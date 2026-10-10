@@ -258,3 +258,100 @@ def test_start_refuses_when_config_is_the_default_one(
     assert response.status_code == 409
     assert response.json()["error"]["code"] == "trust_refused"
     assert not runner.called("workspace", "create")
+
+
+# --- Starting agents anywhere else must fail ------------------------------------------
+
+
+@pytest.fixture
+def layout(tmp_path: Path) -> dict[str, Path]:
+    """Mirror of the real setup: ~/projects is both allowed and trusted."""
+    home = tmp_path
+    work = home / "Projects" / "work"
+    (work / "app").mkdir(parents=True)
+    (home / "Projects" / "other").mkdir()
+    (home / "Projects" / "work-evil").mkdir()
+    (work / "link-out").symlink_to(home / "Projects" / "other")
+    config_dir = home / ".claude-agents"
+    config_dir.mkdir()
+    (config_dir / ".claude.json").write_text('{"projects": {}}')
+    return {"home": home, "work": work, "config_dir": config_dir}
+
+
+def strict_client(runner: FakeRunner, layout: dict[str, Path], **overrides) -> TestClient:
+    defaults = {
+        "allowed_roots": (layout["work"].resolve(),),
+        "trust_root": layout["work"],
+        "claude_config_dir": layout["config_dir"],
+    }
+    settings = Settings(token=TOKEN, **{**defaults, **overrides})
+    return TestClient(create_app(settings, Herdr(runner=runner)))
+
+
+@pytest.mark.parametrize(
+    "cwd",
+    [
+        "/",
+        "/etc",
+        "/tmp",
+        "{home}",
+        "{home}/Projects",
+        "{home}/Projects/other",
+        "{home}/Projects/work-evil",
+        "{home}/Projects/work/../other",
+        "{home}/Projects/work/link-out",
+        "{home}/.claude-agents",
+        "~",
+    ],
+)
+def test_start_outside_allowed_roots_fails_without_side_effects(
+    layout: dict[str, Path], cwd: str
+) -> None:
+    runner = FakeRunner({})
+    response = strict_client(runner, layout).post(
+        "/agents", headers=AUTH, json={"cwd": cwd.format(home=layout["home"]), "name": "probe"}
+    )
+    assert response.status_code == 403
+    assert "outside the allowed roots" in response.json()["detail"]
+    assert runner.calls == []
+    assert projects_in(layout["config_dir"]) == {}
+
+
+def test_start_in_missing_folder_fails_without_side_effects(layout: dict[str, Path]) -> None:
+    runner = FakeRunner({})
+    response = strict_client(runner, layout).post(
+        "/agents", headers=AUTH, json={"cwd": str(layout["work"] / "missing"), "name": "x"}
+    )
+    assert response.status_code == 404
+    assert runner.calls == []
+    assert projects_in(layout["config_dir"]) == {}
+
+
+def test_allowed_but_outside_trust_root_is_never_trusted(layout: dict[str, Path]) -> None:
+    """With a broader allowlist, folders outside the trust root get no trust entry, and
+    the trust dialog backstop refuses the start and closes the workspace."""
+    runner = FakeRunner(start_responses(trust_dialog=True))
+    client_ = strict_client(
+        runner, layout, allowed_roots=((layout["home"] / "Projects").resolve(),)
+    )
+    response = client_.post(
+        "/agents", headers=AUTH, json={"cwd": str(layout["home"] / "Projects" / "other"), "name": "x"}
+    )
+    assert response.status_code == 409
+    assert response.json()["error"]["code"] == "folder_not_trusted"
+    assert runner.called("workspace", "close")
+    assert projects_in(layout["config_dir"]) == {}
+
+
+def test_rejects_malformed_names(layout: dict[str, Path]) -> None:
+    runner = FakeRunner({})
+    for name in ["", "a b", "../x", "x;rm -rf", "x" * 65]:
+        response = strict_client(runner, layout).post(
+            "/agents", headers=AUTH, json={"cwd": str(layout["work"] / "app"), "name": name}
+        )
+        assert response.status_code == 422, name
+    assert runner.calls == []
+
+
+def projects_in(config_dir: Path) -> dict:
+    return json.loads((config_dir / ".claude.json").read_text())["projects"]
