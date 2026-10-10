@@ -19,9 +19,14 @@ All routes require `Authorization: Bearer $AGENT_BRIDGE_TOKEN`.
 | `DELETE /agents/{id}` | `pane close` | |
 
 Agents are started with a separate Claude config (`CLAUDE_CONFIG_DIR=~/.claude-agents`) with
-`--permission-mode auto`. If Claude shows its folder-trust dialog, the start is refused
-with `folder_not_trusted` and the workspace closed: the dialog defaults to "No, exit",
-so a prompt sent into it would quit Claude.
+`--permission-mode auto`.
+
+Claude's folder-trust dialog defaults to "No, exit", so a prompt sent into it would quit
+Claude. Before starting, agent-bridge marks the exact folder as trusted in
+`$AGENT_BRIDGE_CLAUDE_CONFIG_DIR/.claude.json`, but only for folders under
+`AGENT_BRIDGE_TRUST_ROOT`, and it refuses (`409 trust_refused`) to ever edit the default
+config (`~/.claude.json`, `~/.claude/`). If the dialog still shows, the start is refused
+with `folder_not_trusted` and the workspace closed.
 
 ## Configuration
 
@@ -32,6 +37,7 @@ so a prompt sent into it would quit Claude.
 | `AGENT_BRIDGE_CLAUDE_CONFIG_DIR` | `~/.claude-agents` | |
 | `AGENT_BRIDGE_CLAUDE_ARGS` | `--permission-mode auto` | |
 | `AGENT_BRIDGE_HERDR_BIN` | `herdr` | |
+| `AGENT_BRIDGE_TRUST_ROOT` | `~/projects` | only folders under it are auto-trusted |
 | `AGENT_BRIDGE_MAX_AGENTS` | `10` | no new agents while this many or more exist (all herdr agents count) |
 
 ## Run

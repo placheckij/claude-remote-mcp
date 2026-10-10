@@ -65,6 +65,8 @@ def root(tmp_path: Path) -> Path:
 
 
 def client(runner: FakeRunner, root: Path, **overrides) -> TestClient:
+    # Trust writes are covered in test_trust.py; keep these tests off the real config.
+    overrides.setdefault("trust_root", root / "no-trust-writes")
     settings = Settings(token=TOKEN, allowed_roots=(root.resolve(),), **overrides)
     return TestClient(create_app(settings, Herdr(runner=runner)))
 
@@ -228,3 +230,31 @@ def test_start_allowed_just_below_the_limit(root: Path) -> None:
         "/agents", headers=AUTH, json={"cwd": str(root / "project"), "name": "probe"}
     )
     assert response.status_code == 201
+
+
+def test_start_trusts_folders_under_the_trust_root(root: Path) -> None:
+    config_dir = root / "claude-config"
+    config_dir.mkdir()
+    (config_dir / ".claude.json").write_text("{}")
+    runner = FakeRunner(start_responses(trust_dialog=False))
+    response = client(runner, root, trust_root=root, claude_config_dir=config_dir).post(
+        "/agents", headers=AUTH, json={"cwd": str(root / "project"), "name": "probe"}
+    )
+    assert response.status_code == 201
+    trusted = json.loads((config_dir / ".claude.json").read_text())["projects"]
+    assert trusted == {str((root / "project").resolve()): {"hasTrustDialogAccepted": True}}
+
+
+def test_start_refuses_when_config_is_the_default_one(
+    root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("HOME", str(root))
+    (root / ".claude").mkdir()
+    (root / ".claude" / ".claude.json").write_text("{}")
+    runner = FakeRunner(start_responses(trust_dialog=False))
+    response = client(
+        runner, root, trust_root=root, claude_config_dir=root / ".claude"
+    ).post("/agents", headers=AUTH, json={"cwd": str(root / "project"), "name": "probe"})
+    assert response.status_code == 409
+    assert response.json()["error"]["code"] == "trust_refused"
+    assert not runner.called("workspace", "create")

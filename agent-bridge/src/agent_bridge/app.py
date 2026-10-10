@@ -17,6 +17,7 @@ from pydantic import BaseModel, Field
 from agent_bridge.config import Settings
 from agent_bridge.herdr import Herdr, HerdrError
 from agent_bridge.screen import SNAPSHOT_LINES, last_lines
+from agent_bridge.trust import TrustError, trust_folder
 
 ERROR_STATUS = {
     "agent_not_found": 404,
@@ -162,6 +163,16 @@ def create_app(settings: Settings, herdr: Herdr | None = None) -> FastAPI:
                         }
                     },
                 )
+            if cwd.is_relative_to(settings.trust_root.expanduser().resolve()):
+                try:
+                    await asyncio.to_thread(
+                        trust_folder, settings.claude_config_dir, cwd, settings.trust_root
+                    )
+                except TrustError as error:
+                    return JSONResponse(
+                        status_code=409,
+                        content={"error": {"code": "trust_refused", "message": str(error)}},
+                    )
             agent = await herdr.start_agent(
                 body.name, str(cwd), settings.claude_env(), settings.claude_args
             )

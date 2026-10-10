@@ -14,6 +14,8 @@ class Settings:
     claude_config_dir: Path = Path.home() / ".claude-agents"
     claude_args: tuple[str, ...] = ("--permission-mode", "auto")
     herdr_bin: str = "herdr"
+    # Agents started under this folder get it marked trusted in the Claude config.
+    trust_root: Path = Path.home() / "Projects" / "work"
     max_output_chars: int = 8000
     # Counts every herdr agent, including ones started by hand.
     max_agents: int = 10
@@ -42,6 +44,9 @@ class Settings:
             if "AGENT_BRIDGE_CLAUDE_ARGS" in os.environ
             else defaults.claude_args,
             herdr_bin=os.environ.get("AGENT_BRIDGE_HERDR_BIN", defaults.herdr_bin),
+            trust_root=Path(
+                os.environ.get("AGENT_BRIDGE_TRUST_ROOT", defaults.trust_root)
+            ).expanduser(),
             max_agents=int(os.environ.get("AGENT_BRIDGE_MAX_AGENTS", defaults.max_agents)),
         )
 
