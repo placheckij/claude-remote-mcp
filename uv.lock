@@ -1,0 +1,25 @@
+version = 1
+revision = 3
+requires-python = ">=3.11"
+
+[manifest]
+members = [
+    "claude-remote-mcp",
+    "agent-bridge",
+    "mcp-gateway",
+]
+
+[[package]]
+name = "claude-remote-mcp"
+version = "0.1.0"
+source = { virtual = "." }
+
+[[package]]
+name = "agent-bridge"
+version = "0.1.0"
+source = { editable = "agent-bridge" }
+
+[[package]]
+name = "mcp-gateway"
+version = "0.1.0"
+source = { editable = "mcp-gateway" }

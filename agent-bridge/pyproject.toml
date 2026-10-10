@@ -1,0 +1,10 @@
+[project]
+name = "agent-bridge"
+version = "0.1.0"
+description = "Stateless LAN-only HTTP service on the agent host that drives the herdr CLI"
+requires-python = ">=3.11"
+dependencies = []
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
