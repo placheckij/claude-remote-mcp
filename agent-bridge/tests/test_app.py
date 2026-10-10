@@ -135,8 +135,9 @@ def test_prompt_timeout_reports_still_working(root: Path) -> None:
     assert body["agent"]["status"] == "working"
 
 
-def start_responses(trust_dialog: bool) -> dict:
+def start_responses(trust_dialog: bool, running: int = 0) -> dict:
     return {
+        ("agent", "list"): ok({"agents": [agent(f"w{i}:p1") for i in range(running)]}),
         ("workspace", "create"): ok(
             {"workspace": {"workspace_id": "w5"}, "root_pane": {"pane_id": "w5:p1"}}
         ),
@@ -203,3 +204,27 @@ def test_stop_closes_the_pane(root: Path) -> None:
     runner = FakeRunner({("pane", "close"): ok({"type": "ok"})})
     assert client(runner, root).delete("/agents/w1:p1", headers=AUTH).status_code == 204
     assert runner.calls == [["pane", "close", "w1:p1"]]
+
+
+@pytest.mark.parametrize("running", [10, 12])
+def test_start_refuses_at_the_agent_limit(root: Path, running: int) -> None:
+    runner = FakeRunner(start_responses(trust_dialog=False, running=running))
+    response = client(runner, root).post(
+        "/agents", headers=AUTH, json={"cwd": str(root / "project"), "name": "probe"}
+    )
+    assert response.status_code == 409
+    error = response.json()["error"]
+    assert error["code"] == "agent_limit_reached"
+    assert error["message"] == (
+        f"Refusing to start a new agent: {running} agents are already running "
+        "and the limit is 10. Stop an agent first."
+    )
+    assert not runner.called("workspace", "create")
+
+
+def test_start_allowed_just_below_the_limit(root: Path) -> None:
+    runner = FakeRunner(start_responses(trust_dialog=False, running=9))
+    response = client(runner, root).post(
+        "/agents", headers=AUTH, json={"cwd": str(root / "project"), "name": "probe"}
+    )
+    assert response.status_code == 201

@@ -15,7 +15,7 @@ All routes require `Authorization: Bearer $AGENT_BRIDGE_TOKEN`.
 | `GET /agents/{id}/output?lines=40` | `agent read` | last N meaningful lines: padding, input box and status bar dropped |
 | `POST /agents/{id}/prompt` `{text, timeout_s?, lines?}` | `agent prompt --wait` | waits until idle/done/blocked; on timeout returns `timed_out: true` with current status |
 | `POST /agents/{id}/keys` `{keys}` | `agent send-keys` | answer a `blocked` agent's question |
-| `POST /agents` `{cwd, name}` | `workspace create` + `agent start --kind claude` | `cwd` must be under an allowed root |
+| `POST /agents` `{cwd, name}` | `workspace create` + `agent start --kind claude` | `cwd` must be under an allowed root; refused with `409 agent_limit_reached` when the agent count is at the limit |
 | `DELETE /agents/{id}` | `pane close` | |
 
 Agents are started with a separate Claude config (`CLAUDE_CONFIG_DIR=~/.claude-agents`) with
@@ -32,6 +32,7 @@ so a prompt sent into it would quit Claude.
 | `AGENT_BRIDGE_CLAUDE_CONFIG_DIR` | `~/.claude-agents` | |
 | `AGENT_BRIDGE_CLAUDE_ARGS` | `--permission-mode auto` | |
 | `AGENT_BRIDGE_HERDR_BIN` | `herdr` | |
+| `AGENT_BRIDGE_MAX_AGENTS` | `10` | no new agents while this many or more exist (all herdr agents count) |
 
 ## Run
 

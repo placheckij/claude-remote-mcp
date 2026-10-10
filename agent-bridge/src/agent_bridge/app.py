@@ -4,6 +4,7 @@ Agents are addressed by their herdr pane id (e.g. `w1:p1`). Responses are trimme
 what a voice-driven caller needs; raw terminal output is capped.
 """
 
+import asyncio
 import hmac
 from pathlib import Path
 from typing import Annotated, Literal
@@ -89,6 +90,8 @@ def create_app(settings: Settings, herdr: Herdr | None = None) -> FastAPI:
             raise HTTPException(status_code=401, detail="invalid token")
 
     app = FastAPI(title="agent-bridge", dependencies=[Depends(authorize)])
+    # Serializes count-then-start so concurrent requests cannot exceed the limit.
+    start_lock = asyncio.Lock()
 
     @app.exception_handler(HerdrError)
     async def herdr_error(_: Request, error: HerdrError) -> JSONResponse:
@@ -136,16 +139,32 @@ def create_app(settings: Settings, herdr: Herdr | None = None) -> FastAPI:
     async def send_keys(agent_id: str, body: KeysRequest) -> None:
         await herdr.send_keys(agent_id, body.keys)
 
-    @app.post("/agents", status_code=201)
-    async def start_agent(body: StartRequest) -> AgentSummary:
+    @app.post("/agents", status_code=201, response_model=AgentSummary)
+    async def start_agent(body: StartRequest) -> AgentSummary | JSONResponse:
         cwd = Path(body.cwd).expanduser().resolve()
         if not settings.is_allowed(cwd):
             raise HTTPException(status_code=403, detail=f"{cwd} is outside the allowed roots")
         if not cwd.is_dir():
             raise HTTPException(status_code=404, detail=f"{cwd} is not a directory")
-        agent = await herdr.start_agent(
-            body.name, str(cwd), settings.claude_env(), settings.claude_args
-        )
+        async with start_lock:
+            running = len(await herdr.list_agents())
+            if running >= settings.max_agents:
+                return JSONResponse(
+                    status_code=409,
+                    content={
+                        "error": {
+                            "code": "agent_limit_reached",
+                            "message": (
+                                f"Refusing to start a new agent: {running} agents are already "
+                                f"running and the limit is {settings.max_agents}. "
+                                "Stop an agent first."
+                            ),
+                        }
+                    },
+                )
+            agent = await herdr.start_agent(
+                body.name, str(cwd), settings.claude_env(), settings.claude_args
+            )
         return summarize(agent)
 
     @app.delete("/agents/{agent_id}", status_code=204)

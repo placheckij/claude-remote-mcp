@@ -15,6 +15,8 @@ class Settings:
     claude_args: tuple[str, ...] = ("--permission-mode", "auto")
     herdr_bin: str = "herdr"
     max_output_chars: int = 8000
+    # Counts every herdr agent, including ones started by hand.
+    max_agents: int = 10
     prompt_timeout_ms: int = 10 * 60 * 1000
 
     @classmethod
@@ -40,6 +42,7 @@ class Settings:
             if "AGENT_BRIDGE_CLAUDE_ARGS" in os.environ
             else defaults.claude_args,
             herdr_bin=os.environ.get("AGENT_BRIDGE_HERDR_BIN", defaults.herdr_bin),
+            max_agents=int(os.environ.get("AGENT_BRIDGE_MAX_AGENTS", defaults.max_agents)),
         )
 
     def claude_env(self) -> dict[str, str]:
