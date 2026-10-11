@@ -19,6 +19,10 @@ from agent_bridge.herdr import Herdr, HerdrError
 from agent_bridge.screen import SNAPSHOT_LINES, last_lines
 from agent_bridge.trust import TrustError, trust_folder
 
+# How long a wait with expect_change gives the agent to leave its old state; herdr's own
+# `agent prompt --wait` uses the same window.
+STATE_CHANGE_WINDOW_MS = 5000
+
 ERROR_STATUS = {
     "agent_not_found": 404,
     "pane_not_found": 404,
@@ -46,6 +50,14 @@ class PromptRequest(BaseModel):
     text: str = Field(min_length=1)
     timeout_s: int | None = Field(default=None, ge=1, le=3600)
     lines: int = Field(default=40, ge=1, le=500)
+
+
+class WaitRequest(BaseModel):
+    timeout_s: int | None = Field(default=None, ge=1, le=3600)
+    lines: int = Field(default=40, ge=1, le=500)
+    # Set right after answering the agent: its status is still the old one (e.g. blocked),
+    # so first wait briefly for it to start working before waiting for it to settle.
+    expect_change: bool = False
 
 
 class PromptResult(BaseModel):
@@ -118,23 +130,47 @@ def create_app(settings: Settings, herdr: Herdr | None = None) -> FastAPI:
         snapshot = await herdr.read(agent_id, SNAPSHOT_LINES, source)
         return cap(last_lines(snapshot, lines), settings.max_output_chars)
 
-    @app.post("/agents/{agent_id}/prompt")
-    async def prompt(agent_id: str, body: PromptRequest) -> PromptResult:
-        timeout_ms = body.timeout_s * 1000 if body.timeout_s else settings.prompt_timeout_ms
+    async def settle(agent_id: str, waiting, lines: int) -> PromptResult:
+        """Await `waiting` (a herdr wait), then report status and the latest output."""
         timed_out = False
         try:
-            agent = await herdr.prompt(agent_id, body.text, timeout_ms)
+            agent = await waiting
         except HerdrError as error:
             if error.code != "timeout":
                 raise
             timed_out = True
             agent = await herdr.get_agent(agent_id)
-        output = last_lines(await herdr.read(agent_id, SNAPSHOT_LINES), body.lines)
+        output = last_lines(await herdr.read(agent_id, SNAPSHOT_LINES), lines)
         return PromptResult(
             agent=summarize(agent),
             output=cap(output, settings.max_output_chars),
             timed_out=timed_out,
         )
+
+    @app.post("/agents/{agent_id}/prompt")
+    async def prompt(agent_id: str, body: PromptRequest) -> PromptResult:
+        timeout_ms = body.timeout_s * 1000 if body.timeout_s else settings.prompt_timeout_ms
+        return await settle(agent_id, herdr.prompt(agent_id, body.text, timeout_ms), body.lines)
+
+    @app.post("/agents/{agent_id}/wait")
+    async def wait(agent_id: str, body: WaitRequest) -> PromptResult:
+        timeout_ms = body.timeout_s * 1000 if body.timeout_s else settings.prompt_timeout_ms
+
+        async def waiting() -> dict:
+            remaining = timeout_ms
+            if body.expect_change:
+                window = min(STATE_CHANGE_WINDOW_MS, timeout_ms)
+                try:
+                    await herdr.wait(agent_id, window, until=("working",))
+                except HerdrError as error:
+                    # No change seen: the turn may already be over, or the answer did not
+                    # take; either way the settled wait below reports the current state.
+                    if error.code != "timeout":
+                        raise
+                remaining -= window
+            return await herdr.wait(agent_id, max(remaining, 1000))
+
+        return await settle(agent_id, waiting(), body.lines)
 
     @app.post("/agents/{agent_id}/keys", status_code=204)
     async def send_keys(agent_id: str, body: KeysRequest) -> None:

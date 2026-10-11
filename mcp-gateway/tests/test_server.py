@@ -107,7 +107,7 @@ def test_health_check_is_open_and_says_nothing(client: TestClient) -> None:
 def test_lists_the_tools(client: TestClient) -> None:
     tools = {tool["name"] for tool in rpc(client, "tools/list").json()["result"]["tools"]}
     assert tools == {
-        "list_agents", "agent_details", "read_output", "send_prompt",
+        "list_agents", "agent_details", "read_output", "send_prompt", "wait_for_agent",
         "answer_agent", "start_agent", "stop_agent",
     }
 
@@ -144,8 +144,55 @@ def test_send_prompt_flags_blocked_and_timed_out(client: TestClient, mac: FakeAg
         200, json={"agent": {**AGENT, "status": "working"}, "output": output, "timed_out": True}
     )
     text = call_tool(client, "send_prompt", agent_id="w1:p1", text="x")[1]
-    assert text.startswith("Still working after 90s")
+    assert text.startswith("Still working after 90s. Keep waiting with wait_for_agent.")
     assert "(earlier output cut)" in text
+
+
+def test_wait_for_agent_reports_how_it_ended(client: TestClient, mac: FakeAgentBridge) -> None:
+    mac.routes[("POST", "/agents/w1:p1/wait")] = httpx.Response(
+        200,
+        json={"agent": {**AGENT, "status": "done"}, "output": {"text": "Tests pass", "truncated": False},
+              "timed_out": False},
+    )
+    is_error, text = call_tool(client, "wait_for_agent", agent_id="w1:p1", wait_seconds=120)
+    assert not is_error
+    assert text.startswith("Agent is done.") and text.endswith("Tests pass")
+    assert json.loads(mac.requests[0].content) == {"timeout_s": 120, "lines": 20, "expect_change": False}
+
+
+def test_wait_for_unknown_agent_passes_the_error_through(client: TestClient, mac: FakeAgentBridge) -> None:
+    mac.routes[("POST", "/agents/w9:p9/wait")] = httpx.Response(
+        404, json={"error": {"code": "agent_not_found", "message": "agent target w9:p9 not found"}}
+    )
+    is_error, text = call_tool(client, "wait_for_agent", agent_id="w9:p9")
+    assert is_error and text.endswith("agent target w9:p9 not found")
+
+
+def test_answer_agent_only_sends_keys_by_default(client: TestClient, mac: FakeAgentBridge) -> None:
+    mac.routes[("POST", "/agents/w1:p1/keys")] = httpx.Response(204)
+    assert call_tool(client, "answer_agent", agent_id="w1:p1", keys=["1"]) == (False, "Sent 1 to w1:p1.")
+    assert [request.url.path for request in mac.requests] == ["/agents/w1:p1/keys"]
+
+
+def test_answer_agent_can_wait_for_the_result(client: TestClient, mac: FakeAgentBridge) -> None:
+    mac.routes[("POST", "/agents/w1:p1/keys")] = httpx.Response(204)
+    mac.routes[("POST", "/agents/w1:p1/wait")] = httpx.Response(
+        200,
+        json={"agent": {**AGENT, "status": "idle"}, "output": {"text": "Removed.", "truncated": False},
+              "timed_out": False},
+    )
+    is_error, text = call_tool(client, "answer_agent", agent_id="w1:p1", keys=["1"], wait_seconds=60)
+    assert not is_error
+    assert text.startswith("Sent 1 to w1:p1.\nAgent is idle.") and text.endswith("Removed.")
+    assert [request.url.path for request in mac.requests] == ["/agents/w1:p1/keys", "/agents/w1:p1/wait"]
+    # The agent is still "blocked" right after the key press; agent-bridge must skip that.
+    assert json.loads(mac.requests[1].content)["expect_change"] is True
+
+
+@pytest.mark.parametrize("wait_seconds", [0, 4, 601])
+def test_wait_rejects_out_of_range_waits(client: TestClient, mac: FakeAgentBridge, wait_seconds: int) -> None:
+    is_error, _ = call_tool(client, "wait_for_agent", agent_id="w1:p1", wait_seconds=wait_seconds)
+    assert is_error and mac.requests == []
 
 
 def test_start_agent_resolves_project_names(client: TestClient, mac: FakeAgentBridge) -> None:

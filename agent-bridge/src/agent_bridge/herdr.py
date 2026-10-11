@@ -65,6 +65,16 @@ class Herdr:
         return (await self._json("agent", "get", target))["agent"]
 
     async def read(self, target: str, lines: int, source: str = "recent") -> str:
+        """Read terminal text. While the agent is working or blocked herdr can only capture
+        the visible screen, which is then what callers get (it holds the live question)."""
+        try:
+            return await self._read(target, lines, source)
+        except HerdrError as error:
+            if error.code != "agent_not_idle" or source == "visible":
+                raise
+            return await self._read(target, lines, "visible")
+
+    async def _read(self, target: str, lines: int, source: str) -> str:
         return await self._run(
             "agent", "read", target, "--lines", str(lines), "--source", source, "--format", "text"
         )
@@ -74,6 +84,12 @@ class Herdr:
         result = await self._json(
             "agent", "prompt", target, text, "--wait", "--timeout", str(timeout_ms)
         )
+        return result["agent"]
+
+    async def wait(self, target: str, timeout_ms: int, until: Sequence[str] = ()) -> dict:
+        """Wait for one of `until`, or by default until the agent settles (idle, done, blocked)."""
+        until_args = [arg for status in until for arg in ("--until", status)]
+        result = await self._json("agent", "wait", target, *until_args, "--timeout", str(timeout_ms))
         return result["agent"]
 
     async def send_keys(self, target: str, keys: Sequence[str]) -> None:

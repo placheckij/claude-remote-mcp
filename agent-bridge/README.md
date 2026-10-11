@@ -12,8 +12,9 @@ All routes require `Authorization: Bearer $AGENT_BRIDGE_TOKEN`.
 |---|---|---|
 | `GET /agents` | `agent list` | every herdr agent, including ones started by hand |
 | `GET /agents/{id}` | `agent get` | |
-| `GET /agents/{id}/output?lines=40` | `agent read` | last N meaningful lines: padding, input box and status bar dropped |
+| `GET /agents/{id}/output?lines=40` | `agent read` | last N meaningful lines: padding, input box and status bar dropped; the visible screen only while the agent is working or blocked (herdr can't scroll its history then) |
 | `POST /agents/{id}/prompt` `{text, timeout_s?, lines?}` | `agent prompt --wait` | waits until idle/done/blocked; on timeout returns `timed_out: true` with current status |
+| `POST /agents/{id}/wait` `{timeout_s?, lines?, expect_change?}` | `agent wait` | same result as `/prompt`, without sending anything; `expect_change` (after `/keys`) first gives the agent 5 s to leave its old `blocked` state |
 | `POST /agents/{id}/keys` `{keys}` | `agent send-keys` | answer a `blocked` agent's question |
 | `POST /agents` `{cwd, name}` | `workspace create` + `agent start --kind claude` | `cwd` must be under an allowed root; refused with `409 agent_limit_reached` when the agent count is at the limit |
 | `DELETE /agents/{id}` | `pane close` | |

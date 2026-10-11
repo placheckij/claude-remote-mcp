@@ -51,6 +51,14 @@ class AgentBridge:
             timeout=timeout_s + 30,
         )
 
+    async def wait(self, agent_id: str, timeout_s: int, lines: int, expect_change: bool = False) -> dict:
+        return await self._request(
+            "POST",
+            f"/agents/{agent_id}/wait",
+            json={"timeout_s": timeout_s, "lines": lines, "expect_change": expect_change},
+            timeout=timeout_s + 30,
+        )
+
     async def send_keys(self, agent_id: str, keys: list[str]) -> None:
         await self._request("POST", f"/agents/{agent_id}/keys", json={"keys": keys})
 

@@ -105,6 +105,24 @@ def test_output_keeps_the_tail_when_capped(root: Path) -> None:
     assert response.json() == {"text": "a" * 7 + "END", "truncated": True}
 
 
+def test_output_of_a_busy_agent_falls_back_to_the_visible_screen(root: Path) -> None:
+    runner = FakeRunner(
+        {
+            ("agent", "read", "w1:p1", "--lines", "500", "--source", "recent"): err("agent_not_idle"),
+            ("agent", "read", "w1:p1", "--lines", "500", "--source", "visible"): (0, "Allow rm?\n", ""),
+        }
+    )
+    response = client(runner, root).get("/agents/w1:p1/output", headers=AUTH)
+    assert response.json() == {"text": "Allow rm?", "truncated": False}
+
+
+def test_visible_read_failures_are_not_retried(root: Path) -> None:
+    runner = FakeRunner({("agent", "read"): err("agent_not_idle")})
+    response = client(runner, root).get("/agents/w1:p1/output?source=visible", headers=AUTH)
+    assert response.status_code == 502
+    assert len(runner.called("agent", "read")) == 1
+
+
 def test_prompt_waits_then_returns_status_and_output(root: Path) -> None:
     runner = FakeRunner(
         {
@@ -135,6 +153,82 @@ def test_prompt_timeout_reports_still_working(root: Path) -> None:
     body = client(runner, root).post("/agents/w1:p1/prompt", headers=AUTH, json={"text": "hi"}).json()
     assert body["timed_out"] is True
     assert body["agent"]["status"] == "working"
+
+
+def test_wait_returns_once_the_agent_settles(root: Path) -> None:
+    runner = FakeRunner(
+        {
+            ("agent", "wait"): ok({"agent": agent(status="done")}),
+            ("agent", "read"): (0, "All tests pass\n", ""),
+        }
+    )
+    body = client(runner, root).post(
+        "/agents/w1:p1/wait", headers=AUTH, json={"timeout_s": 60, "lines": 5}
+    ).json()
+    assert (body["agent"]["status"], body["output"]["text"], body["timed_out"]) == (
+        "done", "All tests pass", False,
+    )
+    # A plain wait matches herdr's default settled states, not "working".
+    assert runner.called("agent", "wait") == [["agent", "wait", "w1:p1", "--timeout", "60000"]]
+
+
+def test_wait_timeout_reports_still_working(root: Path) -> None:
+    runner = FakeRunner(
+        {
+            ("agent", "wait"): err("timeout"),
+            ("agent", "get"): ok({"agent": agent(status="working")}),
+            ("agent", "read"): (0, "thinking", ""),
+        }
+    )
+    body = client(runner, root).post("/agents/w1:p1/wait", headers=AUTH, json={}).json()
+    assert body["timed_out"] is True
+    assert body["agent"]["status"] == "working"
+
+
+def test_wait_after_an_answer_skips_the_stale_blocked_state(root: Path) -> None:
+    runner = FakeRunner(
+        {
+            ("agent", "wait", "w1:p1", "--until", "working"): ok({"agent": agent(status="working")}),
+            ("agent", "wait", "w1:p1", "--timeout"): ok({"agent": agent(status="idle")}),
+            ("agent", "read"): (0, "Done.", ""),
+        }
+    )
+    body = client(runner, root).post(
+        "/agents/w1:p1/wait", headers=AUTH, json={"timeout_s": 60, "expect_change": True}
+    ).json()
+    assert body["agent"]["status"] == "idle"
+    assert runner.called("agent", "wait") == [
+        ["agent", "wait", "w1:p1", "--until", "working", "--timeout", "5000"],
+        ["agent", "wait", "w1:p1", "--timeout", "55000"],
+    ]
+
+
+def test_wait_after_an_answer_without_a_change_reports_current_state(root: Path) -> None:
+    runner = FakeRunner(
+        {
+            ("agent", "wait", "w1:p1", "--until", "working"): err("timeout"),
+            ("agent", "wait", "w1:p1", "--timeout"): ok({"agent": agent(status="blocked")}),
+            ("agent", "read"): (0, "Allow rm?", ""),
+        }
+    )
+    body = client(runner, root).post(
+        "/agents/w1:p1/wait", headers=AUTH, json={"timeout_s": 30, "expect_change": True}
+    ).json()
+    assert (body["agent"]["status"], body["timed_out"]) == ("blocked", False)
+
+
+def test_wait_for_unknown_agent_is_404(root: Path) -> None:
+    runner = FakeRunner({("agent", "wait"): err("agent_not_found")})
+    response = client(runner, root).post("/agents/w9:p9/wait", headers=AUTH, json={})
+    assert response.status_code == 404
+    assert response.json()["error"]["code"] == "agent_not_found"
+
+
+@pytest.mark.parametrize("body", [{"timeout_s": 0}, {"timeout_s": 3601}, {"lines": 0}])
+def test_wait_rejects_out_of_range_values(root: Path, body: dict) -> None:
+    runner = FakeRunner({})
+    assert client(runner, root).post("/agents/w1:p1/wait", headers=AUTH, json=body).status_code == 422
+    assert runner.calls == []
 
 
 def start_responses(trust_dialog: bool, running: int = 0) -> dict:

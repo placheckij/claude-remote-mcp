@@ -27,9 +27,11 @@ often driving and talking by voice: keep replies short and speakable, never read
 long code or logs, and summarize what an agent did instead.
 
 Typical flow: list_agents → send_prompt to an agent (waits for it to finish) →
-read_output for more detail. If an agent's status is "blocked" it is waiting for an
-approval: read the question with read_output, tell the user, and answer with
-answer_agent only after the user decides. Agent ids look like "w1:p1".
+read_output for more detail. If the agent is still working when the wait ends, call
+wait_for_agent to keep waiting instead of re-reading its output. If an agent's status is
+"blocked" it is waiting for an approval: read the question with read_output, tell the
+user, and answer with answer_agent (with wait_seconds to wait for the result) only after
+the user decides. Agent ids look like "w1:p1".
 """
 
 READ_ONLY = ToolAnnotations(read_only_hint=True, open_world_hint=False)
@@ -37,6 +39,10 @@ ACTION = ToolAnnotations(read_only_hint=False, destructive_hint=False, open_worl
 DESTRUCTIVE = ToolAnnotations(read_only_hint=False, destructive_hint=True, open_world_hint=False)
 
 AgentId = Annotated[str, Field(description='Agent id from list_agents, e.g. "w1:p1".')]
+WaitSeconds = Annotated[
+    int, Field(ge=5, le=600, description="How long to wait for the agent to finish.")
+]
+Lines = Annotated[int, Field(ge=1, le=200, description="Output lines to return.")]
 
 
 def describe(agent: dict) -> str:
@@ -79,23 +85,21 @@ def build_server(settings: Settings, bridge: AgentBridge) -> MCPServer:
     async def send_prompt(
         agent_id: AgentId,
         text: Annotated[str, Field(min_length=1, description="The prompt, as the user said it.")],
-        wait_seconds: Annotated[
-            int, Field(ge=5, le=600, description="How long to wait for the agent to finish.")
-        ] = 90,
-        lines: Annotated[int, Field(ge=1, le=200, description="Output lines to return.")] = 20,
+        wait_seconds: WaitSeconds = 90,
+        lines: Lines = 20,
     ) -> str:
         """Send a prompt to an agent and wait until it finishes, then return its status and
-        latest output. If it is still working when the wait ends, check later with
-        read_output or agent_details."""
+        latest output. If it is still working when the wait ends, use wait_for_agent."""
         result = await call(bridge.prompt(agent_id, text, wait_seconds, lines))
-        agent = result["agent"]
-        if result["timed_out"]:
-            head = f"Still working after {wait_seconds}s. Check back with read_output."
-        elif agent["status"] == "blocked":
-            head = "The agent is waiting for an approval. Ask the user, then use answer_agent."
-        else:
-            head = f"Agent is {agent['status']}."
-        return f"{head}\n{describe(agent)}\n---\n{_with_truncation_note(result['output'])}"
+        return _report(result, wait_seconds)
+
+    @mcp.tool(annotations=READ_ONLY)
+    async def wait_for_agent(
+        agent_id: AgentId, wait_seconds: WaitSeconds = 90, lines: Lines = 20
+    ) -> str:
+        """Wait until an agent finishes its current work or needs an approval, then return
+        its status and latest output. Returns at once if it is already idle or done."""
+        return _report(await call(bridge.wait(agent_id, wait_seconds, lines)), wait_seconds)
 
     @mcp.tool(annotations=ACTION)
     async def answer_agent(
@@ -108,11 +112,21 @@ def build_server(settings: Settings, bridge: AgentBridge) -> MCPServer:
                 description='Key presses, e.g. ["1"], ["Enter"], ["Down", "Enter"] or ["esc"].',
             ),
         ],
+        wait_seconds: Annotated[
+            int | None,
+            Field(ge=5, le=600, description="Also wait this long for the agent to finish."),
+        ] = None,
+        lines: Lines = 20,
     ) -> str:
         """Answer a blocked agent's question (e.g. a permission prompt) with key presses.
-        Only use this after the user decided; read_output shows the options first."""
+        Only use this after the user decided; read_output shows the options first. With
+        wait_seconds, also waits for the agent to carry on and reports how it ended."""
         await call(bridge.send_keys(agent_id, keys))
-        return f"Sent {' '.join(keys)} to {agent_id}."
+        sent = f"Sent {' '.join(keys)} to {agent_id}."
+        if wait_seconds is None:
+            return sent
+        result = await call(bridge.wait(agent_id, wait_seconds, lines, expect_change=True))
+        return f"{sent}\n{_report(result, wait_seconds)}"
 
     @mcp.tool(annotations=ACTION)
     async def start_agent(
@@ -147,6 +161,18 @@ def build_server(settings: Settings, bridge: AgentBridge) -> MCPServer:
         return PlainTextResponse("ok")
 
     return mcp
+
+
+def _report(result: dict, wait_seconds: int) -> str:
+    """Status headline, the agent line, then its latest output."""
+    agent = result["agent"]
+    if result["timed_out"]:
+        head = f"Still working after {wait_seconds}s. Keep waiting with wait_for_agent."
+    elif agent["status"] == "blocked":
+        head = "The agent is waiting for an approval. Ask the user, then use answer_agent."
+    else:
+        head = f"Agent is {agent['status']}."
+    return f"{head}\n{describe(agent)}\n---\n{_with_truncation_note(result['output'])}"
 
 
 def _with_truncation_note(output: dict) -> str:
