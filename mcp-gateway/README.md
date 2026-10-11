@@ -116,7 +116,7 @@ hostname can take a minute; if only the tunnel checks fail, try again shortly:
 | `/etc/cloudflared/claude-remote.yml` | tunnel config with the ingress rules |
 | `/etc/systemd/system/cloudflared-claude-remote.service` | runs the tunnel as the `cloudflared` system user |
 
-### Update, rotate, remove
+### Update and rotate
 
 - **Update the code:** `git pull` in the checkout, then re-run the script. It keeps the
   token and reuses the tunnel.
@@ -124,14 +124,67 @@ hostname can take a minute; if only the tunnel checks fail, try again shortly:
   header in the claude.ai connector.
 - **Change the agent host URL or token:** re-run with the new values.
 - **Logs:** `journalctl -u mcp-gateway -u cloudflared-claude-remote -f`.
-- **Remove:**
+
+### Stop, restart, uninstall
+
+The MCP server and the tunnel are two services. Stopping the tunnel alone is enough to
+take the connector offline; claude.ai then gets an error from Cloudflare.
+
+```sh
+# Status
+systemctl status mcp-gateway cloudflared-claude-remote
+
+# Take it offline: stop the tunnel (and the server); they start again at boot
+sudo systemctl stop cloudflared-claude-remote mcp-gateway
+
+# Keep it offline across reboots too
+sudo systemctl disable --now cloudflared-claude-remote mcp-gateway
+
+# Back online
+sudo systemctl enable --now mcp-gateway cloudflared-claude-remote
+
+# Restart, e.g. after editing /etc/mcp-gateway/env by hand
+sudo systemctl restart mcp-gateway cloudflared-claude-remote
+```
+
+**Uninstall everything** the script set up:
+
+```sh
+# 1. Stop and remove both services
+sudo systemctl disable --now cloudflared-claude-remote mcp-gateway
+sudo rm /etc/systemd/system/mcp-gateway.service /etc/systemd/system/cloudflared-claude-remote.service
+sudo systemctl daemon-reload
+
+# 2. Delete the tunnel at Cloudflare (it must have no running connections, hence step 1)
+sudo TUNNEL_ORIGIN_CERT=/etc/cloudflared/cert.pem cloudflared tunnel cleanup claude-remote
+sudo TUNNEL_ORIGIN_CERT=/etc/cloudflared/cert.pem cloudflared tunnel delete claude-remote
+
+# 3. Remove the code, configuration, tokens and tunnel credentials
+sudo rm -rf /opt/claude-remote-mcp /etc/mcp-gateway
+sudo rm -f /etc/cloudflared/claude-remote.json /etc/cloudflared/claude-remote.yml
+
+# 4. Remove the service users
+sudo userdel mcp-gateway
+sudo userdel cloudflared
+```
+
+Then:
+
+- **DNS:** `tunnel delete` leaves the hostname's CNAME behind. Delete it in the
+  Cloudflare dashboard (your domain → DNS → Records → the `mcp` record).
+- **claude.ai:** remove the custom connector (Customize → Connectors).
+- **Cloudflare Access**, if you set it up: delete the application and the service token
+  in Zero Trust.
+- **Only if nothing else on the gateway host uses them:** the Cloudflare login cert, cloudflared
+  itself and uv.
   ```sh
-  sudo systemctl disable --now mcp-gateway cloudflared-claude-remote
-  sudo rm /etc/systemd/system/{mcp-gateway,cloudflared-claude-remote}.service
-  sudo TUNNEL_ORIGIN_CERT=/etc/cloudflared/cert.pem cloudflared tunnel delete claude-remote
-  sudo rm -rf /opt/claude-remote-mcp /etc/mcp-gateway /etc/cloudflared/claude-remote.*
+  sudo rm -f /etc/cloudflared/cert.pem
+  sudo apt-get remove cloudflared
+  sudo rm /etc/apt/sources.list.d/cloudflared.list /usr/share/keyrings/cloudflare-main.gpg
+  sudo rm /usr/local/bin/uv /usr/local/bin/uvx
   ```
-  Delete the DNS record for the hostname in the Cloudflare dashboard.
+  Treat the cert like a password while it exists: it can create tunnels and DNS
+  records in that zone.
 
 ## Cloudflare Tunnel
 

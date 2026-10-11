@@ -119,16 +119,53 @@ To start it at login and keep it running, save as
 </plist>
 ```
 
+Load it (it starts right away and at every login):
+
 ```sh
 chmod 600 ~/Library/LaunchAgents/dev.claude-remote.agent-bridge.plist
 launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/dev.claude-remote.agent-bridge.plist
-launchctl kickstart -k gui/$(id -u)/dev.claude-remote.agent-bridge     # restart after code changes
-launchctl bootout gui/$(id -u)/dev.claude-remote.agent-bridge          # stop and unload
 ```
 
 If the macOS firewall is on, allow incoming connections for the venv's Python when
 asked. Check from the gateway host:
 `curl -H "Authorization: Bearer $TOKEN" http://192.168.1.20:8765/agents`.
+
+### Restart, stop, uninstall
+
+```sh
+# Status: a PID and "state = running" when it's up; "last exit code" after a crash
+launchctl print gui/$(id -u)/dev.claude-remote.agent-bridge | grep -E 'state|pid|last exit'
+tail -f ~/Library/Logs/agent-bridge.log
+
+# Restart, e.g. after pulling new code or `uv sync`. After editing the plist,
+# stop and start it instead (below), so launchd rereads the file.
+launchctl kickstart -k gui/$(id -u)/dev.claude-remote.agent-bridge
+
+# Stop. `launchctl stop` is not enough: KeepAlive would start it again at once.
+# Unloading stops it until you start it again or log in next time.
+launchctl bootout gui/$(id -u)/dev.claude-remote.agent-bridge
+
+# Start again
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/dev.claude-remote.agent-bridge.plist
+
+# Keep it from starting at login without deleting the plist
+launchctl disable gui/$(id -u)/dev.claude-remote.agent-bridge     # `enable` to undo
+```
+
+**Uninstall:**
+
+```sh
+launchctl bootout gui/$(id -u)/dev.claude-remote.agent-bridge
+rm ~/Library/LaunchAgents/dev.claude-remote.agent-bridge.plist   # holds the token
+rm -f ~/Library/Logs/agent-bridge.log
+```
+
+While agent-bridge is stopped, mcp-gateway answers every tool call with "The agent host is not
+reachable", and the agents in herdr keep running untouched. Uninstalling leaves behind
+the folder-trust entries agent-bridge added to `~/.claude-agents/.claude.json`; they're
+ordinary trust entries and can stay. To retire the whole setup, also uninstall
+[mcp-gateway on the gateway host](../mcp-gateway/README.md#stop-restart-uninstall) and remove the
+connector in claude.ai.
 
 ## Tests
 
