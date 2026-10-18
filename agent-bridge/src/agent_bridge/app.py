@@ -1,4 +1,4 @@
-"""LAN-only HTTP API that mcp-gateway calls; every route maps onto herdr CLI calls.
+"""Private HTTP API that mcp-gateway calls; every route maps onto herdr CLI calls.
 
 Agents are addressed by their herdr pane id (e.g. `w1:p1`). Responses are trimmed to
 what a voice-driven caller needs; raw terminal output is capped.
@@ -199,11 +199,13 @@ def create_app(settings: Settings, herdr: Herdr | None = None) -> FastAPI:
                         }
                     },
                 )
-            if cwd.is_relative_to(settings.trust_root.expanduser().resolve()):
+            trust_root = settings.trust_root
+            if trust_root and cwd.is_relative_to(trust_root.expanduser().resolve()):
                 try:
-                    await asyncio.to_thread(
-                        trust_folder, settings.claude_config_dir, cwd, settings.trust_root
-                    )
+                    # Without a config dir agents use the default config, which
+                    # trust_folder always refuses to edit.
+                    config_dir = settings.claude_config_dir or Path.home()
+                    await asyncio.to_thread(trust_folder, config_dir, cwd, trust_root)
                 except TrustError as error:
                     return JSONResponse(
                         status_code=409,

@@ -12,8 +12,9 @@ class Settings:
     bridge_token: str
     # Host header the tunnel forwards, e.g. mcp.example.com; checked against DNS rebinding.
     public_host: str
-    # Relative project paths given to start_agent resolve against this (on the agent host).
-    projects_root: str = "/Users/me/projects"
+    # Relative project paths given to start_agent resolve against this folder on the
+    # agent host, e.g. /home/me/projects.
+    projects_root: str
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -31,5 +32,5 @@ class Settings:
             bridge_url=required("MCP_GATEWAY_BRIDGE_URL"),
             bridge_token=required("MCP_GATEWAY_BRIDGE_TOKEN"),
             public_host=required("MCP_GATEWAY_PUBLIC_HOST"),
-            projects_root=os.environ.get("MCP_GATEWAY_PROJECTS_ROOT", cls.projects_root),
+            projects_root=required("MCP_GATEWAY_PROJECTS_ROOT"),
         )

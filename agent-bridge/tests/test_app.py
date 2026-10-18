@@ -245,7 +245,7 @@ def start_responses(trust_dialog: bool, running: int = 0) -> dict:
     }
 
 
-def test_start_uses_personal_config_and_auto_mode(root: Path) -> None:
+def test_start_uses_auto_mode_and_the_default_config(root: Path) -> None:
     runner = FakeRunner(start_responses(trust_dialog=False))
     response = client(runner, root).post(
         "/agents", headers=AUTH, json={"cwd": str(root / "project"), "name": "probe"}
@@ -253,9 +253,19 @@ def test_start_uses_personal_config_and_auto_mode(root: Path) -> None:
     assert response.status_code == 201
     assert response.json()["id"] == "w5:p1"
     create = runner.called("workspace", "create")[0]
-    assert f"CLAUDE_CONFIG_DIR={Path.home() / '.claude-agents'}" in create
+    assert not any(arg.startswith("CLAUDE_CONFIG_DIR=") for arg in create)
     assert runner.called("agent", "start")[0][-3:] == ["--", "--permission-mode", "auto"]
     assert not runner.called("workspace", "close")
+
+
+def test_start_passes_a_configured_claude_config_dir(root: Path) -> None:
+    runner = FakeRunner(start_responses(trust_dialog=False))
+    config_dir = root / ".claude-agents"
+    response = client(runner, root, claude_config_dir=config_dir).post(
+        "/agents", headers=AUTH, json={"cwd": str(root / "project"), "name": "probe"}
+    )
+    assert response.status_code == 201
+    assert f"CLAUDE_CONFIG_DIR={config_dir}" in runner.called("workspace", "create")[0]
 
 
 def test_start_retries_while_the_new_shell_is_busy(
@@ -354,28 +364,56 @@ def test_start_refuses_when_config_is_the_default_one(
     assert not runner.called("workspace", "create")
 
 
+def test_start_refuses_to_trust_without_a_separate_config(
+    root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # No config dir means agents use the default config, which is never edited.
+    monkeypatch.setenv("HOME", str(root))
+    (root / ".claude.json").write_text("{}")
+    runner = FakeRunner(start_responses(trust_dialog=False))
+    response = client(runner, root, trust_root=root).post(
+        "/agents", headers=AUTH, json={"cwd": str(root / "project"), "name": "probe"}
+    )
+    assert response.status_code == 409
+    assert response.json()["error"]["code"] == "trust_refused"
+    assert (root / ".claude.json").read_text() == "{}"
+    assert not runner.called("workspace", "create")
+
+
+def test_start_without_a_trust_root_never_writes_trust(root: Path) -> None:
+    config_dir = root / "claude-config"
+    config_dir.mkdir()
+    (config_dir / ".claude.json").write_text("{}")
+    runner = FakeRunner(start_responses(trust_dialog=False))
+    response = client(runner, root, trust_root=None, claude_config_dir=config_dir).post(
+        "/agents", headers=AUTH, json={"cwd": str(root / "project"), "name": "probe"}
+    )
+    assert response.status_code == 201
+    assert (config_dir / ".claude.json").read_text() == "{}"
+
+
 # --- Starting agents anywhere else must fail ------------------------------------------
 
 
 @pytest.fixture
 def layout(tmp_path: Path) -> dict[str, Path]:
-    """Mirror of the real setup: ~/projects is both allowed and trusted."""
+    """A typical setup: ~/projects is both allowed and trusted, with a separate Claude config."""
     home = tmp_path
-    work = home / "Projects" / "work"
-    (work / "app").mkdir(parents=True)
-    (home / "Projects" / "other").mkdir()
-    (home / "Projects" / "work-evil").mkdir()
-    (work / "link-out").symlink_to(home / "Projects" / "other")
+    projects_dir = home / "projects"
+    (projects_dir / "app").mkdir(parents=True)
+    (home / "other").mkdir()
+    (home / "projects-evil").mkdir()
+    (projects_dir / "link-out").symlink_to(home / "other")
     config_dir = home / ".claude-agents"
     config_dir.mkdir()
     (config_dir / ".claude.json").write_text('{"projects": {}}')
-    return {"home": home, "work": work, "config_dir": config_dir}
+    return {"home": home, "projects_dir": projects_dir, "config_dir": config_dir}
 
 
 def strict_client(runner: FakeRunner, layout: dict[str, Path], **overrides) -> TestClient:
     defaults = {
-        "allowed_roots": (layout["work"].resolve(),),
-        "trust_root": layout["work"],
+        "allowed_roots": (layout["projects_dir"].resolve(),),
+        "trust_root": layout["projects_dir"],
         "claude_config_dir": layout["config_dir"],
     }
     settings = Settings(token=TOKEN, **{**defaults, **overrides})
@@ -389,11 +427,10 @@ def strict_client(runner: FakeRunner, layout: dict[str, Path], **overrides) -> T
         "/etc",
         "/tmp",
         "{home}",
-        "{home}/Projects",
-        "{home}/Projects/other",
-        "{home}/Projects/work-evil",
-        "{home}/Projects/work/../other",
-        "{home}/Projects/work/link-out",
+        "{home}/other",
+        "{home}/projects-evil",
+        "{home}/projects/../other",
+        "{home}/projects/link-out",
         "{home}/.claude-agents",
         "~",
     ],
@@ -414,7 +451,7 @@ def test_start_outside_allowed_roots_fails_without_side_effects(
 def test_start_in_missing_folder_fails_without_side_effects(layout: dict[str, Path]) -> None:
     runner = FakeRunner({})
     response = strict_client(runner, layout).post(
-        "/agents", headers=AUTH, json={"cwd": str(layout["work"] / "missing"), "name": "x"}
+        "/agents", headers=AUTH, json={"cwd": str(layout["projects_dir"] / "missing"), "name": "x"}
     )
     assert response.status_code == 404
     assert runner.calls == []
@@ -426,10 +463,10 @@ def test_allowed_but_outside_trust_root_is_never_trusted(layout: dict[str, Path]
     the trust dialog backstop refuses the start and closes the workspace."""
     runner = FakeRunner(start_responses(trust_dialog=True))
     client_ = strict_client(
-        runner, layout, allowed_roots=((layout["home"] / "Projects").resolve(),)
+        runner, layout, allowed_roots=(layout["home"].resolve(),)
     )
     response = client_.post(
-        "/agents", headers=AUTH, json={"cwd": str(layout["home"] / "Projects" / "other"), "name": "x"}
+        "/agents", headers=AUTH, json={"cwd": str(layout["home"] / "other"), "name": "x"}
     )
     assert response.status_code == 409
     assert response.json()["error"]["code"] == "folder_not_trusted"
@@ -441,7 +478,7 @@ def test_rejects_malformed_names(layout: dict[str, Path]) -> None:
     runner = FakeRunner({})
     for name in ["", "a b", "../x", "x;rm -rf", "x" * 65]:
         response = strict_client(runner, layout).post(
-            "/agents", headers=AUTH, json={"cwd": str(layout["work"] / "app"), "name": name}
+            "/agents", headers=AUTH, json={"cwd": str(layout["projects_dir"] / "app"), "name": name}
         )
         assert response.status_code == 422, name
     assert runner.calls == []

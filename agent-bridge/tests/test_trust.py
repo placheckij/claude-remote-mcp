@@ -23,7 +23,7 @@ def config_dir(home: Path) -> Path:
 
 @pytest.fixture
 def trust_root(home: Path) -> Path:
-    path = home / "Projects" / "work"
+    path = home / "projects"
     (path / "app").mkdir(parents=True)
     return path
 
@@ -49,7 +49,7 @@ def test_skips_when_a_parent_is_already_trusted(config_dir: Path, trust_root: Pa
     assert str(trust_root / "app" / "sub") not in projects(config_dir)
 
 
-@pytest.mark.parametrize("folder", ["Projects", "Projects/other", "Projects/work-evil"])
+@pytest.mark.parametrize("folder", ["", "other", "projects-evil"])
 def test_refuses_folders_outside_the_trust_root(
     config_dir: Path, trust_root: Path, home: Path, folder: str
 ) -> None:

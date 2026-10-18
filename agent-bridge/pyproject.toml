@@ -1,7 +1,7 @@
 [project]
 name = "agent-bridge"
 version = "0.1.0"
-description = "Stateless LAN-only HTTP service on the agent host that drives the herdr CLI"
+description = "Stateless HTTP service on the agent host that drives the herdr CLI"
 requires-python = ">=3.11"
 dependencies = [
     "fastapi>=0.143.0",

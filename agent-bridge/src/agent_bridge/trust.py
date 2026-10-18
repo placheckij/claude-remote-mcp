@@ -5,7 +5,7 @@ Claude Code keeps folder trust in `<config dir>/.claude.json` under
 inside it. Without it, a new agent sits on the trust dialog whose default answer is
 "No, exit".
 
-Guard rails: only the personal config dir is ever written (never the default
+Guard rails: only a separate config dir (CLAUDE_CONFIG_DIR) is ever written (never the default
 `~/.claude.json` or `~/.claude/`), and only the exact folder being started is trusted,
 and only when it lies under the trust root.
 """

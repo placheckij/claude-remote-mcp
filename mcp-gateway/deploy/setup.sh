@@ -1,15 +1,17 @@
 #!/usr/bin/env bash
-# Installs mcp-gateway as a systemd service on a Debian-based Linux host and publishes it through a
-# Cloudflare Tunnel. Safe to re-run: it updates the code, keeps the connector token and
-# reuses the existing tunnel.
+# Installs mcp-gateway as a systemd service on a Debian-based Linux host (e.g. Debian,
+# Ubuntu) and publishes it through a Cloudflare Tunnel. Safe to re-run: it
+# updates the code, keeps the connector token and reuses the existing tunnel.
 #
 # Run from a checkout of this repo on the gateway host:
 #   sudo PUBLIC_HOST=mcp.example.com \
 #        AGENT_BRIDGE_URL=http://192.168.1.20:8765 \
 #        AGENT_BRIDGE_TOKEN=<agent-bridge token> \
+#        PROJECTS_ROOT=/home/me/projects \
 #        mcp-gateway/deploy/setup.sh
-# Missing values are asked for interactively. Optional: TUNNEL_NAME (claude-remote),
-# PORT (8766), PROJECTS_ROOT (/Users/me/projects), ROTATE_TOKEN=1.
+# Missing values are asked for interactively. PROJECTS_ROOT is the folder on the agent
+# host that project names given to start_agent resolve against. Optional: TUNNEL_NAME
+# (claude-remote), PORT (8766), ROTATE_TOKEN=1.
 
 set -euo pipefail
 
@@ -22,7 +24,6 @@ CF_DIR=/etc/cloudflared
 CF_USER=cloudflared
 TUNNEL_NAME="${TUNNEL_NAME:-claude-remote}"
 PORT="${PORT:-8766}"
-PROJECTS_ROOT="${PROJECTS_ROOT:-/Users/me/projects}"
 ORIGIN_CERT="$CF_DIR/cert.pem"
 CREDENTIALS="$CF_DIR/$TUNNEL_NAME.json"
 TUNNEL_CONFIG="$CF_DIR/$TUNNEL_NAME.yml"
@@ -40,11 +41,15 @@ ask() { # ask VAR "prompt" [secret]
 }
 
 [[ $EUID -eq 0 ]] || die "run with sudo"
+if ! command -v apt-get >/dev/null || ! command -v systemctl >/dev/null; then
+  die "this script needs a Debian-based Linux with systemd; see mcp-gateway/README.md to install by hand"
+fi
 [[ -f "$REPO_DIR/mcp-gateway/pyproject.toml" ]] || die "run from a checkout of claude-remote-mcp"
 
 ask PUBLIC_HOST "Public hostname for the MCP server (e.g. mcp.example.com)"
 ask AGENT_BRIDGE_URL "agent-bridge URL on the LAN (e.g. http://192.168.1.20:8765)"
 ask AGENT_BRIDGE_TOKEN "agent-bridge token (AGENT_BRIDGE_TOKEN on the agent host)" secret
+ask PROJECTS_ROOT "Projects folder on the agent host (e.g. /home/me/projects)"
 
 # --- Packages ------------------------------------------------------------------------
 
@@ -168,7 +173,7 @@ log "Routing $PUBLIC_HOST to tunnel $TUNNEL_NAME"
 cloudflared tunnel route dns "$TUNNEL_NAME" "$PUBLIC_HOST" \
   || echo "warning: DNS route not created (does a record for $PUBLIC_HOST already exist?)"
 
-# Only /mcp is published; the health check and anything else stay on the gateway host.
+# Only /mcp is published; the health check and anything else stay on this host.
 cat >"$TUNNEL_CONFIG" <<EOF
 tunnel: $TUNNEL_ID
 credentials-file: $CREDENTIALS
@@ -180,7 +185,7 @@ ingress:
 EOF
 cloudflared tunnel --config "$TUNNEL_CONFIG" ingress validate
 
-# A dedicated unit, so it can sit next to any other cloudflared service on the gateway host.
+# A dedicated unit, so it can sit next to any other cloudflared service on this host.
 cat >/etc/systemd/system/"$TUNNEL_SERVICE".service <<EOF
 [Unit]
 Description=Cloudflare Tunnel $TUNNEL_NAME for mcp-gateway

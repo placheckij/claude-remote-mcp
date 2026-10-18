@@ -1,19 +1,34 @@
 # mcp-gateway
 
-The MCP server that the Claude app talks to. It runs on the gateway host, is published
-to the internet through a Cloudflare Tunnel, and is added to the Claude account as a
-custom connector. Every tool call is checked against the connector's bearer token and
-forwarded over the LAN to [`agent-bridge`](../agent-bridge/), which drives herdr on the agent host.
+The MCP server that the Claude app talks to. It runs on an always-on host (the
+*gateway host*), is published to the internet through a Cloudflare Tunnel, and is added
+to the Claude account as a custom connector. Every tool call is checked against the
+connector's bearer token and forwarded over the LAN to
+[`agent-bridge`](../agent-bridge/), which drives herdr on the *agent host*.
 
 ```
-Claude app ──HTTPS──> Cloudflare edge ──tunnel──> cloudflared (gateway host) ──> mcp-gateway :8766 (gateway host)
-                                                                           │ LAN, bearer token
-                                                                           └─> agent-bridge :8765 (agent host)
+Claude app ──HTTPS──> Cloudflare edge ──tunnel──> cloudflared ──> mcp-gateway :8766     (gateway host)
+                                                                      │ LAN, bearer token
+                                                                      └─> agent-bridge :8765 (agent host)
 ```
+
+The gateway host and the agent host can be the same machine; then agent-bridge listens
+on `127.0.0.1` and nothing goes over the LAN.
 
 Built on the MCP Python SDK 2.x (`MCPServer`, Streamable HTTP, stateless, JSON
 responses). Tool results are short plain text meant to be read aloud: one line per
-agent, the last few output lines, refusals from the agent host passed through verbatim.
+agent, the last few output lines, refusals from agent-bridge passed through verbatim.
+
+## System requirements
+
+| | |
+|---|---|
+| OS | anything that runs Python 3.11+; tested on Linux and macOS, Windows should work but is untested. The [setup script](#deploy-with-the-setup-script) needs a Debian-based Linux with systemd (e.g. Debian 12+, Ubuntu 22.04+); elsewhere, [install by hand](#install-by-hand). |
+| Hardware | very light: one small Python process plus cloudflared. A single-board computer, a small home server, a VPS (if it can reach agent-bridge, e.g. over a VPN) or the agent host itself is enough. 64-bit recommended. |
+| Software | [uv](https://docs.astral.sh/uv/) (installs Python 3.11+ itself if needed); [cloudflared](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/) for the tunnel |
+| Network | outbound HTTPS to Cloudflare; a route to agent-bridge's URL. No inbound port needs to be open. |
+| Accounts | a Cloudflare account with a domain whose DNS is on Cloudflare (Free plan is fine); a Claude plan with custom connectors (Free, Pro and Max included) |
+| Always on | yes: the connector only works while this host is up |
 
 ## Tools
 
@@ -33,7 +48,7 @@ answers, no code read aloud, and no approvals without asking.
 
 ## Configuration
 
-Read from the environment (on the gateway host: `/etc/mcp-gateway/env`, written by the setup script).
+Read from the environment (with the setup script: `/etc/mcp-gateway/env`).
 
 | Variable | |
 |---|---|
@@ -41,11 +56,11 @@ Read from the environment (on the gateway host: `/etc/mcp-gateway/env`, written 
 | `MCP_GATEWAY_PUBLIC_HOST` | required; the tunnel hostname, e.g. `mcp.example.com` (requests with any other `Host` are refused) |
 | `MCP_GATEWAY_BRIDGE_URL` | required, e.g. `http://192.168.1.20:8765` |
 | `MCP_GATEWAY_BRIDGE_TOKEN` | required; agent-bridge's `AGENT_BRIDGE_TOKEN` |
-| `MCP_GATEWAY_PROJECTS_ROOT` | default `/Users/me/projects`; where `start_agent` looks up project names (a path on the agent host) |
+| `MCP_GATEWAY_PROJECTS_ROOT` | required; where `start_agent` looks up project names, as a path on the agent host, e.g. `/home/me/projects` |
 
 ## Security
 
-What stands between the internet and an agent on the agent host:
+What stands between the internet and an agent:
 
 1. **Cloudflare Tunnel.** The gateway host opens an outbound connection; no port is opened on the
    router. Cloudflare terminates TLS.
@@ -56,7 +71,8 @@ What stands between the internet and an agent on the agent host:
 4. **Host and Origin check.** Only `MCP_GATEWAY_PUBLIC_HOST` (and localhost) and the
    `https://claude.ai` origin are accepted (DNS-rebinding protection from the SDK).
 5. **agent-bridge's own limits.** A separate token, a project-folder allowlist, the
-   10-agent limit, and folder trust only under `~/projects`.
+   10-agent limit, and folder trust only under its trust root, never in the default
+   Claude config.
 6. **Optional: Cloudflare Access** with a service token in front of the hostname (see
    below).
 
@@ -71,14 +87,17 @@ Cloudflare Tunnel.
 
 ### Before you start
 
-- A Debian-based Linux with systemd (e.g. Debian 12+, Ubuntu 22.04+) with systemd. It
-  coexists with other services: mcp-gateway uses port 8766 on localhost, and the tunnel runs
-  as its own `cloudflared-claude-remote` service.
+- A Debian-based Linux with systemd (see [System requirements](#system-requirements)).
+  It coexists with other services: mcp-gateway uses port 8766 on localhost, and the
+  tunnel runs as its own `cloudflared-claude-remote` service next to any other
+  cloudflared setup.
 - A domain whose DNS is on Cloudflare (any plan, including Free). The MCP server gets a
   subdomain of it, e.g. `mcp.example.com`.
-- agent-bridge running on the agent host (see [its README](../agent-bridge/README.md)), its LAN
-  URL, and its token. Give the agent host a fixed LAN address (a DHCP reservation on the
-  router) so the URL stays valid.
+- agent-bridge running on the agent host (see [its README](../agent-bridge/README.md)),
+  its LAN URL, and its token. Give the agent host a fixed LAN address (a DHCP
+  reservation on the router) so the URL stays valid.
+- The projects folder on the agent host that `start_agent` should resolve project names
+  against.
 
 ### Run it
 
@@ -88,17 +107,18 @@ cd ~/claude-remote-mcp
 sudo PUBLIC_HOST=mcp.example.com \
      AGENT_BRIDGE_URL=http://192.168.1.20:8765 \
      AGENT_BRIDGE_TOKEN='<AGENT_BRIDGE_TOKEN from the agent host>' \
+     PROJECTS_ROOT=/home/me/projects \
      mcp-gateway/deploy/setup.sh
 ```
 
 Values left out are asked for. Optional variables: `TUNNEL_NAME` (default
-`claude-remote`), `PORT` (default `8766`), `PROJECTS_ROOT`, `ROTATE_TOKEN=1`.
+`claude-remote`), `PORT` (default `8766`), `ROTATE_TOKEN=1`.
 
 On the first run `cloudflared tunnel login` prints a URL. Open it in any browser, log in
 to Cloudflare and pick the zone (domain) for `PUBLIC_HOST`. The script waits until you
 do.
 
-At the end it checks that mcp-gateway is up, that the agent host answers with its token, and
+At the end it checks that mcp-gateway is up, that agent-bridge answers with its token, and
 that the tunnel answers `401` without the token and `404` outside `/mcp`. Then it prints
 the connector settings and, on the first run, the new `MCP_GATEWAY_TOKEN`. DNS for a new
 hostname can take a minute; if only the tunnel checks fail, try again shortly:
@@ -122,7 +142,7 @@ hostname can take a minute; if only the tunnel checks fail, try again shortly:
   token and reuses the tunnel.
 - **Rotate the connector token:** re-run with `ROTATE_TOKEN=1`, then update the request
   header in the claude.ai connector.
-- **Change the agent host URL or token:** re-run with the new values.
+- **Change agent-bridge's URL or token, or the projects folder:** re-run with the new values.
 - **Logs:** `journalctl -u mcp-gateway -u cloudflared-claude-remote -f`.
 
 ### Stop, restart, uninstall
@@ -175,7 +195,7 @@ Then:
 - **claude.ai:** remove the custom connector (Customize → Connectors).
 - **Cloudflare Access**, if you set it up: delete the application and the service token
   in Zero Trust.
-- **Only if nothing else on the gateway host uses them:** the Cloudflare login cert, cloudflared
+- **Only if nothing else on the host uses them:** the Cloudflare login cert, cloudflared
   itself and uv.
   ```sh
   sudo rm -f /etc/cloudflared/cert.pem
@@ -186,10 +206,29 @@ Then:
   Treat the cert like a password while it exists: it can create tunnels and DNS
   records in that zone.
 
+## Install by hand
+
+On any other system (another Linux, macOS, Windows), or to use a different tunnel or
+reverse proxy:
+
+1. Install [uv](https://docs.astral.sh/uv/getting-started/installation/), clone the
+   repo, and run `uv sync --frozen --no-dev --package mcp-gateway`.
+2. Set the [configuration](#configuration) variables and start the server on
+   localhost:
+   ```sh
+   .venv/bin/uvicorn mcp_gateway.server:main --factory --host 127.0.0.1 --port 8766 --no-server-header
+   ```
+   Keep it running with your system's service manager (systemd, launchd, NSSM, …).
+3. Publish only `/mcp` over HTTPS at `MCP_GATEWAY_PUBLIC_HOST`: a
+   [Cloudflare Tunnel](#cloudflare-tunnel) set up by hand, or any reverse proxy that
+   terminates TLS, with a request timeout at least as long as the waits you use
+   (`wait_seconds` goes up to 600 s; Cloudflare itself cuts requests off at 125 s).
+   Don't publish `/healthz` or anything else.
+
 ## Cloudflare Tunnel
 
-The script uses a **locally managed** tunnel: its configuration lives in a file on the gateway
-host, not in the Cloudflare dashboard. These are the steps it runs, if you'd rather do it
+The script uses a **locally managed** tunnel: its configuration lives in a file on the
+gateway host, not in the Cloudflare dashboard. These are the steps it runs, if you'd rather do it
 by hand:
 
 ```sh
@@ -254,7 +293,7 @@ claude.ai → **Customize → Connectors → Add custom connector**:
 | Request headers | `authorization` = `Bearer <MCP_GATEWAY_TOKEN>` (plus the Access headers, if used) |
 
 Connectors added on claude.ai are available in the Claude apps on the same account,
-including on CarPlay. Request headers on custom connectors are a beta feature that not
+including the mobile app (and with it CarPlay). Request headers on custom connectors are a beta feature that not
 every account has yet; without it the server would need OAuth, which isn't built.
 
 ## Development
@@ -263,9 +302,10 @@ every account has yet; without it the server would need OAuth, which isn't built
 uv sync --all-packages
 uv run --package mcp-gateway pytest mcp-gateway
 
-# Local run against a agent-bridge on this machine
+# Local run against an agent-bridge on this machine
 MCP_GATEWAY_TOKEN=$(openssl rand -hex 32) MCP_GATEWAY_PUBLIC_HOST=localhost \
 MCP_GATEWAY_BRIDGE_URL=http://127.0.0.1:8765 MCP_GATEWAY_BRIDGE_TOKEN=… \
+MCP_GATEWAY_PROJECTS_ROOT=$HOME/projects \
   uv run --package mcp-gateway uvicorn mcp_gateway.server:main --factory --host 127.0.0.1 --port 8766
 ```
 
