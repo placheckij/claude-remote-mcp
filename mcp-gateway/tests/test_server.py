@@ -102,6 +102,68 @@ def test_accepts_the_token_with_any_scheme_case(client: TestClient, scheme: str)
     assert response.status_code == 200
 
 
+def test_logs_rejections_without_secrets(client: TestClient, caplog: pytest.LogCaptureFixture) -> None:
+    secret, wrong = "s" * 40, "w" * 32
+    headers = {
+        **MCP_HEADERS,
+        "Authorization": f"bearer {wrong}",
+        "CF-Access-Client-Secret": secret,
+        "User-Agent": "Claude-User",
+    }
+    with caplog.at_level("WARNING", logger="mcp_gateway.auth"):
+        assert rpc(client, "tools/list", headers=headers).status_code == 401
+    (record,) = caplog.records
+    line = record.getMessage()
+    assert line.startswith("401 POST /mcp: wrong token; expected token <32 chars, sha256 ")
+    assert "authorization='bearer' + <32 chars, sha256 " in line
+    assert "cf-access-client-secret=<redacted, 40 chars>" in line
+    assert "user-agent=Claude-User" in line and f"host={HOST}" in line
+    assert TOKEN not in line and wrong not in line and secret not in line
+
+
+@pytest.mark.parametrize(
+    ("authorization", "reason"),
+    [(None, "no authorization header"), (f"Basic {TOKEN}", "scheme is not Bearer"),
+     (f"Bearer {TOKEN}x", "wrong token")],
+)
+def test_logs_why_a_request_was_refused(
+    client: TestClient, caplog: pytest.LogCaptureFixture, authorization: str | None, reason: str
+) -> None:
+    headers = {k: v for k, v in MCP_HEADERS.items() if k != "Authorization"}
+    if authorization:
+        headers["Authorization"] = authorization
+    with caplog.at_level("WARNING", logger="mcp_gateway.auth"):
+        rpc(client, "tools/list", headers=headers)
+    assert f": {reason};" in caplog.records[0].getMessage()
+    assert TOKEN not in caplog.records[0].getMessage()
+
+
+@pytest.mark.parametrize("authorization", [TOKEN, f"{TOKEN} trailing", f"Custom{TOKEN} x"])
+def test_never_logs_a_token_sent_without_a_known_scheme(
+    client: TestClient, caplog: pytest.LogCaptureFixture, authorization: str
+) -> None:
+    with caplog.at_level("WARNING", logger="mcp_gateway.auth"):
+        rpc(client, "tools/list", headers={**MCP_HEADERS, "Authorization": authorization})
+    line = caplog.records[0].getMessage()
+    assert TOKEN not in line
+    assert "authorization=no known scheme, <" in line
+
+
+def test_redacts_headers_not_known_to_be_safe(client: TestClient, caplog: pytest.LogCaptureFixture) -> None:
+    secret = "k" * 24
+    headers = {**MCP_HEADERS, "Authorization": "Bearer wrong", "X-Some-Credential": secret}
+    with caplog.at_level("WARNING", logger="mcp_gateway.auth"):
+        rpc(client, "tools/list", headers=headers)
+    line = caplog.records[0].getMessage()
+    assert "x-some-credential=<redacted, 24 chars>" in line and secret not in line
+
+
+def test_accepted_requests_are_not_logged(client: TestClient, caplog: pytest.LogCaptureFixture) -> None:
+    with caplog.at_level("WARNING", logger="mcp_gateway.auth"):
+        assert rpc(client, "tools/list").status_code == 200
+    assert not caplog.records
+
+
 def test_rejects_unknown_host(client: TestClient) -> None:
     response = rpc(client, "tools/list", headers={**MCP_HEADERS, "Host": "evil.example.com"})
     assert response.status_code == 421
