@@ -97,15 +97,20 @@ trusted.
 The herdr server must be running in the same user session. Bind to the host's LAN
 address, not `0.0.0.0` (or to `127.0.0.1` when mcp-gateway runs on the same machine).
 
+Generate the token once and keep it: the same value goes into the service config below
+and into mcp-gateway's `MCP_GATEWAY_BRIDGE_TOKEN`.
+
 ```sh
 uv sync --all-packages
-AGENT_BRIDGE_TOKEN=$(openssl rand -hex 32) \
+AGENT_BRIDGE_TOKEN=$(openssl rand -hex 32)
+echo "$AGENT_BRIDGE_TOKEN"     # copy it somewhere safe
+AGENT_BRIDGE_TOKEN=$AGENT_BRIDGE_TOKEN \
 AGENT_BRIDGE_ALLOWED_ROOTS=$HOME/projects \
   uv run --package agent-bridge uvicorn agent_bridge.app:main --factory --host 192.168.1.20 --port 8765
 ```
 
-Check from the gateway host:
-`curl -H "Authorization: Bearer $TOKEN" http://192.168.1.20:8765/agents`.
+Check from the gateway host, with the same token set there as `AGENT_BRIDGE_TOKEN`:
+`curl -H "Authorization: Bearer $AGENT_BRIDGE_TOKEN" http://192.168.1.20:8765/agents`.
 
 The examples below use `/path/to/claude-remote-mcp` for the checkout, `192.168.1.20` for
 the LAN address and `~/projects` for the projects folder; replace them with yours.
