@@ -94,6 +94,20 @@ def cap(text: str, limit: int) -> Output:
     return Output(text=text[-limit:], truncated=True)
 
 
+def untrusted_message(settings: Settings, cwd: Path) -> str:
+    """Why Claude Code doesn't trust `cwd`, and what would fix it."""
+    head = f"Claude Code does not trust {cwd}, so the agent was not started."
+    if settings.trust_root is None:
+        return (
+            f"{head} Automatic trust is off: trust the folder once by opening Claude Code "
+            "there, or set AGENT_BRIDGE_TRUST_ROOT and AGENT_BRIDGE_CLAUDE_CONFIG_DIR."
+        )
+    return (
+        f"{head} It is outside the trust root {settings.trust_root}: trust it once by "
+        "opening Claude Code there."
+    )
+
+
 def create_app(settings: Settings, herdr: Herdr | None = None) -> FastAPI:
     herdr = herdr or Herdr(binary=settings.herdr_bin)
     bearer = HTTPBearer()
@@ -211,9 +225,14 @@ def create_app(settings: Settings, herdr: Herdr | None = None) -> FastAPI:
                         status_code=409,
                         content={"error": {"code": "trust_refused", "message": str(error)}},
                     )
-            agent = await herdr.start_agent(
-                body.name, str(cwd), settings.claude_env(), settings.claude_args
-            )
+            try:
+                agent = await herdr.start_agent(
+                    body.name, str(cwd), settings.claude_env(), settings.claude_args
+                )
+            except HerdrError as error:
+                if error.code != "folder_not_trusted":
+                    raise
+                raise HerdrError(error.code, untrusted_message(settings, cwd)) from error
         return summarize(agent)
 
     @app.delete("/agents/{agent_id}", status_code=204)
