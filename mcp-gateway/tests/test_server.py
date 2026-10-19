@@ -82,7 +82,11 @@ def call_tool(client: TestClient, name: str, **arguments) -> tuple[bool, str]:
 
 
 @pytest.mark.parametrize(
-    "authorization", [None, "", "Bearer", "Bearer wrong", TOKEN, f"Bearer {TOKEN}x", f"bearer {TOKEN}"]
+    "authorization",
+    [
+        None, "", "Bearer", "Bearer ", "Bearer wrong", TOKEN, f"Bearer {TOKEN}x", f"Bearer  {TOKEN}",
+        f"Bearer {TOKEN.upper()}", f"Basic {TOKEN}", f"Bearer{TOKEN}",
+    ],
 )
 def test_rejects_requests_without_the_exact_token(client: TestClient, authorization) -> None:
     headers = {k: v for k, v in MCP_HEADERS.items() if k != "Authorization"}
@@ -90,6 +94,12 @@ def test_rejects_requests_without_the_exact_token(client: TestClient, authorizat
         headers["Authorization"] = authorization
     response = rpc(client, "tools/list", headers=headers)
     assert response.status_code == 401
+
+
+@pytest.mark.parametrize("scheme", ["Bearer", "bearer", "BEARER"])
+def test_accepts_the_token_with_any_scheme_case(client: TestClient, scheme: str) -> None:
+    response = rpc(client, "tools/list", headers={**MCP_HEADERS, "Authorization": f"{scheme} {TOKEN}"})
+    assert response.status_code == 200
 
 
 def test_rejects_unknown_host(client: TestClient) -> None:

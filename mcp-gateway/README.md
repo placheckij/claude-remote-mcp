@@ -66,8 +66,9 @@ What stands between the internet and an agent:
    router. Cloudflare terminates TLS.
 2. **Ingress rule.** The tunnel only forwards `https://<host>/mcp`; every other path
    (including `/healthz`) gets a 404 at the edge.
-3. **Bearer token.** mcp-gateway refuses any request without the exact
-   `Authorization: Bearer <MCP_GATEWAY_TOKEN>` (constant-time compare).
+3. **Bearer token.** mcp-gateway refuses any request without
+   `Authorization: Bearer <MCP_GATEWAY_TOKEN>`. The word `Bearer` may be in any case;
+   the token must match exactly (constant-time compare).
 4. **Host and Origin check.** Only `MCP_GATEWAY_PUBLIC_HOST` (and localhost) and the
    `https://claude.ai` origin are accepted (DNS-rebinding protection from the SDK).
 5. **agent-bridge's own limits.** A separate token, a project-folder allowlist, the

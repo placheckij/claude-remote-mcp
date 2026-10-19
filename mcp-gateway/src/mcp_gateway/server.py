@@ -189,13 +189,18 @@ class BearerAuth:
 
     def __init__(self, app: ASGIApp, token: str, open_paths: frozenset[str] = frozenset({"/healthz"})):
         self.app = app
-        self.expected = f"Bearer {token}".encode()
+        self.expected = token.encode()
         self.open_paths = open_paths
+
+    def _authorized(self, header: bytes) -> bool:
+        # The scheme is case-insensitive (RFC 9110), and claude.ai may lowercase it;
+        # the token itself must match exactly.
+        scheme, _, provided = header.partition(b" ")
+        return scheme.lower() == b"bearer" and hmac.compare_digest(provided, self.expected)
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope["type"] == "http" and scope["path"] not in self.open_paths:
-            provided = dict(scope["headers"]).get(b"authorization", b"")
-            if not hmac.compare_digest(provided, self.expected):
+            if not self._authorized(dict(scope["headers"]).get(b"authorization", b"")):
                 response = JSONResponse({"error": "unauthorized"}, status_code=401)
                 await response(scope, receive, send)
                 return
