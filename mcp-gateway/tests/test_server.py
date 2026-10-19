@@ -278,6 +278,20 @@ def test_start_agent_resolves_project_names(client: TestClient, fake: FakeAgentB
     }
 
 
+@pytest.mark.parametrize(
+    ("name", "slug"),
+    [("my agent", "my-agent"), ("  Fix the login bug! ", "Fix-the-login-bug"), ("łódź", "łódź"),
+     ("a/b\\c", "a-b-c"), ("...", "agent"), ("x" * 80, "x" * 64)],
+)
+def test_start_agent_turns_spoken_names_into_slugs(
+    client: TestClient, fake: FakeAgentBridge, name: str, slug: str
+) -> None:
+    fake.routes[("POST", "/agents")] = httpx.Response(201, json={**AGENT, "id": "w9:p1"})
+    response = rpc(client, "tools/call", {"name": "start_agent", "arguments": {"project": "grafik", "name": name}})
+    assert not response.json()["result"].get("isError")
+    assert json.loads(fake.requests[0].content)["name"] == slug
+
+
 def test_refusals_from_the_bridge_reach_the_model_verbatim(client: TestClient, fake: FakeAgentBridge) -> None:
     message = (
         "Refusing to start a new agent: 10 agents are already running "

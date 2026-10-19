@@ -155,13 +155,14 @@ def build_server(settings: Settings, bridge: AgentBridge) -> MCPServer:
         ],
         name: Annotated[
             str | None,
-            Field(description="Short agent name; defaults to the folder name."),
+            Field(description="Short agent name, any words; turned into a slug like \"my-agent\". Defaults to the folder name."),
         ] = None,
     ) -> str:
         """Start a new Claude Code agent in a project folder on the agent host. Refused when too
         many agents are already running or the folder is not allowed."""
         cwd = posixpath.normpath(posixpath.join(settings.projects_root, project))
-        agent_name = name or _safe_name(posixpath.basename(cwd))
+        # Names come from speech ("my agent"); agent-bridge only takes [\w.-].
+        agent_name = _safe_name(name or posixpath.basename(cwd))
         agent = await call(bridge.start_agent(cwd, agent_name))
         return f"Started {describe(agent)}"
 
@@ -196,7 +197,7 @@ def _with_truncation_note(output: dict) -> str:
 
 
 def _safe_name(value: str) -> str:
-    return re.sub(r"[^\w.-]+", "-", value).strip("-")[:64] or "agent"
+    return re.sub(r"[^\w.-]+", "-", value.strip()).strip("-.")[:64].strip("-.") or "agent"
 
 
 class BearerAuth:

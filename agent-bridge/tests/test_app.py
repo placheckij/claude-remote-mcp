@@ -288,12 +288,15 @@ def test_start_retries_while_the_new_shell_is_busy(
 
 def test_start_refuses_and_cleans_up_when_folder_untrusted(root: Path) -> None:
     runner = FakeRunner(start_responses(trust_dialog=True))
-    response = client(runner, root).post(
+    response = client(runner, root, trust_root=None).post(
         "/agents", headers=AUTH, json={"cwd": str(root / "project"), "name": "probe"}
     )
     assert response.status_code == 409
     assert response.json()["error"]["code"] == "folder_not_trusted"
     assert runner.called("workspace", "close")[0] == ["workspace", "close", "w5"]
+    message = response.json()["error"]["message"]
+    assert message.startswith(f"Claude Code does not trust {(root / 'project').resolve()}")
+    assert "AGENT_BRIDGE_TRUST_ROOT and AGENT_BRIDGE_CLAUDE_CONFIG_DIR" in message
 
 
 @pytest.mark.parametrize("cwd", ["/etc", "{root}/../outside", "{root}/project/../../escape"])
@@ -470,6 +473,7 @@ def test_allowed_but_outside_trust_root_is_never_trusted(layout: dict[str, Path]
     )
     assert response.status_code == 409
     assert response.json()["error"]["code"] == "folder_not_trusted"
+    assert "outside the trust root" in response.json()["error"]["message"]
     assert runner.called("workspace", "close")
     assert projects_in(layout["config_dir"]) == {}
 
