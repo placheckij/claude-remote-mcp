@@ -217,7 +217,8 @@ reverse proxy:
 2. Set the [configuration](#configuration) variables and start the server on
    localhost:
    ```sh
-   .venv/bin/uvicorn mcp_gateway.server:main --factory --host 127.0.0.1 --port 8766 --no-server-header
+   uv run --frozen --no-dev --package mcp-gateway \
+     uvicorn mcp_gateway.server:main --factory --host 127.0.0.1 --port 8766 --no-server-header
    ```
    Keep it running with your system's service manager (systemd, launchd, NSSM, …).
 3. Publish only `/mcp` over HTTPS at `MCP_GATEWAY_PUBLIC_HOST`: a
