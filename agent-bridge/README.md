@@ -37,8 +37,10 @@ All routes require `Authorization: Bearer $AGENT_BRIDGE_TOKEN`.
 | `POST /agents` `{cwd, name}` | `workspace create` + `agent start --kind claude` | start an agent in a project folder (see below) |
 | `DELETE /agents/{id}` | `pane close` | |
 
-Errors from herdr come back as `{"error": {"code", "message"}}` with a matching status
-(`agent_not_found` → 404, `timeout` → 504, …); the message is written to be read aloud.
+Every error comes back as `{"error": {"code", "message"}}` with a matching status
+(`unauthorized` → 401, `path_not_allowed` → 403, `agent_not_found` → 404,
+`agent_limit_reached` → 409, `timeout` → 504, …); the message is written to be read
+aloud. Only request validation failures keep FastAPI's `{"detail": [...]}` shape (422).
 
 ## Starting agents
 

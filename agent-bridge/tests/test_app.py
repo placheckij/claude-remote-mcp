@@ -73,8 +73,10 @@ def client(runner: FakeRunner, root: Path, **overrides) -> TestClient:
 
 def test_rejects_missing_and_wrong_token(root: Path) -> None:
     c = client(FakeRunner({}), root)
-    assert c.get("/agents").status_code in (401, 403)
-    assert c.get("/agents", headers={"Authorization": "Bearer nope"}).status_code == 401
+    for headers in ({}, {"Authorization": "Bearer nope"}):
+        response = c.get("/agents", headers=headers)
+        assert response.status_code == 401
+        assert response.json()["error"]["code"] == "unauthorized"
 
 
 def test_lists_agents_as_summaries(root: Path) -> None:
@@ -446,7 +448,9 @@ def test_start_outside_allowed_roots_fails_without_side_effects(
         "/agents", headers=AUTH, json={"cwd": cwd.format(home=layout["home"]), "name": "probe"}
     )
     assert response.status_code == 403
-    assert "outside the allowed roots" in response.json()["detail"]
+    error = response.json()["error"]
+    assert error["code"] == "path_not_allowed"
+    assert "outside the allowed roots" in error["message"]
     assert runner.calls == []
     assert projects_in(layout["config_dir"]) == {}
 
@@ -457,6 +461,7 @@ def test_start_in_missing_folder_fails_without_side_effects(layout: dict[str, Pa
         "/agents", headers=AUTH, json={"cwd": str(layout["projects_dir"] / "missing"), "name": "x"}
     )
     assert response.status_code == 404
+    assert response.json()["error"]["code"] == "not_a_directory"
     assert runner.calls == []
     assert projects_in(layout["config_dir"]) == {}
 
