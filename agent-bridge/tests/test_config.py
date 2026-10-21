@@ -9,8 +9,8 @@ TOKEN = "t" * 32
 
 @pytest.fixture
 def env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> pytest.MonkeyPatch:
-    for name in ("AGENT_BRIDGE_CLAUDE_CONFIG_DIR", "AGENT_BRIDGE_TRUST_ROOT", "AGENT_BRIDGE_CLAUDE_ARGS"):
-        monkeypatch.delenv(name, raising=False)
+    # from_env reads .env from the working directory; start each test without one.
+    monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("AGENT_BRIDGE_TOKEN", TOKEN)
     monkeypatch.setenv("AGENT_BRIDGE_ALLOWED_ROOTS", str(tmp_path))
     return monkeypatch
@@ -21,6 +21,7 @@ def test_defaults_use_claudes_own_config_and_trust_nothing(env: pytest.MonkeyPat
     assert settings.claude_config_dir is None
     assert settings.trust_root is None
     assert settings.claude_env() == {}
+    assert settings.claude_args == ("--permission-mode", "auto")
 
 
 def test_reads_a_separate_config_and_trust_root(env: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -31,19 +32,71 @@ def test_reads_a_separate_config_and_trust_root(env: pytest.MonkeyPatch, tmp_pat
     assert settings.trust_root == tmp_path
 
 
+def test_empty_optional_paths_are_unset(env: pytest.MonkeyPatch) -> None:
+    env.setenv("AGENT_BRIDGE_CLAUDE_CONFIG_DIR", "")
+    env.setenv("AGENT_BRIDGE_TRUST_ROOT", "")
+    settings = Settings.from_env()
+    assert (settings.claude_config_dir, settings.trust_root) == (None, None)
+
+
 def test_refuses_a_trust_root_without_a_separate_config(env: pytest.MonkeyPatch, tmp_path: Path) -> None:
     env.setenv("AGENT_BRIDGE_TRUST_ROOT", str(tmp_path))
     with pytest.raises(RuntimeError, match="AGENT_BRIDGE_CLAUDE_CONFIG_DIR"):
         Settings.from_env()
 
 
+def test_splits_roots_and_shell_quoted_args(env: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    (tmp_path / "a").mkdir()
+    env.setenv("AGENT_BRIDGE_ALLOWED_ROOTS", f"{tmp_path / 'a'}::{tmp_path / 'b'}")
+    env.setenv("AGENT_BRIDGE_CLAUDE_ARGS", "--model 'opus 5' --verbose")
+    settings = Settings.from_env()
+    assert settings.allowed_roots == ((tmp_path / "a").resolve(), (tmp_path / "b").resolve())
+    assert settings.claude_args == ("--model", "opus 5", "--verbose")
+
+
+def test_empty_claude_args_pass_no_arguments(env: pytest.MonkeyPatch) -> None:
+    env.setenv("AGENT_BRIDGE_CLAUDE_ARGS", "")
+    assert Settings.from_env().claude_args == ()
+
+
+def test_every_limit_is_settable(env: pytest.MonkeyPatch) -> None:
+    env.setenv("AGENT_BRIDGE_MAX_AGENTS", "3")
+    env.setenv("AGENT_BRIDGE_MAX_OUTPUT_CHARS", "2000")
+    env.setenv("AGENT_BRIDGE_PROMPT_TIMEOUT_MS", "60000")
+    settings = Settings.from_env()
+    assert (settings.max_agents, settings.max_output_chars, settings.prompt_timeout_ms) == (
+        3,
+        2000,
+        60000,
+    )
+
+
+def test_reads_a_dotenv_file_under_the_environment(env: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    Path(".env").write_text("AGENT_BRIDGE_MAX_AGENTS=4\nAGENT_BRIDGE_HERDR_BIN=/opt/herdr\nOTHER=x\n")
+    env.setenv("AGENT_BRIDGE_HERDR_BIN", "/usr/bin/herdr")
+    settings = Settings.from_env()
+    assert (settings.max_agents, settings.herdr_bin) == (4, "/usr/bin/herdr")
+
+
 @pytest.mark.parametrize(
     ("name", "value", "message"),
-    [("AGENT_BRIDGE_TOKEN", "short", "at least 32"), ("AGENT_BRIDGE_ALLOWED_ROOTS", "", "at least one")],
+    [
+        ("AGENT_BRIDGE_TOKEN", "short", "AGENT_BRIDGE_TOKEN: .*at least 32"),
+        ("AGENT_BRIDGE_ALLOWED_ROOTS", "", "AGENT_BRIDGE_ALLOWED_ROOTS: must list at least one"),
+        ("AGENT_BRIDGE_ALLOWED_ROOTS", ":", "AGENT_BRIDGE_ALLOWED_ROOTS: must list at least one"),
+        ("AGENT_BRIDGE_MAX_AGENTS", "ten", "AGENT_BRIDGE_MAX_AGENTS: .*integer"),
+    ],
 )
-def test_refuses_missing_required_settings(
+def test_refuses_bad_settings_naming_the_variable(
     env: pytest.MonkeyPatch, name: str, value: str, message: str
 ) -> None:
     env.setenv(name, value)
     with pytest.raises(RuntimeError, match=message):
+        Settings.from_env()
+
+
+@pytest.mark.parametrize("name", ["AGENT_BRIDGE_TOKEN", "AGENT_BRIDGE_ALLOWED_ROOTS"])
+def test_required_settings_must_be_set(env: pytest.MonkeyPatch, name: str) -> None:
+    env.delenv(name)
+    with pytest.raises(RuntimeError, match=f"{name}: must be set"):
         Settings.from_env()
