@@ -48,7 +48,9 @@ answers, no code read aloud, and no approvals without asking.
 
 ## Configuration
 
-Read from the environment (with the setup script: `/etc/mcp-gateway/env`).
+Read from the environment (with the setup script: `/etc/mcp-gateway/env`), or from a
+`.env` file in the working directory (the environment wins). An empty variable counts as
+unset. An invalid setting stops startup with one line per problem, naming the variable.
 
 | Variable | |
 |---|---|

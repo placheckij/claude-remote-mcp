@@ -1,13 +1,21 @@
-"""Settings read from MCP_GATEWAY_* environment variables."""
+"""Settings read from MCP_GATEWAY_* environment variables, or a `.env` file in the working
+directory (the environment wins)."""
 
-import os
-from dataclasses import dataclass
+from pydantic import Field, ValidationError
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+ENV_FILE = ".env"
 
 
-@dataclass(frozen=True)
-class Settings:
+class Settings(BaseSettings):
+    # No env_file here: only from_env() reads `.env`, so constructing Settings directly
+    # (as tests do) never picks up a stray file. An empty variable counts as unset.
+    model_config = SettingsConfigDict(
+        env_prefix="MCP_GATEWAY_", frozen=True, extra="ignore", env_ignore_empty=True
+    )
+
     # Sent by claude.ai as `Authorization: Bearer <token>` (connector request header).
-    token: str
+    token: str = Field(min_length=32)
     bridge_url: str
     bridge_token: str
     # Host header the tunnel forwards, e.g. mcp.example.com; checked against DNS rebinding.
@@ -18,19 +26,19 @@ class Settings:
 
     @classmethod
     def from_env(cls) -> "Settings":
-        def required(name: str) -> str:
-            value = os.environ.get(name, "")
-            if not value:
-                raise RuntimeError(f"{name} must be set")
-            return value
+        try:
+            return cls(_env_file=ENV_FILE)
+        except ValidationError as error:
+            raise RuntimeError(describe(error, cls.model_config["env_prefix"])) from None
 
-        token = required("MCP_GATEWAY_TOKEN")
-        if len(token) < 32:
-            raise RuntimeError("MCP_GATEWAY_TOKEN must be at least 32 characters")
-        return cls(
-            token=token,
-            bridge_url=required("MCP_GATEWAY_BRIDGE_URL"),
-            bridge_token=required("MCP_GATEWAY_BRIDGE_TOKEN"),
-            public_host=required("MCP_GATEWAY_PUBLIC_HOST"),
-            projects_root=required("MCP_GATEWAY_PROJECTS_ROOT"),
-        )
+
+def describe(error: ValidationError, prefix: str) -> str:
+    """One line per problem, naming the environment variable rather than the field."""
+    lines = []
+    for problem in error.errors():
+        message = "must be set" if problem["type"] == "missing" else problem["msg"]
+        message = message.removeprefix("Value error, ")
+        if problem["loc"]:
+            message = f"{prefix}{str(problem['loc'][0]).upper()}: {message}"
+        lines.append(message)
+    return "Invalid settings:\n" + "\n".join(f"  {line}" for line in lines)

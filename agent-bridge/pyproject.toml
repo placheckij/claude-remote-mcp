@@ -5,6 +5,7 @@ description = "Stateless HTTP service on the agent host that drives the herdr CL
 requires-python = ">=3.11"
 dependencies = [
     "fastapi>=0.143.0",
+    "pydantic-settings>=2.16.1",
     "uvicorn[standard]>=0.54.0",
 ]
 
