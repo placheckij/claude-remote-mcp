@@ -11,7 +11,8 @@
 #        mcp-gateway/deploy/setup.sh
 # Missing values are asked for interactively. PROJECTS_ROOT is the folder on the agent
 # host that project names given to start_agent resolve against. Optional: TUNNEL_NAME
-# (claude-remote), PORT (8766), ROTATE_TOKEN=1.
+# (claude-remote), PORT (8766), ROTATE_TOKEN=1, MCP_GATEWAY_TOKEN (use this connector
+# token instead of generating one).
 
 set -euo pipefail
 
@@ -51,6 +52,14 @@ ask AGENT_BRIDGE_URL "agent-bridge URL on the LAN (e.g. http://192.168.1.20:8765
 ask AGENT_BRIDGE_TOKEN "agent-bridge token (AGENT_BRIDGE_TOKEN on the agent host)" secret
 ask PROJECTS_ROOT "Projects folder on the agent host (e.g. /home/me/projects)"
 
+if [[ -n ${MCP_GATEWAY_TOKEN:-} ]]; then
+  [[ -z ${ROTATE_TOKEN:-} ]] || die "set MCP_GATEWAY_TOKEN or ROTATE_TOKEN, not both"
+  [[ ${#MCP_GATEWAY_TOKEN} -ge 32 ]] || die "MCP_GATEWAY_TOKEN must be at least 32 characters"
+  # The characters a bearer token may have (RFC 6750), which also keep the env file plain.
+  [[ $MCP_GATEWAY_TOKEN =~ ^[A-Za-z0-9._~+/-]+=*$ ]] \
+    || die "MCP_GATEWAY_TOKEN may only contain letters, digits, . _ ~ + / - and trailing ="
+fi
+
 # --- Packages ------------------------------------------------------------------------
 
 log "Installing system packages"
@@ -84,14 +93,16 @@ rsync -a --delete --exclude /.git --exclude /.venv --exclude /python --exclude _
 
 log "Writing $ENV_FILE"
 install -d -m 0750 -g "$SERVICE_USER" "$ENV_DIR"
-TOKEN=""
-if [[ -f $ENV_FILE && -z ${ROTATE_TOKEN:-} ]]; then
+# A token passed in wins; otherwise keep the existing one, unless rotating.
+TOKEN="${MCP_GATEWAY_TOKEN:-}"
+TOKEN_SOURCE=given
+if [[ -z $TOKEN && -f $ENV_FILE && -z ${ROTATE_TOKEN:-} ]]; then
   TOKEN="$(sed -n 's/^MCP_GATEWAY_TOKEN=//p' "$ENV_FILE")"
+  TOKEN_SOURCE=kept
 fi
-TOKEN_IS_NEW=""
 if [[ -z $TOKEN ]]; then
   TOKEN="$(openssl rand -hex 32)"
-  TOKEN_IS_NEW=1
+  TOKEN_SOURCE=new
 fi
 umask 027
 cat >"$ENV_FILE" <<EOF
@@ -236,9 +247,9 @@ Done. Add the connector in claude.ai -> Customize -> Connectors -> Add custom co
   Authentication:  No sign-in
   Request header:  authorization = Bearer <MCP_GATEWAY_TOKEN>
 EOF
-if [[ -n $TOKEN_IS_NEW ]]; then
-  echo "MCP_GATEWAY_TOKEN (new): $TOKEN"
-else
-  echo "MCP_GATEWAY_TOKEN is unchanged; read it with: sudo grep MCP_GATEWAY_TOKEN $ENV_FILE"
-fi
+case $TOKEN_SOURCE in
+  new) echo "MCP_GATEWAY_TOKEN (new): $TOKEN" ;;
+  given) echo "MCP_GATEWAY_TOKEN is the one you passed in" ;;
+  kept) echo "MCP_GATEWAY_TOKEN is unchanged; read it with: sudo grep MCP_GATEWAY_TOKEN $ENV_FILE" ;;
+esac
 echo "Logs: journalctl -u mcp-gateway -u $TUNNEL_SERVICE -f"
