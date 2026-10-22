@@ -115,7 +115,22 @@ sudo PUBLIC_HOST=mcp.example.com \
 ```
 
 Values left out are asked for. Optional variables: `TUNNEL_NAME` (default
-`claude-remote`), `PORT` (default `8766`), `ROTATE_TOKEN=1`.
+`claude-remote`), `PORT` (default `8766`), `ROTATE_TOKEN=1`, and `MCP_GATEWAY_TOKEN`.
+
+The script generates the connector token (`MCP_GATEWAY_TOKEN`) itself. To use one you
+already have instead, e.g. when moving to a new gateway host, add it to the command:
+
+```sh
+sudo PUBLIC_HOST=mcp.example.com \
+     AGENT_BRIDGE_URL=http://192.168.1.20:8765 \
+     AGENT_BRIDGE_TOKEN='<AGENT_BRIDGE_TOKEN from the agent host>' \
+     PROJECTS_ROOT=/home/me/projects \
+     MCP_GATEWAY_TOKEN='<your connector token>' \
+     mcp-gateway/deploy/setup.sh
+```
+
+It must be 32+ characters from `A-Z a-z 0-9 . _ ~ + / -`, optionally ending in `=`
+(`openssl rand -hex 32` makes one).
 
 On the first run `cloudflared tunnel login` prints a URL. Open it in any browser, log in
 to Cloudflare and pick the zone (domain) for `PUBLIC_HOST`. The script waits until you
@@ -123,7 +138,8 @@ do.
 
 At the end it checks that mcp-gateway is up, that agent-bridge answers with its token, and
 that the tunnel answers `401` without the token and `404` outside `/mcp`. Then it prints
-the connector settings and, on the first run, the new `MCP_GATEWAY_TOKEN`. DNS for a new
+the connector settings and, on the first run (unless you passed one in), the new
+`MCP_GATEWAY_TOKEN`. DNS for a new
 hostname can take a minute; if only the tunnel checks fail, try again shortly:
 `curl -i -X POST https://mcp.example.com/mcp` should answer `401`.
 
@@ -145,6 +161,8 @@ hostname can take a minute; if only the tunnel checks fail, try again shortly:
   token and reuses the tunnel.
 - **Rotate the connector token:** re-run with `ROTATE_TOKEN=1`, then update the request
   header in the claude.ai connector.
+- **Set the connector token yourself:** re-run with `MCP_GATEWAY_TOKEN=…`. Later runs
+  keep it.
 - **Change agent-bridge's URL or token, or the projects folder:** re-run with the new values.
 - **Logs:** `journalctl -u mcp-gateway -u cloudflared-claude-remote -f`.
 

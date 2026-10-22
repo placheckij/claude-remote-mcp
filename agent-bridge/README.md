@@ -105,8 +105,9 @@ the variable.
 The herdr server must be running in the same user session. Bind to the host's LAN
 address, not `0.0.0.0` (or to `127.0.0.1` when mcp-gateway runs on the same machine).
 
-Generate the token once and keep it: the same value goes into the service config below
-and into mcp-gateway's `MCP_GATEWAY_BRIDGE_TOKEN`.
+To try it in the foreground, generate a token and start it by hand. To keep it running, set
+it up as a service instead (below); on macOS the setup script generates the token for you.
+Either way the same token goes into mcp-gateway's `MCP_GATEWAY_BRIDGE_TOKEN`.
 
 ```sh
 uv sync --all-packages
@@ -125,58 +126,126 @@ the LAN address and `~/projects` for the projects folder; replace them with your
 
 ### As a service on macOS (launchd)
 
-To start it at login and keep it running, save as
-`~/Library/LaunchAgents/dev.claude-remote.agent-bridge.plist` (it holds the token, so
-`chmod 600` it). launchd doesn't expand `~` or `$HOME`, so write full paths:
+launchd, macOS's service manager, starts agent-bridge at login and restarts it if it
+stops. It is configured by a *plist* file in `~/Library/LaunchAgents`. The setup script
+writes that file for you.
 
-```xml
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-  <key>Label</key><string>dev.claude-remote.agent-bridge</string>
-  <key>ProgramArguments</key>
-  <array>
-    <string>/path/to/claude-remote-mcp/.venv/bin/uvicorn</string>
-    <string>agent_bridge.app:main</string>
-    <string>--factory</string>
-    <string>--host</string><string>192.168.1.20</string>
-    <string>--port</string><string>8765</string>
-  </array>
-  <key>EnvironmentVariables</key>
-  <dict>
-    <key>AGENT_BRIDGE_TOKEN</key><string>…</string>
-    <key>AGENT_BRIDGE_ALLOWED_ROOTS</key><string>/Users/me/projects</string>
-    <key>AGENT_BRIDGE_HERDR_BIN</key><string>/Users/me/.local/bin/herdr</string>
-  </dict>
-  <key>RunAtLoad</key><true/>
-  <!-- Retries until the LAN address exists, e.g. right after login or wake. -->
-  <key>KeepAlive</key><true/>
-  <key>ThrottleInterval</key><integer>10</integer>
-  <key>StandardErrorPath</key><string>/Users/me/Library/Logs/agent-bridge.log</string>
-</dict>
-</plist>
-```
+#### With the setup script
 
-Load it (it starts right away and at every login):
+Run it from the checkout as your own user, not with `sudo`:
 
 ```sh
-chmod 600 ~/Library/LaunchAgents/dev.claude-remote.agent-bridge.plist
-launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/dev.claude-remote.agent-bridge.plist
+agent-bridge/deploy/setup-macos.sh
 ```
+
+It asks for:
+
+- the LAN address to listen on (it suggests the Mac's current one) and the port (8765);
+- the folders agents may start in (`AGENT_BRIDGE_ALLOWED_ROOTS`, default `~/Projects`);
+- the path to `herdr` (found on your `PATH`);
+- a separate Claude config (default `~/.claude-agents`) and a trust root (default: the
+  first folder agents may start in), for [folder trust](#folder-trust). Answer `-` at
+  the config question to skip both. If the config is new, log in to it once, as the
+  script reminds you at the end;
+- the token, hidden as you type or paste it, e.g. one mcp-gateway already uses. Press
+  Enter to keep the installed token, or to generate one on the first run.
+
+Then it:
+
+1. runs `uv sync --all-packages` to install the dependencies;
+2. writes the plist and makes it readable only by you;
+3. (re)starts the service;
+4. checks that it answers `401` without the token and `200` with it. A `200` also means
+   it reached herdr.
+
+At the end it prints the URL, token and projects folder to give mcp-gateway's
+`setup.sh`.
+
+To skip the questions, pass the answers as variables, e.g.
+`HOST=192.168.1.20 ALLOWED_ROOTS=/Users/me/projects agent-bridge/deploy/setup-macos.sh`.
+The other variables are `PORT`, `HERDR_BIN`, `AGENT_BRIDGE_CLAUDE_CONFIG_DIR` and
+`TRUST_ROOT` (pass these two empty for no folder trust), `AGENT_BRIDGE_TOKEN`, and
+`ROTATE_TOKEN=1` to replace the installed token with a new generated one.
+
+Re-run it after pulling new code or to change a setting. It offers the installed values,
+so Enter keeps them, the token included.
+
+#### By hand
+
+What the script does, step by step:
+
+1. In the checkout, run `uv sync --all-packages`.
+2. Create `~/Library/LaunchAgents/dev.claude-remote.agent-bridge.plist` with the content
+   below, and replace the example values in it:
+
+   | In the file | Replace with |
+   |---|---|
+   | `/path/to/claude-remote-mcp` | the checkout's full path (`pwd` in it) |
+   | `192.168.1.20` | the Mac's LAN address (`ipconfig getifaddr en0` on Wi-Fi) |
+   | `…` | the token (`openssl rand -hex 32`) |
+   | `/Users/me/projects` | the folders agents may start in, `:`-separated |
+   | `/Users/me/.local/bin/herdr` | the output of `command -v herdr` |
+   | `/Users/me` in the log path | your home folder |
+
+   Write every path in full: launchd doesn't expand `~` or `$HOME`. To set any other
+   variable from [Configuration](#configuration), add another `<key>NAME</key><string>value</string>`
+   line under `EnvironmentVariables`.
+
+   ```xml
+   <?xml version="1.0" encoding="UTF-8"?>
+   <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+   <plist version="1.0">
+   <dict>
+     <key>Label</key><string>dev.claude-remote.agent-bridge</string>
+     <key>ProgramArguments</key>
+     <array>
+       <string>/path/to/claude-remote-mcp/.venv/bin/uvicorn</string>
+       <string>agent_bridge.app:main</string>
+       <string>--factory</string>
+       <string>--host</string><string>192.168.1.20</string>
+       <string>--port</string><string>8765</string>
+     </array>
+     <key>EnvironmentVariables</key>
+     <dict>
+       <key>AGENT_BRIDGE_TOKEN</key><string>…</string>
+       <key>AGENT_BRIDGE_ALLOWED_ROOTS</key><string>/Users/me/projects</string>
+       <key>AGENT_BRIDGE_HERDR_BIN</key><string>/Users/me/.local/bin/herdr</string>
+     </dict>
+     <key>RunAtLoad</key><true/>
+     <!-- Retries until the LAN address exists, e.g. right after login or wake. -->
+     <key>KeepAlive</key><true/>
+     <key>ThrottleInterval</key><integer>10</integer>
+     <key>StandardErrorPath</key><string>/Users/me/Library/Logs/agent-bridge.log</string>
+   </dict>
+   </plist>
+   ```
+
+3. Make it readable only by you (it holds the token), check it, and load it. It starts
+   right away and at every login:
+
+   ```sh
+   chmod 600 ~/Library/LaunchAgents/dev.claude-remote.agent-bridge.plist
+   plutil -lint ~/Library/LaunchAgents/dev.claude-remote.agent-bridge.plist
+   launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/dev.claude-remote.agent-bridge.plist
+   ```
+
+4. Check it with the `curl` command from [Run](#run).
 
 If the macOS firewall is on, allow incoming connections for the venv's Python when
 asked.
 
-**Restart, stop, uninstall:**
+#### Restart, stop, uninstall
+
+These work however you installed it:
 
 ```sh
 # Status: a PID and "state = running" when it's up; "last exit code" after a crash
 launchctl print gui/$(id -u)/dev.claude-remote.agent-bridge | grep -E 'state|pid|last exit'
 tail -f ~/Library/Logs/agent-bridge.log
 
-# Restart, e.g. after pulling new code or `uv sync`. After editing the plist,
-# stop and start it instead (below), so launchd rereads the file.
+# Restart, e.g. after pulling new code and `uv sync --all-packages` (a plain `uv sync`
+# removes agent-bridge from the venv). After editing the plist, stop and start it
+# instead (below), so launchd rereads the file. Re-running the setup script does both.
 launchctl kickstart -k gui/$(id -u)/dev.claude-remote.agent-bridge
 
 # Stop. `launchctl stop` is not enough: KeepAlive would start it again at once.
