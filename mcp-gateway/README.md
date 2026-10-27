@@ -141,10 +141,12 @@ to Cloudflare and pick the zone (domain) for `PUBLIC_HOST`. The script waits unt
 do.
 
 At the end it checks that mcp-gateway is up, that agent-bridge answers with its token, and
-that the tunnel answers `401` without the token and `404` outside `/mcp`. Then it prints
-the connector settings and, on the first run (unless you passed one in), the new
-`MCP_GATEWAY_TOKEN`. DNS for a new
-hostname can take a minute; if only the tunnel checks fail, try again shortly:
+that the tunnel answers `401` without the token and `404` outside `/mcp` (waiting up to
+30 s each for the service and the tunnel to come up). If all pass, it prints the
+connector settings; if any fails, it lists the failed checks and exits with status 1.
+Either way it says where the connector token is: on the first run (unless you passed
+one in) it prints the new `MCP_GATEWAY_TOKEN`. DNS for a new hostname can take a few
+minutes; if only the tunnel checks fail, try again shortly:
 `curl -i -X POST https://mcp.example.com/mcp` should answer `401`.
 
 ### What it creates
