@@ -61,16 +61,28 @@ def trust_folder(config_dir: Path, folder: Path, trust_root: Path) -> bool:
     if not (folder.is_relative_to(trust_root) or _is_inside(folder, trust_root)):
         raise TrustError(f"{folder} is outside the trust root {trust_root}")
 
-    path = config_dir / CONFIG_FILE
-    config = json.loads(path.read_text())
-    projects = config.setdefault("projects", {})
+    # Resolved, so a symlinked file is updated where it lives instead of being replaced by
+    # a copy (is_default_config has already refused a link to ~/.claude.json).
+    path = (config_dir / CONFIG_FILE).resolve()
+    try:
+        config = json.loads(path.read_text())
+    except FileNotFoundError:
+        raise TrustError(
+            f"{config_dir} has no Claude login yet ({CONFIG_FILE} is missing). Run "
+            f"CLAUDE_CONFIG_DIR={config_dir} claude once on the agent host and log in."
+        ) from None
+    except ValueError:
+        raise TrustError(f"{path} is not valid JSON, so folder trust was not written") from None
+    # Claude Code may leave null where an object is expected; treat it as empty.
+    projects = config.get("projects") or {}
+    config["projects"] = projects
     if any(
-        projects.get(str(candidate), {}).get("hasTrustDialogAccepted")
+        (projects.get(str(candidate)) or {}).get("hasTrustDialogAccepted")
         for candidate in (folder, *folder.parents)
     ):
         return False
 
-    projects.setdefault(str(folder), {})["hasTrustDialogAccepted"] = True
+    projects[str(folder)] = {**(projects.get(str(folder)) or {}), "hasTrustDialogAccepted": True}
     _replace_atomically(path, json.dumps(config, indent=2))
     return True
 
