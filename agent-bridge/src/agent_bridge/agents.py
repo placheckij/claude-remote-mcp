@@ -113,6 +113,10 @@ class AgentService:
                 if error.code != "timeout":
                     raise
             remaining -= window
+            if remaining < 1000:
+                # The window used up the budget (herdr waits at least 1 s): report the
+                # state now rather than overrun the caller's timeout.
+                return await self.herdr.get_agent(agent_id)
         return await self.herdr.wait(agent_id, max(remaining, 1000))
 
     async def _settle(self, agent_id: str, waiting: Awaitable[dict], lines: int) -> PromptResult:

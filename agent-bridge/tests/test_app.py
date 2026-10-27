@@ -1,3 +1,4 @@
+import asyncio
 import json
 from collections.abc import Sequence
 from pathlib import Path
@@ -5,9 +6,10 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
+from agent_bridge.agents import AgentService
 from agent_bridge.app import create_app
 from agent_bridge.config import Settings
-from agent_bridge.herdr import Herdr
+from agent_bridge.herdr import Herdr, subprocess_runner
 
 TOKEN = "t" * 32
 AUTH = {"Authorization": f"Bearer {TOKEN}"}
@@ -612,3 +614,97 @@ def test_rejects_malformed_names(layout: dict[str, Path]) -> None:
 
 def projects_in(config_dir: Path) -> dict:
     return json.loads((config_dir / ".claude.json").read_text())["projects"]
+
+
+def waits(runner: FakeRunner) -> list[int]:
+    return [int(call[call.index("--timeout") + 1]) for call in runner.called("agent", "wait")]
+
+
+def test_a_short_wait_after_an_answer_stays_within_its_budget(root: Path) -> None:
+    # The 5 s state-change window used the whole budget; a further 1 s wait overran it.
+    runner = FakeRunner(
+        {
+            ("agent", "wait"): err("timeout"),
+            ("agent", "get"): ok({"agent": agent(status="blocked")}),
+            ("agent", "read"): (0, "Allow?\n", ""),
+        }
+    )
+    body = client(runner, root).post(
+        "/agents/w1:p1/wait", headers=AUTH, json={"timeout_s": 5, "expect_change": True}
+    ).json()
+    assert sum(waits(runner)) <= 5000
+    assert body["agent"]["status"] == "blocked"
+
+
+def test_cancelling_a_start_still_closes_its_workspace(root: Path) -> None:
+    started, closed = asyncio.Event(), []
+
+    async def runner(argv) -> tuple[int, str, str]:
+        args = list(argv[1:])
+        if args[:2] == ["agent", "list"]:
+            return ok({"agents": []})
+        if args[:2] == ["workspace", "create"]:
+            return ok({"workspace": {"workspace_id": "w5"}, "root_pane": {"pane_id": "w5:p1"}})
+        if args[:2] == ["agent", "start"]:
+            started.set()
+            await asyncio.Event().wait()  # never answers
+        if args[:2] == ["workspace", "close"]:
+            closed.append(args[2])
+            return ok({"type": "ok"})
+        raise AssertionError(f"unexpected herdr call: {args}")
+
+    settings = Settings(token=TOKEN, allowed_roots=(root.resolve(),), trust_root=root / "none")
+    service = AgentService(settings, Herdr(runner=runner))
+
+    async def scenario() -> None:
+        task = asyncio.create_task(service.start_agent(str(root / "project"), "x"))
+        await started.wait()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    asyncio.run(scenario())
+    assert closed == ["w5"]
+
+
+def test_a_failing_cleanup_does_not_hide_why_the_start_failed(root: Path) -> None:
+    responses = start_responses(trust_dialog=False)
+    responses[("agent", "start")] = err("agent_start_failed")
+    responses[("workspace", "close")] = err("workspace_not_found")
+    response = client(FakeRunner(responses), root).post(
+        "/agents", headers=AUTH, json={"cwd": str(root / "project"), "name": "x"}
+    )
+    assert response.json()["error"]["code"] == "agent_start_failed"
+
+
+def test_a_cancelled_herdr_call_kills_the_child(monkeypatch: pytest.MonkeyPatch) -> None:
+    killed = []
+
+    class Hanging:
+        returncode = None
+
+        async def communicate(self):
+            await asyncio.Event().wait()
+
+        def kill(self):
+            killed.append(True)
+
+        async def wait(self):
+            return -9
+
+    async def fake_exec(*argv, **kwargs):
+        return Hanging()
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
+
+    async def scenario() -> None:
+        task = asyncio.create_task(subprocess_runner(["herdr", "agent", "list"]))
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    asyncio.run(scenario())
+    assert killed == [True]
+
