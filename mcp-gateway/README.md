@@ -39,7 +39,7 @@ agent, the last few output lines, refusals from agent-bridge passed through verb
 | `read_output` | last N meaningful terminal lines (default 20) |
 | `send_prompt` | prompt, wait up to `wait_seconds` (default 90, at most 100), return status + output; flags `blocked` and still-working. A `blocked` agent refuses prompts until its question is answered |
 | `wait_for_agent` | keep waiting for an agent still working (e.g. after `send_prompt` ran out of time); same result format |
-| `answer_agent` | key presses for a blocked agent's question, e.g. `["1"]`, `["Enter"]`; with `wait_seconds` also waits for the result |
+| `answer_agent` | key presses for a blocked agent's question, e.g. `["1"]`, `["Enter"]`; with `wait_seconds` also waits for the result. Marked destructive, so Claude asks first |
 | `start_agent` | new agent in a project: a name under `MCP_GATEWAY_PROJECTS_ROOT` or an absolute path |
 | `stop_agent` | close an agent's pane (marked destructive, so Claude asks first) |
 
