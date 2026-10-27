@@ -17,7 +17,9 @@ on `127.0.0.1` and nothing goes over the LAN.
 
 Built on the MCP Python SDK 2.x (`MCPServer`, Streamable HTTP, stateless, JSON
 responses). Tool results are short plain text meant to be read aloud: one line per
-agent, the last few output lines, refusals from agent-bridge passed through verbatim.
+agent, the last few output lines. A refusal from agent-bridge comes back as a tool error
+with agent-bridge's message unchanged, after the SDK's `Error executing tool <name>: `
+prefix.
 
 ## System requirements
 
@@ -67,7 +69,8 @@ What stands between the internet and an agent:
 1. **Cloudflare Tunnel.** The gateway host opens an outbound connection; no port is opened on the
    router. Cloudflare terminates TLS.
 2. **Ingress rule.** The tunnel only forwards `https://<host>/mcp`; every other path
-   (including `/healthz`) gets a 404 at the edge.
+   (including `/healthz`) gets a 404 from cloudflared on the gateway host and never
+   reaches mcp-gateway.
 3. **Bearer token.** mcp-gateway refuses any request without
    `Authorization: Bearer <MCP_GATEWAY_TOKEN>`. The word `Bearer` may be in any case;
    the token must match exactly (constant-time compare).
