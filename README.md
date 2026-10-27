@@ -28,7 +28,9 @@ You need:
   host;
 - [uv](https://docs.astral.sh/uv/) on both hosts;
 - a Cloudflare account with a domain on it;
-- a Claude plan with custom connectors.
+- a Claude plan with custom connectors, and the **Request headers** option in the Add
+  custom connector dialog. That option is a beta that only some accounts have; without
+  it the connector can't send its token, and mcp-gateway has no OAuth sign-in instead.
 
 The gateway and the agent host can be one machine.
 
