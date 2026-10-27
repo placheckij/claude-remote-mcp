@@ -286,9 +286,9 @@ These work however you installed it:
 launchctl print gui/$(id -u)/dev.claude-remote.agent-bridge | grep -E 'state|pid|last exit'
 tail -f ~/Library/Logs/agent-bridge.log
 
-# Restart, e.g. after pulling new code and `uv sync --all-packages` (a plain `uv sync`
-# removes agent-bridge from the venv). After editing the plist, stop and start it
-# instead (below), so launchd rereads the file. Re-running the setup script does both.
+# Restart, e.g. after pulling new code and `uv sync --all-packages`. After editing the
+# plist, stop and start it instead (below), so launchd rereads the file. Re-running the
+# setup script does both.
 launchctl kickstart -k gui/$(id -u)/dev.claude-remote.agent-bridge
 
 # Stop. `launchctl stop` is not enough: KeepAlive would start it again at once.
