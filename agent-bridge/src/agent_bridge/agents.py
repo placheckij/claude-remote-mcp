@@ -5,6 +5,8 @@ Agents are addressed by their herdr pane id (e.g. `w1:p1`).
 """
 
 import asyncio
+import re
+import unicodedata
 from collections.abc import Awaitable
 from pathlib import Path
 
@@ -83,7 +85,8 @@ class AgentService:
     async def start_agent(self, cwd: str, name: str) -> AgentSummary:
         folder = self._allowed_folder(cwd)
         async with self._start_lock:
-            await self._check_agent_limit()
+            running = await self._check_agent_limit()
+            name = herdr_name(name, {agent.get("name") for agent in running})
             await self._trust(folder)
             try:
                 agent = await self.herdr.start_agent(
@@ -158,16 +161,18 @@ class AgentService:
             raise BridgeError(404, "not_a_directory", f"{folder} is not a directory")
         return folder
 
-    async def _check_agent_limit(self) -> None:
-        running = len(await self.herdr.list_agents())
+    async def _check_agent_limit(self) -> list[dict]:
+        """The running agents, unless there are already as many as the limit allows."""
+        running = await self.herdr.list_agents()
         limit = self.settings.max_agents
-        if running >= limit:
+        if len(running) >= limit:
             raise BridgeError(
                 409,
                 "agent_limit_reached",
-                f"Refusing to start a new agent: {running} agents are already running and "
+                f"Refusing to start a new agent: {len(running)} agents are already running and "
                 f"the limit is {limit}. Stop an agent first.",
             )
+        return running
 
     async def _trust(self, folder: Path) -> None:
         trust_root = self.settings.trust_root
@@ -193,3 +198,30 @@ class AgentService:
             f"{head} It is outside the trust root {self.settings.trust_root}: trust it once by "
             "opening Claude Code there."
         )
+
+
+# herdr's rule for agent names: lower-case ASCII, starting with a letter, at most 32 long.
+HERDR_NAME_MAX = 32
+
+
+def herdr_name(spoken: str, taken: set[str | None]) -> str:
+    """A name herdr accepts for `spoken` (e.g. "Grafik fix!" → "grafik-fix"), made unique
+    among the `taken` names of live agents by a "-2", "-3", … suffix."""
+    # NFKD splits accents off most letters; ł has no decomposition, so map it by hand.
+    ascii_name = (
+        unicodedata.normalize("NFKD", spoken.replace("ł", "l").replace("Ł", "L"))
+        .encode("ascii", "ignore")
+        .decode()
+        .lower()
+    )
+    base = re.sub(r"-{2,}", "-", re.sub(r"[^a-z0-9_-]+", "-", ascii_name)).strip("-_")
+    if not base[:1].isalpha():
+        base = f"agent-{base}".rstrip("-")
+    base = base[:HERDR_NAME_MAX].rstrip("-_")
+    name, number = base, 1
+    while name in taken:
+        number += 1
+        suffix = f"-{number}"
+        name = base[: HERDR_NAME_MAX - len(suffix)].rstrip("-_") + suffix
+    return name
+
