@@ -31,7 +31,7 @@ You need:
 - [herdr](https://github.com/ogulcancelik/herdr) 0.8.0+ and Claude Code on the agent
   host;
 - [uv](https://docs.astral.sh/uv/) on both hosts;
-- a Cloudflare account with a domain on it;
+- a Cloudflare account (the Free plan is fine) with a domain whose DNS is on Cloudflare;
 - a Claude plan with custom connectors, and the **Request headers** option in the Add
   custom connector dialog. That option is a beta that only some accounts have; without
   it the connector can't send its token, and mcp-gateway has no OAuth sign-in instead.
@@ -40,12 +40,19 @@ The gateway and the agent host can be one machine.
 
 ## Setup order
 
-1. **Agent host:** start [agent-bridge](agent-bridge/README.md#run) on its LAN address
+1. **Cloudflare:** add your domain to Cloudflare if it isn't there yet (its DNS must be
+   managed by Cloudflare), and pick a subdomain for the connector, e.g.
+   `mcp.example.com`. Nothing else to create by hand: the setup script in step 3 makes
+   the tunnel and the DNS record.
+2. **Agent host:** start [agent-bridge](agent-bridge/README.md#run) on its LAN address
    and note its token.
-2. **Gateway host:** run [`mcp-gateway/deploy/setup.sh`](mcp-gateway/README.md#deploy-with-the-setup-script)
-   with the public hostname, agent-bridge's URL and token, and the projects folder. It
-   sets up the service and the Cloudflare Tunnel and prints the connector token.
-3. **claude.ai:** [add the custom connector](mcp-gateway/README.md#add-the-connector-in-claudeai)
+3. **Gateway host:** run [`mcp-gateway/deploy/setup.sh`](mcp-gateway/README.md#deploy-with-the-setup-script)
+   with that subdomain, agent-bridge's URL and token, and the projects folder. On the
+   first run it prints a Cloudflare login URL: open it in any browser and pick your
+   domain. It then sets up the service and the
+   [Cloudflare Tunnel](mcp-gateway/README.md#cloudflare-tunnel) and prints the
+   connector token.
+4. **claude.ai:** [add the custom connector](mcp-gateway/README.md#add-the-connector-in-claudeai)
    with that token.
 
 ## Development
