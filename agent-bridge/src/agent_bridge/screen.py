@@ -15,8 +15,9 @@ _RULE = re.compile(r"^\s*─{10,}\s*$")
 
 def last_lines(snapshot: str, count: int) -> str:
     lines = [line.rstrip() for line in snapshot.splitlines() if line.strip()]
+    # The input box is a rule followed by the `❯` line, which may hold draft text.
     for i in range(len(lines) - 1, 0, -1):
-        if lines[i].strip() == "❯" and _RULE.match(lines[i - 1]):
+        if lines[i].lstrip().startswith("❯") and _RULE.match(lines[i - 1]):
             lines = lines[: i - 1]
             break
     return "\n".join(lines[-count:])
