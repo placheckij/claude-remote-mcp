@@ -22,9 +22,33 @@ class TrustError(Exception):
     pass
 
 
-def _is_default_config(config_dir: Path) -> bool:
+def is_default_config(config_dir: Path) -> bool:
+    """True if `config_dir` is Claude Code's default config, however it is spelled.
+
+    Folders are compared as files on disk, not as strings: on a case-insensitive disk (the
+    macOS default) `/USERS/ME/.CLAUDE` is `~/.claude`, and a `.claude.json` linked to
+    `~/.claude.json` would write the global config.
+    """
     home = Path.home().resolve()
-    return config_dir == home or config_dir.is_relative_to(home / ".claude")
+    config_dir = config_dir.expanduser().resolve()
+    return (
+        config_dir == home
+        or config_dir.is_relative_to(home / ".claude")
+        or _same_file(config_dir, home)
+        or _is_inside(config_dir, home / ".claude")
+        or _same_file(config_dir / CONFIG_FILE, home / CONFIG_FILE)
+    )
+
+
+def _is_inside(path: Path, folder: Path) -> bool:
+    return any(_same_file(candidate, folder) for candidate in (path, *path.parents))
+
+
+def _same_file(a: Path, b: Path) -> bool:
+    try:
+        return os.path.samefile(a, b)
+    except OSError:  # either one missing
+        return False
 
 
 def trust_folder(config_dir: Path, folder: Path, trust_root: Path) -> bool:
@@ -32,9 +56,9 @@ def trust_folder(config_dir: Path, folder: Path, trust_root: Path) -> bool:
     config_dir = config_dir.expanduser().resolve()
     folder = folder.expanduser().resolve()
     trust_root = trust_root.expanduser().resolve()
-    if _is_default_config(config_dir):
+    if is_default_config(config_dir):
         raise TrustError(f"refusing to edit the default Claude config in {config_dir}")
-    if not folder.is_relative_to(trust_root):
+    if not (folder.is_relative_to(trust_root) or _is_inside(folder, trust_root)):
         raise TrustError(f"{folder} is outside the trust root {trust_root}")
 
     path = config_dir / CONFIG_FILE

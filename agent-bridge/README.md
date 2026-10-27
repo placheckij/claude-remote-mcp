@@ -76,8 +76,10 @@ Hard limits:
 
 - only folders under the trust root are ever trusted automatically;
 - never in the default config (`~/.claude.json`, `~/.claude/`): agent-bridge refuses
-  to start with a trust root but no separate config dir, and refuses each start with
-  `409 trust_refused` if the config dir is the default one anyway.
+  to start with a trust root but no separate config dir, or with a config dir that is
+  the default one, and refuses each start with `409 trust_refused` if it is anyway.
+  Folders are compared on disk, not by spelling, so another letter case (macOS disks
+  ignore case), a symlink, or a `.claude.json` linked to `~/.claude.json` is caught too.
 
 The file is written atomically and left alone if the folder (or a parent) is already
 trusted.
