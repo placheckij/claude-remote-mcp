@@ -55,7 +55,10 @@ class BearerAuth:
                     scope["method"], scope["path"], reason,
                     _describe_token(self.expected), _describe_headers(scope["headers"]),
                 )
-                response = JSONResponse({"error": "unauthorized"}, status_code=401)
+                # RFC 9110 and the MCP spec: a 401 names the scheme it expects.
+                response = JSONResponse(
+                    {"error": "unauthorized"}, status_code=401, headers={"WWW-Authenticate": "Bearer"}
+                )
                 await response(scope, receive, send)
                 return
         await self.app(scope, receive, send)
