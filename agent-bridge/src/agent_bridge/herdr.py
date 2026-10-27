@@ -29,7 +29,13 @@ async def subprocess_runner(argv: Sequence[str]) -> tuple[int, str, str]:
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
     )
-    stdout, stderr = await proc.communicate()
+    try:
+        stdout, stderr = await proc.communicate()
+    except asyncio.CancelledError:
+        # The caller gave up (e.g. the HTTP client disconnected); don't leave herdr running.
+        proc.kill()
+        await proc.wait()
+        raise
     return proc.returncode or 0, stdout.decode(errors="replace"), stderr.decode(errors="replace")
 
 
@@ -132,8 +138,13 @@ class Herdr:
             # quit Claude. Refuse instead of leaving a trap.
             if await self._shows_trust_dialog(pane_id):
                 raise HerdrError("folder_not_trusted", f"Claude Code does not trust {cwd}")
-        except Exception:
-            await self._json("workspace", "close", workspace_id)
+        except BaseException:
+            # Also on cancellation; shielded so the close itself isn't cancelled, and a
+            # failing close must not replace the reason the start failed.
+            try:
+                await asyncio.shield(self._json("workspace", "close", workspace_id))
+            except Exception:
+                pass
             raise
         return started["agent"]
 
