@@ -150,7 +150,9 @@ address, not `0.0.0.0` (or to `127.0.0.1` when mcp-gateway runs on the same mach
 
 To try it in the foreground, generate a token and start it by hand. To keep it running, set
 it up as a service instead (below); on macOS the setup script generates the token for you.
-Either way the same token goes into mcp-gateway's `MCP_GATEWAY_BRIDGE_TOKEN`.
+Either way the same token goes into mcp-gateway's `MCP_GATEWAY_BRIDGE_TOKEN`. Generate it
+once and keep a copy, e.g. in a password manager: it goes into the service's config and
+into mcp-gateway's setup on the gateway host, and is stored nowhere else.
 
 ```sh
 uv sync --all-packages
@@ -225,10 +227,10 @@ What the script does, step by step:
    |---|---|
    | `/path/to/claude-remote-mcp` | the checkout's full path (`pwd` in it) |
    | `192.168.1.20` | the Mac's LAN address (`ipconfig getifaddr en0` on Wi-Fi) |
-   | `…` | the token (`openssl rand -hex 32`) |
+   | `…` | the token: generate it once (`openssl rand -hex 32`) and keep a copy; mcp-gateway's setup needs the same one |
    | `/Users/me/projects` | the folders agents may start in, `:`-separated |
    | `/Users/me/.local/bin/herdr` | the output of `command -v herdr` |
-   | `/Users/me` in the log path | your home folder |
+   | `/Users/me` in the log paths | your home folder |
 
    Write every path in full: launchd doesn't expand `~` or `$HOME`. To set any other
    variable from [Configuration](#configuration), add another `<key>NAME</key><string>value</string>`
@@ -258,6 +260,8 @@ What the script does, step by step:
      <!-- Retries until the LAN address exists, e.g. right after login or wake. -->
      <key>KeepAlive</key><true/>
      <key>ThrottleInterval</key><integer>10</integer>
+     <!-- Errors (stderr) and uvicorn's one line per request (stdout), in one file. -->
+     <key>StandardOutPath</key><string>/Users/me/Library/Logs/agent-bridge.log</string>
      <key>StandardErrorPath</key><string>/Users/me/Library/Logs/agent-bridge.log</string>
    </dict>
    </plist>
@@ -284,7 +288,11 @@ These work however you installed it:
 ```sh
 # Status: a PID and "state = running" when it's up; "last exit code" after a crash
 launchctl print gui/$(id -u)/dev.claude-remote.agent-bridge | grep -E 'state|pid|last exit'
+
+# Log: errors, plus one line per request. Nothing rotates it; it grows slowly, and
+# emptying it is safe while agent-bridge runs (launchd appends to it).
 tail -f ~/Library/Logs/agent-bridge.log
+: > ~/Library/Logs/agent-bridge.log
 
 # Restart, e.g. after pulling new code and `uv sync --all-packages` (a plain `uv sync`
 # removes agent-bridge from the venv). After editing the plist, stop and start it
@@ -295,11 +303,14 @@ launchctl kickstart -k gui/$(id -u)/dev.claude-remote.agent-bridge
 # Unloading stops it until you start it again or log in next time.
 launchctl bootout gui/$(id -u)/dev.claude-remote.agent-bridge
 
-# Start again
+# Start again (after `disable` below, `enable` it first)
 launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/dev.claude-remote.agent-bridge.plist
 
-# Keep it from starting at login without deleting the plist
-launchctl disable gui/$(id -u)/dev.claude-remote.agent-bridge     # `enable` to undo
+# Keep it from starting at login without deleting the plist. This doesn't stop it if
+# it's running (bootout does), and bootstrap fails with "5: Input/output error" until
+# you enable it again. Re-running the setup script enables it too.
+launchctl disable gui/$(id -u)/dev.claude-remote.agent-bridge
+launchctl enable gui/$(id -u)/dev.claude-remote.agent-bridge      # undo
 
 # Uninstall
 launchctl bootout gui/$(id -u)/dev.claude-remote.agent-bridge
