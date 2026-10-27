@@ -78,7 +78,8 @@ def build_server(settings: Settings, bridge: AgentBridge) -> MCPServer:
         lines: Lines = 20,
     ) -> str:
         """Send a prompt to an agent and wait until it finishes, then return its status and
-        latest output. If it is still working when the wait ends, use wait_for_agent."""
+        latest output. If it is still working when the wait ends, use wait_for_agent. A
+        blocked agent refuses prompts: answer its question with answer_agent first."""
         result = await call(bridge.prompt(agent_id, text, wait_seconds, lines))
         return report(result, wait_seconds)
 

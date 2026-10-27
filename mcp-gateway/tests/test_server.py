@@ -292,6 +292,13 @@ def test_start_agent_turns_spoken_names_into_slugs(
     assert json.loads(fake.requests[0].content)["name"] == slug
 
 
+def test_send_prompt_says_a_blocked_agent_needs_an_answer_first(client: TestClient) -> None:
+    # agent-bridge refuses prompts to a blocked agent; the model should know before trying.
+    tools = {tool["name"]: tool for tool in rpc(client, "tools/list").json()["result"]["tools"]}
+    assert "blocked" in tools["send_prompt"]["description"]
+    assert "answer_agent" in tools["send_prompt"]["description"]
+
+
 def test_refusals_from_the_bridge_reach_the_model_verbatim(client: TestClient, fake: FakeAgentBridge) -> None:
     message = (
         "Refusing to start a new agent: 10 agents are already running "
