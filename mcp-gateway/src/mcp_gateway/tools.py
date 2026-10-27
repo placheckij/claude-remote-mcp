@@ -13,7 +13,7 @@ from starlette.responses import PlainTextResponse
 
 from mcp_gateway.bridge import AgentBridge, BridgeError
 from mcp_gateway.config import Settings
-from mcp_gateway.replies import describe, report, with_truncation_note
+from mcp_gateway.replies import count, describe, report, with_truncation_note
 
 INSTRUCTIONS = """\
 Controls the user's Claude Code agents running on their agent host (via herdr). The user is
@@ -52,11 +52,14 @@ WaitSeconds = Annotated[
         description=f"How long to wait for the agent to finish, at most {MAX_WAIT_SECONDS} s.",
     ),
 ]
-Lines = Annotated[int, Field(ge=1, le=200, description="Output lines to return.")]
+# Output is read aloud: a few dozen lines is already more than anyone listens to.
+MAX_LINES = 60
+Lines = Annotated[int, Field(ge=1, le=MAX_LINES, description="Output lines to return.")]
 
 
 def build_server(settings: Settings, bridge: AgentBridge) -> MCPServer:
     mcp = MCPServer(name="claude-remote", instructions=INSTRUCTIONS)
+    root = settings.projects_root
 
     async def call(coro):
         try:
@@ -70,17 +73,17 @@ def build_server(settings: Settings, bridge: AgentBridge) -> MCPServer:
         agents = await call(bridge.list_agents())
         if not agents:
             return "No agents are running."
-        return f"{len(agents)} agents:\n" + "\n".join(describe(agent) for agent in agents)
+        return f"{count(len(agents), 'agent')}:\n" + "\n".join(describe(agent, root) for agent in agents)
 
     @mcp.tool(annotations=READ_ONLY)
     async def agent_details(agent_id: AgentId) -> str:
         """Show one agent's name, status and folder."""
-        return describe(await call(bridge.get_agent(agent_id)))
+        return describe(await call(bridge.get_agent(agent_id)), root)
 
     @mcp.tool(annotations=READ_ONLY)
     async def read_output(
         agent_id: AgentId,
-        lines: Annotated[int, Field(ge=1, le=200, description="How many recent lines.")] = 20,
+        lines: Annotated[int, Field(ge=1, le=MAX_LINES, description="How many recent lines.")] = 20,
     ) -> str:
         """Read the latest lines of an agent's terminal (its recent answer or question)."""
         output = await call(bridge.read_output(agent_id, lines))
@@ -97,7 +100,7 @@ def build_server(settings: Settings, bridge: AgentBridge) -> MCPServer:
         latest output. If it is still working when the wait ends, use wait_for_agent. A
         blocked agent refuses prompts: answer its question with answer_agent first."""
         result = await call(bridge.prompt(agent_id, text, wait_seconds, lines))
-        return report(result, wait_seconds)
+        return report(result, wait_seconds, root)
 
     @mcp.tool(annotations=READ_ONLY)
     async def wait_for_agent(
@@ -105,7 +108,7 @@ def build_server(settings: Settings, bridge: AgentBridge) -> MCPServer:
     ) -> str:
         """Wait until an agent finishes its current work or needs an approval, then return
         its status and latest output. Returns at once if it is already idle or done."""
-        return report(await call(bridge.wait(agent_id, wait_seconds, lines)), wait_seconds)
+        return report(await call(bridge.wait(agent_id, wait_seconds, lines)), wait_seconds, root)
 
     @mcp.tool(annotations=DESTRUCTIVE)
     async def answer_agent(
@@ -146,7 +149,7 @@ def build_server(settings: Settings, bridge: AgentBridge) -> MCPServer:
                 f"{sent} Couldn't confirm what happened next: {str(error).rstrip('.')}. "
                 "Check with agent_details before answering again."
             )
-        return f"{sent}\n{report(result, wait_seconds)}"
+        return f"{sent}\n{report(result, wait_seconds, root)}"
 
     @mcp.tool(annotations=ACTION)
     async def start_agent(
@@ -169,7 +172,7 @@ def build_server(settings: Settings, bridge: AgentBridge) -> MCPServer:
         # Names come from speech ("my agent"); agent-bridge only takes [\w.-].
         agent_name = _safe_name(name or posixpath.basename(cwd))
         agent = await call(bridge.start_agent(cwd, agent_name))
-        return f"Started {describe(agent)}"
+        return f"Started {describe(agent, root)}"
 
     @mcp.tool(annotations=DESTRUCTIVE)
     async def stop_agent(agent_id: AgentId) -> str:
