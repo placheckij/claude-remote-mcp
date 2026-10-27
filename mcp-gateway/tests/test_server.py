@@ -227,10 +227,10 @@ def test_wait_for_agent_reports_how_it_ended(client: TestClient, fake: FakeAgent
         json={"agent": {**AGENT, "status": "done"}, "output": {"text": "Tests pass", "truncated": False},
               "timed_out": False},
     )
-    is_error, text = call_tool(client, "wait_for_agent", agent_id="w1:p1", wait_seconds=120)
+    is_error, text = call_tool(client, "wait_for_agent", agent_id="w1:p1", wait_seconds=100)
     assert not is_error
     assert text.startswith("Agent is done.") and text.endswith("Tests pass")
-    assert json.loads(fake.requests[0].content) == {"timeout_s": 120, "lines": 20, "expect_change": False}
+    assert json.loads(fake.requests[0].content) == {"timeout_s": 100, "lines": 20, "expect_change": False}
 
 
 def test_wait_for_unknown_agent_passes_the_error_through(client: TestClient, fake: FakeAgentBridge) -> None:
@@ -262,9 +262,17 @@ def test_answer_agent_can_wait_for_the_result(client: TestClient, fake: FakeAgen
     assert json.loads(fake.requests[1].content)["expect_change"] is True
 
 
-@pytest.mark.parametrize("wait_seconds", [0, 4, 601])
-def test_wait_rejects_out_of_range_waits(client: TestClient, fake: FakeAgentBridge, wait_seconds: int) -> None:
-    is_error, _ = call_tool(client, "wait_for_agent", agent_id="w1:p1", wait_seconds=wait_seconds)
+# Cloudflare ends a request after 125 s and nothing is sent before the tool returns, so a
+# longer wait would fail at the edge after the prompt was already typed.
+@pytest.mark.parametrize("wait_seconds", [0, 4, 101, 600])
+@pytest.mark.parametrize(
+    ("tool", "arguments"),
+    [("wait_for_agent", {}), ("send_prompt", {"text": "hi"}), ("answer_agent", {"keys": ["1"]})],
+)
+def test_waits_are_capped_below_the_proxy_timeout(
+    client: TestClient, fake: FakeAgentBridge, tool: str, arguments: dict, wait_seconds: int
+) -> None:
+    is_error, _ = call_tool(client, tool, agent_id="w1:p1", wait_seconds=wait_seconds, **arguments)
     assert is_error and fake.requests == []
 
 

@@ -25,7 +25,8 @@ read_output for more detail. If the agent is still working when the wait ends, c
 wait_for_agent to keep waiting instead of re-reading its output. If an agent's status is
 "blocked" it is waiting for an approval: read the question with read_output, tell the
 user, and answer with answer_agent (with wait_seconds to wait for the result) only after
-the user decides. Agent ids look like "w1:p1".
+the user decides. Each wait lasts at most 100 seconds; for longer work call
+wait_for_agent again. Agent ids look like "w1:p1".
 """
 
 READ_ONLY = ToolAnnotations(read_only_hint=True, open_world_hint=False)
@@ -33,8 +34,16 @@ ACTION = ToolAnnotations(read_only_hint=False, destructive_hint=False, open_worl
 DESTRUCTIVE = ToolAnnotations(read_only_hint=False, destructive_hint=True, open_world_hint=False)
 
 AgentId = Annotated[str, Field(description='Agent id from list_agents, e.g. "w1:p1".')]
+# Nothing is sent until a tool returns, and Cloudflare ends a request after 125 s; the cap
+# leaves room for the calls around the wait.
+MAX_WAIT_SECONDS = 100
 WaitSeconds = Annotated[
-    int, Field(ge=5, le=600, description="How long to wait for the agent to finish.")
+    int,
+    Field(
+        ge=5,
+        le=MAX_WAIT_SECONDS,
+        description=f"How long to wait for the agent to finish, at most {MAX_WAIT_SECONDS} s.",
+    ),
 ]
 Lines = Annotated[int, Field(ge=1, le=200, description="Output lines to return.")]
 
@@ -104,7 +113,11 @@ def build_server(settings: Settings, bridge: AgentBridge) -> MCPServer:
         ],
         wait_seconds: Annotated[
             int | None,
-            Field(ge=5, le=600, description="Also wait this long for the agent to finish."),
+            Field(
+                ge=5,
+                le=MAX_WAIT_SECONDS,
+                description=f"Also wait this long for the agent to finish, at most {MAX_WAIT_SECONDS} s.",
+            ),
         ] = None,
         lines: Lines = 20,
     ) -> str:
