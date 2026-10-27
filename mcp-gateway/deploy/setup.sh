@@ -184,8 +184,14 @@ install -d -m 0755 "$CF_DIR"
 id "$CF_USER" &>/dev/null || useradd --system --no-create-home --shell /usr/sbin/nologin "$CF_USER"
 
 if [[ ! -f $ORIGIN_CERT ]]; then
-  log "Log in to Cloudflare: open the URL below and pick the zone for $PUBLIC_HOST"
-  HOME=/root cloudflared tunnel login
+  # Left from an earlier login; tunnel login wouldn't overwrite it anyway.
+  if [[ -f /root/.cloudflared/cert.pem ]]; then
+    log "Using the existing Cloudflare login cert /root/.cloudflared/cert.pem"
+    echo "If it isn't for the zone that contains $PUBLIC_HOST, delete $ORIGIN_CERT and re-run."
+  else
+    log "Log in to Cloudflare: open the URL below and pick the zone that contains $PUBLIC_HOST"
+    HOME=/root cloudflared tunnel login
+  fi
   mv /root/.cloudflared/cert.pem "$ORIGIN_CERT"
   chmod 0600 "$ORIGIN_CERT"
 fi
@@ -228,7 +234,9 @@ ingress:
 EOF
 cloudflared tunnel --config "$TUNNEL_CONFIG" ingress validate
 
-# A dedicated unit, so it can sit next to any other cloudflared service on this host.
+# A dedicated unit, so it can sit next to any other cloudflared service on this host. The
+# binary is the one found above, which isn't always the apt package's /usr/bin/cloudflared.
+CLOUDFLARED="$(command -v cloudflared)"
 cat >/etc/systemd/system/"$TUNNEL_SERVICE".service <<EOF
 [Unit]
 Description=Cloudflare Tunnel $TUNNEL_NAME for mcp-gateway
@@ -238,7 +246,7 @@ Wants=network-online.target
 [Service]
 User=$CF_USER
 Group=$CF_USER
-ExecStart=/usr/bin/cloudflared --no-autoupdate tunnel --config $TUNNEL_CONFIG run
+ExecStart=$CLOUDFLARED --no-autoupdate tunnel --config $TUNNEL_CONFIG run
 Restart=on-failure
 RestartSec=5
 NoNewPrivileges=yes
