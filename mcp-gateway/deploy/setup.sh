@@ -119,7 +119,9 @@ trap 'rm -rf "$STAGE"' EXIT
 git -c safe.directory="$REPO_DIR" -c tar.umask=0022 -C "$REPO_DIR" archive --format=tar HEAD | tar -x -C "$STAGE"
 chmod 0755 "$STAGE"
 rsync -a --delete --chown=root:root --exclude /.venv --exclude /python "$STAGE/" "$APP_DIR/"
-(cd "$APP_DIR" && UV_PYTHON_INSTALL_DIR="$APP_DIR/python" uv sync --frozen --no-dev --package mcp-gateway)
+# Compile bytecode now: the sandboxed service can't write it into $APP_DIR, so without it
+# every start compiles the dependencies again, which takes seconds on a small board.
+(cd "$APP_DIR" && UV_PYTHON_INSTALL_DIR="$APP_DIR/python" uv sync --frozen --no-dev --package mcp-gateway --compile-bytecode)
 
 log "Writing $ENV_FILE"
 install -d -m 0750 -g "$SERVICE_USER" "$ENV_DIR"
@@ -255,24 +257,42 @@ systemctl daemon-reload
 systemctl enable --now mcp-gateway.service "$TUNNEL_SERVICE".service
 systemctl restart mcp-gateway.service "$TUNNEL_SERVICE".service
 
-check() { # check "label" expected-status curl-args...
+FAILED=()
+check() { # check [-w SECONDS] "label" expected-status curl-args...
+  # -w retries for up to SECONDS while the status is wrong (curl args must not read stdin).
+  local wait=0
+  if [[ $1 == -w ]]; then wait=$2; shift 2; fi
   local label=$1 expected=$2; shift 2
-  local status
-  status="$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 "$@" || true)"
-  if [[ $status == "$expected" ]]; then echo "ok    $label ($status)"; else echo "FAIL  $label (got $status, want $expected)"; fi
+  local status deadline=$((SECONDS + wait))
+  while :; do
+    status="$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 "$@" || true)"
+    [[ $status != "$expected" && $SECONDS -lt $deadline ]] || break
+    sleep 1
+  done
+  if [[ $status == "$expected" ]]; then
+    echo "ok    $label ($status)"
+  else
+    echo "FAIL  $label (got $status, want $expected)"
+    FAILED+=("$label")
+  fi
 }
 
 log "Checks"
-for _ in $(seq 20); do curl -fs "http://127.0.0.1:$PORT/healthz" >/dev/null && break; sleep 0.5; done
-check "mcp-gateway is up" 200 "http://127.0.0.1:$PORT/healthz"
+check -w 30 "mcp-gateway is up" 200 "http://127.0.0.1:$PORT/healthz"
+# Without mcp-gateway the tunnel can only answer 502: then don't wait for it below.
+tunnel_wait=30
+[[ ${#FAILED[@]} -eq 0 ]] || tunnel_wait=0
 # The header goes through stdin (printf is a builtin), so the token never shows in curl's argv.
-printf 'Authorization: Bearer %s\n' "$AGENT_BRIDGE_TOKEN" \
-  | check "agent host reachable with its token" 200 -H @- "$AGENT_BRIDGE_URL/agents"
-sleep 3
-check "tunnel refuses requests without the token" 401 -X POST "https://$PUBLIC_HOST/mcp"
+# Not a pipe into check: that would run it in a subshell and lose a failure.
+check "agent host reachable with its token" 200 -H @- "$AGENT_BRIDGE_URL/agents" \
+  < <(printf 'Authorization: Bearer %s\n' "$AGENT_BRIDGE_TOKEN")
+# The tunnel takes a few seconds to register at Cloudflare's edge; until then it answers 530.
+# Once it has answered, it is registered, so the second check needn't wait.
+check -w "$tunnel_wait" "tunnel refuses requests without the token" 401 -X POST "https://$PUBLIC_HOST/mcp"
 check "tunnel hides everything but /mcp" 404 "https://$PUBLIC_HOST/healthz"
 
-cat <<EOF
+if [[ ${#FAILED[@]} -eq 0 ]]; then
+  cat <<EOF
 
 Done. Add the connector in claude.ai -> Customize -> Connectors -> Add custom connector:
   URL:             https://$PUBLIC_HOST/mcp
@@ -280,6 +300,15 @@ Done. Add the connector in claude.ai -> Customize -> Connectors -> Add custom co
   Request header:  authorization = Bearer <MCP_GATEWAY_TOKEN>
 (Request headers are a beta; see mcp-gateway/README.md if the dialog has none.)
 EOF
+else
+  printf '\nNot working yet: %d check(s) failed:\n' "${#FAILED[@]}"
+  printf '  - %s\n' "${FAILED[@]}"
+  cat <<EOF
+Fix the cause (see the logs below) and re-run this script; it keeps the connector token.
+If only the tunnel checks failed for a new hostname, DNS may need a few more minutes:
+  curl -i -X POST https://$PUBLIC_HOST/mcp    should answer 401.
+EOF
+fi
 # claude.ai can't edit a connector's headers, so a changed token means re-adding it.
 readd="If the connector already exists in claude.ai, remove it and add it again with this token."
 case $TOKEN_SOURCE in
@@ -288,3 +317,4 @@ case $TOKEN_SOURCE in
   kept) echo "MCP_GATEWAY_TOKEN is unchanged; read it with: sudo grep MCP_GATEWAY_TOKEN $ENV_FILE" ;;
 esac
 echo "Logs: journalctl -u mcp-gateway -u $TUNNEL_SERVICE -f"
+[[ ${#FAILED[@]} -eq 0 ]] || exit 1
