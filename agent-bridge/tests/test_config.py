@@ -45,6 +45,17 @@ def test_refuses_a_trust_root_without_a_separate_config(env: pytest.MonkeyPatch,
         Settings.from_env()
 
 
+@pytest.mark.parametrize("config_dir", ["", ".claude", ".claude/nested"])
+def test_refuses_the_default_config_as_the_separate_one(
+    env: pytest.MonkeyPatch, tmp_path: Path, config_dir: str
+) -> None:
+    env.setenv("HOME", str(tmp_path))
+    (tmp_path / config_dir).mkdir(parents=True, exist_ok=True)
+    env.setenv("AGENT_BRIDGE_CLAUDE_CONFIG_DIR", str(tmp_path / config_dir))
+    with pytest.raises(RuntimeError, match="AGENT_BRIDGE_CLAUDE_CONFIG_DIR.*default Claude config"):
+        Settings.from_env()
+
+
 def test_splits_roots_and_shell_quoted_args(env: pytest.MonkeyPatch, tmp_path: Path) -> None:
     (tmp_path / "a").mkdir()
     env.setenv("AGENT_BRIDGE_ALLOWED_ROOTS", f"{tmp_path / 'a'}::{tmp_path / 'b'}")

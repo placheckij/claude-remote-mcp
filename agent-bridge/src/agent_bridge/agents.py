@@ -40,6 +40,17 @@ class AgentService:
     async def prompt(
         self, agent_id: str, text: str, timeout_s: int | None, lines: int
     ) -> PromptResult:
+        # herdr types the text and presses Enter; on a pending question that Enter picks
+        # the highlighted answer (often "Yes") and the text is lost. The agent could still
+        # turn blocked between this check and the prompt; that window is accepted.
+        if (await self.get_agent(agent_id)).status == "blocked":
+            raise BridgeError(
+                409,
+                "agent_blocked",
+                "The agent is waiting for an answer to a question, so the prompt was not "
+                "sent. Read the question with read_output and answer it with answer_agent "
+                "first.",
+            )
         waiting = self.herdr.prompt(agent_id, text, self._timeout_ms(timeout_s))
         return await self._settle(agent_id, waiting, lines)
 

@@ -79,6 +79,12 @@ def test_rejects_missing_and_wrong_token(root: Path) -> None:
         assert response.json()["error"]["code"] == "unauthorized"
 
 
+@pytest.mark.parametrize("path", ["/docs", "/redoc", "/openapi.json", "/docs/oauth2-redirect"])
+def test_api_docs_are_not_served(root: Path, path: str) -> None:
+    # FastAPI's doc routes skip app-level dependencies, so they would answer without a token.
+    assert client(FakeRunner({}), root).get(path).status_code == 404
+
+
 def test_lists_agents_as_summaries(root: Path) -> None:
     runner = FakeRunner({("agent", "list"): ok({"agents": [agent()]})})
     response = client(runner, root).get("/agents", headers=AUTH)
@@ -128,6 +134,7 @@ def test_visible_read_failures_are_not_retried(root: Path) -> None:
 def test_prompt_waits_then_returns_status_and_output(root: Path) -> None:
     runner = FakeRunner(
         {
+            ("agent", "get"): ok({"agent": agent(status="idle")}),
             ("agent", "prompt"): ok({"agent": agent(status="done")}),
             ("agent", "read"): (0, "OK\n", ""),
         }
@@ -142,6 +149,18 @@ def test_prompt_waits_then_returns_status_and_output(root: Path) -> None:
     assert runner.called("agent", "prompt")[0] == [
         "agent", "prompt", "w1:p1", "hi", "--wait", "--timeout", "30000",
     ]
+
+
+def test_prompt_to_a_blocked_agent_is_refused_without_typing(root: Path) -> None:
+    # herdr types the text and presses Enter, which would pick the highlighted answer
+    # (often "Yes") of the pending question.
+    runner = FakeRunner({("agent", "get"): ok({"agent": agent(status="blocked")})})
+    response = client(runner, root).post("/agents/w1:p1/prompt", headers=AUTH, json={"text": "hi"})
+    assert response.status_code == 409
+    error = response.json()["error"]
+    assert error["code"] == "agent_blocked"
+    assert "answer_agent" in error["message"]
+    assert runner.called("agent", "prompt") == []
 
 
 def test_prompt_timeout_reports_still_working(root: Path) -> None:

@@ -15,7 +15,14 @@ from agent_bridge.routes import router
 
 
 def create_app(settings: Settings, herdr: Herdr | None = None) -> FastAPI:
-    app = FastAPI(title="agent-bridge", dependencies=[Depends(require_token(settings.token))])
+    # No doc routes: FastAPI serves them outside app-level dependencies, i.e. without the token.
+    app = FastAPI(
+        title="agent-bridge",
+        dependencies=[Depends(require_token(settings.token))],
+        docs_url=None,
+        redoc_url=None,
+        openapi_url=None,
+    )
     app.state.agents = AgentService(settings, herdr or Herdr(binary=settings.herdr_bin))
     install_error_handlers(app)
     app.include_router(router)

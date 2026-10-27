@@ -246,10 +246,13 @@ Done. Add the connector in claude.ai -> Customize -> Connectors -> Add custom co
   URL:             https://$PUBLIC_HOST/mcp
   Authentication:  No sign-in
   Request header:  authorization = Bearer <MCP_GATEWAY_TOKEN>
+(Request headers are a beta; see mcp-gateway/README.md if the dialog has none.)
 EOF
+# claude.ai can't edit a connector's headers, so a changed token means re-adding it.
+readd="If the connector already exists in claude.ai, remove it and add it again with this token."
 case $TOKEN_SOURCE in
-  new) echo "MCP_GATEWAY_TOKEN (new): $TOKEN" ;;
-  given) echo "MCP_GATEWAY_TOKEN is the one you passed in" ;;
+  new) echo "MCP_GATEWAY_TOKEN (new): $TOKEN"; echo "$readd" ;;
+  given) echo "MCP_GATEWAY_TOKEN is the one you passed in. $readd" ;;
   kept) echo "MCP_GATEWAY_TOKEN is unchanged; read it with: sudo grep MCP_GATEWAY_TOKEN $ENV_FILE" ;;
 esac
 echo "Logs: journalctl -u mcp-gateway -u $TUNNEL_SERVICE -f"

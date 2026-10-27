@@ -9,6 +9,8 @@ from typing import Annotated, Any
 from pydantic import Field, ValidationError, field_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
+from agent_bridge.trust import is_default_config
+
 ENV_FILE = ".env"
 
 
@@ -45,6 +47,11 @@ class Settings(BaseSettings):
             raise RuntimeError(
                 "AGENT_BRIDGE_TRUST_ROOT needs AGENT_BRIDGE_CLAUDE_CONFIG_DIR: folders are "
                 "only ever trusted in a separate Claude config, never the default one"
+            )
+        if settings.claude_config_dir and is_default_config(settings.claude_config_dir):
+            raise RuntimeError(
+                f"AGENT_BRIDGE_CLAUDE_CONFIG_DIR is the default Claude config "
+                f"({settings.claude_config_dir}); set it to a separate folder, e.g. ~/.claude-agents"
             )
         return settings
 

@@ -72,3 +72,41 @@ def test_never_edits_the_default_config(home: Path, trust_root: Path, default_di
     with pytest.raises(TrustError, match="default Claude config"):
         trust_folder(config_dir, trust_root / "app", trust_root)
     assert (config_dir / ".claude.json").read_text() == "{}"
+
+
+def other_case(path: Path) -> Path:
+    """`path` spelled with its letters' case flipped; skips where the disk is case-sensitive."""
+    flipped = Path(str(path).swapcase())
+    if not flipped.exists():
+        pytest.skip("case-sensitive file system")
+    return flipped
+
+
+@pytest.mark.parametrize("default_dir", ["", ".claude", ".claude/nested"])
+def test_never_edits_the_default_config_spelled_differently(
+    home: Path, trust_root: Path, default_dir: str
+) -> None:
+    # macOS disks are case-insensitive by default: /USERS/ME/.CLAUDE is ~/.claude.
+    config_dir = home / default_dir
+    config_dir.mkdir(parents=True, exist_ok=True)
+    (config_dir / ".claude.json").write_text("{}")
+    with pytest.raises(TrustError, match="default Claude config"):
+        trust_folder(other_case(config_dir), trust_root / "app", trust_root)
+    assert (config_dir / ".claude.json").read_text() == "{}"
+
+
+def test_never_edits_a_config_file_linked_to_the_default(
+    home: Path, config_dir: Path, trust_root: Path
+) -> None:
+    (home / ".claude.json").write_text("{}")
+    (config_dir / ".claude.json").unlink()
+    (config_dir / ".claude.json").symlink_to(home / ".claude.json")
+    with pytest.raises(TrustError, match="default Claude config"):
+        trust_folder(config_dir, trust_root / "app", trust_root)
+    assert (home / ".claude.json").read_text() == "{}"
+
+
+def test_trust_root_spelled_differently_still_trusts_folders_inside(
+    config_dir: Path, trust_root: Path
+) -> None:
+    assert trust_folder(config_dir, trust_root / "app", other_case(trust_root)) is True
