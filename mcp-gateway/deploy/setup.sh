@@ -6,10 +6,11 @@
 # Run from a checkout of this repo on the gateway host:
 #   sudo PUBLIC_HOST=mcp.example.com \
 #        AGENT_BRIDGE_URL=http://192.168.1.20:8765 \
-#        AGENT_BRIDGE_TOKEN=<agent-bridge token> \
 #        PROJECTS_ROOT=/home/me/projects \
 #        mcp-gateway/deploy/setup.sh
-# Missing values are asked for interactively. PROJECTS_ROOT is the folder on the agent
+# Missing values are asked for interactively; tokens without echoing. Don't put tokens
+# on the command line (shell history, process list): let the script ask, or export
+# them and pass them with sudo --preserve-env=NAME. PROJECTS_ROOT is the folder on the agent
 # host that project names given to start_agent resolve against. Optional: TUNNEL_NAME
 # (claude-remote), PORT (8766), ROTATE_TOKEN=1, MCP_GATEWAY_TOKEN (use this connector
 # token instead of generating one).
@@ -240,7 +241,9 @@ check() { # check "label" expected-status curl-args...
 log "Checks"
 for _ in $(seq 20); do curl -fs "http://127.0.0.1:$PORT/healthz" >/dev/null && break; sleep 0.5; done
 check "mcp-gateway is up" 200 "http://127.0.0.1:$PORT/healthz"
-check "agent host reachable with its token" 200 -H "Authorization: Bearer $AGENT_BRIDGE_TOKEN" "$AGENT_BRIDGE_URL/agents"
+# The header goes through stdin (printf is a builtin), so the token never shows in curl's argv.
+printf 'Authorization: Bearer %s\n' "$AGENT_BRIDGE_TOKEN" \
+  | check "agent host reachable with its token" 200 -H @- "$AGENT_BRIDGE_URL/agents"
 sleep 3
 check "tunnel refuses requests without the token" 401 -X POST "https://$PUBLIC_HOST/mcp"
 check "tunnel hides everything but /mcp" 404 "https://$PUBLIC_HOST/healthz"
