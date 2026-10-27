@@ -262,6 +262,27 @@ def test_answer_agent_can_wait_for_the_result(client: TestClient, fake: FakeAgen
     assert json.loads(fake.requests[1].content)["expect_change"] is True
 
 
+@pytest.mark.parametrize(
+    "wait_failure",
+    [
+        httpx.Response(504, json={"error": {"code": "timeout", "message": "timed out"}}),
+        httpx.Response(502, json={"error": {"code": "cli_failed", "message": "herdr hiccup"}}),
+    ],
+)
+def test_answer_agent_says_the_keys_went_through_when_the_wait_fails(
+    client: TestClient, fake: FakeAgentBridge, wait_failure: httpx.Response
+) -> None:
+    # An error alone would read as "the answer didn't go through", and answering again would
+    # answer the agent's next question without the user.
+    fake.routes[("POST", "/agents/w1:p1/keys")] = httpx.Response(204)
+    fake.routes[("POST", "/agents/w1:p1/wait")] = wait_failure
+    is_error, text = call_tool(client, "answer_agent", agent_id="w1:p1", keys=["1"], wait_seconds=60)
+    assert not is_error
+    assert text.startswith("Sent 1 to w1:p1.")
+    assert "couldn't confirm" in text.lower() and "agent_details" in text
+    assert ". Check with agent_details" in text and ".. " not in text
+
+
 # Cloudflare ends a request after 125 s and nothing is sent before the tool returns, so a
 # longer wait would fail at the edge after the prompt was already typed.
 @pytest.mark.parametrize("wait_seconds", [0, 4, 101, 600])
