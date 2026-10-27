@@ -19,7 +19,8 @@ Built on the MCP Python SDK 2.x (`MCPServer`, Streamable HTTP, stateless, JSON
 responses). Tool results are short plain text meant to be read aloud: one line per
 agent, the last few output lines. A refusal from agent-bridge comes back as a tool error
 with agent-bridge's message unchanged, after the SDK's `Error executing tool <name>: `
-prefix.
+prefix; invalid arguments (e.g. a malformed agent id, or a prompt over 20 000 characters
+or with a NUL character) come back the same way as one sentence.
 
 ## System requirements
 

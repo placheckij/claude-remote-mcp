@@ -4,6 +4,8 @@ from typing import Any
 
 import httpx
 
+from mcp_gateway.replies import invalid
+
 # A sleeping agent host drops packets instead of refusing them, so connecting gets its own
 # short timeout; otherwise a prompt's long read timeout would also apply to connecting and
 # Cloudflare would give up (after 125 s) before the user hears that the host is down.
@@ -96,4 +98,6 @@ def _message(response: httpx.Response) -> str:
     detail = body.get("detail")
     if isinstance(detail, str):
         return detail
+    if isinstance(detail, list) and detail and all(isinstance(error, dict) for error in detail):
+        return f"agent-bridge refused the request: {invalid(detail)}"
     return f"agent-bridge rejected the request (HTTP {response.status_code}): {detail}"

@@ -5,15 +5,15 @@ import re
 from typing import Annotated
 
 from mcp.server.mcpserver import MCPServer
-from mcp.server.mcpserver.exceptions import ToolError
+from mcp.server.mcpserver.exceptions import ToolError, UnexpectedToolError
 from mcp.types import ToolAnnotations
-from pydantic import Field
+from pydantic import AfterValidator, Field, ValidationError
 from starlette.requests import Request
 from starlette.responses import PlainTextResponse
 
 from mcp_gateway.bridge import AgentBridge, BridgeError
 from mcp_gateway.config import Settings
-from mcp_gateway.replies import count, describe, report, with_truncation_note
+from mcp_gateway.replies import count, describe, invalid, report, with_truncation_note
 
 INSTRUCTIONS = """\
 Controls the user's Claude Code agents running on their agent host (via herdr). The user is
@@ -58,7 +58,7 @@ Lines = Annotated[int, Field(ge=1, le=MAX_LINES, description="Output lines to re
 
 
 def build_server(settings: Settings, bridge: AgentBridge) -> MCPServer:
-    mcp = MCPServer(name="claude-remote", instructions=INSTRUCTIONS)
+    mcp = _Server(name="claude-remote", instructions=INSTRUCTIONS)
     root = settings.projects_root
 
     async def call(coro):
@@ -92,7 +92,11 @@ def build_server(settings: Settings, bridge: AgentBridge) -> MCPServer:
     @mcp.tool(annotations=ACTION)
     async def send_prompt(
         agent_id: AgentId,
-        text: Annotated[str, Field(min_length=1, description="The prompt, as the user said it.")],
+        text: Annotated[
+            str,
+            Field(min_length=1, max_length=MAX_PROMPT_CHARS, description="The prompt, as the user said it."),
+            AfterValidator(_no_nul),
+        ],
         wait_seconds: WaitSeconds = 90,
         lines: Lines = 20,
     ) -> str:
@@ -201,3 +205,29 @@ def _project_folder(projects_root: str, project: str) -> str:
 
 def _safe_name(value: str) -> str:
     return re.sub(r"[^\w.-]+", "-", value.strip()).strip("-.")[:64].strip("-.") or "agent"
+
+
+# agent-bridge hands the prompt to herdr as one command-line argument, which the OS limits
+# in size and which can't hold a NUL byte; agent-bridge refuses the same.
+MAX_PROMPT_CHARS = 20_000
+
+
+def _no_nul(value: str) -> str:
+    if "\x00" in value:
+        raise ValueError("must not contain NUL characters")
+    return value
+
+
+class _Server(MCPServer):
+    """Reports invalid tool arguments in one plain sentence; pydantic's own report is
+    several lines with the pattern, the input and a URL, and it would be read aloud."""
+
+    async def call_tool(self, name, arguments, context=None):
+        try:
+            return await super().call_tool(name, arguments, context)
+        except ToolError as error:
+            cause = error.__cause__
+            if isinstance(error, UnexpectedToolError) or not isinstance(cause, ValidationError):
+                raise
+            # Chained to the ValidationError so the SDK still logs the rejected fields.
+            raise ToolError(f"Error executing tool {name}: {invalid(cause.errors())}") from cause
