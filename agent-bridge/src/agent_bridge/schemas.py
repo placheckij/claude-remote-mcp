@@ -3,7 +3,23 @@
 Responses are trimmed to what a voice-driven caller needs; raw terminal output is capped.
 """
 
-from pydantic import BaseModel, Field
+from typing import Annotated
+
+from pydantic import AfterValidator, BaseModel, Field
+
+# Prompts go to herdr as one command-line argument; Linux caps a single argument at
+# 128 KiB, and 20 000 characters stay below it even at 4 bytes each.
+MAX_PROMPT_CHARS = 20_000
+
+
+def _no_nul(value: str) -> str:
+    # The OS can't pass a NUL byte in a command-line argument; running herdr would fail.
+    if "\x00" in value:
+        raise ValueError("must not contain NUL characters")
+    return value
+
+
+ArgvText = Annotated[str, AfterValidator(_no_nul)]
 
 
 class AgentSummary(BaseModel):
@@ -21,7 +37,8 @@ class Output(BaseModel):
 
 
 class PromptRequest(BaseModel):
-    text: str = Field(min_length=1)
+    # The length check comes first, so its error names characters, not "items".
+    text: Annotated[str, Field(min_length=1, max_length=MAX_PROMPT_CHARS), AfterValidator(_no_nul)]
     timeout_s: int | None = Field(default=None, ge=1, le=3600)
     lines: int = Field(default=40, ge=1, le=500)
 
@@ -42,11 +59,11 @@ class PromptResult(BaseModel):
 
 
 class KeysRequest(BaseModel):
-    keys: list[str] = Field(min_length=1, max_length=20)
+    keys: list[ArgvText] = Field(min_length=1, max_length=20)
 
 
 class StartRequest(BaseModel):
-    cwd: str
+    cwd: ArgvText
     name: str = Field(min_length=1, max_length=64, pattern=r"^[\w.-]+$")
 
 
