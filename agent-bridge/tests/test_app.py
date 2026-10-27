@@ -1,3 +1,4 @@
+import asyncio
 import json
 from collections.abc import Sequence
 from pathlib import Path
@@ -5,8 +6,10 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
+from agent_bridge.agents import AgentService
 from agent_bridge.app import create_app
 from agent_bridge.config import Settings
+from agent_bridge.errors import BridgeError
 from agent_bridge.herdr import Herdr
 
 TOKEN = "t" * 32
@@ -181,7 +184,11 @@ def test_prompt_timeout_reports_still_working(root: Path) -> None:
     runner = FakeRunner(
         {
             ("agent", "prompt"): err("timeout"),
-            ("agent", "get"): ok({"agent": agent(status="working", cwd=str(root / "project"))}),
+            # Idle when the prompt is sent, still working on it when the wait runs out.
+            ("agent", "get"): [
+                ok({"agent": agent(status="idle", cwd=str(root / "project"))}),
+                ok({"agent": agent(status="working", cwd=str(root / "project"))}),
+            ],
             ("agent", "read"): (0, "thinking", ""),
         }
     )
@@ -471,15 +478,23 @@ def test_start_trusts_folders_under_the_trust_root(root: Path) -> None:
     assert trusted == {str((root / "project").resolve()): {"hasTrustDialogAccepted": True}}
 
 
+def separate_home(root: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """A home folder next to `root`, not containing it: an allowed root may not be home."""
+    home = root.parent / f"{root.name}-home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    return home
+
+
 def test_start_refuses_when_config_is_the_default_one(
     root: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setenv("HOME", str(root))
-    (root / ".claude").mkdir()
-    (root / ".claude" / ".claude.json").write_text("{}")
+    home = separate_home(root, monkeypatch)
+    (home / ".claude").mkdir()
+    (home / ".claude" / ".claude.json").write_text("{}")
     runner = FakeRunner(start_responses(trust_dialog=False))
     response = client(
-        runner, root, trust_root=root, claude_config_dir=root / ".claude"
+        runner, root, trust_root=root, claude_config_dir=home / ".claude"
     ).post("/agents", headers=AUTH, json={"cwd": str(root / "project"), "name": "probe"})
     assert response.status_code == 409
     assert response.json()["error"]["code"] == "trust_refused"
@@ -490,15 +505,15 @@ def test_start_refuses_to_trust_without_a_separate_config(
     root: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     # No config dir means agents use the default config, which is never edited.
-    monkeypatch.setenv("HOME", str(root))
-    (root / ".claude.json").write_text("{}")
+    home = separate_home(root, monkeypatch)
+    (home / ".claude.json").write_text("{}")
     runner = FakeRunner(start_responses(trust_dialog=False))
     response = client(runner, root, trust_root=root).post(
         "/agents", headers=AUTH, json={"cwd": str(root / "project"), "name": "probe"}
     )
     assert response.status_code == 409
     assert response.json()["error"]["code"] == "trust_refused"
-    assert (root / ".claude.json").read_text() == "{}"
+    assert (home / ".claude.json").read_text() == "{}"
     assert not runner.called("workspace", "create")
 
 
@@ -612,3 +627,69 @@ def test_rejects_malformed_names(layout: dict[str, Path]) -> None:
 
 def projects_in(config_dir: Path) -> dict:
     return json.loads((config_dir / ".claude.json").read_text())["projects"]
+
+
+def test_prompt_to_a_working_agent_is_refused_without_typing(root: Path) -> None:
+    # herdr's --wait can't tell turns apart: it would return the current turn's result as
+    # the answer to this prompt.
+    runner = FakeRunner(
+        {("agent", "get"): ok({"agent": agent(status="working", cwd=str(root / "project"))})}
+    )
+    response = client(runner, root).post("/agents/w1:p1/prompt", headers=AUTH, json={"text": "hi"})
+    assert response.status_code == 409
+    error = response.json()["error"]
+    assert error["code"] == "agent_busy"
+    assert "wait_for_agent" in error["message"]
+    assert runner.called("agent", "prompt") == []
+
+
+def test_a_stalled_prompt_is_reported_as_sent_but_unconfirmed(root: Path) -> None:
+    # agent_prompt_stalled: the text was submitted but the agent showed no change within 5 s.
+    # Calling that a failure would get the prompt sent twice.
+    runner = FakeRunner(
+        {
+            ("agent", "get"): ok({"agent": agent(status="idle", cwd=str(root / "project"))}),
+            ("agent", "prompt"): err("agent_prompt_stalled"),
+            ("agent", "read"): (0, "> hi\n", ""),
+        }
+    )
+    response = client(runner, root).post("/agents/w1:p1/prompt", headers=AUTH, json={"text": "hi"})
+    assert response.status_code == 200
+    body = response.json()
+    assert body["unconfirmed"] is True and body["timed_out"] is False
+    assert body["agent"]["status"] == "idle"
+    assert body["output"]["text"] == "> hi"
+
+
+def test_a_second_prompt_while_one_runs_is_refused(root: Path) -> None:
+    started, release = asyncio.Event(), asyncio.Event()
+
+    async def runner(argv) -> tuple[int, str, str]:
+        args = list(argv[1:])
+        if args[:2] == ["agent", "get"]:
+            return ok({"agent": agent(status="idle", cwd=str(root / "project"))})
+        if args[:2] == ["agent", "prompt"]:
+            started.set()
+            await release.wait()
+            return ok({"agent": agent(status="done")})
+        if args[:2] == ["agent", "read"]:
+            return 0, "OK\n", ""
+        raise AssertionError(f"unexpected herdr call: {args}")
+
+    settings = Settings(token=TOKEN, allowed_roots=(root.resolve(),), trust_root=root / "none")
+    service = AgentService(settings, Herdr(runner=runner))
+
+    async def scenario() -> None:
+        first = asyncio.create_task(service.prompt("w1:p1", "one", 30, 5))
+        await started.wait()
+        try:
+            # Without a guard the second prompt would wait behind the first, or be typed too.
+            with pytest.raises(BridgeError) as refused:
+                await asyncio.wait_for(service.prompt("w1:p1", "two", 30, 5), timeout=2)
+            assert refused.value.code == "agent_busy"
+        finally:
+            release.set()
+        assert (await first).agent.status == "done"
+
+    asyncio.run(scenario())
+

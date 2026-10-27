@@ -12,7 +12,12 @@ def describe(agent: dict) -> str:
 def report(result: dict, wait_seconds: int) -> str:
     """Status headline, the agent line, then its latest output."""
     agent = result["agent"]
-    if result["timed_out"]:
+    if result.get("unconfirmed"):
+        head = (
+            "The prompt was typed, but the agent hasn't started on it yet. Check with "
+            "wait_for_agent; don't send it again."
+        )
+    elif result["timed_out"]:
         head = f"Still working after {wait_seconds}s. Keep waiting with wait_for_agent."
     elif agent["status"] == "blocked":
         head = "The agent is waiting for an approval. Ask the user, then use answer_agent."
