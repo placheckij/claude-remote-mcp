@@ -368,6 +368,31 @@ def test_unreachable_agent_host_is_reported_plainly(client: TestClient, fake: Fa
     assert is_error and text.endswith("The agent host is not reachable (ConnectError). It may be asleep or offline.")
 
 
+@pytest.mark.parametrize("project", ["..", "../../../etc", ".", "./", "~/foo", "~", "grafik/../..", "a/b", "x..y"])
+def test_start_agent_refuses_project_names_that_leave_the_projects_root(
+    client: TestClient, fake: FakeAgentBridge, project: str
+) -> None:
+    # Relative names are documented as "a name under the projects root": ".." would climb
+    # out of it, "." would start an agent over every project, and "~" is not expanded.
+    is_error, text = call_tool(client, "start_agent", project=project)
+    assert is_error and fake.requests == []
+    assert text.endswith('Give the project as one folder name, like "grafik", or as an absolute path.')
+
+
+@pytest.mark.parametrize(
+    ("project", "cwd"),
+    [("/home/me/projects/grafik", "/home/me/projects/grafik"), ("/srv/work/app/", "/srv/work/app"),
+     ("my-app.v2", "/home/me/projects/my-app.v2")],
+)
+def test_start_agent_passes_absolute_paths_and_plain_names(
+    client: TestClient, fake: FakeAgentBridge, project: str, cwd: str
+) -> None:
+    # agent-bridge checks absolute paths against its own allowlist.
+    fake.routes[("POST", "/agents")] = httpx.Response(201, json={**AGENT, "id": "w9:p1"})
+    assert not call_tool(client, "start_agent", project=project)[0]
+    assert json.loads(fake.requests[0].content)["cwd"] == cwd
+
+
 def test_folders_are_named_relative_to_the_projects_root(client: TestClient, fake: FakeAgentBridge) -> None:
     # Read aloud, "/home/me/projects/grafik" after every agent is noise; the name under the
     # projects root is what the user said when starting it. Other folders keep their path.
