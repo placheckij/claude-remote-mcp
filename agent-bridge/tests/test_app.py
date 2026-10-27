@@ -612,3 +612,38 @@ def test_rejects_malformed_names(layout: dict[str, Path]) -> None:
 
 def projects_in(config_dir: Path) -> dict:
     return json.loads((config_dir / ".claude.json").read_text())["projects"]
+
+
+def not_detected() -> tuple[int, str, str]:
+    # Seen once from herdr 0.8.0's `agent start` (not reproduced in 20 later tries): the
+    # client found no agent in the pane when it checked.
+    return 1, "", json.dumps(
+        {"id": "cli", "error": {"code": "cli_failed", "message": "expected claude, detected "}}
+    )
+
+
+def test_a_start_where_claude_is_not_detected_is_retried_once(root: Path) -> None:
+    responses = start_responses(trust_dialog=False)
+    responses[("agent", "start")] = [not_detected(), ok({"agent": agent("w5:p1")})]
+    runner = FakeRunner(responses)
+    response = client(runner, root).post(
+        "/agents", headers=AUTH, json={"cwd": str(root / "project"), "name": "x"}
+    )
+    assert response.status_code == 201
+    assert len(runner.called("workspace", "create")) == 2
+    assert len(runner.called("workspace", "close")) == 1  # the failed attempt's workspace
+
+
+def test_a_start_where_claude_is_never_detected_is_explained(root: Path) -> None:
+    responses = start_responses(trust_dialog=False)
+    responses[("agent", "start")] = not_detected()
+    runner = FakeRunner(responses)
+    response = client(runner, root).post(
+        "/agents", headers=AUTH, json={"cwd": str(root / "project"), "name": "x"}
+    )
+    assert response.status_code == 502
+    error = response.json()["error"]
+    assert error["code"] == "agent_not_detected"
+    assert "try" in error["message"].lower()
+    assert len(runner.called("workspace", "close")) == 2
+

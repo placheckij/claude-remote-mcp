@@ -69,15 +69,31 @@ class AgentService:
         async with self._start_lock:
             await self._check_agent_limit()
             await self._trust(folder)
+            agent = await self._start_with_one_retry(name, folder)
+        return summarize(agent)
+
+    async def _start_with_one_retry(self, name: str, folder: Path) -> dict:
+        # herdr 0.8.0 once failed a start with "expected claude, detected " (no agent seen
+        # in the pane yet); 20 later tries all worked. The failed attempt's workspace is
+        # already closed, so one more try in a fresh workspace is safe.
+        for attempt in (1, 2):
             try:
-                agent = await self.herdr.start_agent(
+                return await self.herdr.start_agent(
                     name, str(folder), self.settings.claude_env(), self.settings.claude_args
                 )
             except HerdrError as error:
-                if error.code != "folder_not_trusted":
+                if error.code == "folder_not_trusted":
+                    raise BridgeError(409, error.code, self._untrusted_message(folder)) from error
+                if not error.message.startswith("expected claude, detected"):
                     raise
-                raise BridgeError(409, error.code, self._untrusted_message(folder)) from error
-        return summarize(agent)
+                if attempt == 2:
+                    raise BridgeError(
+                        502,
+                        "agent_not_detected",
+                        "Claude Code didn't come up in the new workspace, twice, so the "
+                        "workspaces were closed. Try starting the agent again in a moment.",
+                    ) from error
+        raise AssertionError("unreachable")
 
     async def stop_agent(self, agent_id: str) -> None:
         # Looking the agent up first also refuses panes that aren't agents (a shell, a dev
