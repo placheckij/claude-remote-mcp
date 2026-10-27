@@ -17,7 +17,9 @@ on `127.0.0.1` and nothing goes over the LAN.
 
 Built on the MCP Python SDK 2.x (`MCPServer`, Streamable HTTP, stateless, JSON
 responses). Tool results are short plain text meant to be read aloud: one line per
-agent, the last few output lines, refusals from agent-bridge passed through verbatim.
+agent, the last few output lines, refusals from agent-bridge passed through verbatim,
+invalid arguments (e.g. a malformed agent id, or a prompt over 20 000 characters or
+with a NUL character) as one sentence.
 
 ## System requirements
 

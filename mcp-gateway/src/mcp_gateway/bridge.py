@@ -4,6 +4,8 @@ from typing import Any
 
 import httpx
 
+from mcp_gateway.replies import invalid
+
 
 class BridgeError(Exception):
     """A refusal or failure reported by agent-bridge, with its human-readable message."""
@@ -80,4 +82,6 @@ def _message(response: httpx.Response) -> str:
     detail = body.get("detail")
     if isinstance(detail, str):
         return detail
+    if isinstance(detail, list) and detail and all(isinstance(error, dict) for error in detail):
+        return f"agent-bridge refused the request: {invalid(detail)}"
     return f"agent-bridge rejected the request (HTTP {response.status_code}): {detail}"

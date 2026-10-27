@@ -24,3 +24,25 @@ def report(result: dict, wait_seconds: int) -> str:
 def with_truncation_note(output: dict) -> str:
     text = output["text"] or "(no output)"
     return f"(earlier output cut)\n{text}" if output["truncated"] else text
+
+
+def invalid(errors: list[dict]) -> str:
+    """Pydantic's (or FastAPI's) validation errors as one sentence, without the input."""
+    return "; ".join(_problem(error) for error in errors) + "."
+
+
+def _problem(error: dict) -> str:
+    loc = [str(part) for part in error.get("loc", ())]
+    if loc[:1] in (["body"], ["query"], ["path"]):  # FastAPI says where the field was
+        loc = loc[1:]
+    field = ".".join(loc) or "the request"
+    kind, message = error.get("type"), str(error.get("msg", "is not valid"))
+    if kind == "missing":
+        return f"{field} is missing"
+    if kind == "string_pattern_mismatch":
+        if loc[-1:] == ["agent_id"]:
+            return f'{field} must be an id from list_agents, like "w1:p1"'
+        return f"{field} has the wrong form"
+    if kind == "value_error":
+        return f"{field} {message.removeprefix('Value error, ')}"
+    return f"{field}: {message[:1].lower()}{message[1:]}"

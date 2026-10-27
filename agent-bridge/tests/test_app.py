@@ -612,3 +612,23 @@ def test_rejects_malformed_names(layout: dict[str, Path]) -> None:
 
 def projects_in(config_dir: Path) -> dict:
     return json.loads((config_dir / ".claude.json").read_text())["projects"]
+
+
+@pytest.mark.parametrize(
+    ("path", "body"),
+    [
+        ("/agents/w1:p1/prompt", {"text": "say\x00hi"}),
+        ("/agents/w1:p1/prompt", {"text": "x" * 20_001}),
+        ("/agents/w1:p1/keys", {"keys": ["1\x00"]}),
+        ("/agents", {"cwd": "{root}/project\x00", "name": "x"}),
+    ],
+)
+def test_text_that_cannot_go_into_herdrs_argv_is_refused(root: Path, path: str, body: dict) -> None:
+    # A NUL byte can't be passed in argv at all (running herdr raised, a bare 500), and an
+    # unbounded prompt could exceed the OS's limit on one argument.
+    runner = FakeRunner({})
+    body = {key: value.replace("{root}", str(root)) if isinstance(value, str) else value
+            for key, value in body.items()}
+    response = client(runner, root).post(path, headers=AUTH, json=body)
+    assert response.status_code == 422, response.text
+    assert runner.calls == []
