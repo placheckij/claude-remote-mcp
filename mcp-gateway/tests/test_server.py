@@ -540,3 +540,43 @@ def test_an_unconfirmed_prompt_tells_the_model_not_to_send_it_again(
     is_error, text = call_tool(client, "send_prompt", agent_id="w1:p1", text="hi")
     assert not is_error
     assert "hasn't started" in text and "don't send it again" in text.lower()
+
+
+@pytest.mark.parametrize(
+    ("tool", "arguments", "message"),
+    [
+        ("read_output", {"agent_id": "--help"}, 'agent_id must be an id from list_agents, like "w1:p1".'),
+        ("read_output", {"agent_id": "w1:p1", "lines": 0}, "lines: input should be greater than or equal to 1."),
+        ("send_prompt", {"agent_id": "w1:p1"}, "text is missing."),
+        ("send_prompt", {"agent_id": "w1:p1", "text": "a\x00b"}, "text must not contain NUL characters."),
+        ("send_prompt", {"agent_id": "w1", "text": ""},
+         'agent_id must be an id from list_agents, like "w1:p1"; text: string should have at least 1 character.'),
+    ],
+)
+def test_invalid_arguments_are_one_plain_sentence(
+    client: TestClient, fake: FakeAgentBridge, tool: str, arguments: dict, message: str
+) -> None:
+    # Pydantic's report is several lines with a regex, the input and a URL; it is read aloud.
+    is_error, text = call_tool(client, tool, **arguments)
+    assert (is_error, text) == (True, f"Error executing tool {tool}: {message}")
+    assert fake.requests == []
+
+
+def test_prompt_text_is_capped_at_20000_characters(client: TestClient, fake: FakeAgentBridge) -> None:
+    # agent-bridge passes the prompt to herdr as one argument, which the OS limits in size.
+    fake.routes[("POST", "/agents/w1:p1/prompt")] = httpx.Response(
+        200, json={"agent": AGENT, "output": {"text": "", "truncated": False}, "timed_out": False}
+    )
+    assert not call_tool(client, "send_prompt", agent_id="w1:p1", text="x" * 20_000)[0]
+    is_error, text = call_tool(client, "send_prompt", agent_id="w1:p1", text="x" * 20_001)
+    assert is_error and text.endswith("text: string should have at most 20000 characters.")
+    assert len(fake.requests) == 1
+
+
+def test_validation_errors_from_the_bridge_are_one_sentence(client: TestClient, fake: FakeAgentBridge) -> None:
+    fake.routes[("POST", "/agents/w1:p1/keys")] = httpx.Response(422, json={"detail": [
+        {"type": "value_error", "loc": ["body", "keys", 0], "msg": "Value error, must not contain NUL characters",
+         "input": "1\x00"},
+    ]})
+    is_error, text = call_tool(client, "answer_agent", agent_id="w1:p1", keys=["1\x00"])
+    assert is_error and text.endswith("agent-bridge refused the request: keys.0 must not contain NUL characters.")
