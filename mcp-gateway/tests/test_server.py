@@ -189,7 +189,7 @@ def test_list_agents_is_one_line_per_agent(client: TestClient, fake: FakeAgentBr
     fake.routes[("GET", "/agents")] = httpx.Response(200, json=[AGENT])
     assert call_tool(client, "list_agents") == (
         False,
-        "1 agents:\nw1:p1 · grafik · idle · /home/me/projects/grafik",
+        "1 agent:\nw1:p1 · grafik · idle · grafik",
     )
 
 
@@ -260,6 +260,27 @@ def test_answer_agent_can_wait_for_the_result(client: TestClient, fake: FakeAgen
     assert [request.url.path for request in fake.requests] == ["/agents/w1:p1/keys", "/agents/w1:p1/wait"]
     # The agent is still "blocked" right after the key press; agent-bridge must skip that.
     assert json.loads(fake.requests[1].content)["expect_change"] is True
+
+
+@pytest.mark.parametrize(
+    "wait_failure",
+    [
+        httpx.Response(504, json={"error": {"code": "timeout", "message": "timed out"}}),
+        httpx.Response(502, json={"error": {"code": "cli_failed", "message": "herdr hiccup"}}),
+    ],
+)
+def test_answer_agent_says_the_keys_went_through_when_the_wait_fails(
+    client: TestClient, fake: FakeAgentBridge, wait_failure: httpx.Response
+) -> None:
+    # An error alone would read as "the answer didn't go through", and answering again would
+    # answer the agent's next question without the user.
+    fake.routes[("POST", "/agents/w1:p1/keys")] = httpx.Response(204)
+    fake.routes[("POST", "/agents/w1:p1/wait")] = wait_failure
+    is_error, text = call_tool(client, "answer_agent", agent_id="w1:p1", keys=["1"], wait_seconds=60)
+    assert not is_error
+    assert text.startswith("Sent 1 to w1:p1.")
+    assert "couldn't confirm" in text.lower() and "agent_details" in text
+    assert ". Check with agent_details" in text and ".. " not in text
 
 
 # Cloudflare ends a request after 125 s and nothing is sent before the tool returns, so a
@@ -344,4 +365,77 @@ def test_refusals_from_the_bridge_reach_the_model_verbatim(client: TestClient, f
 def test_unreachable_agent_host_is_reported_plainly(client: TestClient, fake: FakeAgentBridge) -> None:
     fake.down = True
     is_error, text = call_tool(client, "list_agents")
-    assert is_error and text.endswith("The agent host is not reachable (ConnectError).")
+    assert is_error and text.endswith("The agent host is not reachable (ConnectError). It may be asleep or offline.")
+
+
+def test_folders_are_named_relative_to_the_projects_root(client: TestClient, fake: FakeAgentBridge) -> None:
+    # Read aloud, "/home/me/projects/grafik" after every agent is noise; the name under the
+    # projects root is what the user said when starting it. Other folders keep their path.
+    fake.routes[("GET", "/agents")] = httpx.Response(200, json=[
+        {**AGENT, "cwd": "/home/me/projects/grafik/api"},
+        {**AGENT, "id": "w2:p1", "name": "notes", "cwd": "/home/me/projects-old/notes"},
+        {**AGENT, "id": "w3:p1", "name": "root", "cwd": "/home/me/projects"},
+    ])
+    assert call_tool(client, "list_agents") == (
+        False,
+        "3 agents:\n"
+        "w1:p1 · grafik · idle · grafik/api\n"
+        "w2:p1 · notes · idle · /home/me/projects-old/notes\n"
+        "w3:p1 · root · idle · /home/me/projects",
+    )
+    fake.routes[("POST", "/agents/w1:p1/wait")] = httpx.Response(
+        200, json={"agent": AGENT, "output": {"text": "", "truncated": False}, "timed_out": False}
+    )
+    assert "\nw1:p1 · grafik · idle · grafik\n" in call_tool(client, "wait_for_agent", agent_id="w1:p1")[1]
+
+
+@pytest.mark.parametrize(
+    ("tool", "arguments"),
+    [("read_output", {}), ("send_prompt", {"text": "hi"}), ("wait_for_agent", {}),
+     ("answer_agent", {"keys": ["1"], "wait_seconds": 30})],
+)
+def test_output_is_capped_at_60_lines(client: TestClient, fake: FakeAgentBridge, tool: str, arguments: dict) -> None:
+    # Output is read aloud; 200 lines (up to 8000 characters) is far more than anyone listens to.
+    is_error, _ = call_tool(client, tool, agent_id="w1:p1", lines=61, **arguments)
+    assert is_error and fake.requests == []
+    tools = {tool["name"]: tool for tool in rpc(client, "tools/list").json()["result"]["tools"]}
+    assert tools[tool]["inputSchema"]["properties"]["lines"]["maximum"] == 60
+
+
+def test_a_sleeping_agent_host_is_reported_within_seconds(client: TestClient, fake: FakeAgentBridge) -> None:
+    # A host that is asleep drops packets, so only the connect timeout decides how long the
+    # user waits; the long read timeout of a prompt must not apply to connecting.
+    fake.routes[("POST", "/agents/w1:p1/prompt")] = httpx.Response(
+        200, json={"agent": AGENT, "output": {"text": "", "truncated": False}, "timed_out": False}
+    )
+    fake.routes[("GET", "/agents")] = httpx.Response(200, json=[])
+    call_tool(client, "send_prompt", agent_id="w1:p1", text="hi", wait_seconds=90)
+    call_tool(client, "list_agents")
+    prompt_timeout, list_timeout = (request.extensions["timeout"] for request in fake.requests)
+    assert prompt_timeout["connect"] <= 5 and prompt_timeout["read"] == 120
+    assert list_timeout["connect"] <= 5 and list_timeout["read"] == 30
+    assert AgentBridge.connect(SETTINGS.bridge_url, "b" * 32).client.timeout.connect <= 5
+
+
+def test_a_connect_timeout_says_the_host_may_be_asleep() -> None:
+    def asleep(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectTimeout("timed out", request=request)
+
+    bridge = AgentBridge(httpx.AsyncClient(base_url=SETTINGS.bridge_url, transport=httpx.MockTransport(asleep)))
+    with TestClient(create_app(SETTINGS, bridge), base_url=f"https://{HOST}") as test_client:
+        is_error, text = call_tool(test_client, "list_agents")
+    assert is_error
+    assert text.endswith("The agent host is not reachable (ConnectTimeout). It may be asleep or offline.")
+
+
+def test_an_unconfirmed_prompt_tells_the_model_not_to_send_it_again(
+    client: TestClient, fake: FakeAgentBridge
+) -> None:
+    fake.routes[("POST", "/agents/w1:p1/prompt")] = httpx.Response(
+        200,
+        json={"agent": {**AGENT, "status": "idle"}, "output": {"text": "> hi", "truncated": False},
+              "timed_out": False, "unconfirmed": True},
+    )
+    is_error, text = call_tool(client, "send_prompt", agent_id="w1:p1", text="hi")
+    assert not is_error
+    assert "hasn't started" in text and "don't send it again" in text.lower()
