@@ -33,7 +33,14 @@ READ_ONLY = ToolAnnotations(read_only_hint=True, open_world_hint=False)
 ACTION = ToolAnnotations(read_only_hint=False, destructive_hint=False, open_world_hint=False)
 DESTRUCTIVE = ToolAnnotations(read_only_hint=False, destructive_hint=True, open_world_hint=False)
 
-AgentId = Annotated[str, Field(description='Agent id from list_agents, e.g. "w1:p1".')]
+# Checked here so nothing else (paths, query strings, options) ends up in the bridge's URL.
+AgentId = Annotated[
+    str,
+    Field(
+        pattern=r"^w[0-9A-Za-z]+:p[0-9A-Za-z]+$",
+        description='Agent id from list_agents, e.g. "w1:p1".',
+    ),
+]
 # Nothing is sent until a tool returns, and Cloudflare ends a request after 125 s; the cap
 # leaves room for the calls around the wait.
 MAX_WAIT_SECONDS = 100

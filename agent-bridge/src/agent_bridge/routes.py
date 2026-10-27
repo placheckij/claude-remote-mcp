@@ -2,7 +2,7 @@
 
 from typing import Annotated, Literal
 
-from fastapi import APIRouter, Depends, Query, Request
+from fastapi import APIRouter, Depends, Path, Query, Request
 
 from agent_bridge.agents import AgentService
 from agent_bridge.schemas import (
@@ -23,6 +23,9 @@ def get_agents(request: Request) -> AgentService:
 
 
 Agents = Annotated[AgentService, Depends(get_agents)]
+# herdr pane ids, e.g. "w1:p1" or "w1F:p1". Anything else, notably a leading "-" that herdr
+# would read as an option, is refused before it reaches the CLI.
+AgentId = Annotated[str, Path(pattern=r"^w[0-9A-Za-z]+:p[0-9A-Za-z]+$")]
 
 
 @router.get("/agents")
@@ -31,13 +34,13 @@ async def list_agents(agents: Agents) -> list[AgentSummary]:
 
 
 @router.get("/agents/{agent_id}")
-async def get_agent(agent_id: str, agents: Agents) -> AgentSummary:
+async def get_agent(agent_id: AgentId, agents: Agents) -> AgentSummary:
     return await agents.get_agent(agent_id)
 
 
 @router.get("/agents/{agent_id}/output")
 async def read_output(
-    agent_id: str,
+    agent_id: AgentId,
     agents: Agents,
     lines: Annotated[int, Query(ge=1, le=500)] = 40,
     source: Literal["visible", "recent", "recent-unwrapped"] = "recent",
@@ -46,17 +49,17 @@ async def read_output(
 
 
 @router.post("/agents/{agent_id}/prompt")
-async def prompt(agent_id: str, body: PromptRequest, agents: Agents) -> PromptResult:
+async def prompt(agent_id: AgentId, body: PromptRequest, agents: Agents) -> PromptResult:
     return await agents.prompt(agent_id, body.text, body.timeout_s, body.lines)
 
 
 @router.post("/agents/{agent_id}/wait")
-async def wait(agent_id: str, body: WaitRequest, agents: Agents) -> PromptResult:
+async def wait(agent_id: AgentId, body: WaitRequest, agents: Agents) -> PromptResult:
     return await agents.wait(agent_id, body.timeout_s, body.lines, body.expect_change)
 
 
 @router.post("/agents/{agent_id}/keys", status_code=204)
-async def send_keys(agent_id: str, body: KeysRequest, agents: Agents) -> None:
+async def send_keys(agent_id: AgentId, body: KeysRequest, agents: Agents) -> None:
     await agents.send_keys(agent_id, body.keys)
 
 
@@ -66,5 +69,5 @@ async def start_agent(body: StartRequest, agents: Agents) -> AgentSummary:
 
 
 @router.delete("/agents/{agent_id}", status_code=204)
-async def stop_agent(agent_id: str, agents: Agents) -> None:
+async def stop_agent(agent_id: AgentId, agents: Agents) -> None:
     await agents.stop_agent(agent_id)
