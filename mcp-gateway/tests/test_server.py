@@ -345,3 +345,17 @@ def test_unreachable_agent_host_is_reported_plainly(client: TestClient, fake: Fa
     fake.down = True
     is_error, text = call_tool(client, "list_agents")
     assert is_error and text.endswith("The agent host is not reachable (ConnectError).")
+
+
+def test_an_unconfirmed_prompt_tells_the_model_not_to_send_it_again(
+    client: TestClient, fake: FakeAgentBridge
+) -> None:
+    fake.routes[("POST", "/agents/w1:p1/prompt")] = httpx.Response(
+        200,
+        json={"agent": {**AGENT, "status": "idle"}, "output": {"text": "> hi", "truncated": False},
+              "timed_out": False, "unconfirmed": True},
+    )
+    is_error, text = call_tool(client, "send_prompt", agent_id="w1:p1", text="hi")
+    assert not is_error
+    assert "hasn't started" in text and "don't send it again" in text.lower()
+

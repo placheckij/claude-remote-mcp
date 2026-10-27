@@ -39,6 +39,9 @@ class PromptResult(BaseModel):
     output: Output
     # True when the agent was still working at the timeout; poll /output or /agents/{id}.
     timed_out: bool = False
+    # True when herdr typed the prompt but saw no reaction within its 5 s window
+    # (agent_prompt_stalled): it may still run, so it must not be sent again.
+    unconfirmed: bool = False
 
 
 class KeysRequest(BaseModel):
