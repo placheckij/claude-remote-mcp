@@ -189,7 +189,7 @@ def test_list_agents_is_one_line_per_agent(client: TestClient, fake: FakeAgentBr
     fake.routes[("GET", "/agents")] = httpx.Response(200, json=[AGENT])
     assert call_tool(client, "list_agents") == (
         False,
-        "1 agents:\nw1:p1 · grafik · idle · /home/me/projects/grafik",
+        "1 agent:\nw1:p1 · grafik · idle · grafik",
     )
 
 
@@ -260,6 +260,27 @@ def test_answer_agent_can_wait_for_the_result(client: TestClient, fake: FakeAgen
     assert [request.url.path for request in fake.requests] == ["/agents/w1:p1/keys", "/agents/w1:p1/wait"]
     # The agent is still "blocked" right after the key press; agent-bridge must skip that.
     assert json.loads(fake.requests[1].content)["expect_change"] is True
+
+
+@pytest.mark.parametrize(
+    "wait_failure",
+    [
+        httpx.Response(504, json={"error": {"code": "timeout", "message": "timed out"}}),
+        httpx.Response(502, json={"error": {"code": "cli_failed", "message": "herdr hiccup"}}),
+    ],
+)
+def test_answer_agent_says_the_keys_went_through_when_the_wait_fails(
+    client: TestClient, fake: FakeAgentBridge, wait_failure: httpx.Response
+) -> None:
+    # An error alone would read as "the answer didn't go through", and answering again would
+    # answer the agent's next question without the user.
+    fake.routes[("POST", "/agents/w1:p1/keys")] = httpx.Response(204)
+    fake.routes[("POST", "/agents/w1:p1/wait")] = wait_failure
+    is_error, text = call_tool(client, "answer_agent", agent_id="w1:p1", keys=["1"], wait_seconds=60)
+    assert not is_error
+    assert text.startswith("Sent 1 to w1:p1.")
+    assert "couldn't confirm" in text.lower() and "agent_details" in text
+    assert ". Check with agent_details" in text and ".. " not in text
 
 
 # Cloudflare ends a request after 125 s and nothing is sent before the tool returns, so a
@@ -344,7 +365,181 @@ def test_refusals_from_the_bridge_reach_the_model_verbatim(client: TestClient, f
 def test_unreachable_agent_host_is_reported_plainly(client: TestClient, fake: FakeAgentBridge) -> None:
     fake.down = True
     is_error, text = call_tool(client, "list_agents")
-    assert is_error and text.endswith("The agent host is not reachable (ConnectError).")
+    assert is_error and text.endswith("The agent host is not reachable (ConnectError). It may be asleep or offline.")
+
+
+# --- Transport edges ------------------------------------------------------------------
+
+
+def test_401_names_the_bearer_scheme(client: TestClient) -> None:
+    # The MCP spec says a 401 MUST carry WWW-Authenticate.
+    response = rpc(client, "tools/list", headers={**MCP_HEADERS, "Authorization": "Bearer wrong"})
+    assert (response.status_code, response.headers["www-authenticate"]) == (401, "Bearer")
+
+
+def response_start(client: TestClient, method: str, headers: dict[str, str]) -> dict:
+    """The status line and headers of a response that may never end (an SSE stream): the
+    request is sent straight to the app, which is told the client left once it answered."""
+    import anyio
+
+    async def run() -> dict:
+        answered = anyio.Event()
+        started: dict = {}
+        requested = False
+
+        async def receive() -> dict:
+            nonlocal requested
+            if not requested:
+                requested = True
+                return {"type": "http.request", "body": b"", "more_body": False}
+            await answered.wait()
+            return {"type": "http.disconnect"}
+
+        async def send(message: dict) -> None:
+            if message["type"] == "http.response.start":
+                started.update(message)
+                answered.set()
+
+        scope = {
+            "type": "http", "asgi": {"version": "3.0"}, "http_version": "1.1", "method": method,
+            "scheme": "https", "path": "/mcp", "raw_path": b"/mcp", "query_string": b"", "root_path": "",
+            "headers": [(name.lower().encode(), value.encode()) for name, value in headers.items()],
+            "client": ("testclient", 50000), "server": (HOST, 443), "state": {},
+        }
+        with anyio.fail_after(5):
+            await client.app(scope, receive, send)
+        return started
+
+    return client.portal.call(run)
+
+
+def test_get_answers_405_instead_of_an_idle_stream(client: TestClient) -> None:
+    # Stateless mode never sends anything on a GET stream; it would only hold a task open.
+    # The spec lets a server answer 405 instead, and clients then carry on with POST alone.
+    start = response_start(client, "GET", {**MCP_HEADERS, "Accept": "text/event-stream"})
+    assert start["status"] == 405
+    assert (b"allow", b"POST") in start["headers"]
+
+
+@pytest.mark.parametrize("origin", ["https://claude.ai", "https://claude.com"])
+def test_accepts_claude_origins(client: TestClient, origin: str) -> None:
+    assert rpc(client, "tools/list", headers={**MCP_HEADERS, "Origin": origin}).status_code == 200
+
+
+def test_logs_a_refused_origin_as_an_error(client: TestClient, caplog: pytest.LogCaptureFixture) -> None:
+    # The token was right, so this is most likely the Claude app itself and every call fails:
+    # the log must say so plainly.
+    with caplog.at_level("WARNING", logger="mcp_gateway"):
+        response = rpc(client, "tools/list", headers={**MCP_HEADERS, "Origin": "https://evil.example"})
+    assert response.status_code == 403
+    (record,) = [record for record in caplog.records if record.name.startswith("mcp_gateway")]
+    assert record.levelname == "ERROR"
+    assert record.getMessage().startswith("403 POST /mcp: Origin 'https://evil.example' is not allowed")
+
+
+def test_closes_the_agent_bridge_client_on_shutdown() -> None:
+    http = httpx.AsyncClient(base_url=SETTINGS.bridge_url, transport=httpx.MockTransport(FakeAgentBridge({})))
+    with TestClient(create_app(SETTINGS, AgentBridge(http)), base_url=f"https://{HOST}"):
+        assert not http.is_closed
+    assert http.is_closed
+
+
+@pytest.mark.parametrize("project", ["..", "../../../etc", ".", "./", "~/foo", "~", "grafik/../..", "a/b", "x..y"])
+def test_start_agent_refuses_project_names_that_leave_the_projects_root(
+    client: TestClient, fake: FakeAgentBridge, project: str
+) -> None:
+    # Relative names are documented as "a name under the projects root": ".." would climb
+    # out of it, "." would start an agent over every project, and "~" is not expanded.
+    is_error, text = call_tool(client, "start_agent", project=project)
+    assert is_error and fake.requests == []
+    assert text.endswith('Give the project as one folder name, like "grafik", or as an absolute path.')
+
+
+@pytest.mark.parametrize(
+    ("project", "cwd"),
+    [("/home/me/projects/grafik", "/home/me/projects/grafik"), ("/srv/work/app/", "/srv/work/app"),
+     ("my-app.v2", "/home/me/projects/my-app.v2")],
+)
+def test_start_agent_passes_absolute_paths_and_plain_names(
+    client: TestClient, fake: FakeAgentBridge, project: str, cwd: str
+) -> None:
+    # agent-bridge checks absolute paths against its own allowlist.
+    fake.routes[("POST", "/agents")] = httpx.Response(201, json={**AGENT, "id": "w9:p1"})
+    assert not call_tool(client, "start_agent", project=project)[0]
+    assert json.loads(fake.requests[0].content)["cwd"] == cwd
+
+
+def test_folders_are_named_relative_to_the_projects_root(client: TestClient, fake: FakeAgentBridge) -> None:
+    # Read aloud, "/home/me/projects/grafik" after every agent is noise; the name under the
+    # projects root is what the user said when starting it. Other folders keep their path.
+    fake.routes[("GET", "/agents")] = httpx.Response(200, json=[
+        {**AGENT, "cwd": "/home/me/projects/grafik/api"},
+        {**AGENT, "id": "w2:p1", "name": "notes", "cwd": "/home/me/projects-old/notes"},
+        {**AGENT, "id": "w3:p1", "name": "root", "cwd": "/home/me/projects"},
+    ])
+    assert call_tool(client, "list_agents") == (
+        False,
+        "3 agents:\n"
+        "w1:p1 · grafik · idle · grafik/api\n"
+        "w2:p1 · notes · idle · /home/me/projects-old/notes\n"
+        "w3:p1 · root · idle · /home/me/projects",
+    )
+    fake.routes[("POST", "/agents/w1:p1/wait")] = httpx.Response(
+        200, json={"agent": AGENT, "output": {"text": "", "truncated": False}, "timed_out": False}
+    )
+    assert "\nw1:p1 · grafik · idle · grafik\n" in call_tool(client, "wait_for_agent", agent_id="w1:p1")[1]
+
+
+@pytest.mark.parametrize(
+    ("tool", "arguments"),
+    [("read_output", {}), ("send_prompt", {"text": "hi"}), ("wait_for_agent", {}),
+     ("answer_agent", {"keys": ["1"], "wait_seconds": 30})],
+)
+def test_output_is_capped_at_60_lines(client: TestClient, fake: FakeAgentBridge, tool: str, arguments: dict) -> None:
+    # Output is read aloud; 200 lines (up to 8000 characters) is far more than anyone listens to.
+    is_error, _ = call_tool(client, tool, agent_id="w1:p1", lines=61, **arguments)
+    assert is_error and fake.requests == []
+    tools = {tool["name"]: tool for tool in rpc(client, "tools/list").json()["result"]["tools"]}
+    assert tools[tool]["inputSchema"]["properties"]["lines"]["maximum"] == 60
+
+
+def test_a_sleeping_agent_host_is_reported_within_seconds(client: TestClient, fake: FakeAgentBridge) -> None:
+    # A host that is asleep drops packets, so only the connect timeout decides how long the
+    # user waits; the long read timeout of a prompt must not apply to connecting.
+    fake.routes[("POST", "/agents/w1:p1/prompt")] = httpx.Response(
+        200, json={"agent": AGENT, "output": {"text": "", "truncated": False}, "timed_out": False}
+    )
+    fake.routes[("GET", "/agents")] = httpx.Response(200, json=[])
+    call_tool(client, "send_prompt", agent_id="w1:p1", text="hi", wait_seconds=90)
+    call_tool(client, "list_agents")
+    prompt_timeout, list_timeout = (request.extensions["timeout"] for request in fake.requests)
+    assert prompt_timeout["connect"] <= 5 and prompt_timeout["read"] == 120
+    assert list_timeout["connect"] <= 5 and list_timeout["read"] == 30
+    assert AgentBridge.connect(SETTINGS.bridge_url, "b" * 32).client.timeout.connect <= 5
+
+
+def test_a_connect_timeout_says_the_host_may_be_asleep() -> None:
+    def asleep(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectTimeout("timed out", request=request)
+
+    bridge = AgentBridge(httpx.AsyncClient(base_url=SETTINGS.bridge_url, transport=httpx.MockTransport(asleep)))
+    with TestClient(create_app(SETTINGS, bridge), base_url=f"https://{HOST}") as test_client:
+        is_error, text = call_tool(test_client, "list_agents")
+    assert is_error
+    assert text.endswith("The agent host is not reachable (ConnectTimeout). It may be asleep or offline.")
+
+
+def test_an_unconfirmed_prompt_tells_the_model_not_to_send_it_again(
+    client: TestClient, fake: FakeAgentBridge
+) -> None:
+    fake.routes[("POST", "/agents/w1:p1/prompt")] = httpx.Response(
+        200,
+        json={"agent": {**AGENT, "status": "idle"}, "output": {"text": "> hi", "truncated": False},
+              "timed_out": False, "unconfirmed": True},
+    )
+    is_error, text = call_tool(client, "send_prompt", agent_id="w1:p1", text="hi")
+    assert not is_error
+    assert "hasn't started" in text and "don't send it again" in text.lower()
 
 
 @pytest.mark.parametrize(
