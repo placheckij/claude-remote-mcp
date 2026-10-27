@@ -47,7 +47,8 @@ class KeysRequest(BaseModel):
 
 class StartRequest(BaseModel):
     cwd: str
-    name: str = Field(min_length=1, max_length=64, pattern=r"^[\w.-]+$")
+    # Any spoken name; it's turned into one herdr accepts (agents.herdr_name).
+    name: str = Field(min_length=1, max_length=200)
 
 
 def summarize(agent: dict) -> AgentSummary:
