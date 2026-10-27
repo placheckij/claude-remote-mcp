@@ -3,6 +3,7 @@ name = "mcp-gateway"
 version = "0.1.0"
 description = "Public MCP server that exposes Claude Code session tools and forwards them to agent-bridge"
 requires-python = ">=3.11"
+license = "MIT"
 dependencies = [
     "httpx>=0.28.1",
     "mcp>=2.3.0",
