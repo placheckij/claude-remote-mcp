@@ -5,6 +5,8 @@ Agents are addressed by their herdr pane id (e.g. `w1:p1`).
 """
 
 import asyncio
+import re
+import unicodedata
 from collections.abc import Awaitable
 from pathlib import Path
 
@@ -14,6 +16,11 @@ from agent_bridge.herdr import Herdr, HerdrError
 from agent_bridge.schemas import AgentSummary, Output, PromptResult, cap, summarize
 from agent_bridge.screen import SNAPSHOT_LINES, last_lines
 from agent_bridge.trust import TrustError, trust_folder
+
+BUSY_MESSAGE = (
+    "The agent is still working on an earlier request, so the prompt was not sent. Wait for "
+    "it with wait_for_agent, then send the prompt again."
+)
 
 # How long a wait with expect_change gives the agent to leave its old state; herdr's own
 # `agent prompt --wait` uses the same window.
@@ -26,6 +33,8 @@ class AgentService:
         self.herdr = herdr
         # Serializes count-then-start so concurrent requests cannot exceed the limit.
         self._start_lock = asyncio.Lock()
+        # One prompt at a time per agent; a second one is refused rather than typed in.
+        self._prompt_locks: dict[str, asyncio.Lock] = {}
 
     async def list_agents(self) -> list[AgentSummary]:
         return [summarize(agent) for agent in await self.herdr.list_agents()]
@@ -40,19 +49,28 @@ class AgentService:
     async def prompt(
         self, agent_id: str, text: str, timeout_s: int | None, lines: int
     ) -> PromptResult:
-        # herdr types the text and presses Enter; on a pending question that Enter picks
-        # the highlighted answer (often "Yes") and the text is lost. The agent could still
-        # turn blocked between this check and the prompt; that window is accepted.
-        if (await self._controllable(agent_id)).status == "blocked":
-            raise BridgeError(
-                409,
-                "agent_blocked",
-                "The agent is waiting for an answer to a question, so the prompt was not "
-                "sent. Read the question with read_output and answer it with answer_agent "
-                "first.",
-            )
-        waiting = self.herdr.prompt(agent_id, text, self._timeout_ms(timeout_s))
-        return await self._settle(agent_id, waiting, lines)
+        lock = self._prompt_locks.setdefault(agent_id, asyncio.Lock())
+        if lock.locked():
+            raise BridgeError(409, "agent_busy", BUSY_MESSAGE)
+        async with lock:
+            status = (await self._controllable(agent_id)).status
+            # herdr types the text and presses Enter; on a pending question that Enter picks
+            # the highlighted answer (often "Yes") and the text is lost. The agent could still
+            # change state between this check and the prompt; that window is accepted.
+            if status == "blocked":
+                raise BridgeError(
+                    409,
+                    "agent_blocked",
+                    "The agent is waiting for an answer to a question, so the prompt was not "
+                    "sent. Read the question with read_output and answer it with answer_agent "
+                    "first.",
+                )
+            # herdr's --wait can't tell turns apart, so it would report the turn already
+            # running as this prompt's result.
+            if status == "working":
+                raise BridgeError(409, "agent_busy", BUSY_MESSAGE)
+            waiting = self.herdr.prompt(agent_id, text, self._timeout_ms(timeout_s))
+            return await self._settle(agent_id, waiting, lines)
 
     async def wait(
         self, agent_id: str, timeout_s: int | None, lines: int, expect_change: bool
@@ -67,7 +85,8 @@ class AgentService:
     async def start_agent(self, cwd: str, name: str) -> AgentSummary:
         folder = self._allowed_folder(cwd)
         async with self._start_lock:
-            await self._check_agent_limit()
+            running = await self._check_agent_limit()
+            name = herdr_name(name, {agent.get("name") for agent in running})
             await self._trust(folder)
             agent = await self._start_with_one_retry(name, folder)
         return summarize(agent)
@@ -129,23 +148,29 @@ class AgentService:
                 if error.code != "timeout":
                     raise
             remaining -= window
+            if remaining < 1000:
+                # The window used up the budget (herdr waits at least 1 s): report the
+                # state now rather than overrun the caller's timeout.
+                return await self.herdr.get_agent(agent_id)
         return await self.herdr.wait(agent_id, max(remaining, 1000))
 
     async def _settle(self, agent_id: str, waiting: Awaitable[dict], lines: int) -> PromptResult:
         """Await `waiting` (a herdr wait), then report status and the latest output."""
-        timed_out = False
+        timed_out = unconfirmed = False
         try:
             agent = await waiting
         except HerdrError as error:
-            if error.code != "timeout":
+            if error.code not in ("timeout", "agent_prompt_stalled"):
                 raise
-            timed_out = True
+            timed_out = error.code == "timeout"
+            unconfirmed = error.code == "agent_prompt_stalled"
             agent = await self.herdr.get_agent(agent_id)
         output = last_lines(await self.herdr.read(agent_id, SNAPSHOT_LINES), lines)
         return PromptResult(
             agent=summarize(agent),
             output=cap(output, self.settings.max_output_chars),
             timed_out=timed_out,
+            unconfirmed=unconfirmed,
         )
 
     def _allowed_folder(self, cwd: str) -> Path:
@@ -156,16 +181,18 @@ class AgentService:
             raise BridgeError(404, "not_a_directory", f"{folder} is not a directory")
         return folder
 
-    async def _check_agent_limit(self) -> None:
-        running = len(await self.herdr.list_agents())
+    async def _check_agent_limit(self) -> list[dict]:
+        """The running agents, unless there are already as many as the limit allows."""
+        running = await self.herdr.list_agents()
         limit = self.settings.max_agents
-        if running >= limit:
+        if len(running) >= limit:
             raise BridgeError(
                 409,
                 "agent_limit_reached",
-                f"Refusing to start a new agent: {running} agents are already running and "
+                f"Refusing to start a new agent: {len(running)} agents are already running and "
                 f"the limit is {limit}. Stop an agent first.",
             )
+        return running
 
     async def _trust(self, folder: Path) -> None:
         trust_root = self.settings.trust_root
@@ -191,3 +218,30 @@ class AgentService:
             f"{head} It is outside the trust root {self.settings.trust_root}: trust it once by "
             "opening Claude Code there."
         )
+
+
+# herdr's rule for agent names: lower-case ASCII, starting with a letter, at most 32 long.
+HERDR_NAME_MAX = 32
+
+
+def herdr_name(spoken: str, taken: set[str | None]) -> str:
+    """A name herdr accepts for `spoken` (e.g. "Grafik fix!" → "grafik-fix"), made unique
+    among the `taken` names of live agents by a "-2", "-3", … suffix."""
+    # NFKD splits accents off most letters; ł has no decomposition, so map it by hand.
+    ascii_name = (
+        unicodedata.normalize("NFKD", spoken.replace("ł", "l").replace("Ł", "L"))
+        .encode("ascii", "ignore")
+        .decode()
+        .lower()
+    )
+    base = re.sub(r"-{2,}", "-", re.sub(r"[^a-z0-9_-]+", "-", ascii_name)).strip("-_")
+    if not base[:1].isalpha():
+        base = f"agent-{base}".rstrip("-")
+    base = base[:HERDR_NAME_MAX].rstrip("-_")
+    name, number = base, 1
+    while name in taken:
+        number += 1
+        suffix = f"-{number}"
+        name = base[: HERDR_NAME_MAX - len(suffix)].rstrip("-_") + suffix
+    return name
+
