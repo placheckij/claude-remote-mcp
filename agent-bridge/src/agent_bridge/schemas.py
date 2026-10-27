@@ -39,6 +39,9 @@ class PromptResult(BaseModel):
     output: Output
     # True when the agent was still working at the timeout; poll /output or /agents/{id}.
     timed_out: bool = False
+    # True when herdr typed the prompt but saw no reaction within its 5 s window
+    # (agent_prompt_stalled): it may still run, so it must not be sent again.
+    unconfirmed: bool = False
 
 
 class KeysRequest(BaseModel):
@@ -47,7 +50,8 @@ class KeysRequest(BaseModel):
 
 class StartRequest(BaseModel):
     cwd: str
-    name: str = Field(min_length=1, max_length=64, pattern=r"^[\w.-]+$")
+    # Any spoken name; it's turned into one herdr accepts (agents.herdr_name).
+    name: str = Field(min_length=1, max_length=200)
 
 
 def summarize(agent: dict) -> AgentSummary:
