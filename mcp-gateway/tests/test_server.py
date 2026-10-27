@@ -365,7 +365,33 @@ def test_refusals_from_the_bridge_reach_the_model_verbatim(client: TestClient, f
 def test_unreachable_agent_host_is_reported_plainly(client: TestClient, fake: FakeAgentBridge) -> None:
     fake.down = True
     is_error, text = call_tool(client, "list_agents")
-    assert is_error and text.endswith("The agent host is not reachable (ConnectError).")
+    assert is_error and text.endswith("The agent host is not reachable (ConnectError). It may be asleep or offline.")
+
+
+def test_a_sleeping_agent_host_is_reported_within_seconds(client: TestClient, fake: FakeAgentBridge) -> None:
+    # A host that is asleep drops packets, so only the connect timeout decides how long the
+    # user waits; the long read timeout of a prompt must not apply to connecting.
+    fake.routes[("POST", "/agents/w1:p1/prompt")] = httpx.Response(
+        200, json={"agent": AGENT, "output": {"text": "", "truncated": False}, "timed_out": False}
+    )
+    fake.routes[("GET", "/agents")] = httpx.Response(200, json=[])
+    call_tool(client, "send_prompt", agent_id="w1:p1", text="hi", wait_seconds=90)
+    call_tool(client, "list_agents")
+    prompt_timeout, list_timeout = (request.extensions["timeout"] for request in fake.requests)
+    assert prompt_timeout["connect"] <= 5 and prompt_timeout["read"] == 120
+    assert list_timeout["connect"] <= 5 and list_timeout["read"] == 30
+    assert AgentBridge.connect(SETTINGS.bridge_url, "b" * 32).client.timeout.connect <= 5
+
+
+def test_a_connect_timeout_says_the_host_may_be_asleep() -> None:
+    def asleep(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectTimeout("timed out", request=request)
+
+    bridge = AgentBridge(httpx.AsyncClient(base_url=SETTINGS.bridge_url, transport=httpx.MockTransport(asleep)))
+    with TestClient(create_app(SETTINGS, bridge), base_url=f"https://{HOST}") as test_client:
+        is_error, text = call_tool(test_client, "list_agents")
+    assert is_error
+    assert text.endswith("The agent host is not reachable (ConnectTimeout). It may be asleep or offline.")
 
 
 def test_an_unconfirmed_prompt_tells_the_model_not_to_send_it_again(
@@ -379,4 +405,3 @@ def test_an_unconfirmed_prompt_tells_the_model_not_to_send_it_again(
     is_error, text = call_tool(client, "send_prompt", agent_id="w1:p1", text="hi")
     assert not is_error
     assert "hasn't started" in text and "don't send it again" in text.lower()
-
