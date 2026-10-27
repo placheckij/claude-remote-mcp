@@ -201,6 +201,8 @@ $ENV_ENTRIES
   <!-- Retries until the LAN address exists, e.g. right after login or wake. -->
   <key>KeepAlive</key><true/>
   <key>ThrottleInterval</key><integer>10</integer>
+  <!-- Errors (stderr) and uvicorn's one line per request (stdout), in one file. -->
+  <key>StandardOutPath</key><string>$(xml "$LOG_FILE")</string>
   <key>StandardErrorPath</key><string>$(xml "$LOG_FILE")</string>
 </dict>
 </plist>
