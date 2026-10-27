@@ -65,7 +65,7 @@ All routes require `Authorization: Bearer $AGENT_BRIDGE_TOKEN`.
 | `GET /agents` | `agent list` | every herdr agent, in any folder |
 | `GET /agents/{id}` | `agent get` | |
 | `GET /agents/{id}/output?lines=40` | `agent read` | last N meaningful lines: padding, input box and status bar dropped; the visible screen only while the agent is working or blocked (herdr can't scroll its history then) |
-| `POST /agents/{id}/prompt` `{text, timeout_s?, lines?}` | `agent prompt --wait` | waits until idle/done/blocked; on timeout returns `timed_out: true` with current status. Refused with `409 agent_blocked` while the agent is `blocked`, since the Enter would answer its question |
+| `POST /agents/{id}/prompt` `{text, timeout_s?, lines?}` | `agent prompt --wait` | waits until idle/done/blocked; on timeout returns `timed_out: true` with current status, and `unconfirmed: true` if the text was typed but the agent didn't react within 5 s (don't resend). Refused with `409 agent_blocked` while the agent is `blocked` (the Enter would answer its question), and with `409 agent_busy` while it is `working` or another prompt to it is running |
 | `POST /agents/{id}/wait` `{timeout_s?, lines?, expect_change?}` | `agent wait` | same result as `/prompt`, without sending anything; `expect_change` (after `/keys`) first gives the agent 5 s to leave its old `blocked` state |
 | `POST /agents/{id}/keys` `{keys}` | `agent send-keys` | answer a `blocked` agent's question |
 | `POST /agents` `{cwd, name}` | `workspace create` + `agent start --kind claude` | start an agent in a project folder (see below). `name` may be any words: it becomes a name herdr accepts (lower-case ASCII, starting with a letter, at most 32 characters, e.g. `Grafik fix!` → `grafik-fix`), with `-2`, `-3`, … if a live agent already has it |
@@ -134,11 +134,11 @@ the variable.
 | Variable | Default | |
 |---|---|---|
 | `AGENT_BRIDGE_TOKEN` | — | required, at least 32 characters; mcp-gateway's `MCP_GATEWAY_BRIDGE_TOKEN` |
-| `AGENT_BRIDGE_ALLOWED_ROOTS` | — | required, `:`-separated folders agents may start in |
+| `AGENT_BRIDGE_ALLOWED_ROOTS` | — | required, `:`-separated absolute folders agents may start in; `/`, the home folder or anything above it is refused |
 | `AGENT_BRIDGE_CLAUDE_CONFIG_DIR` | unset | `CLAUDE_CONFIG_DIR` for new agents; unset uses Claude Code's default config |
 | `AGENT_BRIDGE_CLAUDE_ARGS` | `--permission-mode auto` | extra `claude` arguments, shell-quoted; set it empty for none |
 | `AGENT_BRIDGE_HERDR_BIN` | `herdr` | use the full path under a service manager, e.g. `~/.local/bin/herdr` |
-| `AGENT_BRIDGE_TRUST_ROOT` | unset | auto-trust folders under it; needs `AGENT_BRIDGE_CLAUDE_CONFIG_DIR` |
+| `AGENT_BRIDGE_TRUST_ROOT` | unset | auto-trust folders under it; needs `AGENT_BRIDGE_CLAUDE_CONFIG_DIR`; absolute, and like the allowed roots never `/` or the home folder |
 | `AGENT_BRIDGE_MAX_AGENTS` | `10` | no new agents while this many or more exist (all herdr agents count) |
 | `AGENT_BRIDGE_MAX_OUTPUT_CHARS` | `8000` | terminal output beyond this is cut from the front (`truncated: true`) |
 | `AGENT_BRIDGE_PROMPT_TIMEOUT_MS` | `600000` | how long prompt and wait block when the request gives no `timeout_s` |
@@ -150,7 +150,9 @@ address, not `0.0.0.0` (or to `127.0.0.1` when mcp-gateway runs on the same mach
 
 To try it in the foreground, generate a token and start it by hand. To keep it running, set
 it up as a service instead (below); on macOS the setup script generates the token for you.
-Either way the same token goes into mcp-gateway's `MCP_GATEWAY_BRIDGE_TOKEN`.
+Either way the same token goes into mcp-gateway's `MCP_GATEWAY_BRIDGE_TOKEN`. Generate it
+once and keep a copy, e.g. in a password manager: it goes into the service's config and
+into mcp-gateway's setup on the gateway host, and is stored nowhere else.
 
 ```sh
 uv sync --all-packages
@@ -225,10 +227,10 @@ What the script does, step by step:
    |---|---|
    | `/path/to/claude-remote-mcp` | the checkout's full path (`pwd` in it) |
    | `192.168.1.20` | the Mac's LAN address (`ipconfig getifaddr en0` on Wi-Fi) |
-   | `…` | the token (`openssl rand -hex 32`) |
+   | `…` | the token: generate it once (`openssl rand -hex 32`) and keep a copy; mcp-gateway's setup needs the same one |
    | `/Users/me/projects` | the folders agents may start in, `:`-separated |
    | `/Users/me/.local/bin/herdr` | the output of `command -v herdr` |
-   | `/Users/me` in the log path | your home folder |
+   | `/Users/me` in the log paths | your home folder |
 
    Write every path in full: launchd doesn't expand `~` or `$HOME`. To set any other
    variable from [Configuration](#configuration), add another `<key>NAME</key><string>value</string>`
@@ -258,6 +260,8 @@ What the script does, step by step:
      <!-- Retries until the LAN address exists, e.g. right after login or wake. -->
      <key>KeepAlive</key><true/>
      <key>ThrottleInterval</key><integer>10</integer>
+     <!-- Errors (stderr) and uvicorn's one line per request (stdout), in one file. -->
+     <key>StandardOutPath</key><string>/Users/me/Library/Logs/agent-bridge.log</string>
      <key>StandardErrorPath</key><string>/Users/me/Library/Logs/agent-bridge.log</string>
    </dict>
    </plist>
@@ -284,22 +288,29 @@ These work however you installed it:
 ```sh
 # Status: a PID and "state = running" when it's up; "last exit code" after a crash
 launchctl print gui/$(id -u)/dev.claude-remote.agent-bridge | grep -E 'state|pid|last exit'
-tail -f ~/Library/Logs/agent-bridge.log
 
-# Restart, e.g. after pulling new code and `uv sync --all-packages` (a plain `uv sync`
-# removes agent-bridge from the venv). After editing the plist, stop and start it
-# instead (below), so launchd rereads the file. Re-running the setup script does both.
+# Log: errors, plus one line per request. Nothing rotates it; it grows slowly, and
+# emptying it is safe while agent-bridge runs (launchd appends to it).
+tail -f ~/Library/Logs/agent-bridge.log
+: > ~/Library/Logs/agent-bridge.log
+
+# Restart, e.g. after pulling new code and `uv sync --all-packages`. After editing the
+# plist, stop and start it instead (below), so launchd rereads the file. Re-running the
+# setup script does both.
 launchctl kickstart -k gui/$(id -u)/dev.claude-remote.agent-bridge
 
 # Stop. `launchctl stop` is not enough: KeepAlive would start it again at once.
 # Unloading stops it until you start it again or log in next time.
 launchctl bootout gui/$(id -u)/dev.claude-remote.agent-bridge
 
-# Start again
+# Start again (after `disable` below, `enable` it first)
 launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/dev.claude-remote.agent-bridge.plist
 
-# Keep it from starting at login without deleting the plist
-launchctl disable gui/$(id -u)/dev.claude-remote.agent-bridge     # `enable` to undo
+# Keep it from starting at login without deleting the plist. This doesn't stop it if
+# it's running (bootout does), and bootstrap fails with "5: Input/output error" until
+# you enable it again. Re-running the setup script enables it too.
+launchctl disable gui/$(id -u)/dev.claude-remote.agent-bridge
+launchctl enable gui/$(id -u)/dev.claude-remote.agent-bridge      # undo
 
 # Uninstall
 launchctl bootout gui/$(id -u)/dev.claude-remote.agent-bridge
