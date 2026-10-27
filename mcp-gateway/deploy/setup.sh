@@ -6,10 +6,11 @@
 # Run from a checkout of this repo on the gateway host:
 #   sudo PUBLIC_HOST=mcp.example.com \
 #        AGENT_BRIDGE_URL=http://192.168.1.20:8765 \
-#        AGENT_BRIDGE_TOKEN=<agent-bridge token> \
 #        PROJECTS_ROOT=/home/me/projects \
 #        mcp-gateway/deploy/setup.sh
-# Missing values are asked for interactively. PROJECTS_ROOT is the folder on the agent
+# Missing values are asked for interactively; tokens without echoing. Don't put tokens
+# on the command line (shell history, process list): let the script ask, or export
+# them and pass them with sudo --preserve-env=NAME. PROJECTS_ROOT is the folder on the agent
 # host that project names given to start_agent resolve against. Optional: TUNNEL_NAME
 # (claude-remote), PORT (8766), ROTATE_TOKEN=1, MCP_GATEWAY_TOKEN (use this connector
 # token instead of generating one).
@@ -64,7 +65,7 @@ fi
 
 log "Installing system packages"
 apt-get update -qq
-apt-get install -y -qq curl ca-certificates gnupg openssl rsync python3 >/dev/null
+apt-get install -y -qq curl ca-certificates gnupg openssl rsync python3 git >/dev/null
 
 if ! command -v uv >/dev/null; then
   log "Installing uv"
@@ -86,9 +87,14 @@ fi
 log "Installing mcp-gateway into $APP_DIR"
 id "$SERVICE_USER" &>/dev/null || useradd --system --no-create-home --shell /usr/sbin/nologin "$SERVICE_USER"
 install -d -m 0755 "$APP_DIR"
-rsync -a --delete --exclude /.git --exclude /.venv --exclude /python --exclude __pycache__ \
-  "$REPO_DIR/" "$APP_DIR/"
-# The code and venv stay root-owned: the service can run them but not change them.
+# Only committed files (no .env, notes or caches from the checkout), owned by root: the
+# service, and whoever owns the checkout, can run this code but not change it. The
+# checkout belongs to another user, hence safe.directory for root's git.
+STAGE="$(mktemp -d)"
+trap 'rm -rf "$STAGE"' EXIT
+git -c safe.directory="$REPO_DIR" -c tar.umask=0022 -C "$REPO_DIR" archive --format=tar HEAD | tar -x -C "$STAGE"
+chmod 0755 "$STAGE"
+rsync -a --delete --chown=root:root --exclude /.venv --exclude /python "$STAGE/" "$APP_DIR/"
 (cd "$APP_DIR" && UV_PYTHON_INSTALL_DIR="$APP_DIR/python" uv sync --frozen --no-dev --package mcp-gateway)
 
 log "Writing $ENV_FILE"
@@ -235,7 +241,9 @@ check() { # check "label" expected-status curl-args...
 log "Checks"
 for _ in $(seq 20); do curl -fs "http://127.0.0.1:$PORT/healthz" >/dev/null && break; sleep 0.5; done
 check "mcp-gateway is up" 200 "http://127.0.0.1:$PORT/healthz"
-check "agent host reachable with its token" 200 -H "Authorization: Bearer $AGENT_BRIDGE_TOKEN" "$AGENT_BRIDGE_URL/agents"
+# The header goes through stdin (printf is a builtin), so the token never shows in curl's argv.
+printf 'Authorization: Bearer %s\n' "$AGENT_BRIDGE_TOKEN" \
+  | check "agent host reachable with its token" 200 -H @- "$AGENT_BRIDGE_URL/agents"
 sleep 3
 check "tunnel refuses requests without the token" 401 -X POST "https://$PUBLIC_HOST/mcp"
 check "tunnel hides everything but /mcp" 404 "https://$PUBLIC_HOST/healthz"
