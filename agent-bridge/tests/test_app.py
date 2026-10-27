@@ -146,7 +146,7 @@ def test_visible_read_failures_are_not_retried(root: Path) -> None:
 def test_prompt_waits_then_returns_status_and_output(root: Path) -> None:
     runner = FakeRunner(
         {
-            ("agent", "get"): ok({"agent": agent(status="idle")}),
+            ("agent", "get"): ok({"agent": agent(status="idle", cwd=str(root / "project"))}),
             ("agent", "prompt"): ok({"agent": agent(status="done")}),
             ("agent", "read"): (0, "OK\n", ""),
         }
@@ -166,7 +166,9 @@ def test_prompt_waits_then_returns_status_and_output(root: Path) -> None:
 def test_prompt_to_a_blocked_agent_is_refused_without_typing(root: Path) -> None:
     # herdr types the text and presses Enter, which would pick the highlighted answer
     # (often "Yes") of the pending question.
-    runner = FakeRunner({("agent", "get"): ok({"agent": agent(status="blocked")})})
+    runner = FakeRunner(
+        {("agent", "get"): ok({"agent": agent(status="blocked", cwd=str(root / "project"))})}
+    )
     response = client(runner, root).post("/agents/w1:p1/prompt", headers=AUTH, json={"text": "hi"})
     assert response.status_code == 409
     error = response.json()["error"]
@@ -179,7 +181,7 @@ def test_prompt_timeout_reports_still_working(root: Path) -> None:
     runner = FakeRunner(
         {
             ("agent", "prompt"): err("timeout"),
-            ("agent", "get"): ok({"agent": agent(status="working")}),
+            ("agent", "get"): ok({"agent": agent(status="working", cwd=str(root / "project"))}),
             ("agent", "read"): (0, "thinking", ""),
         }
     )
@@ -342,10 +344,60 @@ def test_start_rejects_paths_outside_allowed_roots(root: Path, cwd: str) -> None
     assert runner.calls == []
 
 
+CONTROL = [
+    ("POST", "/agents/w1:p1/prompt", {"text": "hi"}, ("agent", "prompt")),
+    ("POST", "/agents/w1:p1/keys", {"keys": ["1"]}, ("agent", "send-keys")),
+    ("DELETE", "/agents/w1:p1", None, ("pane", "close")),
+]
+
+
+@pytest.mark.parametrize(("method", "path", "body", "herdr_call"), CONTROL)
+def test_agents_outside_the_allowed_roots_can_be_read_but_not_controlled(
+    root: Path, method: str, path: str, body: dict | None, herdr_call: tuple[str, ...]
+) -> None:
+    # Every herdr agent is listed, including ones in unrelated folders; a misheard id must
+    # not prompt, answer or close those.
+    runner = FakeRunner({("agent", "get"): ok({"agent": agent(cwd="/elsewhere/work-repo")})})
+    c = client(runner, root)
+    response = c.request(method, path, headers=AUTH, json=body)
+    assert response.status_code == 403
+    assert response.json()["error"]["code"] == "agent_not_allowed"
+    assert runner.called(*herdr_call) == []
+    assert c.get("/agents/w1:p1", headers=AUTH).status_code == 200
+
+
+@pytest.mark.parametrize(("method", "path", "body", "herdr_call"), CONTROL[1:])
+def test_agents_inside_the_allowed_roots_can_be_controlled(
+    root: Path, method: str, path: str, body: dict | None, herdr_call: tuple[str, ...]
+) -> None:
+    runner = FakeRunner(
+        {
+            ("agent", "get"): ok({"agent": agent(cwd=str(root / "project"))}),
+            herdr_call: ok({"type": "ok"}),
+        }
+    )
+    response = client(runner, root).request(method, path, headers=AUTH, json=body)
+    assert response.status_code == 204
+    assert len(runner.called(*herdr_call)) == 1
+
+
+def test_stop_refuses_panes_that_are_not_agents(root: Path) -> None:
+    # A plain shell or dev-server pane has a pane id too.
+    runner = FakeRunner({("agent", "get"): err("agent_not_found")})
+    response = client(runner, root).delete("/agents/w1:p1", headers=AUTH)
+    assert response.status_code == 404
+    assert runner.called("pane", "close") == []
+
+
 def test_stop_closes_the_pane(root: Path) -> None:
-    runner = FakeRunner({("pane", "close"): ok({"type": "ok"})})
+    runner = FakeRunner(
+        {
+            ("agent", "get"): ok({"agent": agent(cwd=str(root / "project"))}),
+            ("pane", "close"): ok({"type": "ok"}),
+        }
+    )
     assert client(runner, root).delete("/agents/w1:p1", headers=AUTH).status_code == 204
-    assert runner.calls == [["pane", "close", "w1:p1"]]
+    assert runner.called("pane", "close") == [["pane", "close", "w1:p1"]]
 
 
 @pytest.mark.parametrize("running", [10, 12])
