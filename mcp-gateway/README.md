@@ -17,9 +17,10 @@ on `127.0.0.1` and nothing goes over the LAN.
 
 Built on the MCP Python SDK 2.x (`MCPServer`, Streamable HTTP, stateless, JSON
 responses). Tool results are short plain text meant to be read aloud: one line per
-agent, the last few output lines, refusals from agent-bridge passed through verbatim,
-invalid arguments (e.g. a malformed agent id, or a prompt over 20 000 characters or
-with a NUL character) as one sentence.
+agent, the last few output lines. A refusal from agent-bridge comes back as a tool error
+with agent-bridge's message unchanged, after the SDK's `Error executing tool <name>: `
+prefix; invalid arguments (e.g. a malformed agent id, or a prompt over 20 000 characters
+or with a NUL character) come back the same way as one sentence.
 
 ## System requirements
 
@@ -36,13 +37,13 @@ with a NUL character) as one sentence.
 
 | Tool | Does |
 |---|---|
-| `list_agents` | one line per agent: id · name · status · folder |
+| `list_agents` | one line per agent: id · name · status · folder (a folder under `MCP_GATEWAY_PROJECTS_ROOT` by its name there, e.g. `grafik`) |
 | `agent_details` | the same line for one agent |
-| `read_output` | last N meaningful terminal lines (default 20) |
+| `read_output` | last N meaningful terminal lines (default 20, at most 60; the same for `lines` on the waiting tools) |
 | `send_prompt` | prompt, wait up to `wait_seconds` (default 90, at most 100), return status + output; flags `blocked` and still-working. A `blocked` agent refuses prompts until its question is answered |
 | `wait_for_agent` | keep waiting for an agent still working (e.g. after `send_prompt` ran out of time); same result format |
 | `answer_agent` | key presses for a blocked agent's question, e.g. `["1"]`, `["Enter"]`; with `wait_seconds` also waits for the result. Marked destructive, so Claude asks first |
-| `start_agent` | new agent in a project: a name under `MCP_GATEWAY_PROJECTS_ROOT` or an absolute path |
+| `start_agent` | new agent in a project: one folder name under `MCP_GATEWAY_PROJECTS_ROOT` (names with `/`, `..` or `~`, and `.`, are refused) or an absolute path |
 | `stop_agent` | close an agent's pane (marked destructive, so Claude asks first) |
 
 The server's instructions tell Claude the user is probably driving: short, speakable
@@ -69,12 +70,22 @@ What stands between the internet and an agent:
 1. **Cloudflare Tunnel.** The gateway host opens an outbound connection; no port is opened on the
    router. Cloudflare terminates TLS.
 2. **Ingress rule.** The tunnel only forwards `https://<host>/mcp`; every other path
-   (including `/healthz`) gets a 404 at the edge.
+   (including `/healthz`) gets a 404 from cloudflared on the gateway host and never
+   reaches mcp-gateway.
 3. **Bearer token.** mcp-gateway refuses any request without
    `Authorization: Bearer <MCP_GATEWAY_TOKEN>`. The word `Bearer` may be in any case;
-   the token must match exactly (constant-time compare).
-4. **Host and Origin check.** Only `MCP_GATEWAY_PUBLIC_HOST` (and localhost) and the
-   `https://claude.ai` origin are accepted (DNS-rebinding protection from the SDK).
+   the token must match exactly (constant-time compare). The 401 says
+   `WWW-Authenticate: Bearer`, and each refusal is logged with the request's headers,
+   secrets redacted.
+4. **Host and Origin check.** Only `MCP_GATEWAY_PUBLIC_HOST` (and localhost) is
+   accepted as `Host`, and only `https://claude.ai` or `https://claude.com` as `Origin`
+   (a request without one is fine). This is DNS-rebinding protection from the SDK. A
+   refused Origin with the right token is logged as an error: if it is the Claude app,
+   every call fails until that Origin is added to `ALLOWED_ORIGINS` in
+   `src/mcp_gateway/server.py`.
+
+`GET /mcp` answers `405`: the server is stateless and never pushes anything on a GET
+stream, so clients use POST only, as the MCP spec allows.
 5. **agent-bridge's own limits.** A separate token, a project-folder allowlist, the
    10-agent limit, and folder trust only under its trust root, never in the default
    Claude config.
@@ -118,9 +129,10 @@ sudo PUBLIC_HOST=mcp.example.com \
 It asks for agent-bridge's token (`AGENT_BRIDGE_TOKEN` from the agent host) without
 showing it. Keep tokens out of the command itself: there they end up in your shell
 history and, while the script runs, in the process list that other users on the host
-can read. Other values left out are asked for too. Optional variables: `TUNNEL_NAME`
-(default `claude-remote`), `PORT` (default `8766`), `ROTATE_TOKEN=1`, and
-`MCP_GATEWAY_TOKEN`.
+can read. Other values left out are asked for too; on later runs they come from
+`/etc/mcp-gateway/env` instead (see [Update and rotate](#update-and-rotate)). Optional
+variables: `TUNNEL_NAME` (default `claude-remote`), `PORT` (default `8766`),
+`ROTATE_TOKEN=1`, and `MCP_GATEWAY_TOKEN`.
 
 The script generates the connector token (`MCP_GATEWAY_TOKEN`) itself. To use one you
 already have instead, e.g. when moving to a new gateway host, read it without echoing
@@ -139,14 +151,21 @@ It must be 32+ characters from `A-Z a-z 0-9 . _ ~ + / -`, optionally ending in `
 (`openssl rand -hex 32` makes one).
 
 On the first run `cloudflared tunnel login` prints a URL. Open it in any browser, log in
-to Cloudflare and pick the zone (domain) for `PUBLIC_HOST`. The script waits until you
-do.
+to Cloudflare and pick the zone (domain) that contains `PUBLIC_HOST`: `example.com` for
+`mcp.example.com`. The script waits until you do. The DNS record is created in the zone
+picked here; in any other zone the name comes out wrong (e.g.
+`mcp.example.com.other.org`). If that happened, delete that record in the dashboard,
+delete `/etc/cloudflared/cert.pem` and re-run to log in again. A cert left in
+`/root/.cloudflared/` by an earlier `cloudflared tunnel login` is used instead of logging
+in.
 
 At the end it checks that mcp-gateway is up, that agent-bridge answers with its token, and
-that the tunnel answers `401` without the token and `404` outside `/mcp`. Then it prints
-the connector settings and, on the first run (unless you passed one in), the new
-`MCP_GATEWAY_TOKEN`. DNS for a new
-hostname can take a minute; if only the tunnel checks fail, try again shortly:
+that the tunnel answers `401` without the token and `404` outside `/mcp` (waiting up to
+30 s each for the service and the tunnel to come up). If all pass, it prints the
+connector settings; if any fails, it lists the failed checks and exits with status 1.
+Either way it says where the connector token is: on the first run (unless you passed
+one in) it prints the new `MCP_GATEWAY_TOKEN`. DNS for a new hostname can take a few
+minutes; if only the tunnel checks fail, try again shortly:
 `curl -i -X POST https://mcp.example.com/mcp` should answer `401`.
 
 ### What it creates
@@ -163,14 +182,26 @@ hostname can take a minute; if only the tunnel checks fail, try again shortly:
 
 ### Update and rotate
 
-- **Update the code:** `git pull` in the checkout, then re-run the script. It keeps the
-  token and reuses the tunnel. Only committed code is installed.
+- **Update the code:** `git pull` in the checkout, then re-run the script without any
+  variables: `sudo mcp-gateway/deploy/setup.sh`. It takes `PUBLIC_HOST`,
+  `AGENT_BRIDGE_URL`, `AGENT_BRIDGE_TOKEN` and `PROJECTS_ROOT` from
+  `/etc/mcp-gateway/env` and lists the ones it keeps (tokens not shown), keeps the
+  connector token and reuses the tunnel. Only committed code is installed.
 - **Rotate the connector token:** re-run with `ROTATE_TOKEN=1`, then remove the
   connector in claude.ai and add it again with the new token. Request headers can't be
   edited once a connector is added.
 - **Set the connector token yourself:** re-run with `MCP_GATEWAY_TOKEN=…`. Later runs
   keep it. If it differs from the one in claude.ai, re-add the connector there too.
-- **Change agent-bridge's URL or token, or the projects folder:** re-run with the new values.
+- **Change agent-bridge's URL or token, or the projects folder:** re-run with just the
+  values that change; the rest are kept:
+  ```sh
+  sudo AGENT_BRIDGE_URL=http://192.168.1.21:8765 mcp-gateway/deploy/setup.sh
+  ```
+  For a new agent-bridge token, export it as shown for `MCP_GATEWAY_TOKEN` above and
+  pass it with `sudo --preserve-env=AGENT_BRIDGE_TOKEN`.
+- **Change the hostname:** re-run with the new `PUBLIC_HOST`. It gets a new DNS record;
+  delete the old one in the Cloudflare dashboard, and re-add the connector in claude.ai
+  with the new URL.
 - **Logs:** `journalctl -u mcp-gateway -u cloudflared-claude-remote -f`.
 
 ### Stop, restart, uninstall
@@ -211,9 +242,8 @@ sudo TUNNEL_ORIGIN_CERT=/etc/cloudflared/cert.pem cloudflared tunnel delete clau
 sudo rm -rf /opt/claude-remote-mcp /etc/mcp-gateway
 sudo rm -f /etc/cloudflared/claude-remote.json /etc/cloudflared/claude-remote.yml
 
-# 4. Remove the service users
+# 4. Remove the service user
 sudo userdel mcp-gateway
-sudo userdel cloudflared
 ```
 
 Then:
@@ -223,12 +253,18 @@ Then:
 - **claude.ai:** remove the custom connector (Customize → Connectors).
 - **Cloudflare Access**, if you set it up: delete the application and the service token
   in Zero Trust.
-- **Only if nothing else on the host uses them:** the Cloudflare login cert, cloudflared
-  itself and uv.
+- **Only if nothing else on the host uses them:** the Cloudflare login cert, the
+  `cloudflared` user, cloudflared itself, and uv with root's uv cache. The script reuses
+  a `cloudflared` user that already exists, so check first that no other service runs as
+  it: `ps -u cloudflared` and `grep -rl '^User=cloudflared' /etc/systemd/system` should
+  find nothing.
   ```sh
   sudo rm -f /etc/cloudflared/cert.pem
+  sudo rmdir /etc/cloudflared /root/.cloudflared   # only removed if empty
+  sudo userdel cloudflared
   sudo apt-get remove cloudflared
   sudo rm /etc/apt/sources.list.d/cloudflared.list /usr/share/keyrings/cloudflare-main.gpg
+  sudo rm -rf /root/.cache/uv
   sudo rm /usr/local/bin/uv /usr/local/bin/uvx
   ```
   Treat the cert like a password while it exists: it can create tunnels and DNS
