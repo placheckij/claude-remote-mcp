@@ -4,6 +4,12 @@ from typing import Any
 
 import httpx
 
+# A sleeping agent host drops packets instead of refusing them, so connecting gets its own
+# short timeout; otherwise a prompt's long read timeout would also apply to connecting and
+# Cloudflare would give up (after 125 s) before the user hears that the host is down.
+CONNECT_TIMEOUT_S = 5.0
+DEFAULT_TIMEOUT_S = 30.0
+
 
 class BridgeError(Exception):
     """A refusal or failure reported by agent-bridge, with its human-readable message."""
@@ -19,15 +25,22 @@ class AgentBridge:
             httpx.AsyncClient(
                 base_url=url,
                 headers={"Authorization": f"Bearer {token}"},
-                timeout=httpx.Timeout(30.0),
+                timeout=httpx.Timeout(DEFAULT_TIMEOUT_S, connect=CONNECT_TIMEOUT_S),
             )
         )
 
     async def _request(self, method: str, path: str, *, timeout: float | None = None, **kwargs) -> Any:
         try:
             response = await self.client.request(
-                method, path, timeout=timeout or httpx.USE_CLIENT_DEFAULT, **kwargs
+                method,
+                path,
+                timeout=httpx.Timeout(timeout or DEFAULT_TIMEOUT_S, connect=CONNECT_TIMEOUT_S),
+                **kwargs,
             )
+        except (httpx.ConnectError, httpx.ConnectTimeout) as error:
+            raise BridgeError(
+                f"The agent host is not reachable ({type(error).__name__}). It may be asleep or offline."
+            ) from error
         except httpx.TransportError as error:
             raise BridgeError(f"The agent host is not reachable ({type(error).__name__}).") from error
         if response.is_success:
