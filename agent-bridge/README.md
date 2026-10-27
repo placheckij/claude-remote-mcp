@@ -28,19 +28,25 @@ All routes require `Authorization: Bearer $AGENT_BRIDGE_TOKEN`.
 
 | Route | herdr | Notes |
 |---|---|---|
-| `GET /agents` | `agent list` | every herdr agent |
+| `GET /agents` | `agent list` | every herdr agent, in any folder |
 | `GET /agents/{id}` | `agent get` | |
 | `GET /agents/{id}/output?lines=40` | `agent read` | last N meaningful lines: padding, input box and status bar dropped; the visible screen only while the agent is working or blocked (herdr can't scroll its history then) |
 | `POST /agents/{id}/prompt` `{text, timeout_s?, lines?}` | `agent prompt --wait` | waits until idle/done/blocked; on timeout returns `timed_out: true` with current status. Refused with `409 agent_blocked` while the agent is `blocked`, since the Enter would answer its question |
 | `POST /agents/{id}/wait` `{timeout_s?, lines?, expect_change?}` | `agent wait` | same result as `/prompt`, without sending anything; `expect_change` (after `/keys`) first gives the agent 5 s to leave its old `blocked` state |
 | `POST /agents/{id}/keys` `{keys}` | `agent send-keys` | answer a `blocked` agent's question |
 | `POST /agents` `{cwd, name}` | `workspace create` + `agent start --kind claude` | start an agent in a project folder (see below) |
-| `DELETE /agents/{id}` | `pane close` | |
+| `DELETE /agents/{id}` | `agent get` + `pane close` | close the agent's pane; `404` if the id isn't an agent (a shell or dev-server pane) |
 
 Every error comes back as `{"error": {"code", "message"}}` with a matching status
 (`unauthorized` → 401, `path_not_allowed` → 403, `agent_not_found` → 404,
 `agent_limit_reached` → 409, `timeout` → 504, …); the message is written to be read
 aloud. Only request validation failures keep FastAPI's `{"detail": [...]}` shape (422).
+
+Reading (list, details, output, wait) works for every agent. Changing one (`/prompt`,
+`/keys`, `DELETE`) only works for agents whose folder is under
+`AGENT_BRIDGE_ALLOWED_ROOTS`; any other agent gets `403 agent_not_allowed`, so a
+misheard id can't prompt, answer or close an agent you started by hand elsewhere. To
+keep agents in some folders off limits, leave those folders out of the allowed roots.
 
 ## Starting agents
 
