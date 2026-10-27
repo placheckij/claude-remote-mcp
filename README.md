@@ -31,6 +31,8 @@ You need:
 - [herdr](https://github.com/ogulcancelik/herdr) 0.8.0+ and Claude Code on the agent
   host;
 - [uv](https://docs.astral.sh/uv/) on both hosts;
+- an agent host that stays awake and logged in while you use it (see
+  [Keeping the agent host available](agent-bridge/README.md#keeping-the-agent-host-available));
 - a Cloudflare account (the Free plan is fine) with a domain whose DNS is on Cloudflare;
 - a Claude plan with custom connectors, and the **Request headers** option in the Add
   custom connector dialog. That option is a beta that only some accounts have; without
