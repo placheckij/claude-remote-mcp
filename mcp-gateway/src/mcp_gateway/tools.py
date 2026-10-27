@@ -143,7 +143,7 @@ def build_server(settings: Settings, bridge: AgentBridge) -> MCPServer:
             # Not a tool error: the keys did go through, and answering again would answer
             # the agent's next question.
             return (
-                f"{sent} Couldn't confirm what happened next: {error} "
+                f"{sent} Couldn't confirm what happened next: {str(error).rstrip('.')}. "
                 "Check with agent_details before answering again."
             )
         return f"{sent}\n{report(result, wait_seconds)}"
