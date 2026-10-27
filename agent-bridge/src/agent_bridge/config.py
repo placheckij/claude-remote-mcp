@@ -67,7 +67,7 @@ class Settings(BaseSettings):
     def _resolve_roots(cls, roots: tuple[Path, ...]) -> tuple[Path, ...]:
         if not roots:
             raise ValueError("must list at least one directory")
-        return tuple(root.expanduser().resolve() for root in roots)
+        return tuple(narrow_folder(root) for root in roots)
 
     @field_validator("claude_args", mode="before")
     @classmethod
@@ -84,6 +84,13 @@ class Settings(BaseSettings):
     def _expand(cls, path: Path | None) -> Path | None:
         return path.expanduser() if path else None
 
+    @field_validator("trust_root")
+    @classmethod
+    def _narrow_trust_root(cls, path: Path | None) -> Path | None:
+        if path:
+            narrow_folder(path)
+        return path
+
     def claude_env(self) -> dict[str, str]:
         if self.claude_config_dir is None:
             return {}
@@ -92,6 +99,24 @@ class Settings(BaseSettings):
     def is_allowed(self, path: Path) -> bool:
         resolved = path.expanduser().resolve()
         return any(resolved.is_relative_to(root) for root in self.allowed_roots)
+
+
+def narrow_folder(folder: Path) -> Path:
+    """`folder` resolved, if it is absolute and narrower than the home folder.
+
+    "/" or the home folder (or anything above it) as a root would let agents start, or be
+    trusted, anywhere. A relative path would resolve against the service's working folder,
+    which is "/" under launchd.
+    """
+    if not folder.expanduser().is_absolute():
+        raise ValueError(f"{folder} must be an absolute path")
+    resolved = folder.expanduser().resolve()
+    home = Path.home().resolve()
+    if home.is_relative_to(resolved):
+        raise ValueError(
+            f"{resolved} is too broad: use a projects folder, not / or the home folder itself"
+        )
+    return resolved
 
 
 def describe(error: ValidationError, prefix: str) -> str:

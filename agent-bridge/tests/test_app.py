@@ -471,15 +471,23 @@ def test_start_trusts_folders_under_the_trust_root(root: Path) -> None:
     assert trusted == {str((root / "project").resolve()): {"hasTrustDialogAccepted": True}}
 
 
+def separate_home(root: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """A home folder next to `root`, not containing it: an allowed root may not be home."""
+    home = root.parent / f"{root.name}-home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    return home
+
+
 def test_start_refuses_when_config_is_the_default_one(
     root: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setenv("HOME", str(root))
-    (root / ".claude").mkdir()
-    (root / ".claude" / ".claude.json").write_text("{}")
+    home = separate_home(root, monkeypatch)
+    (home / ".claude").mkdir()
+    (home / ".claude" / ".claude.json").write_text("{}")
     runner = FakeRunner(start_responses(trust_dialog=False))
     response = client(
-        runner, root, trust_root=root, claude_config_dir=root / ".claude"
+        runner, root, trust_root=root, claude_config_dir=home / ".claude"
     ).post("/agents", headers=AUTH, json={"cwd": str(root / "project"), "name": "probe"})
     assert response.status_code == 409
     assert response.json()["error"]["code"] == "trust_refused"
@@ -490,15 +498,15 @@ def test_start_refuses_to_trust_without_a_separate_config(
     root: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     # No config dir means agents use the default config, which is never edited.
-    monkeypatch.setenv("HOME", str(root))
-    (root / ".claude.json").write_text("{}")
+    home = separate_home(root, monkeypatch)
+    (home / ".claude.json").write_text("{}")
     runner = FakeRunner(start_responses(trust_dialog=False))
     response = client(runner, root, trust_root=root).post(
         "/agents", headers=AUTH, json={"cwd": str(root / "project"), "name": "probe"}
     )
     assert response.status_code == 409
     assert response.json()["error"]["code"] == "trust_refused"
-    assert (root / ".claude.json").read_text() == "{}"
+    assert (home / ".claude.json").read_text() == "{}"
     assert not runner.called("workspace", "create")
 
 
