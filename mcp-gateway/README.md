@@ -137,8 +137,13 @@ It must be 32+ characters from `A-Z a-z 0-9 . _ ~ + / -`, optionally ending in `
 (`openssl rand -hex 32` makes one).
 
 On the first run `cloudflared tunnel login` prints a URL. Open it in any browser, log in
-to Cloudflare and pick the zone (domain) for `PUBLIC_HOST`. The script waits until you
-do.
+to Cloudflare and pick the zone (domain) that contains `PUBLIC_HOST`: `example.com` for
+`mcp.example.com`. The script waits until you do. The DNS record is created in the zone
+picked here; in any other zone the name comes out wrong (e.g.
+`mcp.example.com.other.org`). If that happened, delete that record in the dashboard,
+delete `/etc/cloudflared/cert.pem` and re-run to log in again. A cert left in
+`/root/.cloudflared/` by an earlier `cloudflared tunnel login` is used instead of logging
+in.
 
 At the end it checks that mcp-gateway is up, that agent-bridge answers with its token, and
 that the tunnel answers `401` without the token and `404` outside `/mcp`. Then it prints
@@ -209,9 +214,8 @@ sudo TUNNEL_ORIGIN_CERT=/etc/cloudflared/cert.pem cloudflared tunnel delete clau
 sudo rm -rf /opt/claude-remote-mcp /etc/mcp-gateway
 sudo rm -f /etc/cloudflared/claude-remote.json /etc/cloudflared/claude-remote.yml
 
-# 4. Remove the service users
+# 4. Remove the service user
 sudo userdel mcp-gateway
-sudo userdel cloudflared
 ```
 
 Then:
@@ -221,12 +225,18 @@ Then:
 - **claude.ai:** remove the custom connector (Customize → Connectors).
 - **Cloudflare Access**, if you set it up: delete the application and the service token
   in Zero Trust.
-- **Only if nothing else on the host uses them:** the Cloudflare login cert, cloudflared
-  itself and uv.
+- **Only if nothing else on the host uses them:** the Cloudflare login cert, the
+  `cloudflared` user, cloudflared itself, and uv with root's uv cache. The script reuses
+  a `cloudflared` user that already exists, so check first that no other service runs as
+  it: `ps -u cloudflared` and `grep -rl '^User=cloudflared' /etc/systemd/system` should
+  find nothing.
   ```sh
   sudo rm -f /etc/cloudflared/cert.pem
+  sudo rmdir /etc/cloudflared /root/.cloudflared   # only removed if empty
+  sudo userdel cloudflared
   sudo apt-get remove cloudflared
   sudo rm /etc/apt/sources.list.d/cloudflared.list /usr/share/keyrings/cloudflare-main.gpg
+  sudo rm -rf /root/.cache/uv
   sudo rm /usr/local/bin/uv /usr/local/bin/uvx
   ```
   Treat the cert like a password while it exists: it can create tunnels and DNS
