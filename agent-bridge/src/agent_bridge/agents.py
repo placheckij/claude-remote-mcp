@@ -43,7 +43,7 @@ class AgentService:
         # herdr types the text and presses Enter; on a pending question that Enter picks
         # the highlighted answer (often "Yes") and the text is lost. The agent could still
         # turn blocked between this check and the prompt; that window is accepted.
-        if (await self.get_agent(agent_id)).status == "blocked":
+        if (await self._controllable(agent_id)).status == "blocked":
             raise BridgeError(
                 409,
                 "agent_blocked",
@@ -61,6 +61,7 @@ class AgentService:
         return await self._settle(agent_id, waiting, lines)
 
     async def send_keys(self, agent_id: str, keys: list[str]) -> None:
+        await self._controllable(agent_id)
         await self.herdr.send_keys(agent_id, keys)
 
     async def start_agent(self, cwd: str, name: str) -> AgentSummary:
@@ -79,7 +80,23 @@ class AgentService:
         return summarize(agent)
 
     async def stop_agent(self, agent_id: str) -> None:
+        # Looking the agent up first also refuses panes that aren't agents (a shell, a dev
+        # server): herdr answers agent_not_found, a 404.
+        await self._controllable(agent_id)
         await self.herdr.close_pane(agent_id)
+
+    async def _controllable(self, agent_id: str) -> AgentSummary:
+        """The agent, if it works under the allowed roots. Every herdr agent can be read,
+        but only those may be prompted, answered or stopped."""
+        agent = await self.get_agent(agent_id)
+        if not agent.cwd or not self.settings.is_allowed(Path(agent.cwd)):
+            raise BridgeError(
+                403,
+                "agent_not_allowed",
+                f"Agent {agent_id} works in {agent.cwd or 'an unknown folder'}, outside the "
+                "allowed folders, so it can be read but not prompted, answered or stopped.",
+            )
+        return agent
 
     def _timeout_ms(self, timeout_s: int | None) -> int:
         return timeout_s * 1000 if timeout_s else self.settings.prompt_timeout_ms
