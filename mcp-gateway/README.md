@@ -70,9 +70,18 @@ What stands between the internet and an agent:
    (including `/healthz`) gets a 404 at the edge.
 3. **Bearer token.** mcp-gateway refuses any request without
    `Authorization: Bearer <MCP_GATEWAY_TOKEN>`. The word `Bearer` may be in any case;
-   the token must match exactly (constant-time compare).
-4. **Host and Origin check.** Only `MCP_GATEWAY_PUBLIC_HOST` (and localhost) and the
-   `https://claude.ai` origin are accepted (DNS-rebinding protection from the SDK).
+   the token must match exactly (constant-time compare). The 401 says
+   `WWW-Authenticate: Bearer`, and each refusal is logged with the request's headers,
+   secrets redacted.
+4. **Host and Origin check.** Only `MCP_GATEWAY_PUBLIC_HOST` (and localhost) is
+   accepted as `Host`, and only `https://claude.ai` or `https://claude.com` as `Origin`
+   (a request without one is fine). This is DNS-rebinding protection from the SDK. A
+   refused Origin with the right token is logged as an error: if it is the Claude app,
+   every call fails until that Origin is added to `ALLOWED_ORIGINS` in
+   `src/mcp_gateway/server.py`.
+
+`GET /mcp` answers `405`: the server is stateless and never pushes anything on a GET
+stream, so clients use POST only, as the MCP spec allows.
 5. **agent-bridge's own limits.** A separate token, a project-folder allowlist, the
    10-agent limit, and folder trust only under its trust root, never in the default
    Claude config.

@@ -345,3 +345,79 @@ def test_unreachable_agent_host_is_reported_plainly(client: TestClient, fake: Fa
     fake.down = True
     is_error, text = call_tool(client, "list_agents")
     assert is_error and text.endswith("The agent host is not reachable (ConnectError).")
+
+
+# --- Transport edges ------------------------------------------------------------------
+
+
+def test_401_names_the_bearer_scheme(client: TestClient) -> None:
+    # The MCP spec says a 401 MUST carry WWW-Authenticate.
+    response = rpc(client, "tools/list", headers={**MCP_HEADERS, "Authorization": "Bearer wrong"})
+    assert (response.status_code, response.headers["www-authenticate"]) == (401, "Bearer")
+
+
+def response_start(client: TestClient, method: str, headers: dict[str, str]) -> dict:
+    """The status line and headers of a response that may never end (an SSE stream): the
+    request is sent straight to the app, which is told the client left once it answered."""
+    import anyio
+
+    async def run() -> dict:
+        answered = anyio.Event()
+        started: dict = {}
+        requested = False
+
+        async def receive() -> dict:
+            nonlocal requested
+            if not requested:
+                requested = True
+                return {"type": "http.request", "body": b"", "more_body": False}
+            await answered.wait()
+            return {"type": "http.disconnect"}
+
+        async def send(message: dict) -> None:
+            if message["type"] == "http.response.start":
+                started.update(message)
+                answered.set()
+
+        scope = {
+            "type": "http", "asgi": {"version": "3.0"}, "http_version": "1.1", "method": method,
+            "scheme": "https", "path": "/mcp", "raw_path": b"/mcp", "query_string": b"", "root_path": "",
+            "headers": [(name.lower().encode(), value.encode()) for name, value in headers.items()],
+            "client": ("testclient", 50000), "server": (HOST, 443), "state": {},
+        }
+        with anyio.fail_after(5):
+            await client.app(scope, receive, send)
+        return started
+
+    return client.portal.call(run)
+
+
+def test_get_answers_405_instead_of_an_idle_stream(client: TestClient) -> None:
+    # Stateless mode never sends anything on a GET stream; it would only hold a task open.
+    # The spec lets a server answer 405 instead, and clients then carry on with POST alone.
+    start = response_start(client, "GET", {**MCP_HEADERS, "Accept": "text/event-stream"})
+    assert start["status"] == 405
+    assert (b"allow", b"POST") in start["headers"]
+
+
+@pytest.mark.parametrize("origin", ["https://claude.ai", "https://claude.com"])
+def test_accepts_claude_origins(client: TestClient, origin: str) -> None:
+    assert rpc(client, "tools/list", headers={**MCP_HEADERS, "Origin": origin}).status_code == 200
+
+
+def test_logs_a_refused_origin_as_an_error(client: TestClient, caplog: pytest.LogCaptureFixture) -> None:
+    # The token was right, so this is most likely the Claude app itself and every call fails:
+    # the log must say so plainly.
+    with caplog.at_level("WARNING", logger="mcp_gateway"):
+        response = rpc(client, "tools/list", headers={**MCP_HEADERS, "Origin": "https://evil.example"})
+    assert response.status_code == 403
+    (record,) = [record for record in caplog.records if record.name.startswith("mcp_gateway")]
+    assert record.levelname == "ERROR"
+    assert record.getMessage().startswith("403 POST /mcp: Origin 'https://evil.example' is not allowed")
+
+
+def test_closes_the_agent_bridge_client_on_shutdown() -> None:
+    http = httpx.AsyncClient(base_url=SETTINGS.bridge_url, transport=httpx.MockTransport(FakeAgentBridge({})))
+    with TestClient(create_app(SETTINGS, AgentBridge(http)), base_url=f"https://{HOST}"):
+        assert not http.is_closed
+    assert http.is_closed

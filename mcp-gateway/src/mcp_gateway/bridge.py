@@ -69,6 +69,9 @@ class AgentBridge:
     async def stop_agent(self, agent_id: str) -> None:
         await self._request("DELETE", f"/agents/{agent_id}")
 
+    async def aclose(self) -> None:
+        await self.client.aclose()
+
 
 def _message(response: httpx.Response) -> str:
     try:
