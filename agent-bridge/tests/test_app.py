@@ -79,6 +79,12 @@ def test_rejects_missing_and_wrong_token(root: Path) -> None:
         assert response.json()["error"]["code"] == "unauthorized"
 
 
+@pytest.mark.parametrize("path", ["/docs", "/redoc", "/openapi.json", "/docs/oauth2-redirect"])
+def test_api_docs_are_not_served(root: Path, path: str) -> None:
+    # FastAPI's doc routes skip app-level dependencies, so they would answer without a token.
+    assert client(FakeRunner({}), root).get(path).status_code == 404
+
+
 def test_lists_agents_as_summaries(root: Path) -> None:
     runner = FakeRunner({("agent", "list"): ok({"agents": [agent()]})})
     response = client(runner, root).get("/agents", headers=AUTH)
