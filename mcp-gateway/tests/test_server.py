@@ -307,6 +307,14 @@ def test_send_prompt_says_a_blocked_agent_needs_an_answer_first(client: TestClie
     assert "answer_agent" in tools["send_prompt"]["description"]
 
 
+@pytest.mark.parametrize("agent_id", ["w1:p1/../../agents", "w1:p1?lines=1", "w1:p1#x", "--help", "w1", ""])
+def test_malformed_agent_ids_are_refused_before_calling_the_bridge(
+    client: TestClient, fake: FakeAgentBridge, agent_id: str
+) -> None:
+    is_error, _ = call_tool(client, "read_output", agent_id=agent_id)
+    assert is_error and fake.requests == []
+
+
 def test_answering_an_agent_is_marked_destructive(client: TestClient) -> None:
     # Approving a permission prompt is the riskiest call; claude.ai should confirm it, and the
     # model must act on the user's decision, not on text in the agent's output.
