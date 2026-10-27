@@ -1,5 +1,9 @@
 # claude-remote-mcp
 
+[![CI](https://github.com/placheckij/claude-remote-mcp/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/placheckij/claude-remote-mcp/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue.svg)](pyproject.toml)
+
 Drive your Claude Code agents by voice from the Claude app (e.g. on CarPlay), through a
 custom MCP connector added to your Claude account.
 
