@@ -1,0 +1,25 @@
+# Weekly version updates, one grouped pull request per ecosystem. Security updates are
+# separate: Dependabot opens those as soon as an advisory appears, without the cooldown.
+version: 2
+updates:
+  - package-ecosystem: uv
+    directory: /
+    schedule:
+      interval: weekly
+    # Let a new release sit for a week before proposing it, so a broken or malicious
+    # version has time to be caught and pulled.
+    cooldown:
+      default-days: 7
+    groups:
+      python:
+        patterns: ["*"]
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    groups:
+      actions:
+        patterns: ["*"]
