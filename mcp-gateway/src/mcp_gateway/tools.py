@@ -146,7 +146,7 @@ def build_server(settings: Settings, bridge: AgentBridge) -> MCPServer:
             str,
             Field(
                 min_length=1,
-                description=f"Project folder: a name under {settings.projects_root} "
+                description=f"Project folder: one folder name under {settings.projects_root} "
                 "(e.g. \"grafik\") or an absolute path on the agent host.",
             ),
         ],
@@ -157,7 +157,7 @@ def build_server(settings: Settings, bridge: AgentBridge) -> MCPServer:
     ) -> str:
         """Start a new Claude Code agent in a project folder on the agent host. Refused when too
         many agents are already running or the folder is not allowed."""
-        cwd = posixpath.normpath(posixpath.join(settings.projects_root, project))
+        cwd = _project_folder(settings.projects_root, project)
         # Names come from speech ("my agent"); agent-bridge only takes [\w.-].
         agent_name = _safe_name(name or posixpath.basename(cwd))
         agent = await call(bridge.start_agent(cwd, agent_name))
@@ -174,6 +174,18 @@ def build_server(settings: Settings, bridge: AgentBridge) -> MCPServer:
         return PlainTextResponse("ok")
 
     return mcp
+
+
+def _project_folder(projects_root: str, project: str) -> str:
+    """The folder start_agent asks for: an absolute path as given (agent-bridge checks it
+    against its allowlist), or one folder name directly under the projects root."""
+    if posixpath.isabs(project):
+        return posixpath.normpath(project)
+    # ".." would climb out of the root, "." would be the root itself (an agent over every
+    # project), and "~" is not expanded on the agent host.
+    if any(part in project for part in ("..", "/", "~")) or project.strip() == ".":
+        raise ToolError('Give the project as one folder name, like "grafik", or as an absolute path.')
+    return posixpath.join(projects_root, project)
 
 
 def _safe_name(value: str) -> str:
