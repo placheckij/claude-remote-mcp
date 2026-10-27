@@ -109,23 +109,27 @@ git clone <this repo> ~/claude-remote-mcp
 cd ~/claude-remote-mcp
 sudo PUBLIC_HOST=mcp.example.com \
      AGENT_BRIDGE_URL=http://192.168.1.20:8765 \
-     AGENT_BRIDGE_TOKEN='<AGENT_BRIDGE_TOKEN from the agent host>' \
      PROJECTS_ROOT=/home/me/projects \
      mcp-gateway/deploy/setup.sh
 ```
 
-Values left out are asked for. Optional variables: `TUNNEL_NAME` (default
-`claude-remote`), `PORT` (default `8766`), `ROTATE_TOKEN=1`, and `MCP_GATEWAY_TOKEN`.
+It asks for agent-bridge's token (`AGENT_BRIDGE_TOKEN` from the agent host) without
+showing it. Keep tokens out of the command itself: there they end up in your shell
+history and, while the script runs, in the process list that other users on the host
+can read. Other values left out are asked for too. Optional variables: `TUNNEL_NAME`
+(default `claude-remote`), `PORT` (default `8766`), `ROTATE_TOKEN=1`, and
+`MCP_GATEWAY_TOKEN`.
 
 The script generates the connector token (`MCP_GATEWAY_TOKEN`) itself. To use one you
-already have instead, e.g. when moving to a new gateway host, add it to the command:
+already have instead, e.g. when moving to a new gateway host, read it without echoing
+and pass it through sudo's environment:
 
 ```sh
-sudo PUBLIC_HOST=mcp.example.com \
+read -rsp 'Connector token: ' MCP_GATEWAY_TOKEN && export MCP_GATEWAY_TOKEN && echo
+sudo --preserve-env=MCP_GATEWAY_TOKEN \
+     PUBLIC_HOST=mcp.example.com \
      AGENT_BRIDGE_URL=http://192.168.1.20:8765 \
-     AGENT_BRIDGE_TOKEN='<AGENT_BRIDGE_TOKEN from the agent host>' \
      PROJECTS_ROOT=/home/me/projects \
-     MCP_GATEWAY_TOKEN='<your connector token>' \
      mcp-gateway/deploy/setup.sh
 ```
 
