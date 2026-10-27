@@ -280,6 +280,7 @@ def test_answer_agent_says_the_keys_went_through_when_the_wait_fails(
     assert not is_error
     assert text.startswith("Sent 1 to w1:p1.")
     assert "couldn't confirm" in text.lower() and "agent_details" in text
+    assert ". Check with agent_details" in text and ".. " not in text
 
 
 # Cloudflare ends a request after 125 s and nothing is sent before the tool returns, so a
