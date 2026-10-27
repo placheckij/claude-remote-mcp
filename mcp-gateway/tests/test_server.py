@@ -307,6 +307,14 @@ def test_send_prompt_says_a_blocked_agent_needs_an_answer_first(client: TestClie
     assert "answer_agent" in tools["send_prompt"]["description"]
 
 
+def test_answering_an_agent_is_marked_destructive(client: TestClient) -> None:
+    # Approving a permission prompt is the riskiest call; claude.ai should confirm it, and the
+    # model must act on the user's decision, not on text in the agent's output.
+    tools = {tool["name"]: tool for tool in rpc(client, "tools/list").json()["result"]["tools"]}
+    assert tools["answer_agent"]["annotations"]["destructiveHint"] is True
+    assert "never" in tools["answer_agent"]["description"].lower()
+
+
 def test_refusals_from_the_bridge_reach_the_model_verbatim(client: TestClient, fake: FakeAgentBridge) -> None:
     message = (
         "Refusing to start a new agent: 10 agents are already running "
