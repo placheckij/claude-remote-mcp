@@ -3,6 +3,7 @@ name = "claude-remote-mcp"
 version = "0.1.0"
 description = "Voice-driven remote control of Claude Code sessions via a custom MCP connector"
 requires-python = ">=3.11"
+license = "MIT"
 
 [tool.uv]
 package = false

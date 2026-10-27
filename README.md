@@ -51,3 +51,7 @@ uv sync --all-packages
 uv run --package agent-bridge pytest agent-bridge
 uv run --package mcp-gateway pytest mcp-gateway
 ```
+
+## License
+
+[MIT](LICENSE)
