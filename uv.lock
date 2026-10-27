@@ -196,6 +196,16 @@ wheels = [
 name = "claude-remote-mcp"
 version = "0.1.0"
 source = { virtual = "." }
+dependencies = [
+    { name = "agent-bridge" },
+    { name = "mcp-gateway" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "agent-bridge", editable = "agent-bridge" },
+    { name = "mcp-gateway", editable = "mcp-gateway" },
+]
 
 [[package]]
 name = "click"

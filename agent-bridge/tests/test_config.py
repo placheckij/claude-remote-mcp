@@ -49,9 +49,12 @@ def test_refuses_a_trust_root_without_a_separate_config(env: pytest.MonkeyPatch,
 def test_refuses_the_default_config_as_the_separate_one(
     env: pytest.MonkeyPatch, tmp_path: Path, config_dir: str
 ) -> None:
-    env.setenv("HOME", str(tmp_path))
-    (tmp_path / config_dir).mkdir(parents=True, exist_ok=True)
-    env.setenv("AGENT_BRIDGE_CLAUDE_CONFIG_DIR", str(tmp_path / config_dir))
+    # The allowed root must not be the home folder itself, so keep them apart.
+    home = tmp_path / "home"
+    env.setenv("HOME", str(home))
+    env.setenv("AGENT_BRIDGE_ALLOWED_ROOTS", str(tmp_path / "projects"))
+    (home / config_dir).mkdir(parents=True, exist_ok=True)
+    env.setenv("AGENT_BRIDGE_CLAUDE_CONFIG_DIR", str(home / config_dir))
     with pytest.raises(RuntimeError, match="AGENT_BRIDGE_CLAUDE_CONFIG_DIR.*default Claude config"):
         Settings.from_env()
 
@@ -111,3 +114,30 @@ def test_required_settings_must_be_set(env: pytest.MonkeyPatch, name: str) -> No
     env.delenv(name)
     with pytest.raises(RuntimeError, match=f"{name}: must be set"):
         Settings.from_env()
+
+
+@pytest.mark.parametrize("variable", ["AGENT_BRIDGE_ALLOWED_ROOTS", "AGENT_BRIDGE_TRUST_ROOT"])
+@pytest.mark.parametrize("root", ["/", "{home}", "{home}/..", "projects", "./projects"])
+def test_refuses_roots_that_are_too_broad_or_relative(
+    env: pytest.MonkeyPatch, tmp_path: Path, variable: str, root: str
+) -> None:
+    # "/" or the home folder would let agents start (or be trusted) anywhere; a relative
+    # path would resolve against launchd's working folder, which is "/".
+    home = tmp_path / "home" / "me"
+    home.mkdir(parents=True)
+    env.setenv("HOME", str(home))
+    env.setenv("AGENT_BRIDGE_CLAUDE_CONFIG_DIR", str(home / ".claude-agents"))
+    env.setenv(variable, root.format(home=home))
+    with pytest.raises(RuntimeError, match=variable):
+        Settings.from_env()
+
+
+def test_accepts_a_project_folder_under_home(env: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    home = tmp_path / "home" / "me"
+    (home / "projects").mkdir(parents=True)
+    env.setenv("HOME", str(home))
+    env.setenv("AGENT_BRIDGE_ALLOWED_ROOTS", "~/projects")
+    env.setenv("AGENT_BRIDGE_CLAUDE_CONFIG_DIR", str(home / ".claude-agents"))
+    env.setenv("AGENT_BRIDGE_TRUST_ROOT", str(home / "projects"))
+    settings = Settings.from_env()
+    assert settings.allowed_roots == ((home / "projects").resolve(),)
