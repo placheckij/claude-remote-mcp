@@ -1,0 +1,48 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  tests:
+    name: tests (${{ matrix.os }}, Python ${{ matrix.python }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # macOS too: its case-insensitive disk is what the folder-trust tests guard against.
+        os: [ubuntu-latest, macos-latest]
+        python: ["3.11", "3.13"]
+    env:
+      UV_PYTHON: ${{ matrix.python }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install uv
+        run: pipx install uv==0.11.15
+      - name: Install dependencies
+        run: uv sync --all-packages --frozen
+      - name: agent-bridge tests
+        run: uv run --frozen --package agent-bridge pytest agent-bridge
+      - name: mcp-gateway tests
+        run: uv run --frozen --package mcp-gateway pytest mcp-gateway
+
+  shellcheck:
+    name: shellcheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Check the setup scripts
+        run: shellcheck mcp-gateway/deploy/setup.sh agent-bridge/deploy/setup-macos.sh
