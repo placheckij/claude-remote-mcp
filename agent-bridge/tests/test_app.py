@@ -85,6 +85,18 @@ def test_api_docs_are_not_served(root: Path, path: str) -> None:
     assert client(FakeRunner({}), root).get(path).status_code == 404
 
 
+@pytest.mark.parametrize("agent_id", ["--help", "-h", "w1", "w1:p1;x", "p1:w1", "w1:p1:p2", "w 1:p1"])
+def test_malformed_agent_ids_never_reach_herdr(root: Path, agent_id: str) -> None:
+    # A leading "-" would reach herdr's argv as an option.
+    runner = FakeRunner({})
+    c = client(runner, root)
+    for method, path in [("GET", ""), ("GET", "/output"), ("POST", "/keys"), ("DELETE", "")]:
+        body = {"keys": ["1"]} if path == "/keys" else None
+        response = c.request(method, f"/agents/{agent_id}{path}", headers=AUTH, json=body)
+        assert response.status_code == 422, (method, path, response.text)
+    assert runner.calls == []
+
+
 def test_lists_agents_as_summaries(root: Path) -> None:
     runner = FakeRunner({("agent", "list"): ok({"agents": [agent()]})})
     response = client(runner, root).get("/agents", headers=AUTH)
