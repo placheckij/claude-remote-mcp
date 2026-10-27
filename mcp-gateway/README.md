@@ -36,9 +36,9 @@ prefix.
 
 | Tool | Does |
 |---|---|
-| `list_agents` | one line per agent: id · name · status · folder |
+| `list_agents` | one line per agent: id · name · status · folder (a folder under `MCP_GATEWAY_PROJECTS_ROOT` by its name there, e.g. `grafik`) |
 | `agent_details` | the same line for one agent |
-| `read_output` | last N meaningful terminal lines (default 20) |
+| `read_output` | last N meaningful terminal lines (default 20, at most 60; the same for `lines` on the waiting tools) |
 | `send_prompt` | prompt, wait up to `wait_seconds` (default 90, at most 100), return status + output; flags `blocked` and still-working. A `blocked` agent refuses prompts until its question is answered |
 | `wait_for_agent` | keep waiting for an agent still working (e.g. after `send_prompt` ran out of time); same result format |
 | `answer_agent` | key presses for a blocked agent's question, e.g. `["1"]`, `["Enter"]`; with `wait_seconds` also waits for the result. Marked destructive, so Claude asks first |

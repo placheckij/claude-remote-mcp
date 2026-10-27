@@ -189,7 +189,7 @@ def test_list_agents_is_one_line_per_agent(client: TestClient, fake: FakeAgentBr
     fake.routes[("GET", "/agents")] = httpx.Response(200, json=[AGENT])
     assert call_tool(client, "list_agents") == (
         False,
-        "1 agents:\nw1:p1 · grafik · idle · /home/me/projects/grafik",
+        "1 agent:\nw1:p1 · grafik · idle · grafik",
     )
 
 
@@ -366,6 +366,40 @@ def test_unreachable_agent_host_is_reported_plainly(client: TestClient, fake: Fa
     fake.down = True
     is_error, text = call_tool(client, "list_agents")
     assert is_error and text.endswith("The agent host is not reachable (ConnectError). It may be asleep or offline.")
+
+
+def test_folders_are_named_relative_to_the_projects_root(client: TestClient, fake: FakeAgentBridge) -> None:
+    # Read aloud, "/home/me/projects/grafik" after every agent is noise; the name under the
+    # projects root is what the user said when starting it. Other folders keep their path.
+    fake.routes[("GET", "/agents")] = httpx.Response(200, json=[
+        {**AGENT, "cwd": "/home/me/projects/grafik/api"},
+        {**AGENT, "id": "w2:p1", "name": "notes", "cwd": "/home/me/projects-old/notes"},
+        {**AGENT, "id": "w3:p1", "name": "root", "cwd": "/home/me/projects"},
+    ])
+    assert call_tool(client, "list_agents") == (
+        False,
+        "3 agents:\n"
+        "w1:p1 · grafik · idle · grafik/api\n"
+        "w2:p1 · notes · idle · /home/me/projects-old/notes\n"
+        "w3:p1 · root · idle · /home/me/projects",
+    )
+    fake.routes[("POST", "/agents/w1:p1/wait")] = httpx.Response(
+        200, json={"agent": AGENT, "output": {"text": "", "truncated": False}, "timed_out": False}
+    )
+    assert "\nw1:p1 · grafik · idle · grafik\n" in call_tool(client, "wait_for_agent", agent_id="w1:p1")[1]
+
+
+@pytest.mark.parametrize(
+    ("tool", "arguments"),
+    [("read_output", {}), ("send_prompt", {"text": "hi"}), ("wait_for_agent", {}),
+     ("answer_agent", {"keys": ["1"], "wait_seconds": 30})],
+)
+def test_output_is_capped_at_60_lines(client: TestClient, fake: FakeAgentBridge, tool: str, arguments: dict) -> None:
+    # Output is read aloud; 200 lines (up to 8000 characters) is far more than anyone listens to.
+    is_error, _ = call_tool(client, tool, agent_id="w1:p1", lines=61, **arguments)
+    assert is_error and fake.requests == []
+    tools = {tool["name"]: tool for tool in rpc(client, "tools/list").json()["result"]["tools"]}
+    assert tools[tool]["inputSchema"]["properties"]["lines"]["maximum"] == 60
 
 
 def test_a_sleeping_agent_host_is_reported_within_seconds(client: TestClient, fake: FakeAgentBridge) -> None:
