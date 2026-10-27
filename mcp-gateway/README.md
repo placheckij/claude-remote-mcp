@@ -116,9 +116,10 @@ sudo PUBLIC_HOST=mcp.example.com \
 It asks for agent-bridge's token (`AGENT_BRIDGE_TOKEN` from the agent host) without
 showing it. Keep tokens out of the command itself: there they end up in your shell
 history and, while the script runs, in the process list that other users on the host
-can read. Other values left out are asked for too. Optional variables: `TUNNEL_NAME`
-(default `claude-remote`), `PORT` (default `8766`), `ROTATE_TOKEN=1`, and
-`MCP_GATEWAY_TOKEN`.
+can read. Other values left out are asked for too; on later runs they come from
+`/etc/mcp-gateway/env` instead (see [Update and rotate](#update-and-rotate)). Optional
+variables: `TUNNEL_NAME` (default `claude-remote`), `PORT` (default `8766`),
+`ROTATE_TOKEN=1`, and `MCP_GATEWAY_TOKEN`.
 
 The script generates the connector token (`MCP_GATEWAY_TOKEN`) itself. To use one you
 already have instead, e.g. when moving to a new gateway host, read it without echoing
@@ -161,14 +162,26 @@ hostname can take a minute; if only the tunnel checks fail, try again shortly:
 
 ### Update and rotate
 
-- **Update the code:** `git pull` in the checkout, then re-run the script. It keeps the
-  token and reuses the tunnel. Only committed code is installed.
+- **Update the code:** `git pull` in the checkout, then re-run the script without any
+  variables: `sudo mcp-gateway/deploy/setup.sh`. It takes `PUBLIC_HOST`,
+  `AGENT_BRIDGE_URL`, `AGENT_BRIDGE_TOKEN` and `PROJECTS_ROOT` from
+  `/etc/mcp-gateway/env` and lists the ones it keeps (tokens not shown), keeps the
+  connector token and reuses the tunnel. Only committed code is installed.
 - **Rotate the connector token:** re-run with `ROTATE_TOKEN=1`, then remove the
   connector in claude.ai and add it again with the new token. Request headers can't be
   edited once a connector is added.
 - **Set the connector token yourself:** re-run with `MCP_GATEWAY_TOKEN=…`. Later runs
   keep it. If it differs from the one in claude.ai, re-add the connector there too.
-- **Change agent-bridge's URL or token, or the projects folder:** re-run with the new values.
+- **Change agent-bridge's URL or token, or the projects folder:** re-run with just the
+  values that change; the rest are kept:
+  ```sh
+  sudo AGENT_BRIDGE_URL=http://192.168.1.21:8765 mcp-gateway/deploy/setup.sh
+  ```
+  For a new agent-bridge token, export it as shown for `MCP_GATEWAY_TOKEN` above and
+  pass it with `sudo --preserve-env=AGENT_BRIDGE_TOKEN`.
+- **Change the hostname:** re-run with the new `PUBLIC_HOST`. It gets a new DNS record;
+  delete the old one in the Cloudflare dashboard, and re-add the connector in claude.ai
+  with the new URL.
 - **Logs:** `journalctl -u mcp-gateway -u cloudflared-claude-remote -f`.
 
 ### Stop, restart, uninstall
