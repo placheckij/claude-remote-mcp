@@ -64,7 +64,7 @@ fi
 
 log "Installing system packages"
 apt-get update -qq
-apt-get install -y -qq curl ca-certificates gnupg openssl rsync python3 >/dev/null
+apt-get install -y -qq curl ca-certificates gnupg openssl rsync python3 git >/dev/null
 
 if ! command -v uv >/dev/null; then
   log "Installing uv"
@@ -86,9 +86,14 @@ fi
 log "Installing mcp-gateway into $APP_DIR"
 id "$SERVICE_USER" &>/dev/null || useradd --system --no-create-home --shell /usr/sbin/nologin "$SERVICE_USER"
 install -d -m 0755 "$APP_DIR"
-rsync -a --delete --exclude /.git --exclude /.venv --exclude /python --exclude __pycache__ \
-  "$REPO_DIR/" "$APP_DIR/"
-# The code and venv stay root-owned: the service can run them but not change them.
+# Only committed files (no .env, notes or caches from the checkout), owned by root: the
+# service, and whoever owns the checkout, can run this code but not change it. The
+# checkout belongs to another user, hence safe.directory for root's git.
+STAGE="$(mktemp -d)"
+trap 'rm -rf "$STAGE"' EXIT
+git -c safe.directory="$REPO_DIR" -c tar.umask=0022 -C "$REPO_DIR" archive --format=tar HEAD | tar -x -C "$STAGE"
+chmod 0755 "$STAGE"
+rsync -a --delete --chown=root:root --exclude /.venv --exclude /python "$STAGE/" "$APP_DIR/"
 (cd "$APP_DIR" && UV_PYTHON_INSTALL_DIR="$APP_DIR/python" uv sync --frozen --no-dev --package mcp-gateway)
 
 log "Writing $ENV_FILE"

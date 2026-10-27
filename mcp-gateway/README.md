@@ -147,7 +147,7 @@ hostname can take a minute; if only the tunnel checks fail, try again shortly:
 
 | Path | |
 |---|---|
-| `/opt/claude-remote-mcp/` | a copy of the repo and its `.venv` (root-owned; the service can't modify its code) |
+| `/opt/claude-remote-mcp/` | the checkout's committed files (`HEAD`; no untracked or uncommitted changes) and their `.venv`, all owned by root, so neither the service nor the checkout's owner can change the code it runs |
 | `/etc/mcp-gateway/env` | configuration and tokens (`root:mcp-gateway`, mode 640) |
 | `/etc/systemd/system/mcp-gateway.service` | runs as the `mcp-gateway` system user on `127.0.0.1:8766`, sandboxed |
 | `/etc/cloudflared/cert.pem` | Cloudflare account cert from `tunnel login`; only needed to manage tunnels, root-only |
@@ -158,7 +158,7 @@ hostname can take a minute; if only the tunnel checks fail, try again shortly:
 ### Update and rotate
 
 - **Update the code:** `git pull` in the checkout, then re-run the script. It keeps the
-  token and reuses the tunnel.
+  token and reuses the tunnel. Only committed code is installed.
 - **Rotate the connector token:** re-run with `ROTATE_TOKEN=1`, then remove the
   connector in claude.ai and add it again with the new token. Request headers can't be
   edited once a connector is added.
