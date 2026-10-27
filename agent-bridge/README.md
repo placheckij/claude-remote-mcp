@@ -108,7 +108,8 @@ So either trust your project folders once by hand (open `claude` in them, or in 
 parent folder, and accept), or let agent-bridge do it. To turn that on, set both:
 
 - `AGENT_BRIDGE_CLAUDE_CONFIG_DIR`: a separate Claude config for the agents, e.g.
-  `~/.claude-agents` (run `CLAUDE_CONFIG_DIR=~/.claude-agents claude` once to log in);
+  `~/.claude-agents` (run `CLAUDE_CONFIG_DIR=~/.claude-agents claude` once to log in;
+  until then starts fail with `409 trust_refused` saying so);
 - `AGENT_BRIDGE_TRUST_ROOT`: the folder under which new agents' folders are marked
   trusted in `$AGENT_BRIDGE_CLAUDE_CONFIG_DIR/.claude.json`.
 

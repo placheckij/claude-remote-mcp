@@ -344,6 +344,40 @@ def test_start_rejects_paths_outside_allowed_roots(root: Path, cwd: str) -> None
     assert runner.calls == []
 
 
+def test_start_with_a_config_dir_that_has_no_login_explains_the_fix(root: Path) -> None:
+    # A fresh AGENT_BRIDGE_CLAUDE_CONFIG_DIR has no .claude.json until Claude is logged in.
+    (root / ".claude-fresh").mkdir()
+    runner = FakeRunner({("agent", "list"): ok({"agents": []})})
+    c = client(runner, root, claude_config_dir=root / ".claude-fresh", trust_root=root)
+    response = c.post("/agents", headers=AUTH, json={"cwd": str(root / "project"), "name": "x"})
+    assert response.status_code == 409
+    assert response.json()["error"]["code"] == "trust_refused"
+    assert "no Claude login yet" in response.json()["error"]["message"]
+
+
+async def missing_binary(argv) -> tuple[int, str, str]:
+    raise FileNotFoundError(2, "No such file or directory", argv[0])
+
+
+def test_a_missing_herdr_binary_is_reported_plainly(root: Path) -> None:
+    c = TestClient(create_app(
+        Settings(token=TOKEN, allowed_roots=(root.resolve(),), herdr_bin="/nowhere/herdr"),
+        Herdr(binary="/nowhere/herdr", runner=missing_binary),
+    ))
+    response = c.get("/agents", headers=AUTH)
+    assert response.status_code == 502
+    error = response.json()["error"]
+    assert error["code"] == "herdr_not_found"
+    assert "AGENT_BRIDGE_HERDR_BIN" in error["message"]
+
+
+def test_output_from_herdr_that_is_not_json_is_reported_plainly(root: Path) -> None:
+    runner = FakeRunner({("agent", "list"): (0, "Usage: herdr agent list [OPTIONS]\n", "")})
+    response = client(runner, root).get("/agents", headers=AUTH)
+    assert response.status_code == 502
+    assert response.json()["error"]["code"] == "bad_output"
+
+
 CONTROL = [
     ("POST", "/agents/w1:p1/prompt", {"text": "hi"}, ("agent", "prompt")),
     ("POST", "/agents/w1:p1/keys", {"keys": ["1"]}, ("agent", "send-keys")),

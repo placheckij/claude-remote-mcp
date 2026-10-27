@@ -30,7 +30,7 @@ async def subprocess_runner(argv: Sequence[str]) -> tuple[int, str, str]:
         stderr=asyncio.subprocess.PIPE,
     )
     stdout, stderr = await proc.communicate()
-    return proc.returncode or 0, stdout.decode(), stderr.decode()
+    return proc.returncode or 0, stdout.decode(errors="replace"), stderr.decode(errors="replace")
 
 
 @dataclass
@@ -39,7 +39,16 @@ class Herdr:
     runner: Runner = subprocess_runner
 
     async def _run(self, *args: str) -> str:
-        code, stdout, stderr = await self.runner([self.binary, *args])
+        try:
+            code, stdout, stderr = await self.runner([self.binary, *args])
+        except FileNotFoundError:
+            raise HerdrError(
+                "herdr_not_found",
+                f"herdr was not found at {self.binary}. Install it, or set "
+                "AGENT_BRIDGE_HERDR_BIN to its full path.",
+            ) from None
+        except OSError as error:
+            raise HerdrError("herdr_not_runnable", f"herdr could not be run: {error}") from None
         if code != 0:
             # herdr writes its {"error": ...} envelope to stderr; older paths use stdout.
             raise (
@@ -53,7 +62,13 @@ class Herdr:
         stdout = await self._run(*args)
         if not stdout.strip():  # some commands (e.g. `pane run`) print nothing on success
             return {}
-        envelope = json.loads(stdout)
+        try:
+            envelope = json.loads(stdout)
+        except ValueError:
+            first_line = stdout.strip().splitlines()[0][:200]
+            raise HerdrError(
+                "bad_output", f"herdr answered with something other than JSON: {first_line}"
+            ) from None
         if "error" in envelope:
             raise HerdrError(envelope["error"]["code"], envelope["error"]["message"])
         return envelope["result"]
