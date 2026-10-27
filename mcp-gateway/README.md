@@ -39,7 +39,7 @@ agent, the last few output lines, refusals from agent-bridge passed through verb
 | `read_output` | last N meaningful terminal lines (default 20) |
 | `send_prompt` | prompt, wait up to `wait_seconds` (default 90, at most 100), return status + output; flags `blocked` and still-working. A `blocked` agent refuses prompts until its question is answered |
 | `wait_for_agent` | keep waiting for an agent still working (e.g. after `send_prompt` ran out of time); same result format |
-| `answer_agent` | key presses for a blocked agent's question, e.g. `["1"]`, `["Enter"]`; with `wait_seconds` also waits for the result |
+| `answer_agent` | key presses for a blocked agent's question, e.g. `["1"]`, `["Enter"]`; with `wait_seconds` also waits for the result. Marked destructive, so Claude asks first |
 | `start_agent` | new agent in a project: a name under `MCP_GATEWAY_PROJECTS_ROOT` or an absolute path |
 | `stop_agent` | close an agent's pane (marked destructive, so Claude asks first) |
 
@@ -109,23 +109,27 @@ git clone <this repo> ~/claude-remote-mcp
 cd ~/claude-remote-mcp
 sudo PUBLIC_HOST=mcp.example.com \
      AGENT_BRIDGE_URL=http://192.168.1.20:8765 \
-     AGENT_BRIDGE_TOKEN='<AGENT_BRIDGE_TOKEN from the agent host>' \
      PROJECTS_ROOT=/home/me/projects \
      mcp-gateway/deploy/setup.sh
 ```
 
-Values left out are asked for. Optional variables: `TUNNEL_NAME` (default
-`claude-remote`), `PORT` (default `8766`), `ROTATE_TOKEN=1`, and `MCP_GATEWAY_TOKEN`.
+It asks for agent-bridge's token (`AGENT_BRIDGE_TOKEN` from the agent host) without
+showing it. Keep tokens out of the command itself: there they end up in your shell
+history and, while the script runs, in the process list that other users on the host
+can read. Other values left out are asked for too. Optional variables: `TUNNEL_NAME`
+(default `claude-remote`), `PORT` (default `8766`), `ROTATE_TOKEN=1`, and
+`MCP_GATEWAY_TOKEN`.
 
 The script generates the connector token (`MCP_GATEWAY_TOKEN`) itself. To use one you
-already have instead, e.g. when moving to a new gateway host, add it to the command:
+already have instead, e.g. when moving to a new gateway host, read it without echoing
+and pass it through sudo's environment:
 
 ```sh
-sudo PUBLIC_HOST=mcp.example.com \
+read -rsp 'Connector token: ' MCP_GATEWAY_TOKEN && export MCP_GATEWAY_TOKEN && echo
+sudo --preserve-env=MCP_GATEWAY_TOKEN \
+     PUBLIC_HOST=mcp.example.com \
      AGENT_BRIDGE_URL=http://192.168.1.20:8765 \
-     AGENT_BRIDGE_TOKEN='<AGENT_BRIDGE_TOKEN from the agent host>' \
      PROJECTS_ROOT=/home/me/projects \
-     MCP_GATEWAY_TOKEN='<your connector token>' \
      mcp-gateway/deploy/setup.sh
 ```
 
@@ -147,7 +151,7 @@ hostname can take a minute; if only the tunnel checks fail, try again shortly:
 
 | Path | |
 |---|---|
-| `/opt/claude-remote-mcp/` | a copy of the repo and its `.venv` (root-owned; the service can't modify its code) |
+| `/opt/claude-remote-mcp/` | the checkout's committed files (`HEAD`; no untracked or uncommitted changes) and their `.venv`, all owned by root, so neither the service nor the checkout's owner can change the code it runs |
 | `/etc/mcp-gateway/env` | configuration and tokens (`root:mcp-gateway`, mode 640) |
 | `/etc/systemd/system/mcp-gateway.service` | runs as the `mcp-gateway` system user on `127.0.0.1:8766`, sandboxed |
 | `/etc/cloudflared/cert.pem` | Cloudflare account cert from `tunnel login`; only needed to manage tunnels, root-only |
@@ -158,7 +162,7 @@ hostname can take a minute; if only the tunnel checks fail, try again shortly:
 ### Update and rotate
 
 - **Update the code:** `git pull` in the checkout, then re-run the script. It keeps the
-  token and reuses the tunnel.
+  token and reuses the tunnel. Only committed code is installed.
 - **Rotate the connector token:** re-run with `ROTATE_TOKEN=1`, then remove the
   connector in claude.ai and add it again with the new token. Request headers can't be
   edited once a connector is added.

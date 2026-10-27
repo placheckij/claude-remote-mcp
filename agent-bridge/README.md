@@ -20,7 +20,41 @@ It sees and controls every herdr agent of its user, including ones started by ha
 | Claude Code | the `claude` CLI, installed and logged in for that user |
 | Python | 3.11+, via [uv](https://docs.astral.sh/uv/) (uv installs it if needed) |
 | Network | reachable from the gateway host on one TCP port (default 8765). Give the host a fixed LAN address, e.g. a DHCP reservation. Nothing is exposed to the internet. |
-| Always on | the agents and agent-bridge only answer while the host is awake and the user is logged in; keep it from sleeping (macOS: `caffeinate` or Energy settings; Linux: disable suspend) |
+| Always on | the agents and agent-bridge only answer while the host is awake and the user is logged in; see [Keeping the agent host available](#keeping-the-agent-host-available) |
+
+## Keeping the agent host available
+
+While you're away from the agent host, it has to stay **awake**, **logged in** and
+running **herdr**. If it sleeps, agent-bridge and the agents pause, and every tool call
+answers "The agent host is not reachable". The gateway host can't wake it: macOS's
+"Wake for network access" doesn't reliably wake for a plain TCP connection.
+
+**macOS**
+
+- Keep it awake on power: `sudo pmset -c sleep 0` (the display can still sleep), or
+  System Settings → Energy (on a laptop: Battery → Options) → turn on "Prevent
+  automatic sleeping when the display is off". For a single trip, `caffeinate -s` in a
+  terminal does the same until you stop it.
+- A laptop with the lid closed sleeps anyway, unless it's on power with an external
+  display. `sudo pmset -c disablesleep 1` keeps it awake with the lid closed too (an
+  undocumented setting; undo with `0`; mind the heat).
+- Stay logged in. agent-bridge is a launchd agent, which only runs in a logged-in
+  session; a locked screen is fine. After a restart (for example an overnight macOS
+  update) FileVault waits for your password, so nothing runs until you log in again.
+  Consider turning off automatic installation of macOS updates.
+- Keep herdr open, or detached; its server must be running.
+
+**Linux**
+
+- Turn off suspend: `sudo systemctl mask sleep.target suspend.target hibernate.target
+  hybrid-sleep.target`. On a laptop, also set `HandleLidSwitch=ignore` and
+  `HandleLidSwitchExternalPower=ignore` in `/etc/systemd/logind.conf`.
+- Run the user service without a login session: `loginctl enable-linger "$USER"` (see
+  [the systemd unit](#as-a-service-on-linux-systemd-user-unit)). herdr's server still
+  has to be started after a reboot.
+
+**Before you leave**, ask Claude to list your agents. If it answers that the agent host
+is not reachable, the host is asleep, logged out, or agent-bridge isn't running.
 
 ## API
 
@@ -28,19 +62,25 @@ All routes require `Authorization: Bearer $AGENT_BRIDGE_TOKEN`.
 
 | Route | herdr | Notes |
 |---|---|---|
-| `GET /agents` | `agent list` | every herdr agent |
+| `GET /agents` | `agent list` | every herdr agent, in any folder |
 | `GET /agents/{id}` | `agent get` | |
 | `GET /agents/{id}/output?lines=40` | `agent read` | last N meaningful lines: padding, input box and status bar dropped; the visible screen only while the agent is working or blocked (herdr can't scroll its history then) |
 | `POST /agents/{id}/prompt` `{text, timeout_s?, lines?}` | `agent prompt --wait` | waits until idle/done/blocked; on timeout returns `timed_out: true` with current status. Refused with `409 agent_blocked` while the agent is `blocked`, since the Enter would answer its question |
 | `POST /agents/{id}/wait` `{timeout_s?, lines?, expect_change?}` | `agent wait` | same result as `/prompt`, without sending anything; `expect_change` (after `/keys`) first gives the agent 5 s to leave its old `blocked` state |
 | `POST /agents/{id}/keys` `{keys}` | `agent send-keys` | answer a `blocked` agent's question |
 | `POST /agents` `{cwd, name}` | `workspace create` + `agent start --kind claude` | start an agent in a project folder (see below) |
-| `DELETE /agents/{id}` | `pane close` | |
+| `DELETE /agents/{id}` | `agent get` + `pane close` | close the agent's pane; `404` if the id isn't an agent (a shell or dev-server pane) |
 
 Every error comes back as `{"error": {"code", "message"}}` with a matching status
 (`unauthorized` → 401, `path_not_allowed` → 403, `agent_not_found` → 404,
 `agent_limit_reached` → 409, `timeout` → 504, …); the message is written to be read
 aloud. Only request validation failures keep FastAPI's `{"detail": [...]}` shape (422).
+
+Reading (list, details, output, wait) works for every agent. Changing one (`/prompt`,
+`/keys`, `DELETE`) only works for agents whose folder is under
+`AGENT_BRIDGE_ALLOWED_ROOTS`; any other agent gets `403 agent_not_allowed`, so a
+misheard id can't prompt, answer or close an agent you started by hand elsewhere. To
+keep agents in some folders off limits, leave those folders out of the allowed roots.
 
 ## Starting agents
 
