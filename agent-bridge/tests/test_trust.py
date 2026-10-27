@@ -110,3 +110,45 @@ def test_trust_root_spelled_differently_still_trusts_folders_inside(
     config_dir: Path, trust_root: Path
 ) -> None:
     assert trust_folder(config_dir, trust_root / "app", other_case(trust_root)) is True
+
+
+def test_a_config_dir_without_a_login_is_refused_with_how_to_fix_it(
+    home: Path, trust_root: Path
+) -> None:
+    fresh = home / ".claude-fresh"
+    fresh.mkdir()
+    with pytest.raises(TrustError, match=r"no Claude login yet.*CLAUDE_CONFIG_DIR="):
+        trust_folder(fresh, trust_root / "app", trust_root)
+
+
+def test_a_config_that_is_not_json_is_refused(config_dir: Path, trust_root: Path) -> None:
+    (config_dir / ".claude.json").write_text("{not json")
+    with pytest.raises(TrustError, match="not valid JSON"):
+        trust_folder(config_dir, trust_root / "app", trust_root)
+    assert (config_dir / ".claude.json").read_text() == "{not json"
+
+
+@pytest.mark.parametrize("projects", [None, {"/elsewhere": None}])
+def test_null_project_entries_are_tolerated(
+    config_dir: Path, trust_root: Path, projects: dict | None
+) -> None:
+    (config_dir / ".claude.json").write_text(json.dumps({"projects": projects}))
+    assert trust_folder(config_dir, trust_root / "app", trust_root) is True
+    assert projects_of(config_dir)[str(trust_root / "app")] == {"hasTrustDialogAccepted": True}
+
+
+def test_a_symlinked_config_file_is_updated_through_the_link(
+    home: Path, config_dir: Path, trust_root: Path
+) -> None:
+    real = home / "dotfiles" / "claude.json"
+    real.parent.mkdir()
+    real.write_text(json.dumps({"projects": {}}))
+    (config_dir / ".claude.json").unlink()
+    (config_dir / ".claude.json").symlink_to(real)
+    trust_folder(config_dir, trust_root / "app", trust_root)
+    assert (config_dir / ".claude.json").is_symlink()
+    assert str(trust_root / "app") in json.loads(real.read_text())["projects"]
+
+
+def projects_of(config_dir: Path) -> dict:
+    return json.loads((config_dir / ".claude.json").read_text())["projects"]
