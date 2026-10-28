@@ -1,6 +1,7 @@
 # claude-remote-mcp
 
 [![CI](https://github.com/placheckij/claude-remote-mcp/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/placheckij/claude-remote-mcp/actions/workflows/ci.yml)
+[![CodeQL](https://github.com/placheckij/claude-remote-mcp/actions/workflows/github-code-scanning/codeql/badge.svg?branch=main)](https://github.com/placheckij/claude-remote-mcp/security/code-scanning)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue.svg)](pyproject.toml)
 
