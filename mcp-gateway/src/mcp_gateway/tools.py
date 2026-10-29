@@ -11,7 +11,7 @@ from pydantic import AfterValidator, Field, ValidationError
 from starlette.requests import Request
 from starlette.responses import PlainTextResponse
 
-from mcp_gateway.bridge import AgentBridge, BridgeError
+from mcp_gateway.bridge import AgentBridge, BridgeError, BridgeTimeout
 from mcp_gateway.config import Settings
 from mcp_gateway.replies import count, describe, invalid, report, with_truncation_note
 
@@ -25,7 +25,7 @@ read_output for more detail. If the agent is still working when the wait ends, c
 wait_for_agent to keep waiting instead of re-reading its output. If an agent's status is
 "blocked" it is waiting for an approval: read the question with read_output, tell the
 user, and answer with answer_agent (with wait_seconds to wait for the result) only after
-the user decides. Each wait lasts at most 100 seconds; for longer work call
+the user decides. Each wait lasts at most 45 seconds; for longer work call
 wait_for_agent again. Agent ids look like "w1:p1".
 """
 
@@ -41,9 +41,12 @@ AgentId = Annotated[
         description='Agent id from list_agents, e.g. "w1:p1".',
     ),
 ]
-# Nothing is sent until a tool returns, and Cloudflare ends a request after 125 s; the cap
-# leaves room for the calls around the wait.
-MAX_WAIT_SECONDS = 100
+# Nothing is sent until a tool returns, and claude.ai gives up on a tool call after about
+# 60 s (measured through the connector: 55 s waits come back, 60 s ones fail with "The
+# operation timed out", though its docs say 240 s). The cap leaves room for the calls
+# around the wait (bridge.WAIT_MARGIN_S); a longer wait would fail after the prompt was
+# already typed.
+MAX_WAIT_SECONDS = 45
 WaitSeconds = Annotated[
     int,
     Field(
@@ -97,18 +100,28 @@ def build_server(settings: Settings, bridge: AgentBridge) -> MCPServer:
             Field(min_length=1, max_length=MAX_PROMPT_CHARS, description="The prompt, as the user said it."),
             AfterValidator(_no_nul),
         ],
-        wait_seconds: WaitSeconds = 90,
+        wait_seconds: WaitSeconds = MAX_WAIT_SECONDS,
         lines: Lines = 20,
     ) -> str:
         """Send a prompt to an agent and wait until it finishes, then return its status and
         latest output. If it is still working when the wait ends, use wait_for_agent. A
         blocked agent refuses prompts: answer its question with answer_agent first."""
-        result = await call(bridge.prompt(agent_id, text, wait_seconds, lines))
+        try:
+            result = await bridge.prompt(agent_id, text, wait_seconds, lines)
+        except BridgeTimeout as error:
+            # Not a tool error: the prompt may well have been typed, and sending it again
+            # would make the agent do the work twice.
+            return (
+                f"{str(error).rstrip('.')}; the prompt may have been sent. Check with "
+                "wait_for_agent before sending it again."
+            )
+        except BridgeError as error:
+            raise ToolError(str(error)) from error
         return report(result, wait_seconds, root)
 
     @mcp.tool(annotations=READ_ONLY)
     async def wait_for_agent(
-        agent_id: AgentId, wait_seconds: WaitSeconds = 90, lines: Lines = 20
+        agent_id: AgentId, wait_seconds: WaitSeconds = MAX_WAIT_SECONDS, lines: Lines = 20
     ) -> str:
         """Wait until an agent finishes its current work or needs an approval, then return
         its status and latest output. Returns at once if it is already idle or done."""
