@@ -15,7 +15,7 @@ It sees and controls every herdr agent of its user, including ones started by ha
 
 | | |
 |---|---|
-| OS | macOS or Linux, wherever [herdr](https://github.com/ogulcancelik/herdr) runs. Tested on macOS; Linux should work but is untested, and Windows would need WSL. |
+| OS | macOS or Linux, wherever [herdr](https://github.com/herdrdev/herdr) runs. Tested on macOS; Linux should work but is untested, and Windows would need WSL. |
 | herdr | 0.8.0 or newer (tested with 0.8.0); its server must be running for the same user (it is whenever herdr is open, and keeps running after you detach) |
 | Claude Code | the `claude` CLI, installed and logged in for that user |
 | Python | 3.11+, via [uv](https://docs.astral.sh/uv/) (uv installs it if needed) |
