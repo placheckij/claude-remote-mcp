@@ -14,6 +14,7 @@ written there once it has signed in: registering is open to anyone.
 import hashlib
 import hmac
 import html
+import ipaddress
 import json
 import logging
 import os
@@ -59,10 +60,16 @@ LOGIN_TTL_S = 600
 MAX_PENDING = 100
 # Wrong passphrases: a sign-in link dies after this many,
 MAX_TRIES_PER_SIGN_IN = 5
-# and a source address that made this many within the window is refused until they age
-# out. Per source, so a stranger can't lock the owner out by guessing.
+# a source address that made this many within the window is refused until they age out
+# (per source, so a stranger guessing doesn't lock the owner out),
 MAX_FAILURES = 10
+# and this many from all sources together stop every sign-in: changing addresses doesn't
+# buy more guesses than that.
+MAX_FAILURES_ALL = 100
 FAILURE_WINDOW_S = 900
+# Sources tracked at once. A full table is never cleared early (that would forget a
+# guesser); a new source then only counts toward MAX_FAILURES_ALL.
+MAX_SOURCES = 1000
 # The client id that tokens accepted through the static MCP_GATEWAY_TOKEN carry.
 STATIC_TOKEN_CLIENT = "static-token"
 
@@ -82,8 +89,9 @@ class GatewayOAuth:
         self._new_clients: OrderedDict[str, OAuthClientInformationFull] = OrderedDict()
         self._logins: OrderedDict[str, _SignIn] = OrderedDict()
         self._codes: OrderedDict[str, AuthorizationCode] = OrderedDict()
-        # Source address -> times of its wrong passphrases.
-        self._failures: OrderedDict[str, deque[float]] = OrderedDict()
+        # Times of wrong passphrases: all of them, and per source address.
+        self._all_failures: deque[float] = deque()
+        self._failures: dict[str, deque[float]] = {}
 
     def auth_settings(self) -> AuthSettings:
         return AuthSettings(
@@ -140,17 +148,13 @@ class GatewayOAuth:
             return _sign_in_form(request_id, client, params)
         source = _source(request)
         if self._locked_out(source):
-            log.warning(
-                "OAuth sign-in refused for %s: %d wrong passphrases in %d s", source, MAX_FAILURES, FAILURE_WINDOW_S
-            )
+            log.warning("OAuth sign-in refused for %s: too many wrong passphrases in %d s", source, FAILURE_WINDOW_S)
             return _page(
                 f"<p>Too many wrong passphrases. Try again in {FAILURE_WINDOW_S // 60} minutes.</p>",
                 status=429,
             )
         if not hmac.compare_digest(passphrase.encode(), self.passphrase):
-            failures = self._failures.pop(source, deque())
-            failures.append(self.clock())
-            _remember(self._failures, source, failures)
+            self._count_failure(source)
             sign_in.wrong_tries += 1
             log.warning("OAuth sign-in: wrong passphrase from %s (client %r)", source, client.client_name)
             if sign_in.wrong_tries >= MAX_TRIES_PER_SIGN_IN:
@@ -180,10 +184,24 @@ class GatewayOAuth:
         )
 
     def _locked_out(self, source: str) -> bool:
-        failures = self._failures.get(source, deque())
-        while failures and failures[0] < self.clock() - FAILURE_WINDOW_S:
-            failures.popleft()
-        return len(failures) >= MAX_FAILURES
+        self._forget_old_failures()
+        return (
+            len(self._all_failures) >= MAX_FAILURES_ALL
+            or len(self._failures.get(source, ())) >= MAX_FAILURES
+        )
+
+    def _count_failure(self, source: str) -> None:
+        now = self.clock()
+        self._all_failures.append(now)
+        if source in self._failures or len(self._failures) < MAX_SOURCES:
+            self._failures.setdefault(source, deque()).append(now)
+
+    def _forget_old_failures(self) -> None:
+        cutoff = self.clock() - FAILURE_WINDOW_S
+        for failures in (self._all_failures, *self._failures.values()):
+            while failures and failures[0] < cutoff:
+                failures.popleft()
+        self._failures = {source: failures for source, failures in self._failures.items() if failures}
 
     # --- Tokens -----------------------------------------------------------------------
 
@@ -338,9 +356,31 @@ class _SignIn:
 
 
 def _source(request: Request) -> str:
-    """Where a request comes from: the address Cloudflare saw, which it sets itself (a
-    client can't forge it through the tunnel), or the peer address without a tunnel."""
-    return request.headers.get("cf-connecting-ip") or (request.client.host if request.client else "?")
+    """Where a request comes from, for counting wrong passphrases.
+
+    Behind the tunnel the peer is the local cloudflared, and the address is the one
+    Cloudflare saw, from CF-Connecting-IP (Cloudflare sets it; a client can't forge it
+    through the tunnel). From any other peer the header is ignored. IPv6 addresses count
+    by /64, the block one host usually has to itself.
+    """
+    peer = request.client.host if request.client else "?"
+    address = peer
+    if _is_loopback(peer):
+        address = request.headers.get("cf-connecting-ip", peer)
+    try:
+        ip = ipaddress.ip_address(address)
+    except ValueError:
+        return address
+    if ip.version == 6:
+        return str(ipaddress.ip_network(f"{ip}/64", strict=False))
+    return str(ip)
+
+
+def _is_loopback(address: str) -> bool:
+    try:
+        return ipaddress.ip_address(address).is_loopback
+    except ValueError:
+        return False
 
 
 def _hash(token: str) -> str:
