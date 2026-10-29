@@ -181,7 +181,7 @@ def test_lists_the_tools(client: TestClient) -> None:
     tools = {tool["name"] for tool in rpc(client, "tools/list").json()["result"]["tools"]}
     assert tools == {
         "list_agents", "agent_details", "read_output", "send_prompt", "wait_for_agent",
-        "answer_agent", "start_agent", "stop_agent",
+        "answer_agent", "start_agent", "rename_agent", "stop_agent",
     }
 
 
@@ -319,6 +319,41 @@ def test_start_agent_turns_spoken_names_into_slugs(
     response = rpc(client, "tools/call", {"name": "start_agent", "arguments": {"project": "grafik", "name": name}})
     assert not response.json()["result"].get("isError")
     assert json.loads(fake.requests[0].content)["name"] == slug
+
+
+def rename(client: TestClient, **arguments) -> tuple[bool, str]:
+    # call_tool's own `name` parameter would take the tool's `name` argument.
+    result = rpc(client, "tools/call", {"name": "rename_agent", "arguments": arguments}).json()["result"]
+    return result.get("isError", False), result["content"][0]["text"]
+
+
+def test_rename_agent_passes_the_spoken_name_and_reports_the_slug(
+    client: TestClient, fake: FakeAgentBridge
+) -> None:
+    # The slug is agent-bridge's to pick, since only it knows which names are taken.
+    fake.routes[("PATCH", "/agents/w1:p1")] = httpx.Response(200, json={**AGENT, "name": "grafik-fix-2"})
+    assert rename(client, agent_id="w1:p1", name="Grafik fix!") == (
+        False,
+        "Renamed w1:p1 to grafik-fix-2.",
+    )
+    assert json.loads(fake.requests[0].content) == {"name": "Grafik fix!"}
+
+
+def test_rename_agent_passes_refusals_through(client: TestClient, fake: FakeAgentBridge) -> None:
+    message = "Agent w1:p1 works in /elsewhere, outside the allowed folders, so it can't be renamed."
+    fake.routes[("PATCH", "/agents/w1:p1")] = httpx.Response(
+        403, json={"error": {"code": "agent_not_allowed", "message": message}}
+    )
+    is_error, text = rename(client, agent_id="w1:p1", name="x")
+    assert is_error and text.endswith(message)
+
+
+@pytest.mark.parametrize("name", ["", "x" * 201])
+def test_rename_agent_refuses_empty_and_absurdly_long_names(
+    client: TestClient, fake: FakeAgentBridge, name: str
+) -> None:
+    is_error, _ = rename(client, agent_id="w1:p1", name=name)
+    assert is_error and fake.requests == []
 
 
 def test_send_prompt_says_a_blocked_agent_needs_an_answer_first(client: TestClient) -> None:

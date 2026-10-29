@@ -31,7 +31,8 @@ class AgentService:
     def __init__(self, settings: Settings, herdr: Herdr):
         self.settings = settings
         self.herdr = herdr
-        # Serializes count-then-start so concurrent requests cannot exceed the limit.
+        # Serializes count-then-start and picking a free name, so concurrent requests can
+        # neither exceed the limit nor give two agents the same name.
         self._start_lock = asyncio.Lock()
         # One prompt at a time per agent; a second one is refused rather than typed in.
         self._prompt_locks: dict[str, asyncio.Lock] = {}
@@ -114,6 +115,16 @@ class AgentService:
                     ) from error
         raise AssertionError("unreachable")
 
+    async def rename_agent(self, agent_id: str, name: str) -> AgentSummary:
+        """Give the agent and its workspace the same new name, as start_agent does."""
+        agent = await self._controllable(agent_id)
+        async with self._start_lock:
+            running = await self.herdr.list_agents()
+            name = herdr_name(name, {a.get("name") for a in running if a["pane_id"] != agent_id})
+            renamed = await self.herdr.rename_agent(agent_id, name)
+            await self.herdr.rename_workspace(agent.workspace_id, name)
+        return summarize(renamed)
+
     async def stop_agent(self, agent_id: str) -> None:
         # Looking the agent up first also refuses panes that aren't agents (a shell, a dev
         # server): herdr answers agent_not_found, a 404.
@@ -122,14 +133,15 @@ class AgentService:
 
     async def _controllable(self, agent_id: str) -> AgentSummary:
         """The agent, if it works under the allowed roots. Every herdr agent can be read,
-        but only those may be prompted, answered or stopped."""
+        but only those may be prompted, answered, renamed or stopped."""
         agent = await self.get_agent(agent_id)
         if not agent.cwd or not self.settings.is_allowed(Path(agent.cwd)):
             raise BridgeError(
                 403,
                 "agent_not_allowed",
                 f"Agent {agent_id} works in {agent.cwd or 'an unknown folder'}, outside the "
-                "allowed folders, so it can be read but not prompted, answered or stopped.",
+                "allowed folders, so it can be read but not prompted, answered, renamed or "
+                "stopped.",
             )
         return agent
 

@@ -44,6 +44,7 @@ or with a NUL character) come back the same way as one sentence.
 | `wait_for_agent` | keep waiting for an agent still working (e.g. after `send_prompt` ran out of time); same result format |
 | `answer_agent` | key presses for a blocked agent's question, e.g. `["1"]`, `["Enter"]`; with `wait_seconds` also waits for the result. Marked destructive, so Claude asks first |
 | `start_agent` | new agent in a project: one folder name under `MCP_GATEWAY_PROJECTS_ROOT` (names with `/`, `..` or `~`, and `.`, are refused) or an absolute path |
+| `rename_agent` | new name for an agent and its herdr workspace, any words; agent-bridge turns it into a slug (`Grafik fix!` → `grafik-fix`, `-2` if another agent has it) and the reply says the name it got |
 | `stop_agent` | close an agent's pane (marked destructive, so Claude asks first) |
 
 The server's instructions tell Claude the user is probably driving: short, speakable

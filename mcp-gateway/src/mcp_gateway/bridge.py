@@ -81,6 +81,9 @@ class AgentBridge:
         # Starting waits for Claude to boot and for the trust check.
         return await self._request("POST", "/agents", json={"cwd": cwd, "name": name}, timeout=120)
 
+    async def rename_agent(self, agent_id: str, name: str) -> dict:
+        return await self._request("PATCH", f"/agents/{agent_id}", json={"name": name})
+
     async def stop_agent(self, agent_id: str) -> None:
         await self._request("DELETE", f"/agents/{agent_id}")
 

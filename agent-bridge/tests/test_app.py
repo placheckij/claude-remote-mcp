@@ -94,8 +94,8 @@ def test_malformed_agent_ids_never_reach_herdr(root: Path, agent_id: str) -> Non
     # A leading "-" would reach herdr's argv as an option.
     runner = FakeRunner({})
     c = client(runner, root)
-    for method, path in [("GET", ""), ("GET", "/output"), ("POST", "/keys"), ("DELETE", "")]:
-        body = {"keys": ["1"]} if path == "/keys" else None
+    for method, path in [("GET", ""), ("GET", "/output"), ("POST", "/keys"), ("PATCH", ""), ("DELETE", "")]:
+        body = {"keys": ["1"]} if path == "/keys" else {"name": "x"} if method == "PATCH" else None
         response = c.request(method, f"/agents/{agent_id}{path}", headers=AUTH, json=body)
         assert response.status_code == 422, (method, path, response.text)
     assert runner.calls == []
@@ -440,6 +440,61 @@ def test_stop_closes_the_pane(root: Path) -> None:
     )
     assert client(runner, root).delete("/agents/w1:p1", headers=AUTH).status_code == 204
     assert runner.called("pane", "close") == [["pane", "close", "w1:p1"]]
+
+
+def rename_responses(root: Path, others: list[dict] = ()) -> dict:
+    mine = agent(cwd=str(root / "project"))
+    return {
+        ("agent", "get"): ok({"agent": mine}),
+        ("agent", "list"): ok({"agents": [mine, *others]}),
+        ("agent", "rename"): ok({"agent": {**mine, "name": "renamed"}}),
+        ("workspace", "rename"): ok({"workspace": {"workspace_id": "w1"}}),
+    }
+
+
+def test_rename_names_the_agent_and_its_workspace_alike(root: Path) -> None:
+    runner = FakeRunner(rename_responses(root))
+    response = client(runner, root).patch("/agents/w1:p1", headers=AUTH, json={"name": "Grafik fix!"})
+    assert response.status_code == 200, response.text
+    assert response.json()["name"] == "renamed"
+    assert runner.called("agent", "rename") == [["agent", "rename", "w1:p1", "grafik-fix"]]
+    assert runner.called("workspace", "rename") == [["workspace", "rename", "w1", "grafik-fix"]]
+
+
+def test_rename_picks_a_free_name_but_may_keep_its_own(root: Path) -> None:
+    others = [{**agent("w2:p1"), "name": "grafik"}]
+    runner = FakeRunner(rename_responses(root, others))
+    c = client(runner, root)
+    c.patch("/agents/w1:p1", headers=AUTH, json={"name": "grafik"})
+    assert runner.called("agent", "rename")[-1][-1] == "grafik-2"
+
+    # Renaming an agent to the name it already has is not a clash with itself.
+    runner.responses[("agent", "list")] = ok({"agents": [{**agent(cwd=str(root / "project")), "name": "probe"}]})
+    c.patch("/agents/w1:p1", headers=AUTH, json={"name": "probe"})
+    assert runner.called("agent", "rename")[-1][-1] == "probe"
+
+
+def test_rename_refuses_agents_outside_the_allowed_roots(root: Path) -> None:
+    runner = FakeRunner({("agent", "get"): ok({"agent": agent(cwd="/elsewhere/work-repo")})})
+    response = client(runner, root).patch("/agents/w1:p1", headers=AUTH, json={"name": "x"})
+    assert response.status_code == 403
+    assert response.json()["error"]["code"] == "agent_not_allowed"
+    assert runner.called("agent", "rename") == [] and runner.called("workspace", "rename") == []
+
+
+def test_rename_of_an_unknown_agent_is_404(root: Path) -> None:
+    runner = FakeRunner({("agent", "get"): err("agent_not_found")})
+    response = client(runner, root).patch("/agents/w1:p1", headers=AUTH, json={"name": "x"})
+    assert response.status_code == 404
+    assert runner.called("agent", "rename") == []
+
+
+@pytest.mark.parametrize("name", ["", "x" * 201])
+def test_rename_rejects_empty_and_absurdly_long_names(root: Path, name: str) -> None:
+    runner = FakeRunner({})
+    response = client(runner, root).patch("/agents/w1:p1", headers=AUTH, json={"name": name})
+    assert response.status_code == 422
+    assert runner.calls == []
 
 
 @pytest.mark.parametrize("running", [10, 12])

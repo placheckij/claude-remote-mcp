@@ -69,6 +69,7 @@ All routes require `Authorization: Bearer $AGENT_BRIDGE_TOKEN`.
 | `POST /agents/{id}/wait` `{timeout_s?, lines?, expect_change?}` | `agent wait` | same result as `/prompt`, without sending anything; `expect_change` (after `/keys`) first gives the agent 5 s to leave its old `blocked` state |
 | `POST /agents/{id}/keys` `{keys}` | `agent send-keys` | answer a `blocked` agent's question |
 | `POST /agents` `{cwd, name}` | `workspace create` + `agent start --kind claude` | start an agent in a project folder (see below). `name` may be any words: it becomes a name herdr accepts (lower-case ASCII, starting with a letter, at most 32 characters, e.g. `Grafik fix!` → `grafik-fix`), with `-2`, `-3`, … if a live agent already has it |
+| `PATCH /agents/{id}` `{name}` | `agent rename` + `workspace rename` | give the agent and its workspace the same new name, made the way `POST /agents` makes one (`-2`, `-3`, … only if *another* live agent has it); returns the agent |
 | `DELETE /agents/{id}` | `agent get` + `pane close` | close the agent's pane; `404` if the id isn't an agent (a shell or dev-server pane) |
 
 Every error comes back as `{"error": {"code", "message"}}` with a matching status
@@ -77,10 +78,11 @@ Every error comes back as `{"error": {"code", "message"}}` with a matching statu
 aloud. Only request validation failures keep FastAPI's `{"detail": [...]}` shape (422).
 
 Reading (list, details, output, wait) works for every agent. Changing one (`/prompt`,
-`/keys`, `DELETE`) only works for agents whose folder is under
+`/keys`, `PATCH`, `DELETE`) only works for agents whose folder is under
 `AGENT_BRIDGE_ALLOWED_ROOTS`; any other agent gets `403 agent_not_allowed`, so a
-misheard id can't prompt, answer or close an agent you started by hand elsewhere. To
-keep agents in some folders off limits, leave those folders out of the allowed roots.
+misheard id can't prompt, answer, rename or close an agent you started by hand
+elsewhere. To keep agents in some folders off limits, leave those folders out of the
+allowed roots.
 
 ## Starting agents
 
