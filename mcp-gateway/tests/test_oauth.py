@@ -18,6 +18,7 @@ from mcp_gateway.oauth import (
     ACCESS_TOKEN_TTL_S,
     FAILURE_WINDOW_S,
     MAX_FAILURES,
+    MAX_FAILURES_ALL,
     MAX_TRIES_PER_SIGN_IN,
     GatewayOAuth,
 )
@@ -78,6 +79,8 @@ def make_client(tmp_path: Path, clock: Clock):
             create_app(settings(tmp_path, token), bridge(), oauth),
             base_url=f"https://{HOST}",
             follow_redirects=False,
+            # Requests come through the local cloudflared.
+            client=("127.0.0.1", 50000),
         )
         client.__enter__()
         clients.append(client)
@@ -345,6 +348,47 @@ def test_wrong_passphrases_lock_out_their_source_only(client: TestClient, clock:
     clock.now += FAILURE_WINDOW_S + 1
     request_id = login_request_id(start_sign_in(client, client_id))
     assert code_from(sign_in(client, request_id, source=guesser))
+
+
+def guess(client: TestClient, client_id: str, sources: list[str], times: int) -> None:
+    """`times` wrong passphrases, spread over fresh sign-ins and the given sources."""
+    for n in range(times):
+        if n % MAX_TRIES_PER_SIGN_IN == 0:
+            request_id = login_request_id(start_sign_in(client, client_id))
+        assert sign_in(client, request_id, "guess guess guess", source=sources[n % len(sources)]).status_code == 403
+
+
+def test_changing_addresses_buys_a_bounded_number_of_guesses(client: TestClient, clock: Clock) -> None:
+    client_id = register(client)["client_id"]
+    sources = [f"203.0.113.{n}" for n in range(1, 101)]
+    guess(client, client_id, sources, MAX_FAILURES_ALL)
+    # Every sign-in stops, the owner's too, until the guesses age out; tokens keep working.
+    request_id = login_request_id(start_sign_in(client, client_id))
+    assert sign_in(client, request_id).status_code == 429
+    clock.now += FAILURE_WINDOW_S + 1
+    request_id = login_request_id(start_sign_in(client, client_id))
+    assert code_from(sign_in(client, request_id))
+
+
+def test_ipv6_addresses_count_by_64(client: TestClient) -> None:
+    client_id = register(client)["client_id"]
+    guess(client, client_id, [f"2001:db8:1:2::{n:x}" for n in range(1, 11)], MAX_FAILURES)
+    request_id = login_request_id(start_sign_in(client, client_id))
+    assert sign_in(client, request_id, source="2001:db8:1:2:ffff::1").status_code == 429
+    assert code_from(sign_in(client, request_id, source="2001:db8:1:3::1"))
+
+
+def test_the_address_header_counts_only_from_the_tunnel(tmp_path: Path, clock: Clock) -> None:
+    # Without cloudflared in front, anyone could set CF-Connecting-IP to a fresh value.
+    oauth = GatewayOAuth(settings(tmp_path), clock=clock)
+    with TestClient(
+        create_app(settings(tmp_path), bridge(), oauth), base_url=f"https://{HOST}",
+        follow_redirects=False, client=("192.0.2.50", 50000),
+    ) as direct:
+        client_id = register(direct)["client_id"]
+        guess(direct, client_id, [f"203.0.113.{n}" for n in range(1, 11)], MAX_FAILURES)
+        request_id = login_request_id(start_sign_in(direct, client_id))
+        assert sign_in(direct, request_id, source="198.51.100.200").status_code == 429
 
 
 def test_a_sign_in_link_works_once_and_expires(client: TestClient, clock: Clock) -> None:

@@ -117,7 +117,7 @@ the connector is added, claude.ai:
 | Access token | 1 hour; claude.ai refreshes it by itself |
 | Refresh token | 90 days; replaced on every refresh (the old one stops working) |
 | Callback | only `https://claude.ai/api/mcp/auth_callback` can be registered, so a sign-in can't hand a code to anyone else. Claude Code's loopback callback isn't accepted |
-| Wrong passphrases | logged with the source address; a sign-in link dies after 5, and an address with 10 within 15 minutes is refused until they age out. Per address (Cloudflare's `CF-Connecting-IP`), so a stranger guessing can't lock you out |
+| Wrong passphrases | logged with the source address; a sign-in link dies after 5, and an address with 10 within 15 minutes is refused until they age out, so one stranger guessing doesn't lock you out. The address is Cloudflare's `CF-Connecting-IP` when the request comes from the local cloudflared, else the peer's; IPv6 counts by /64. Changing addresses doesn't buy more: 100 from all sources together stop every sign-in for those 15 minutes (tokens already issued keep working) |
 | Phishing | someone could send you a sign-in link they started. The code can only go to claude.ai, where it only completes the sign-in that claude.ai itself started (its `state`), and the page says to continue only while you are connecting in Claude |
 | Storage | `MCP_GATEWAY_STATE_DIR/oauth.json`: the clients that signed in and SHA-256 hashes of their tokens, never the tokens. A registration that never signs in is kept in memory only (at most 100) |
 | Revocation | `/revoke` ends a token and its pair |
