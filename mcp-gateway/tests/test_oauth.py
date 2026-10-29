@@ -18,6 +18,7 @@ from mcp_gateway.oauth import (
     ACCESS_TOKEN_TTL_S,
     FAILURE_WINDOW_S,
     MAX_FAILURES,
+    MAX_TRIES_PER_SIGN_IN,
     GatewayOAuth,
 )
 from mcp_gateway.server import create_app
@@ -132,8 +133,13 @@ def login_request_id(response: httpx.Response) -> str:
     return parse_qs(location.query)["request"][0]
 
 
-def sign_in(client: TestClient, request_id: str, passphrase: str = PASSPHRASE) -> httpx.Response:
-    return client.post("/login", data={"request": request_id, "passphrase": passphrase})
+def sign_in(
+    client: TestClient, request_id: str, passphrase: str = PASSPHRASE, source: str = "198.51.100.7"
+) -> httpx.Response:
+    # Cloudflare sets CF-Connecting-IP to the address it saw.
+    return client.post(
+        "/login", data={"request": request_id, "passphrase": passphrase}, headers={"CF-Connecting-IP": source}
+    )
 
 
 def code_from(response: httpx.Response) -> str:
@@ -311,16 +317,34 @@ def test_a_wrong_passphrase_issues_nothing(client: TestClient, caplog: pytest.Lo
     assert code_from(sign_in(client, request_id))
 
 
-def test_wrong_passphrases_lock_sign_in_for_a_while(client: TestClient, clock: Clock) -> None:
+def test_a_sign_in_link_dies_after_a_few_wrong_passphrases(client: TestClient) -> None:
     client_id = register(client)["client_id"]
     request_id = login_request_id(start_sign_in(client, client_id))
-    for _ in range(MAX_FAILURES):
-        assert sign_in(client, request_id, "guess guess guess").status_code == 403
-    # Even the right passphrase is refused now.
-    assert sign_in(client, request_id).status_code == 429
+    for _ in range(MAX_TRIES_PER_SIGN_IN - 1):
+        assert "Wrong passphrase." in sign_in(client, request_id, "guess guess guess").text
+    last = sign_in(client, request_id, "guess guess guess")
+    assert last.status_code == 403 and "Connect again" in last.text
+    # Not even the right passphrase finishes it now.
+    assert sign_in(client, request_id).status_code == 400
+
+
+def test_wrong_passphrases_lock_out_their_source_only(client: TestClient, clock: Clock) -> None:
+    # Anyone can start a sign-in, so a global lock would let a stranger keep the owner out.
+    client_id = register(client)["client_id"]
+    guesser = "203.0.113.9"
+    for _ in range(MAX_FAILURES // MAX_TRIES_PER_SIGN_IN):
+        request_id = login_request_id(start_sign_in(client, client_id))
+        for _ in range(MAX_TRIES_PER_SIGN_IN):
+            assert sign_in(client, request_id, "guess guess guess", source=guesser).status_code == 403
+    request_id = login_request_id(start_sign_in(client, client_id))
+    # Even the right passphrase is refused from there now,
+    assert sign_in(client, request_id, source=guesser).status_code == 429
+    # but the owner, elsewhere, signs in.
+    assert code_from(sign_in(client, request_id))
+
     clock.now += FAILURE_WINDOW_S + 1
     request_id = login_request_id(start_sign_in(client, client_id))
-    assert code_from(sign_in(client, request_id))
+    assert code_from(sign_in(client, request_id, source=guesser))
 
 
 def test_a_sign_in_link_works_once_and_expires(client: TestClient, clock: Clock) -> None:
