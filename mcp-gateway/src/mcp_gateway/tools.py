@@ -178,6 +178,20 @@ def build_server(settings: Settings, bridge: AgentBridge) -> MCPServer:
         agent = await call(bridge.start_agent(cwd, agent_name))
         return f"Started {describe(agent, root)}"
 
+    @mcp.tool(annotations=ACTION)
+    async def rename_agent(
+        agent_id: AgentId,
+        name: Annotated[
+            str,
+            Field(min_length=1, max_length=200, description="New name, any words, as the user said it."),
+        ],
+    ) -> str:
+        """Rename an agent and its workspace. The name is turned into a slug like
+        "my-agent" (with "-2" if another agent has it); the reply gives the name it got."""
+        # agent-bridge makes the slug: it knows the other agents' names.
+        agent = await call(bridge.rename_agent(agent_id, name))
+        return f"Renamed {agent_id} to {agent['name']}."
+
     @mcp.tool(annotations=DESTRUCTIVE)
     async def stop_agent(agent_id: AgentId) -> str:
         """Stop an agent and close its terminal pane. Ask the user to confirm first."""
