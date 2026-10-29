@@ -71,6 +71,11 @@ class StartRequest(BaseModel):
     name: str = Field(min_length=1, max_length=200)
 
 
+class RenameRequest(BaseModel):
+    # As in StartRequest.
+    name: str = Field(min_length=1, max_length=200)
+
+
 def summarize(agent: dict) -> AgentSummary:
     return AgentSummary(
         id=agent["pane_id"],

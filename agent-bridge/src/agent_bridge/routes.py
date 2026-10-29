@@ -11,6 +11,7 @@ from agent_bridge.schemas import (
     Output,
     PromptRequest,
     PromptResult,
+    RenameRequest,
     StartRequest,
     WaitRequest,
 )
@@ -66,6 +67,11 @@ async def send_keys(agent_id: AgentId, body: KeysRequest, agents: Agents) -> Non
 @router.post("/agents", status_code=201)
 async def start_agent(body: StartRequest, agents: Agents) -> AgentSummary:
     return await agents.start_agent(body.cwd, body.name)
+
+
+@router.patch("/agents/{agent_id}")
+async def rename_agent(agent_id: AgentId, body: RenameRequest, agents: Agents) -> AgentSummary:
+    return await agents.rename_agent(agent_id, body.name)
 
 
 @router.delete("/agents/{agent_id}", status_code=204)
