@@ -8,13 +8,20 @@ from mcp_gateway.replies import invalid
 
 # A sleeping agent host drops packets instead of refusing them, so connecting gets its own
 # short timeout; otherwise a prompt's long read timeout would also apply to connecting and
-# Cloudflare would give up (after 125 s) before the user hears that the host is down.
+# claude.ai would give up before the user hears that the host is down.
 CONNECT_TIMEOUT_S = 5.0
 DEFAULT_TIMEOUT_S = 30.0
+# agent-bridge answers a wait right after its deadline; this covers reading the output.
+# It is kept small because claude.ai gives up on the whole tool call after about 60 s.
+WAIT_MARGIN_S = 10
 
 
 class BridgeError(Exception):
     """A refusal or failure reported by agent-bridge, with its human-readable message."""
+
+
+class BridgeTimeout(BridgeError):
+    """agent-bridge took the request but didn't answer in time; it may have acted on it."""
 
 
 class AgentBridge:
@@ -39,6 +46,8 @@ class AgentBridge:
                 timeout=httpx.Timeout(timeout or DEFAULT_TIMEOUT_S, connect=CONNECT_TIMEOUT_S),
                 **kwargs,
             )
+        except httpx.ReadTimeout as error:
+            raise BridgeTimeout("The agent host didn't answer in time.") from error
         except (httpx.ConnectError, httpx.ConnectTimeout) as error:
             raise BridgeError(
                 f"The agent host is not reachable ({type(error).__name__}). It may be asleep or offline."
@@ -63,7 +72,7 @@ class AgentBridge:
             "POST",
             f"/agents/{agent_id}/prompt",
             json={"text": text, "timeout_s": timeout_s, "lines": lines},
-            timeout=timeout_s + 30,
+            timeout=timeout_s + WAIT_MARGIN_S,
         )
 
     async def wait(self, agent_id: str, timeout_s: int, lines: int, expect_change: bool = False) -> dict:
@@ -71,7 +80,7 @@ class AgentBridge:
             "POST",
             f"/agents/{agent_id}/wait",
             json={"timeout_s": timeout_s, "lines": lines, "expect_change": expect_change},
-            timeout=timeout_s + 30,
+            timeout=timeout_s + WAIT_MARGIN_S,
         )
 
     async def send_keys(self, agent_id: str, keys: list[str]) -> None:
