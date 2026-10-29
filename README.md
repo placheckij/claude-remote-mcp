@@ -29,7 +29,7 @@ and tests.
 
 You need:
 
-- [herdr](https://github.com/ogulcancelik/herdr) 0.8.0+ and Claude Code on the agent
+- [herdr](https://github.com/herdrdev/herdr) 0.8.0+ and Claude Code on the agent
   host;
 - [uv](https://docs.astral.sh/uv/) on both hosts;
 - an agent host that stays awake and logged in while you use it (see
