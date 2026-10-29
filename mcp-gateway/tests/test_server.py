@@ -1,4 +1,5 @@
 import json
+from pathlib import Path
 
 import httpx
 import pytest
@@ -12,6 +13,9 @@ TOKEN = "g" * 32
 HOST = "mcp.example.com"
 SETTINGS = Settings(
     token=TOKEN,
+    oauth_passphrase="p" * 24,
+    # Nothing here signs in, so nothing is written; a write would fail loudly.
+    state_dir=Path("/nonexistent/mcp-gateway-state"),
     bridge_url="http://agents.lan:8765",
     bridge_token="b" * 32,
     public_host=HOST,
@@ -114,7 +118,7 @@ def test_logs_rejections_without_secrets(client: TestClient, caplog: pytest.LogC
         assert rpc(client, "tools/list", headers=headers).status_code == 401
     (record,) = caplog.records
     line = record.getMessage()
-    assert line.startswith("401 POST /mcp: wrong token; expected token <32 chars, sha256 ")
+    assert line.startswith("401 POST /mcp: unknown or expired token; headers: ")
     assert "authorization='bearer' + <32 chars, sha256 " in line
     assert "cf-access-client-secret=<redacted, 40 chars>" in line
     assert "user-agent=Claude-User" in line and f"host={HOST}" in line
@@ -124,7 +128,7 @@ def test_logs_rejections_without_secrets(client: TestClient, caplog: pytest.LogC
 @pytest.mark.parametrize(
     ("authorization", "reason"),
     [(None, "no authorization header"), (f"Basic {TOKEN}", "scheme is not Bearer"),
-     (f"Bearer {TOKEN}x", "wrong token")],
+     (f"Bearer {TOKEN}x", "unknown or expired token")],
 )
 def test_logs_why_a_request_was_refused(
     client: TestClient, caplog: pytest.LogCaptureFixture, authorization: str | None, reason: str
@@ -371,10 +375,14 @@ def test_unreachable_agent_host_is_reported_plainly(client: TestClient, fake: Fa
 # --- Transport edges ------------------------------------------------------------------
 
 
-def test_401_names_the_bearer_scheme(client: TestClient) -> None:
-    # The MCP spec says a 401 MUST carry WWW-Authenticate.
+def test_401_points_at_the_oauth_metadata(client: TestClient) -> None:
+    # The MCP spec says a 401 MUST carry WWW-Authenticate; claude.ai starts its OAuth
+    # sign-in from the resource_metadata in it.
     response = rpc(client, "tools/list", headers={**MCP_HEADERS, "Authorization": "Bearer wrong"})
-    assert (response.status_code, response.headers["www-authenticate"]) == (401, "Bearer")
+    assert (response.status_code, response.headers["www-authenticate"]) == (
+        401,
+        f'Bearer resource_metadata="https://{HOST}/.well-known/oauth-protected-resource/mcp"',
+    )
 
 
 def response_start(client: TestClient, method: str, headers: dict[str, str]) -> dict:

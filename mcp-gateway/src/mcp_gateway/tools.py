@@ -13,6 +13,7 @@ from starlette.responses import PlainTextResponse
 
 from mcp_gateway.bridge import AgentBridge, BridgeError
 from mcp_gateway.config import Settings
+from mcp_gateway.oauth import LOGIN_PATH, GatewayOAuth
 from mcp_gateway.replies import count, describe, invalid, report, with_truncation_note
 
 INSTRUCTIONS = """\
@@ -57,8 +58,16 @@ MAX_LINES = 60
 Lines = Annotated[int, Field(ge=1, le=MAX_LINES, description="Output lines to return.")]
 
 
-def build_server(settings: Settings, bridge: AgentBridge) -> MCPServer:
-    mcp = _Server(name="claude-remote", instructions=INSTRUCTIONS)
+def build_server(settings: Settings, bridge: AgentBridge, oauth: GatewayOAuth) -> MCPServer:
+    # With these the SDK serves the OAuth metadata, /register, /authorize, /token and
+    # /revoke, and checks the token on /mcp.
+    mcp = _Server(
+        name="claude-remote",
+        instructions=INSTRUCTIONS,
+        auth=oauth.auth_settings(),
+        auth_server_provider=oauth,
+    )
+    mcp.custom_route(LOGIN_PATH, methods=["GET", "POST"])(oauth.login)
     root = settings.projects_root
 
     async def call(coro):
