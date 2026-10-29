@@ -21,6 +21,7 @@ import secrets
 import time
 from collections import OrderedDict, deque
 from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -56,7 +57,10 @@ LOGIN_TTL_S = 600
 # Registering and starting a sign-in need no credentials; this bounds what either can make
 # the server hold in memory.
 MAX_PENDING = 100
-# Wrong passphrases: this many within the window, and sign-in is refused until they age out.
+# Wrong passphrases: a sign-in link dies after this many,
+MAX_TRIES_PER_SIGN_IN = 5
+# and a source address that made this many within the window is refused until they age
+# out. Per source, so a stranger can't lock the owner out by guessing.
 MAX_FAILURES = 10
 FAILURE_WINDOW_S = 900
 # The client id that tokens accepted through the static MCP_GATEWAY_TOKEN carry.
@@ -76,9 +80,10 @@ class GatewayOAuth:
         self.clock = clock
         self.store = TokenStore(settings.state_dir / "oauth.json", clock)
         self._new_clients: OrderedDict[str, OAuthClientInformationFull] = OrderedDict()
-        self._logins: OrderedDict[str, tuple[str, AuthorizationParams, float]] = OrderedDict()
+        self._logins: OrderedDict[str, _SignIn] = OrderedDict()
         self._codes: OrderedDict[str, AuthorizationCode] = OrderedDict()
-        self._failures: deque[float] = deque()
+        # Source address -> times of its wrong passphrases.
+        self._failures: OrderedDict[str, deque[float]] = OrderedDict()
 
     def auth_settings(self) -> AuthSettings:
         return AuthSettings(
@@ -111,7 +116,7 @@ class GatewayOAuth:
         if params.resource is not None and params.resource.rstrip("/") != self.resource:
             raise AuthorizeError("invalid_target", f"This server only issues tokens for {self.resource}.")
         request_id = secrets.token_urlsafe(32)
-        _remember(self._logins, request_id, (client.client_id, params, self.clock() + LOGIN_TTL_S))
+        _remember(self._logins, request_id, _SignIn(client.client_id, params, self.clock() + LOGIN_TTL_S))
         return f"{self.issuer}{LOGIN_PATH}?request={request_id}"
 
     async def login(self, request: Request) -> Response:
@@ -121,27 +126,39 @@ class GatewayOAuth:
         else:
             form = await request.form()
             request_id, passphrase = str(form.get("request", "")), str(form.get("passphrase", ""))
-        pending = self._logins.get(request_id)
-        client = await self.get_client(pending[0]) if pending else None
-        if not pending or not client or pending[2] < self.clock():
+        sign_in = self._logins.get(request_id)
+        client = await self.get_client(sign_in.client_id) if sign_in else None
+        if not sign_in or not client or sign_in.expires_at < self.clock():
             self._logins.pop(request_id, None)
             return _page(
                 "<p>This sign-in link has expired or was already used. Connect again from the "
                 "Claude app.</p>",
                 status=400,
             )
-        params = pending[1]
+        params = sign_in.params
         if passphrase is None:
             return _sign_in_form(request_id, client, params)
-        if self._locked_out():
-            log.warning("OAuth sign-in refused: %d wrong passphrases in %d s", MAX_FAILURES, FAILURE_WINDOW_S)
+        source = _source(request)
+        if self._locked_out(source):
+            log.warning(
+                "OAuth sign-in refused for %s: %d wrong passphrases in %d s", source, MAX_FAILURES, FAILURE_WINDOW_S
+            )
             return _page(
                 f"<p>Too many wrong passphrases. Try again in {FAILURE_WINDOW_S // 60} minutes.</p>",
                 status=429,
             )
         if not hmac.compare_digest(passphrase.encode(), self.passphrase):
-            self._failures.append(self.clock())
-            log.warning("OAuth sign-in: wrong passphrase (client %r)", client.client_name)
+            failures = self._failures.pop(source, deque())
+            failures.append(self.clock())
+            _remember(self._failures, source, failures)
+            sign_in.wrong_tries += 1
+            log.warning("OAuth sign-in: wrong passphrase from %s (client %r)", source, client.client_name)
+            if sign_in.wrong_tries >= MAX_TRIES_PER_SIGN_IN:
+                del self._logins[request_id]
+                return _page(
+                    "<p>Wrong passphrase too many times. Connect again from the Claude app.</p>",
+                    status=403,
+                )
             return _sign_in_form(request_id, client, params, error="Wrong passphrase.", status=403)
         del self._logins[request_id]
         code = AuthorizationCode(
@@ -162,10 +179,11 @@ class GatewayOAuth:
             headers={"Cache-Control": "no-store"},
         )
 
-    def _locked_out(self) -> bool:
-        while self._failures and self._failures[0] < self.clock() - FAILURE_WINDOW_S:
-            self._failures.popleft()
-        return len(self._failures) >= MAX_FAILURES
+    def _locked_out(self, source: str) -> bool:
+        failures = self._failures.get(source, deque())
+        while failures and failures[0] < self.clock() - FAILURE_WINDOW_S:
+            failures.popleft()
+        return len(failures) >= MAX_FAILURES
 
     # --- Tokens -----------------------------------------------------------------------
 
@@ -307,6 +325,22 @@ class TokenStore:
         with os.fdopen(os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w") as file:
             json.dump(data, file)
         os.replace(temporary, self.path)
+
+
+@dataclass
+class _SignIn:
+    """A sign-in started at /authorize and not finished yet."""
+
+    client_id: str
+    params: AuthorizationParams
+    expires_at: float
+    wrong_tries: int = 0
+
+
+def _source(request: Request) -> str:
+    """Where a request comes from: the address Cloudflare saw, which it sets itself (a
+    client can't forge it through the tunnel), or the peer address without a tunnel."""
+    return request.headers.get("cf-connecting-ip") or (request.client.host if request.client else "?")
 
 
 def _hash(token: str) -> str:
