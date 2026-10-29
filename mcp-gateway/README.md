@@ -40,7 +40,7 @@ or with a NUL character) come back the same way as one sentence.
 | `list_agents` | one line per agent: id · name · status · folder (a folder under `MCP_GATEWAY_PROJECTS_ROOT` by its name there, e.g. `grafik`) |
 | `agent_details` | the same line for one agent |
 | `read_output` | last N meaningful terminal lines (default 20, at most 60; the same for `lines` on the waiting tools) |
-| `send_prompt` | prompt, wait up to `wait_seconds` (default 90, at most 100), return status + output; flags `blocked` and still-working. A `blocked` agent refuses prompts until its question is answered |
+| `send_prompt` | prompt, wait up to `wait_seconds` (default and most 45, see below), return status + output; flags `blocked` and still-working. A `blocked` agent refuses prompts until its question is answered. If agent-bridge doesn't answer in time, it says the prompt may have been sent instead of failing, so it isn't sent twice |
 | `wait_for_agent` | keep waiting for an agent still working (e.g. after `send_prompt` ran out of time); same result format |
 | `answer_agent` | key presses for a blocked agent's question, e.g. `["1"]`, `["Enter"]`; with `wait_seconds` also waits for the result. Marked destructive, so Claude asks first |
 | `start_agent` | new agent in a project: one folder name under `MCP_GATEWAY_PROJECTS_ROOT` (names with `/`, `..` or `~`, and `.`, are refused) or an absolute path |
@@ -48,6 +48,13 @@ or with a NUL character) come back the same way as one sentence.
 
 The server's instructions tell Claude the user is probably driving: short, speakable
 answers, no code read aloud, and no approvals without asking.
+
+**Waits are capped at 45 s** because claude.ai gives up on a tool call after about 60 s,
+whatever its docs say (240 s): measured through the connector, a 55 s wait comes back and
+a 60 s one fails with *The operation timed out*. Nothing is sent before a tool returns,
+so a longer wait would end in a generic failure after the prompt was typed. For longer
+work Claude calls `wait_for_agent` again. agent-bridge's answer gets `wait_seconds` + 10 s
+before mcp-gateway gives up on it.
 
 ## Configuration
 
@@ -286,8 +293,8 @@ reverse proxy:
    Keep it running with your system's service manager (systemd, launchd, NSSM, …).
 3. Publish only `/mcp` over HTTPS at `MCP_GATEWAY_PUBLIC_HOST`: a
    [Cloudflare Tunnel](#cloudflare-tunnel) set up by hand, or any reverse proxy that
-   terminates TLS, with a request timeout of at least 125 s (`wait_seconds` goes up to
-   100 s, and Cloudflare itself cuts requests off at 125 s).
+   terminates TLS, with a request timeout of at least 60 s (`wait_seconds` goes up to
+   45 s, plus up to 10 s for agent-bridge's answer).
    Don't publish `/healthz` or anything else.
 
 ## Cloudflare Tunnel
