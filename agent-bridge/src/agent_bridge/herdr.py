@@ -116,6 +116,12 @@ class Herdr:
     async def send_keys(self, target: str, keys: Sequence[str]) -> None:
         await self._json("agent", "send-keys", target, *keys)
 
+    async def rename_agent(self, target: str, name: str) -> dict:
+        return (await self._json("agent", "rename", target, name))["agent"]
+
+    async def rename_workspace(self, workspace_id: str, label: str) -> None:
+        await self._json("workspace", "rename", workspace_id, label)
+
     async def start_agent(
         self,
         name: str,
