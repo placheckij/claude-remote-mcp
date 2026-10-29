@@ -10,7 +10,7 @@ custom MCP connector added to your Claude account.
 
 ```
 Claude app (voice)
-  └─ custom MCP connector ── HTTPS, Cloudflare Tunnel, bearer token
+  └─ custom MCP connector ── HTTPS, Cloudflare Tunnel, OAuth
        └─ mcp-gateway   (gateway host, always on)   MCP server, auth, frugal tool output
             └─ LAN ──── agent-bridge   (agent host)   stateless HTTP API, project allowlist
                              └─ herdr CLI           owns agents and their state
@@ -24,7 +24,7 @@ and tests.
 
 | Directory | Runs on | Role |
 |---|---|---|
-| [`mcp-gateway/`](mcp-gateway/) | an always-on host: a small home server, a VPS, or the agent host itself (Linux, macOS; the setup script needs Debian-based Linux with systemd) | MCP server exposed to claude.ai through a Cloudflare Tunnel; authenticates requests and forwards tool calls to `agent-bridge`. Includes a setup script. |
+| [`mcp-gateway/`](mcp-gateway/) | an always-on host: a small home server, a VPS, or the agent host itself (Linux, macOS; the setup script needs Debian-based Linux with systemd) | MCP server exposed to claude.ai through a Cloudflare Tunnel; signs the connector in with OAuth (a passphrase) and forwards tool calls to `agent-bridge`. Includes a setup script. |
 | [`agent-bridge/`](agent-bridge/) | the machine where herdr and Claude Code run (macOS or Linux) | Narrow LAN-only HTTP API translating requests into `herdr` CLI calls; keeps no state. Runs as a launchd or systemd user service. |
 
 You need:
@@ -35,9 +35,7 @@ You need:
 - an agent host that stays awake and logged in while you use it (see
   [Keeping the agent host available](agent-bridge/README.md#keeping-the-agent-host-available));
 - a Cloudflare account (the Free plan is fine) with a domain whose DNS is on Cloudflare;
-- a Claude plan with custom connectors, and the **Request headers** option in the Add
-  custom connector dialog. That option is a beta that only some accounts have; without
-  it the connector can't send its token, and mcp-gateway has no OAuth sign-in instead.
+- a Claude plan with custom connectors.
 
 The gateway and the agent host can be one machine.
 
@@ -54,9 +52,9 @@ The gateway and the agent host can be one machine.
    first run it prints a Cloudflare login URL: open it in any browser and pick your
    domain. It then sets up the service and the
    [Cloudflare Tunnel](mcp-gateway/README.md#cloudflare-tunnel) and prints the
-   connector token.
+   sign-in passphrase.
 4. **claude.ai:** [add the custom connector](mcp-gateway/README.md#add-the-connector-in-claudeai)
-   with that token.
+   by its URL and sign in with that passphrase.
 
 ## Development
 

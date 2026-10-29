@@ -5,7 +5,8 @@ import pytest
 from mcp_gateway.config import Settings
 
 REQUIRED = {
-    "MCP_GATEWAY_TOKEN": "g" * 32,
+    "MCP_GATEWAY_OAUTH_PASSPHRASE": "p" * 24,
+    "MCP_GATEWAY_STATE_DIR": "/var/lib/mcp-gateway",
     "MCP_GATEWAY_BRIDGE_URL": "http://agents.lan:8765",
     "MCP_GATEWAY_BRIDGE_TOKEN": "b" * 32,
     "MCP_GATEWAY_PUBLIC_HOST": "mcp.example.com",
@@ -25,6 +26,14 @@ def env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> pytest.MonkeyPatch:
 def test_reads_every_setting(env: pytest.MonkeyPatch) -> None:
     settings = Settings.from_env()
     assert (settings.bridge_url, settings.projects_root) == ("http://agents.lan:8765", "/home/me/projects")
+    assert settings.state_dir == Path("/var/lib/mcp-gateway")
+
+
+def test_the_static_token_is_optional(env: pytest.MonkeyPatch) -> None:
+    # Unset, only OAuth tokens are accepted.
+    assert Settings.from_env().token is None
+    env.setenv("MCP_GATEWAY_TOKEN", "g" * 32)
+    assert Settings.from_env().token == "g" * 32
 
 
 @pytest.mark.parametrize("name", sorted(REQUIRED))
@@ -43,6 +52,12 @@ def test_an_empty_setting_counts_as_unset(env: pytest.MonkeyPatch) -> None:
 def test_refuses_a_short_token(env: pytest.MonkeyPatch) -> None:
     env.setenv("MCP_GATEWAY_TOKEN", "short")
     with pytest.raises(RuntimeError, match="MCP_GATEWAY_TOKEN: .*at least 32"):
+        Settings.from_env()
+
+
+def test_refuses_a_short_passphrase(env: pytest.MonkeyPatch) -> None:
+    env.setenv("MCP_GATEWAY_OAUTH_PASSPHRASE", "hunter2")
+    with pytest.raises(RuntimeError, match="MCP_GATEWAY_OAUTH_PASSPHRASE: .*at least 16"):
         Settings.from_env()
 
 

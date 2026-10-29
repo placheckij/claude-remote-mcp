@@ -2,8 +2,8 @@
 
 The MCP server that the Claude app talks to. It runs on an always-on host (the
 *gateway host*), is published to the internet through a Cloudflare Tunnel, and is added
-to the Claude account as a custom connector. Every tool call is checked against the
-connector's bearer token and forwarded over the LAN to
+to the Claude account as a custom connector, which signs in with OAuth. Every tool call
+is checked against the connector's access token and forwarded over the LAN to
 [`agent-bridge`](../agent-bridge/), which drives herdr on the *agent host*.
 
 ```
@@ -30,7 +30,7 @@ or with a NUL character) come back the same way as one sentence.
 | Hardware | very light: one small Python process plus cloudflared. A single-board computer, a small home server, a VPS (if it can reach agent-bridge, e.g. over a VPN) or the agent host itself is enough. 64-bit recommended. |
 | Software | [uv](https://docs.astral.sh/uv/) (installs Python 3.11+ itself if needed); [cloudflared](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/) for the tunnel |
 | Network | outbound HTTPS to Cloudflare; a route to agent-bridge's URL. No inbound port needs to be open. |
-| Accounts | a Cloudflare account with a domain whose DNS is on Cloudflare (Free plan is fine); a Claude plan with custom connectors (Free, Pro and Max included) and the **Request headers** option in the Add custom connector dialog, a beta only some accounts have (see [Add the connector](#add-the-connector-in-claudeai)) |
+| Accounts | a Cloudflare account with a domain whose DNS is on Cloudflare (Free plan is fine); a Claude plan with custom connectors (Free, Pro and Max included) |
 | Always on | yes: the connector only works while this host is up |
 
 ## Tools
@@ -57,8 +57,10 @@ unset. An invalid setting stops startup with one line per problem, naming the va
 
 | Variable | |
 |---|---|
-| `MCP_GATEWAY_TOKEN` | required, 32+ chars; claude.ai sends it as `Authorization: Bearer …` |
-| `MCP_GATEWAY_PUBLIC_HOST` | required; the tunnel hostname, e.g. `mcp.example.com` (requests with any other `Host` are refused) |
+| `MCP_GATEWAY_OAUTH_PASSPHRASE` | required, 16+ chars; typed on the [sign-in page](#oauth-sign-in) when the connector is added |
+| `MCP_GATEWAY_STATE_DIR` | required; where the signed-in clients and token hashes are kept (`oauth.json`, mode 600), e.g. `/var/lib/mcp-gateway` |
+| `MCP_GATEWAY_TOKEN` | optional, 32+ chars; the static token from before OAuth, still accepted as `Authorization: Bearer …` while set. Leave it unset unless a connector added with request headers still uses it |
+| `MCP_GATEWAY_PUBLIC_HOST` | required; the tunnel hostname, e.g. `mcp.example.com` (requests with any other `Host` are refused). The OAuth issuer is `https://<host>` and the connector URL `https://<host>/mcp` |
 | `MCP_GATEWAY_BRIDGE_URL` | required, e.g. `http://192.168.1.20:8765` |
 | `MCP_GATEWAY_BRIDGE_TOKEN` | required; agent-bridge's `AGENT_BRIDGE_TOKEN` |
 | `MCP_GATEWAY_PROJECTS_ROOT` | required; where `start_agent` looks up project names, as a path on the agent host, e.g. `/home/me/projects` |
@@ -69,18 +71,20 @@ What stands between the internet and an agent:
 
 1. **Cloudflare Tunnel.** The gateway host opens an outbound connection; no port is opened on the
    router. Cloudflare terminates TLS.
-2. **Ingress rule.** The tunnel only forwards `https://<host>/mcp`; every other path
-   (including `/healthz`) gets a 404 from cloudflared on the gateway host and never
-   reaches mcp-gateway.
-3. **Bearer token.** mcp-gateway refuses any request without
-   `Authorization: Bearer <MCP_GATEWAY_TOKEN>`. The word `Bearer` may be in any case;
-   the token must match exactly (constant-time compare). The 401 says
-   `WWW-Authenticate: Bearer`, and each refusal is logged with the request's headers,
-   secrets redacted.
+2. **Ingress rule.** The tunnel only forwards `/mcp` and the OAuth sign-in's paths
+   (see [OAuth sign-in](#oauth-sign-in)); every other path (including `/healthz`) gets a
+   404 from cloudflared on the gateway host and never reaches mcp-gateway.
+3. **OAuth access token.** mcp-gateway refuses any `/mcp` request without
+   `Authorization: Bearer <token>`, where the token is an unexpired access token it
+   issued (or `MCP_GATEWAY_TOKEN`, while set; constant-time compare). The word `Bearer`
+   may be in any case. The 401 carries
+   `WWW-Authenticate: Bearer resource_metadata="https://<host>/.well-known/oauth-protected-resource/mcp"`,
+   from which claude.ai starts the sign-in, and each refusal is logged with the request's
+   headers, secrets redacted.
 4. **Host and Origin check.** Only `MCP_GATEWAY_PUBLIC_HOST` (and localhost) is
    accepted as `Host`, and only `https://claude.ai` or `https://claude.com` as `Origin`
    (a request without one is fine). This is DNS-rebinding protection from the SDK. A
-   refused Origin with the right token is logged as an error: if it is the Claude app,
+   refused Origin with a valid token is logged as an error: if it is the Claude app,
    every call fails until that Origin is added to `ALLOWED_ORIGINS` in
    `src/mcp_gateway/server.py`.
 
@@ -95,11 +99,38 @@ stream, so clients use POST only, as the MCP spec allows.
 mcp-gateway listens on `127.0.0.1` only, so nothing on the LAN can reach it except
 through the tunnel.
 
+## OAuth sign-in
+
+mcp-gateway is its own OAuth authorization server, for one user with one passphrase. When
+the connector is added, claude.ai:
+
+1. gets the `401` from `/mcp` and reads `/.well-known/oauth-protected-resource/mcp`, then
+   `/.well-known/oauth-authorization-server`;
+2. registers itself at `/register` (dynamic client registration, as a public client);
+3. opens `/authorize`, which forwards to the sign-in page `/login`. It names the client
+   and the site the browser returns to (claude.ai), and asks for
+   `MCP_GATEWAY_OAUTH_PASSPHRASE`;
+4. trades the code for tokens at `/token` (PKCE, S256) and calls `/mcp` with them.
+
+| | |
+|---|---|
+| Access token | 1 hour; claude.ai refreshes it by itself |
+| Refresh token | 90 days; replaced on every refresh (the old one stops working) |
+| Callback | only `https://claude.ai/api/mcp/auth_callback` can be registered, so a sign-in can't hand a code to anyone else. Claude Code's loopback callback isn't accepted |
+| Wrong passphrases | logged with the source address; a sign-in link dies after 5, and an address with 10 within 15 minutes is refused until they age out, so one stranger guessing doesn't lock you out. The address is Cloudflare's `CF-Connecting-IP` when the request comes from the local cloudflared, else the peer's; IPv6 counts by /64. Changing addresses doesn't buy more: 100 from all sources together stop every sign-in for those 15 minutes (tokens already issued keep working) |
+| Phishing | someone could send you a sign-in link they started. The code can only go to claude.ai, where it only completes the sign-in that claude.ai itself started (its `state`), and the page says to continue only while you are connecting in Claude |
+| Storage | `MCP_GATEWAY_STATE_DIR/oauth.json`: the clients that signed in and SHA-256 hashes of their tokens, never the tokens. A registration that never signs in is kept in memory only (at most 100) |
+| Revocation | `/revoke` ends a token and its pair |
+| Restart | tokens survive it; a sign-in page or code that was open is lost (sign in again) |
+
+To sign every connector out, stop the service, delete `oauth.json` and start it again.
+Changing the passphrase only affects the next sign-in.
+
 ## Deploy with the setup script
 
 [`deploy/setup.sh`](deploy/setup.sh) does the whole setup: it installs uv and
-cloudflared, installs mcp-gateway as a systemd service, and creates and runs the
-Cloudflare Tunnel.
+cloudflared, installs mcp-gateway as a systemd service, creates and runs the
+Cloudflare Tunnel, and generates the sign-in passphrase.
 
 ### Before you start
 
@@ -132,23 +163,28 @@ history and, while the script runs, in the process list that other users on the 
 can read. Other values left out are asked for too; on later runs they come from
 `/etc/mcp-gateway/env` instead (see [Update and rotate](#update-and-rotate)). Optional
 variables: `TUNNEL_NAME` (default `claude-remote`), `PORT` (default `8766`),
-`ROTATE_TOKEN=1`, and `MCP_GATEWAY_TOKEN`.
+`MCP_GATEWAY_OAUTH_PASSPHRASE`, `ROTATE_PASSPHRASE=1`, `MCP_GATEWAY_TOKEN` and
+`REMOVE_TOKEN=1`.
 
-The script generates the connector token (`MCP_GATEWAY_TOKEN`) itself. To use one you
-already have instead, e.g. when moving to a new gateway host, read it without echoing
-and pass it through sudo's environment:
+The script generates the sign-in passphrase (`MCP_GATEWAY_OAUTH_PASSPHRASE`, 96 random
+bits as six groups of four hex digits) itself. To choose your own instead, read it
+without echoing and pass it through sudo's environment:
 
 ```sh
-read -rsp 'Connector token: ' MCP_GATEWAY_TOKEN && export MCP_GATEWAY_TOKEN && echo
-sudo --preserve-env=MCP_GATEWAY_TOKEN \
+read -rsp 'Passphrase: ' MCP_GATEWAY_OAUTH_PASSPHRASE && export MCP_GATEWAY_OAUTH_PASSPHRASE && echo
+sudo --preserve-env=MCP_GATEWAY_OAUTH_PASSPHRASE \
      PUBLIC_HOST=mcp.example.com \
      AGENT_BRIDGE_URL=http://192.168.1.20:8765 \
      PROJECTS_ROOT=/home/me/projects \
      mcp-gateway/deploy/setup.sh
 ```
 
-It must be 32+ characters from `A-Z a-z 0-9 . _ ~ + / -`, optionally ending in `=`
-(`openssl rand -hex 32` makes one).
+It must be 16+ characters from letters, digits, spaces and `. _ ~ + / = : , ! ? @ # % ^ & * ( ) -`.
+
+No static token is made any more. One already in `/etc/mcp-gateway/env` is kept, so a
+connector added with request headers keeps working until it is replaced (see
+[Move a connector to OAuth](#move-a-connector-to-oauth)); `MCP_GATEWAY_TOKEN` passed the
+same way sets one.
 
 On the first run `cloudflared tunnel login` prints a URL. Open it in any browser, log in
 to Cloudflare and pick the zone (domain) that contains `PUBLIC_HOST`: `example.com` for
@@ -160,12 +196,12 @@ delete `/etc/cloudflared/cert.pem` and re-run to log in again. A cert left in
 in.
 
 At the end it checks that mcp-gateway is up, that agent-bridge answers with its token, and
-that the tunnel answers `401` without the token and `404` outside `/mcp` (waiting up to
-30 s each for the service and the tunnel to come up). If all pass, it prints the
-connector settings; if any fails, it lists the failed checks and exits with status 1.
-Either way it says where the connector token is: on the first run (unless you passed
-one in) it prints the new `MCP_GATEWAY_TOKEN`. DNS for a new hostname can take a few
-minutes; if only the tunnel checks fail, try again shortly:
+that the tunnel answers `401` on `/mcp` without a token, serves the OAuth metadata, and
+answers `404` elsewhere (waiting up to 30 s each for the service and the tunnel to come
+up). If all pass, it prints the connector settings; if any fails, it lists the failed
+checks and exits with status 1. Either way it says where the passphrase is: when it
+makes a new one, it prints it. DNS for a new hostname can take a few minutes; if only
+the tunnel checks fail, try again shortly:
 `curl -i -X POST https://mcp.example.com/mcp` should answer `401`.
 
 ### What it creates
@@ -173,7 +209,8 @@ minutes; if only the tunnel checks fail, try again shortly:
 | Path | |
 |---|---|
 | `/opt/claude-remote-mcp/` | the checkout's committed files (`HEAD`; no untracked or uncommitted changes) and their `.venv`, all owned by root, so neither the service nor the checkout's owner can change the code it runs |
-| `/etc/mcp-gateway/env` | configuration and tokens (`root:mcp-gateway`, mode 640) |
+| `/etc/mcp-gateway/env` | configuration, passphrase and tokens (`root:mcp-gateway`, mode 640) |
+| `/var/lib/mcp-gateway/` | `oauth.json`: signed-in clients and token hashes (systemd `StateDirectory`, owned by `mcp-gateway`, mode 700) |
 | `/etc/systemd/system/mcp-gateway.service` | runs as the `mcp-gateway` system user on `127.0.0.1:8766`, sandboxed |
 | `/etc/cloudflared/cert.pem` | Cloudflare account cert from `tunnel login`; only needed to manage tunnels, root-only |
 | `/etc/cloudflared/claude-remote.json` | the tunnel's credentials (owned by the `cloudflared` user) |
@@ -186,12 +223,13 @@ minutes; if only the tunnel checks fail, try again shortly:
   variables: `sudo mcp-gateway/deploy/setup.sh`. It takes `PUBLIC_HOST`,
   `AGENT_BRIDGE_URL`, `AGENT_BRIDGE_TOKEN` and `PROJECTS_ROOT` from
   `/etc/mcp-gateway/env` and lists the ones it keeps (tokens not shown), keeps the
-  connector token and reuses the tunnel. Only committed code is installed.
-- **Rotate the connector token:** re-run with `ROTATE_TOKEN=1`, then remove the
-  connector in claude.ai and add it again with the new token. Request headers can't be
-  edited once a connector is added.
-- **Set the connector token yourself:** re-run with `MCP_GATEWAY_TOKEN=…`. Later runs
-  keep it. If it differs from the one in claude.ai, re-add the connector there too.
+  passphrase, the OAuth tokens and the static token if there is one, and reuses the
+  tunnel. Only committed code is installed.
+- **Change the passphrase:** re-run with `ROTATE_PASSPHRASE=1` (it prints the new one),
+  or with `MCP_GATEWAY_OAUTH_PASSPHRASE` as above. Connectors already signed in stay
+  signed in; to sign them out too, `sudo rm /var/lib/mcp-gateway/oauth.json && sudo
+  systemctl restart mcp-gateway`.
+- **Stop accepting the static token:** re-run with `REMOVE_TOKEN=1`.
 - **Change agent-bridge's URL or token, or the projects folder:** re-run with just the
   values that change; the rest are kept:
   ```sh
@@ -284,11 +322,15 @@ reverse proxy:
      uvicorn mcp_gateway.server:main --factory --host 127.0.0.1 --port 8766 --no-server-header
    ```
    Keep it running with your system's service manager (systemd, launchd, NSSM, …).
-3. Publish only `/mcp` over HTTPS at `MCP_GATEWAY_PUBLIC_HOST`: a
+3. Publish over HTTPS at `MCP_GATEWAY_PUBLIC_HOST` only `/mcp` and the OAuth paths:
+   `/authorize`, `/login`, `/token`, `/register`, `/revoke`,
+   `/.well-known/oauth-authorization-server` and
+   `/.well-known/oauth-protected-resource/mcp`. Use a
    [Cloudflare Tunnel](#cloudflare-tunnel) set up by hand, or any reverse proxy that
    terminates TLS, with a request timeout of at least 125 s (`wait_seconds` goes up to
    100 s, and Cloudflare itself cuts requests off at 125 s).
-   Don't publish `/healthz` or anything else.
+   Don't publish `/healthz` or anything else. mcp-gateway needs a writable
+   `MCP_GATEWAY_STATE_DIR`.
 
 ## Cloudflare Tunnel
 
@@ -314,7 +356,8 @@ tunnel: <tunnel id from `cloudflared tunnel list`>
 credentials-file: /etc/cloudflared/claude-remote.json
 ingress:
   - hostname: mcp.example.com
-    path: ^/mcp$            # publish only the MCP endpoint
+    # only the MCP endpoint and the OAuth sign-in
+    path: ^/(mcp|authorize|login|token|register|revoke|\.well-known/oauth-(authorization-server|protected-resource/mcp))$
     service: http://127.0.0.1:8766
   - service: http_status:404
 ```
@@ -334,7 +377,12 @@ service runs with `--no-autoupdate`. In the dashboard the tunnel shows up under
 
 Access can sit in front of the hostname as a second gate, checked by Cloudflare before
 a request ever reaches the gateway host. claude.ai can't complete an Access login page, so use a
-**service token** and have the connector send it as headers:
+**service token** and have the connector send it as headers.
+
+This doesn't fit the OAuth sign-in well: `/authorize` and `/login` open in your browser,
+which has no service token, so those two paths need an Access **Bypass** policy, and the
+connector still needs request headers (below) for the rest. With OAuth on, leave Access
+off unless you need it.
 
 1. Zero Trust → **Access → Service auth → Service tokens → Create**. Copy the Client
    ID and Client Secret.
@@ -344,12 +392,12 @@ a request ever reaches the gateway host. claude.ai can't complete an Access logi
 3. In the claude.ai connector, add two more request headers:
    `CF-Access-Client-Id` and `CF-Access-Client-Secret`.
 
-Two catches, both from claude.ai's request headers (below): custom header names like
-these are only sent once Anthropic has approved them (ask
+Two catches, both from claude.ai's request headers, a beta only some accounts have:
+custom header names like these are only sent once Anthropic has approved them (ask
 [Claude support](https://support.claude.com/en/articles/9015913-how-to-get-support);
 until then the connector can't be saved with them), and a connector takes at most four
-headers. Without approval, leave Access off; the bearer token and the ingress rule
-still apply.
+headers. Without approval, leave Access off; the OAuth token and the ingress rule still
+apply.
 
 ## Add the connector in claude.ai
 
@@ -358,17 +406,24 @@ claude.ai → **Customize → Connectors → Add custom connector**:
 | Field | Value |
 |---|---|
 | URL | `https://mcp.example.com/mcp` |
-| Authentication | **No sign-in** |
-| Request headers | `authorization` = `Bearer <MCP_GATEWAY_TOKEN>` (plus the Access headers, if used) |
+| OAuth client ID and secret (advanced settings) | leave empty: claude.ai registers itself |
 
-Enter the header value with the `Bearer ` prefix and the space: claude.ai sends it
-exactly as typed.
+Then click **Connect**. A page from your gateway asks for the passphrase
+(`MCP_GATEWAY_OAUTH_PASSPHRASE`); after **Allow** you are back in claude.ai, connected.
+claude.ai keeps the connector signed in by refreshing its token; if it was signed out
+(e.g. after 90 days unused, or `oauth.json` was deleted), it asks you to connect again.
+See [Claude's connector docs](https://claude.com/docs/connectors/custom/add-unlisted).
 
-**Request headers are a beta.** Only some accounts have the section in the dialog. If
-yours doesn't, the connector can't send the token and mcp-gateway can't be connected:
-it has no OAuth sign-in. Once a connector is added its headers can't be edited; to
-change the token, remove the connector and add it again. See
-[Claude's connector docs](https://claude.com/docs/connectors/custom/add-unlisted).
+### Move a connector to OAuth
+
+A connector added before OAuth sends the static token as a request header, which can't
+be edited. To move it over:
+
+1. Update the gateway (re-run the setup script; it keeps the static token, so the old
+   connector keeps working meanwhile, and prints the passphrase).
+2. In claude.ai, remove the old connector and add it again as above, signing in with the
+   passphrase.
+3. Re-run the setup script with `REMOVE_TOKEN=1`, so the static token stops working.
 
 Connectors added on claude.ai are available in the Claude apps on the same account,
 including the mobile app (and with it CarPlay).
@@ -380,6 +435,7 @@ uv sync --all-packages
 uv run --package mcp-gateway pytest mcp-gateway
 
 # Local run against an agent-bridge on this machine
+MCP_GATEWAY_OAUTH_PASSPHRASE=$(openssl rand -hex 12) MCP_GATEWAY_STATE_DIR=/tmp/mcp-gateway-state \
 MCP_GATEWAY_TOKEN=$(openssl rand -hex 32) MCP_GATEWAY_PUBLIC_HOST=localhost \
 MCP_GATEWAY_BRIDGE_URL=http://127.0.0.1:8765 MCP_GATEWAY_BRIDGE_TOKEN=… \
 MCP_GATEWAY_PROJECTS_ROOT=$HOME/projects \
@@ -387,4 +443,5 @@ MCP_GATEWAY_PROJECTS_ROOT=$HOME/projects \
 ```
 
 Tests drive the real MCP app over JSON-RPC with a fake agent-bridge behind
-`httpx.MockTransport`. `deploy/setup.sh` is checked with `shellcheck`.
+`httpx.MockTransport`; `test_oauth.py` goes through the whole sign-in the way claude.ai
+does. `deploy/setup.sh` is checked with `shellcheck`.
