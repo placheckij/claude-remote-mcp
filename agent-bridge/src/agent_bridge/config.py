@@ -2,16 +2,43 @@
 directory (the environment wins)."""
 
 import os
+import re
 import shlex
 from pathlib import Path
 from typing import Annotated, Any
 
-from pydantic import Field, ValidationError, field_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 from agent_bridge.trust import is_default_config
 
 ENV_FILE = ".env"
+
+ACCOUNT_NAME = re.compile(r"^[a-z][a-z0-9_-]{0,31}$")
+
+
+class Account(BaseModel):
+    """A Claude login agents can be started with, e.g. a work and a personal one."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    # Passed to agents as CLAUDE_CONFIG_DIR; None leaves Claude Code on its default config.
+    config_dir: Path | None = None
+    # Agents started in one of these folders, or below, get this account unless the
+    # request names another.
+    folders: tuple[Path, ...] = ()
+
+    @field_validator("config_dir")
+    @classmethod
+    def _absolute_config_dir(cls, path: Path | None) -> Path | None:
+        if path and not path.expanduser().is_absolute():
+            raise ValueError(f"{path} must be an absolute path")
+        return path.expanduser() if path else None
+
+    @field_validator("folders")
+    @classmethod
+    def _narrow_folders(cls, folders: tuple[Path, ...]) -> tuple[Path, ...]:
+        return tuple(narrow_folder(folder) for folder in folders)
 
 
 class Settings(BaseSettings):
@@ -23,7 +50,11 @@ class Settings(BaseSettings):
     # `:`-separated (os.pathsep) in the environment.
     allowed_roots: Annotated[tuple[Path, ...], NoDecode]
     # Passed to agents as CLAUDE_CONFIG_DIR; None leaves Claude Code on its default config.
+    # Agents that no account below applies to use it.
     claude_config_dir: Path | None = None
+    # Named Claude logins, as JSON in the environment, e.g.
+    # {"work": {"config_dir": null, "folders": ["/Users/me/projects/work"]}}.
+    accounts: dict[str, Account] = {}
     # Shell-quoted in the environment; set it empty to pass no extra arguments.
     claude_args: Annotated[tuple[str, ...], NoDecode] = ("--permission-mode", "auto")
     herdr_bin: str = "herdr"
@@ -91,14 +122,42 @@ class Settings(BaseSettings):
             narrow_folder(path)
         return path
 
-    def claude_env(self) -> dict[str, str]:
-        if self.claude_config_dir is None:
-            return {}
-        return {"CLAUDE_CONFIG_DIR": str(self.claude_config_dir)}
+    @field_validator("accounts")
+    @classmethod
+    def _check_accounts(cls, accounts: dict[str, Account]) -> dict[str, Account]:
+        for name in accounts:
+            if not ACCOUNT_NAME.match(name):
+                raise ValueError(
+                    f"account name {name!r} must be lower-case letters, digits, - or _, "
+                    "starting with a letter, at most 32 long"
+                )
+        # A folder in two accounts would leave the choice to dictionary order.
+        owners: dict[Path, str] = {}
+        for name, account in accounts.items():
+            for folder in account.folders:
+                if folder in owners:
+                    raise ValueError(f"{folder} is in both the {owners[folder]} and {name} accounts")
+                owners[folder] = name
+        return accounts
+
+    def account_for(self, folder: Path) -> str | None:
+        """The account whose folders hold `folder` most closely, if any."""
+        matches = [
+            (len(root.parts), name)
+            for name, account in self.accounts.items()
+            for root in account.folders
+            if folder.is_relative_to(root)
+        ]
+        return max(matches)[1] if matches else None
 
     def is_allowed(self, path: Path) -> bool:
         resolved = path.expanduser().resolve()
         return any(resolved.is_relative_to(root) for root in self.allowed_roots)
+
+
+def claude_env(config_dir: Path | None) -> dict[str, str]:
+    return {} if config_dir is None else {"CLAUDE_CONFIG_DIR": str(config_dir)}
+
 
 
 def narrow_folder(folder: Path) -> Path:
@@ -126,6 +185,9 @@ def describe(error: ValidationError, prefix: str) -> str:
         message = "must be set" if problem["type"] == "missing" else problem["msg"]
         message = message.removeprefix("Value error, ")
         if problem["loc"]:
-            message = f"{prefix}{str(problem['loc'][0]).upper()}: {message}"
+            variable, *inside = (str(part) for part in problem["loc"])
+            # Inside AGENT_BRIDGE_ACCOUNTS' JSON, e.g. "work.folders.0".
+            where = f" ({'.'.join(inside)})" if inside else ""
+            message = f"{prefix}{variable.upper()}{where}: {message}"
         lines.append(message)
     return "Invalid settings:\n" + "\n".join(f"  {line}" for line in lines)

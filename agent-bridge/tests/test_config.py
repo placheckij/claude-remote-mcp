@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from agent_bridge.config import Settings
+from agent_bridge.config import Settings, claude_env
 
 TOKEN = "t" * 32
 
@@ -20,7 +20,7 @@ def test_defaults_use_claudes_own_config_and_trust_nothing(env: pytest.MonkeyPat
     settings = Settings.from_env()
     assert settings.claude_config_dir is None
     assert settings.trust_root is None
-    assert settings.claude_env() == {}
+    assert claude_env(settings.claude_config_dir) == {}
     assert settings.claude_args == ("--permission-mode", "auto")
 
 
@@ -28,7 +28,7 @@ def test_reads_a_separate_config_and_trust_root(env: pytest.MonkeyPatch, tmp_pat
     env.setenv("AGENT_BRIDGE_CLAUDE_CONFIG_DIR", str(tmp_path / ".claude-agents"))
     env.setenv("AGENT_BRIDGE_TRUST_ROOT", str(tmp_path))
     settings = Settings.from_env()
-    assert settings.claude_env() == {"CLAUDE_CONFIG_DIR": str(tmp_path / ".claude-agents")}
+    assert claude_env(settings.claude_config_dir) == {"CLAUDE_CONFIG_DIR": str(tmp_path / ".claude-agents")}
     assert settings.trust_root == tmp_path
 
 
@@ -141,3 +141,35 @@ def test_accepts_a_project_folder_under_home(env: pytest.MonkeyPatch, tmp_path: 
     env.setenv("AGENT_BRIDGE_TRUST_ROOT", str(home / "projects"))
     settings = Settings.from_env()
     assert settings.allowed_roots == ((home / "projects").resolve(),)
+
+
+def test_reads_accounts_as_json(env: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    (tmp_path / "work" / "app").mkdir(parents=True)
+    env.setenv(
+        "AGENT_BRIDGE_ACCOUNTS",
+        f'{{"work": {{"config_dir": null, "folders": ["{tmp_path}/work"]}},'
+        f' "personal": {{"config_dir": "{tmp_path}/.claude-personal", "folders": ["{tmp_path}"]}}}}',
+    )
+    settings = Settings.from_env()
+    assert settings.accounts["work"].config_dir is None
+    assert settings.accounts["personal"].config_dir == tmp_path / ".claude-personal"
+    # The closest folder wins: work's is inside personal's.
+    assert settings.account_for((tmp_path / "work" / "app").resolve()) == "work"
+    assert settings.account_for(tmp_path.resolve()) == "personal"
+    assert settings.account_for(Path("/elsewhere")) is None
+
+
+@pytest.mark.parametrize(
+    ("accounts", "problem"),
+    [
+        ('{"Work": {}}', "lower-case"),
+        ('{"work": {"config_dir": "relative/dir"}}', "absolute"),
+        ('{"work": {"folders": ["/"]}}', "too broad"),
+        ('{"work": {"folders": ["{root}"]}, "home": {"folders": ["{root}"]}}', "in both"),
+        ('{"work": {"config": "/x"}}', r"AGENT_BRIDGE_ACCOUNTS \(work.config\): Extra inputs"),
+    ],
+)
+def test_refuses_bad_accounts(env: pytest.MonkeyPatch, tmp_path: Path, accounts: str, problem: str) -> None:
+    env.setenv("AGENT_BRIDGE_ACCOUNTS", accounts.replace("{root}", str(tmp_path)))
+    with pytest.raises(RuntimeError, match=problem):
+        Settings.from_env()

@@ -34,6 +34,11 @@ class AgentSummary(BaseModel):
     question: str | None = None
 
 
+class StartedAgent(AgentSummary):
+    # The account (AGENT_BRIDGE_ACCOUNTS) it was started with; None for an unnamed one.
+    account: str | None
+
+
 class Output(BaseModel):
     text: str
     truncated: bool
@@ -72,6 +77,8 @@ class StartRequest(BaseModel):
     cwd: ArgvText
     # Any spoken name; it's turned into one herdr accepts (agents.herdr_name).
     name: str = Field(min_length=1, max_length=200)
+    # One of AGENT_BRIDGE_ACCOUNTS, any case; by default the one for the folder.
+    account: str | None = Field(default=None, min_length=1, max_length=64)
 
 
 class RenameRequest(BaseModel):

@@ -90,11 +90,10 @@ class AgentBridge:
     async def send_keys(self, agent_id: str, keys: list[str]) -> None:
         await self._request("POST", f"/agents/{agent_id}/keys", json={"keys": keys})
 
-    async def start_agent(self, cwd: str, name: str) -> dict:
+    async def start_agent(self, cwd: str, name: str, account: str | None = None) -> dict:
+        body = {"cwd": cwd, "name": name} | ({"account": account} if account else {})
         # Starting waits for Claude to boot and for the trust check.
-        return await self._request(
-            "POST", "/agents", json={"cwd": cwd, "name": name}, timeout=START_TIMEOUT_S
-        )
+        return await self._request("POST", "/agents", json=body, timeout=START_TIMEOUT_S)
 
     async def rename_agent(self, agent_id: str, name: str) -> dict:
         return await self._request("PATCH", f"/agents/{agent_id}", json={"name": name})
