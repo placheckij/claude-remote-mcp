@@ -154,7 +154,9 @@ class AgentService:
                 )
             except HerdrError as error:
                 if error.code == "folder_not_trusted":
-                    raise BridgeError(409, error.code, self._untrusted_message(folder)) from error
+                    raise BridgeError(
+                        409, error.code, self._untrusted_message(folder, config_dir)
+                    ) from error
                 if not error.message.startswith("expected claude, detected"):
                     raise
                 if attempt == 2:
@@ -262,17 +264,24 @@ class AgentService:
         trust_root = self.settings.trust_root
         if not trust_root or not folder.is_relative_to(trust_root.expanduser().resolve()):
             return
-        # Without a config dir agents use the default config, which trust_folder always
-        # refuses to edit.
-        config_dir = config_dir or Path.home()
+        # An account on Claude Code's default config (e.g. the user's own work login) is
+        # never edited: its folders must be trusted by hand, and if one isn't, the start
+        # stops at the trust dialog (folder_not_trusted) instead.
+        if config_dir is None:
+            return
         try:
             await asyncio.to_thread(trust_folder, config_dir, folder, trust_root)
         except TrustError as error:
             raise BridgeError(409, "trust_refused", str(error)) from error
 
-    def _untrusted_message(self, folder: Path) -> str:
+    def _untrusted_message(self, folder: Path, config_dir: Path | None) -> str:
         """Why Claude Code doesn't trust `folder`, and what would fix it."""
         head = f"Claude Code does not trust {folder}, so the agent was not started."
+        if config_dir is None and self.settings.trust_root is not None:
+            return (
+                f"{head} Its account uses Claude Code's default config, which agent-bridge "
+                "never edits: trust the folder once by opening Claude Code there."
+            )
         if self.settings.trust_root is None:
             return (
                 f"{head} Automatic trust is off: trust the folder once by opening Claude Code "
