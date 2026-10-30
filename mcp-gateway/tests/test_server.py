@@ -202,11 +202,11 @@ def test_send_prompt_reports_status_and_output(client: TestClient, fake: FakeAge
         json={"agent": {**AGENT, "status": "done"}, "output": {"text": "⏺ PONG", "truncated": False},
               "timed_out": False},
     )
-    is_error, text = call_tool(client, "send_prompt", agent_id="w1:p1", text="say pong", wait_seconds=30)
+    is_error, text = call_tool(client, "send_prompt", agent_id="w1:p1", text="say pong", wait_seconds=15)
     assert not is_error
     assert text.startswith("Agent is done.")
     assert text.endswith("⏺ PONG")
-    assert json.loads(fake.requests[0].content) == {"text": "say pong", "timeout_s": 30, "lines": 20}
+    assert json.loads(fake.requests[0].content) == {"text": "say pong", "timeout_s": 15, "lines": 20}
 
 
 def test_send_prompt_flags_blocked_and_timed_out(client: TestClient, fake: FakeAgentBridge) -> None:
@@ -220,7 +220,7 @@ def test_send_prompt_flags_blocked_and_timed_out(client: TestClient, fake: FakeA
         200, json={"agent": {**AGENT, "status": "working"}, "output": output, "timed_out": True}
     )
     text = call_tool(client, "send_prompt", agent_id="w1:p1", text="x")[1]
-    assert text.startswith("Still working after 45s. Keep waiting with wait_for_agent.")
+    assert text.startswith("Still working after 20s. Keep waiting with wait_for_agent.")
     assert "(earlier output cut)" in text
 
 
@@ -230,10 +230,10 @@ def test_wait_for_agent_reports_how_it_ended(client: TestClient, fake: FakeAgent
         json={"agent": {**AGENT, "status": "done"}, "output": {"text": "Tests pass", "truncated": False},
               "timed_out": False},
     )
-    is_error, text = call_tool(client, "wait_for_agent", agent_id="w1:p1", wait_seconds=45)
+    is_error, text = call_tool(client, "wait_for_agent", agent_id="w1:p1", wait_seconds=20)
     assert not is_error
     assert text.startswith("Agent is done.") and text.endswith("Tests pass")
-    assert json.loads(fake.requests[0].content) == {"timeout_s": 45, "lines": 20, "expect_change": False}
+    assert json.loads(fake.requests[0].content) == {"timeout_s": 20, "lines": 20, "expect_change": False}
 
 
 def test_wait_for_unknown_agent_passes_the_error_through(client: TestClient, fake: FakeAgentBridge) -> None:
@@ -257,7 +257,7 @@ def test_answer_agent_can_wait_for_the_result(client: TestClient, fake: FakeAgen
         json={"agent": {**AGENT, "status": "idle"}, "output": {"text": "Removed.", "truncated": False},
               "timed_out": False},
     )
-    is_error, text = call_tool(client, "answer_agent", agent_id="w1:p1", keys=["1"], wait_seconds=40)
+    is_error, text = call_tool(client, "answer_agent", agent_id="w1:p1", keys=["1"], wait_seconds=20)
     assert not is_error
     assert text.startswith("Sent 1 to w1:p1.\nAgent is idle.") and text.endswith("Removed.")
     assert [request.url.path for request in fake.requests] == ["/agents/w1:p1/keys", "/agents/w1:p1/wait"]
@@ -279,16 +279,16 @@ def test_answer_agent_says_the_keys_went_through_when_the_wait_fails(
     # answer the agent's next question without the user.
     fake.routes[("POST", "/agents/w1:p1/keys")] = httpx.Response(204)
     fake.routes[("POST", "/agents/w1:p1/wait")] = wait_failure
-    is_error, text = call_tool(client, "answer_agent", agent_id="w1:p1", keys=["1"], wait_seconds=40)
+    is_error, text = call_tool(client, "answer_agent", agent_id="w1:p1", keys=["1"], wait_seconds=20)
     assert not is_error
     assert text.startswith("Sent 1 to w1:p1.")
     assert "couldn't confirm" in text.lower() and "agent_details" in text
     assert ". Check with agent_details" in text and ".. " not in text
 
 
-# claude.ai gives up on a tool call after about 60 s and nothing is sent before the tool
-# returns, so a longer wait would fail after the prompt was already typed.
-@pytest.mark.parametrize("wait_seconds", [0, 4, 46, 100, 600])
+# claude.ai's voice mode gives up on a tool call after about 30 s and nothing is sent before
+# the tool returns, so a longer wait would fail after the prompt was already typed.
+@pytest.mark.parametrize("wait_seconds", [0, 4, 21, 45, 100, 600])
 @pytest.mark.parametrize(
     ("tool", "arguments"),
     [("wait_for_agent", {}), ("send_prompt", {"text": "hi"}), ("answer_agent", {"keys": ["1"]})],
@@ -300,8 +300,9 @@ def test_waits_are_capped_below_the_client_timeout(
     assert is_error and fake.requests == []
 
 
-# What claude.ai still waited for in the measurement (MAX_WAIT_SECONDS' comment); 60 s failed.
-CLIENT_PATIENCE_S = 55
+# Below the 30 s after which voice mode reported a prompt as failed (MAX_WAIT_SECONDS'
+# comment), with a few seconds for claude.ai, Cloudflare and the gateway.
+CLIENT_PATIENCE_S = 25
 
 
 @pytest.mark.parametrize(
@@ -317,22 +318,22 @@ def test_the_longest_wait_ends_before_claude_gives_up(
     fake.routes[("POST", path)] = httpx.Response(
         200, json={"agent": AGENT, "output": {"text": "", "truncated": False}, "timed_out": True}
     )
-    call_tool(client, tool, agent_id="w1:p1", wait_seconds=45, **arguments)
+    call_tool(client, tool, agent_id="w1:p1", wait_seconds=20, **arguments)
     timeout = fake.requests[-1].extensions["timeout"]
-    assert json.loads(fake.requests[-1].content)["timeout_s"] == 45
+    assert json.loads(fake.requests[-1].content)["timeout_s"] == 20
     assert timeout["read"] <= CLIENT_PATIENCE_S
 
 
 def test_waits_default_to_the_longest_one_that_comes_back(client: TestClient, fake: FakeAgentBridge) -> None:
-    # The old default (90 s) always outlasted claude.ai: every prompt that ran over a minute
+    # The old defaults (90 s, then 45 s) outlasted claude.ai: every prompt that ran longer
     # came back as a generic failure, though it had been sent.
     fake.routes[("POST", "/agents/w1:p1/prompt")] = httpx.Response(
         200, json={"agent": {**AGENT, "status": "working"}, "output": {"text": "", "truncated": False},
                    "timed_out": True}
     )
     is_error, text = call_tool(client, "send_prompt", agent_id="w1:p1", text="hi")
-    assert not is_error and text.startswith("Still working after 45s.")
-    assert json.loads(fake.requests[0].content)["timeout_s"] == 45
+    assert not is_error and text.startswith("Still working after 20s.")
+    assert json.loads(fake.requests[0].content)["timeout_s"] == 20
 
 
 def test_a_prompt_whose_answer_is_late_is_not_sent_again(client: TestClient, fake: FakeAgentBridge) -> None:
@@ -360,6 +361,24 @@ def test_start_agent_resolves_project_names(client: TestClient, fake: FakeAgentB
         "cwd": "/home/me/projects/grafik",
         "name": "grafik",
     }
+
+
+def test_a_start_ends_before_claude_gives_up(client: TestClient, fake: FakeAgentBridge) -> None:
+    # It used to wait 120 s for agent-bridge, long after voice mode had dropped the call.
+    fake.routes[("POST", "/agents")] = httpx.Response(201, json={**AGENT, "id": "w9:p1"})
+    call_tool(client, "start_agent", project="grafik")
+    assert fake.requests[0].extensions["timeout"]["read"] <= CLIENT_PATIENCE_S
+
+
+def test_a_slow_start_is_not_started_again(client: TestClient, fake: FakeAgentBridge) -> None:
+    fake.routes[("POST", "/agents")] = httpx.ReadTimeout("read timed out")
+    is_error, text = call_tool(client, "start_agent", project="grafik")
+    # Not an error: the agent may still come up, and a retry would start a second one.
+    assert not is_error
+    assert text == (
+        "The agent host didn't answer in time; the agent may still be starting. Check with "
+        "list_agents before starting it again."
+    )
 
 
 @pytest.mark.parametrize(
@@ -600,10 +619,10 @@ def test_a_sleeping_agent_host_is_reported_within_seconds(client: TestClient, fa
         200, json={"agent": AGENT, "output": {"text": "", "truncated": False}, "timed_out": False}
     )
     fake.routes[("GET", "/agents")] = httpx.Response(200, json=[])
-    call_tool(client, "send_prompt", agent_id="w1:p1", text="hi", wait_seconds=45)
+    call_tool(client, "send_prompt", agent_id="w1:p1", text="hi", wait_seconds=20)
     call_tool(client, "list_agents")
     prompt_timeout, list_timeout = (request.extensions["timeout"] for request in fake.requests)
-    assert prompt_timeout["connect"] <= 5 and prompt_timeout["read"] == 55
+    assert prompt_timeout["connect"] <= 5 and prompt_timeout["read"] == 25
     assert list_timeout["connect"] <= 5 and list_timeout["read"] == 30
     assert AgentBridge.connect(SETTINGS.bridge_url, "b" * 32).client.timeout.connect <= 5
 

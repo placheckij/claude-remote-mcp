@@ -25,8 +25,9 @@ read_output for more detail. If the agent is still working when the wait ends, c
 wait_for_agent to keep waiting instead of re-reading its output. If an agent's status is
 "blocked" it is waiting for an approval: read the question with read_output, tell the
 user, and answer with answer_agent (with wait_seconds to wait for the result) only after
-the user decides. Each wait lasts at most 45 seconds; for longer work call
-wait_for_agent again. Agent ids look like "w1:p1".
+the user decides. Each wait lasts at most 20 seconds; for longer work call
+wait_for_agent again. If a call fails without saying why, it may still have gone through:
+check with read_output before sending the same prompt again. Agent ids look like "w1:p1".
 """
 
 READ_ONLY = ToolAnnotations(read_only_hint=True, open_world_hint=False)
@@ -41,12 +42,13 @@ AgentId = Annotated[
         description='Agent id from list_agents, e.g. "w1:p1".',
     ),
 ]
-# Nothing is sent until a tool returns, and claude.ai gives up on a tool call after about
-# 60 s (measured through the connector: 55 s waits come back, 60 s ones fail with "The
-# operation timed out", though its docs say 240 s). The cap leaves room for the calls
-# around the wait (bridge.WAIT_MARGIN_S); a longer wait would fail after the prompt was
-# already typed.
-MAX_WAIT_SECONDS = 45
+# Nothing is sent until a tool returns, and claude.ai gives up on a tool call long before
+# its docs' 240 s: after about 60 s in Claude Code (55 s waits come back, 60 s ones fail
+# with "The operation timed out"), and after about 30 s in voice mode (a prompt that took
+# 30 s came back as "MCP tool call failed", though it had been typed). The cap leaves room
+# for the calls around the wait (bridge.WAIT_MARGIN_S); a longer wait would fail after
+# the prompt was already typed.
+MAX_WAIT_SECONDS = 20
 WaitSeconds = Annotated[
     int,
     Field(
@@ -188,7 +190,17 @@ def build_server(settings: Settings, bridge: AgentBridge) -> MCPServer:
         cwd = _project_folder(settings.projects_root, project)
         # Names come from speech ("my agent"); agent-bridge only takes [\w.-].
         agent_name = _safe_name(name or posixpath.basename(cwd))
-        agent = await call(bridge.start_agent(cwd, agent_name))
+        try:
+            agent = await bridge.start_agent(cwd, agent_name)
+        except BridgeTimeout as error:
+            # Not a tool error: the agent may still come up, and starting it again would
+            # make a second one.
+            return (
+                f"{str(error).rstrip('.')}; the agent may still be starting. Check with "
+                "list_agents before starting it again."
+            )
+        except BridgeError as error:
+            raise ToolError(str(error)) from error
         return f"Started {describe(agent, root)}"
 
     @mcp.tool(annotations=ACTION)
