@@ -29,6 +29,9 @@ class AgentSummary(BaseModel):
     status: str
     cwd: str | None
     workspace_id: str
+    # The question an idle or done agent ended its turn with, if any: it is waiting for
+    # the user's answer, though herdr can't tell that from any other finished turn.
+    question: str | None = None
 
 
 class Output(BaseModel):
