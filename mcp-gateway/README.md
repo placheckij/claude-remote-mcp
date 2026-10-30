@@ -37,7 +37,7 @@ or with a NUL character) come back the same way as one sentence.
 
 | Tool | Does |
 |---|---|
-| `list_agents` | one line per agent: id · name · status · folder (a folder under `MCP_GATEWAY_PROJECTS_ROOT` by its name there, e.g. `grafik`) |
+| `list_agents` | one line per agent: id · name · status · folder (a folder under `MCP_GATEWAY_PROJECTS_ROOT` by its name there, e.g. `grafik`). An agent that ended its turn with a question shows `waiting for an answer` and, on the next line, the question |
 | `agent_details` | the same line for one agent |
 | `read_output` | last N meaningful terminal lines (default 20, at most 60; the same for `lines` on the waiting tools) |
 | `send_prompt` | prompt, wait up to `wait_seconds` (default and most 20, see below), return status + output; flags `blocked` and still-working. A `blocked` agent refuses prompts until its question is answered. If agent-bridge doesn't answer in time, it says the prompt may have been sent instead of failing, so it isn't sent twice |

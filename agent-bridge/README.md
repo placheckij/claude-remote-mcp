@@ -62,10 +62,10 @@ All routes require `Authorization: Bearer $AGENT_BRIDGE_TOKEN`.
 
 | Route | herdr | Notes |
 |---|---|---|
-| `GET /agents` | `agent list` | every herdr agent, in any folder |
-| `GET /agents/{id}` | `agent get` | |
-| `GET /agents/{id}/output?lines=40` | `agent read` | last N meaningful lines: padding, input box and status bar dropped; the visible screen only while the agent is working or blocked (herdr can't scroll its history then) |
-| `POST /agents/{id}/prompt` `{text, timeout_s?, lines?}` | `agent prompt --wait` | waits until idle/done/blocked; on timeout returns `timed_out: true` with current status, and `unconfirmed: true` if the text was typed but the agent didn't react within 5 s (don't resend). Refused with `409 agent_blocked` while the agent is `blocked` (the Enter would answer its question), and with `409 agent_busy` while it is `working` or another prompt to it is running |
+| `GET /agents` | `agent list` | every herdr agent, in any folder. An `idle` or `done` agent whose last message ends with a question has it in `question` (read from its screen with `agent read`, so it is a guess; herdr itself can't tell that agent from one that simply finished) |
+| `GET /agents/{id}` | `agent get` | the same, including `question` |
+| `GET /agents/{id}/output?lines=40` | `agent read` | last N meaningful lines: padding, input box (also when it shows the session's name) and status bar dropped; the visible screen only while the agent is working or blocked (herdr can't scroll its history then) |
+| `POST /agents/{id}/prompt` `{text, timeout_s?, lines?}` | `agent prompt --wait` | waits until idle/done/blocked (the agent includes `question`); on timeout returns `timed_out: true` with current status, and `unconfirmed: true` if the text was typed but the agent didn't react within 5 s (don't resend). Refused with `409 agent_blocked` while the agent is `blocked` (the Enter would answer its question), and with `409 agent_busy` while it is `working` or another prompt to it is running |
 | `POST /agents/{id}/wait` `{timeout_s?, lines?, expect_change?}` | `agent wait` | same result as `/prompt`, without sending anything; `expect_change` (after `/keys`) first gives the agent 5 s to leave its old `blocked` state |
 | `POST /agents/{id}/keys` `{keys}` | `agent send-keys` | answer a `blocked` agent's question |
 | `POST /agents` `{cwd, name}` | `workspace create` + `agent start --kind claude` | start an agent in a project folder (see below). `name` may be any words: it becomes a name herdr accepts (lower-case ASCII, starting with a letter, at most 32 characters, e.g. `Grafik fix!` → `grafik-fix`), with `-2`, `-3`, … if a live agent already has it |

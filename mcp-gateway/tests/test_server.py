@@ -196,6 +196,35 @@ def test_list_agents_is_one_line_per_agent(client: TestClient, fake: FakeAgentBr
     )
 
 
+ASKING = {**AGENT, "status": "done", "question": "Do you want me to commit it?"}
+
+
+def test_an_agent_that_asked_something_is_waiting_for_an_answer(
+    client: TestClient, fake: FakeAgentBridge
+) -> None:
+    # Herdr calls it idle or done, which made a question nobody had heard sound finished.
+    fake.routes[("GET", "/agents")] = httpx.Response(200, json=[ASKING, {**AGENT, "id": "w2:p1"}])
+    fake.routes[("GET", "/agents/w1:p1")] = httpx.Response(200, json=ASKING)
+    expected = "w1:p1 · grafik · waiting for an answer · grafik\n  Asked: Do you want me to commit it?"
+    assert call_tool(client, "list_agents") == (
+        False,
+        f"2 agents:\n{expected}\nw2:p1 · grafik · idle · grafik",
+    )
+    assert call_tool(client, "agent_details", agent_id="w1:p1") == (False, expected)
+
+
+def test_a_prompt_that_ends_in_a_question_says_to_relay_it(client: TestClient, fake: FakeAgentBridge) -> None:
+    fake.routes[("POST", "/agents/w1:p1/prompt")] = httpx.Response(
+        200, json={"agent": ASKING, "output": {"text": "⏺ Fixed.", "truncated": False}, "timed_out": False}
+    )
+    is_error, text = call_tool(client, "send_prompt", agent_id="w1:p1", text="fix it")
+    assert not is_error
+    assert text.startswith(
+        "The agent asked a question. Tell the user, then send their answer with send_prompt.\n"
+        "w1:p1 · grafik · waiting for an answer · grafik\n  Asked: Do you want me to commit it?"
+    )
+
+
 def test_send_prompt_reports_status_and_output(client: TestClient, fake: FakeAgentBridge) -> None:
     fake.routes[("POST", "/agents/w1:p1/prompt")] = httpx.Response(
         200,
