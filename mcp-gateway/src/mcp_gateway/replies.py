@@ -6,7 +6,12 @@ They are read aloud in the car, so every reply is a few lines, with detail only 
 
 def describe(agent: dict, projects_root: str) -> str:
     label = agent.get("name") or agent.get("title") or "unnamed"
-    return f"{agent['id']} · {label} · {agent['status']} · {folder(agent.get('cwd'), projects_root)}"
+    # agent-bridge finds the question an idle or done agent ended its turn with; herdr's
+    # status alone would make it sound finished.
+    question = agent.get("question")
+    status = "waiting for an answer" if question else agent["status"]
+    line = f"{agent['id']} · {label} · {status} · {folder(agent.get('cwd'), projects_root)}"
+    return f"{line}\n  Asked: {question}" if question else line
 
 
 def folder(cwd: str | None, projects_root: str) -> str:
@@ -34,6 +39,8 @@ def report(result: dict, wait_seconds: int, projects_root: str) -> str:
         head = f"Still working after {wait_seconds}s. Keep waiting with wait_for_agent."
     elif agent["status"] == "blocked":
         head = "The agent is waiting for an approval. Ask the user, then use answer_agent."
+    elif agent.get("question"):
+        head = "The agent asked a question. Tell the user, then send their answer with send_prompt."
     else:
         head = f"Agent is {agent['status']}."
     return f"{head}\n{describe(agent, projects_root)}\n---\n{with_truncation_note(result['output'])}"

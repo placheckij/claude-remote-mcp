@@ -14,7 +14,7 @@ from agent_bridge.config import Settings
 from agent_bridge.errors import BridgeError
 from agent_bridge.herdr import Herdr, HerdrError
 from agent_bridge.schemas import AgentSummary, Output, PromptResult, cap, summarize
-from agent_bridge.screen import SNAPSHOT_LINES, last_lines
+from agent_bridge.screen import SNAPSHOT_LINES, last_lines, last_question
 from agent_bridge.trust import TrustError, trust_folder
 
 BUSY_MESSAGE = (
@@ -25,6 +25,11 @@ BUSY_MESSAGE = (
 # How long a wait with expect_change gives the agent to leave its old state; herdr's own
 # `agent prompt --wait` uses the same window.
 STATE_CHANGE_WINDOW_MS = 5000
+# The states in which an agent may have ended its turn with a question for the user.
+FINISHED = ("idle", "done")
+# Enough for the last message and what follows it. Kept within a screen: herdr reads the
+# screen at once but takes ~37 ms per line of history above it, for every listed agent.
+QUESTION_LINES = 60
 
 
 class AgentService:
@@ -38,10 +43,22 @@ class AgentService:
         self._prompt_locks: dict[str, asyncio.Lock] = {}
 
     async def list_agents(self) -> list[AgentSummary]:
-        return [summarize(agent) for agent in await self.herdr.list_agents()]
+        agents = [summarize(agent) for agent in await self.herdr.list_agents()]
+        return list(await asyncio.gather(*(self._with_question(agent) for agent in agents)))
 
     async def get_agent(self, agent_id: str) -> AgentSummary:
-        return summarize(await self.herdr.get_agent(agent_id))
+        return await self._with_question(summarize(await self.herdr.get_agent(agent_id)))
+
+    async def _with_question(self, agent: AgentSummary) -> AgentSummary:
+        if agent.status not in FINISHED:
+            return agent
+        try:
+            # Unwrapped, so a long question comes back whole.
+            snapshot = await self.herdr.read(agent.id, QUESTION_LINES, "recent-unwrapped")
+        except HerdrError:
+            # The status is still right; only the question is missing.
+            return agent
+        return agent.model_copy(update={"question": last_question(snapshot)})
 
     async def read_output(self, agent_id: str, lines: int, source: str) -> Output:
         snapshot = await self.herdr.read(agent_id, SNAPSHOT_LINES, source)
@@ -134,7 +151,8 @@ class AgentService:
     async def _controllable(self, agent_id: str) -> AgentSummary:
         """The agent, if it works under the allowed roots. Every herdr agent can be read,
         but only those may be prompted, answered, renamed or stopped."""
-        agent = await self.get_agent(agent_id)
+        # Not get_agent: the question isn't needed here, and reading it costs a herdr call.
+        agent = summarize(await self.herdr.get_agent(agent_id))
         if not agent.cwd or not self.settings.is_allowed(Path(agent.cwd)):
             raise BridgeError(
                 403,
@@ -179,7 +197,7 @@ class AgentService:
             agent = await self.herdr.get_agent(agent_id)
         output = last_lines(await self.herdr.read(agent_id, SNAPSHOT_LINES), lines)
         return PromptResult(
-            agent=summarize(agent),
+            agent=await self._with_question(summarize(agent)),
             output=cap(output, self.settings.max_output_chars),
             timed_out=timed_out,
             unconfirmed=unconfirmed,
