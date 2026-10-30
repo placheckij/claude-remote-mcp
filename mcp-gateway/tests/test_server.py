@@ -410,6 +410,29 @@ def test_a_slow_start_is_not_started_again(client: TestClient, fake: FakeAgentBr
     )
 
 
+def test_start_agent_passes_the_account_and_says_which_it_got(client: TestClient, fake: FakeAgentBridge) -> None:
+    fake.routes[("POST", "/agents")] = httpx.Response(201, json={**AGENT, "id": "w9:p1", "account": "work"})
+    is_error, text = call_tool(client, "start_agent", project="grafik", account="work")
+    assert (is_error, text) == (False, "Started on the work account: w9:p1 · grafik · idle · grafik")
+    assert json.loads(fake.requests[0].content)["account"] == "work"
+
+
+def test_start_agent_leaves_the_account_to_the_agent_host(client: TestClient, fake: FakeAgentBridge) -> None:
+    fake.routes[("POST", "/agents")] = httpx.Response(201, json={**AGENT, "id": "w9:p1", "account": "personal"})
+    is_error, text = call_tool(client, "start_agent", project="grafik")
+    assert text.startswith("Started on the personal account: w9:p1")
+    assert "account" not in json.loads(fake.requests[0].content)
+
+
+def test_start_agent_passes_an_unknown_account_refusal_through(client: TestClient, fake: FakeAgentBridge) -> None:
+    message = "There is no account named 'private'. The accounts are personal, work."
+    fake.routes[("POST", "/agents")] = httpx.Response(
+        422, json={"error": {"code": "unknown_account", "message": message}}
+    )
+    is_error, text = call_tool(client, "start_agent", project="grafik", account="private")
+    assert is_error and text.endswith(message)
+
+
 @pytest.mark.parametrize(
     ("name", "slug"),
     [("my agent", "my-agent"), ("  Fix the login bug! ", "Fix-the-login-bug"), ("łódź", "łódź"),
