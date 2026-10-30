@@ -102,7 +102,9 @@ def test_malformed_agent_ids_never_reach_herdr(root: Path, agent_id: str) -> Non
 
 
 def test_lists_agents_as_summaries(root: Path) -> None:
-    runner = FakeRunner({("agent", "list"): ok({"agents": [agent()]})})
+    runner = FakeRunner(
+        {("agent", "list"): ok({"agents": [agent()]}), ("agent", "read"): (0, "⏺ Done.\n", "")}
+    )
     response = client(runner, root).get("/agents", headers=AUTH)
     assert response.json() == [
         {
@@ -112,8 +114,54 @@ def test_lists_agents_as_summaries(root: Path) -> None:
             "status": "idle",
             "cwd": "/tmp/project",
             "workspace_id": "w1",
+            "question": None,
         }
     ]
+
+
+ASKED = "⏺ The fix is ready.\n  Do you want me to commit it?\n✻ Baked for 3s\n"
+
+
+def test_an_idle_agent_that_asked_something_says_what(root: Path) -> None:
+    # Herdr calls an agent that ended its turn with a question idle, like any other.
+    runner = FakeRunner(
+        {
+            ("agent", "list"): ok({"agents": [agent(), agent("w2:p1", status="working")]}),
+            ("agent", "get"): ok({"agent": agent()}),
+            ("agent", "read"): (0, ASKED, ""),
+        }
+    )
+    c = client(runner, root)
+    listed = c.get("/agents", headers=AUTH).json()
+    assert [a["question"] for a in listed] == ["Do you want me to commit it?", None]
+    assert c.get("/agents/w1:p1", headers=AUTH).json()["question"] == "Do you want me to commit it?"
+    # Only finished agents are read, unwrapped so a long question comes back whole.
+    reads = runner.called("agent", "read")
+    assert [call[2] for call in reads] == ["w1:p1", "w1:p1"]
+    assert all(call[call.index("--source") + 1] == "recent-unwrapped" for call in reads)
+
+
+def test_a_failed_read_leaves_the_question_out(root: Path) -> None:
+    runner = FakeRunner(
+        {("agent", "list"): ok({"agents": [agent()]}), ("agent", "read"): err("cli_failed")}
+    )
+    response = client(runner, root).get("/agents", headers=AUTH)
+    assert response.status_code == 200
+    assert response.json()[0]["status"] == "idle" and response.json()[0]["question"] is None
+
+
+def test_a_prompt_that_ends_in_a_question_reports_it(root: Path) -> None:
+    runner = FakeRunner(
+        {
+            ("agent", "get"): ok({"agent": agent(cwd=str(root / "project"))}),
+            ("agent", "prompt"): ok({"agent": agent(cwd=str(root / "project"), status="done")}),
+            ("agent", "read"): (0, ASKED, ""),
+        }
+    )
+    response = client(runner, root).post(
+        "/agents/w1:p1/prompt", headers=AUTH, json={"text": "fix it", "timeout_s": 5}
+    )
+    assert response.json()["agent"]["question"] == "Do you want me to commit it?"
 
 
 def test_unknown_agent_is_404(root: Path) -> None:
@@ -427,7 +475,12 @@ def test_agents_outside_the_allowed_roots_can_be_read_but_not_controlled(
 ) -> None:
     # Every herdr agent is listed, including ones in unrelated folders; a misheard id must
     # not prompt, answer or close those.
-    runner = FakeRunner({("agent", "get"): ok({"agent": agent(cwd="/elsewhere/work-repo")})})
+    runner = FakeRunner(
+        {
+            ("agent", "get"): ok({"agent": agent(cwd="/elsewhere/work-repo")}),
+            ("agent", "read"): (0, "", ""),
+        }
+    )
     c = client(runner, root)
     response = c.request(method, path, headers=AUTH, json=body)
     assert response.status_code == 403

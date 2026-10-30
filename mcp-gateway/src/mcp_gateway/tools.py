@@ -23,6 +23,8 @@ long code or logs, and summarize what an agent did instead.
 Typical flow: list_agents → send_prompt to an agent (waits for it to finish) →
 read_output for more detail. If the agent is still working when the wait ends, call
 wait_for_agent to keep waiting instead of re-reading its output. If an agent's status is
+"waiting for an answer", it ended its turn with the question shown after "Asked:": tell
+the user, and send their answer with send_prompt. If an agent's status is
 "blocked" it is waiting for an approval: read the question with read_output, tell the
 user, and answer with answer_agent (with wait_seconds to wait for the result) only after
 the user decides. Each wait lasts at most 20 seconds; for longer work call
