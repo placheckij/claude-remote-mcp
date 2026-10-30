@@ -58,6 +58,10 @@ The gateway and the agent host can be one machine.
 4. **claude.ai:** [add the custom connector](mcp-gateway/README.md#add-the-connector-in-claudeai)
    with that token.
 
+If you have more than one Claude subscription, e.g. a work and a personal one, agents can
+start on the right one for each project folder: see
+[Claude accounts](agent-bridge/README.md#claude-accounts).
+
 ## Development
 
 uv workspace; each component is its own package.
