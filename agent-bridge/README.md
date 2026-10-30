@@ -102,23 +102,48 @@ one gets its own herdr workspace, labelled with the name.
 
 ### Claude accounts
 
-If you use more than one Claude login, e.g. a work and a personal one, each in its own
-Claude config, name them in `AGENT_BRIDGE_ACCOUNTS` (JSON) with the folders each is for:
+agent-bridge can start agents on more than one Claude login, e.g. a work subscription for
+work projects and a personal one for the rest, picking the login from the project's
+folder. Claude Code keeps each login in a config folder: its default one (`~/.claude`,
+what a plain `claude` uses), or another named by `CLAUDE_CONFIG_DIR`.
 
-```json
-{
-  "work": {"config_dir": null, "folders": ["/Users/me/projects/work"]},
-  "personal": {"config_dir": "/Users/me/.claude-personal", "folders": ["/Users/me/projects/own"]}
-}
-```
+1. **Log in once in each config.** The default one is likely logged in already. For
+   another, run `CLAUDE_CONFIG_DIR=~/.claude-personal claude`, log in, and quit. An alias
+   such as `alias claude-personal='CLAUDE_CONFIG_DIR=$HOME/.claude-personal claude'`
+   keeps using that login by hand easy.
+2. **Name the accounts** in `AGENT_BRIDGE_ACCOUNTS`, as JSON: each with its config folder
+   and the project folders it's for. Names are lower-case; paths are full paths.
+   `"config_dir": null` means Claude Code's default config.
 
-`config_dir` becomes the agent's `CLAUDE_CONFIG_DIR`; `null` leaves Claude Code on its
-default config (`~/.claude`). A new agent gets the account named in the request
-(`"account"` in `POST /agents`, any case), else the account whose folder holds its
-folder most closely, else `AGENT_BRIDGE_CLAUDE_CONFIG_DIR`, which counts as the account
-with the same `config_dir` if there is one. An unknown name is refused with
-`422 unknown_account`, listing the accounts. Folder trust (below) is written to the
-account's own config, and never to the default one.
+   ```json
+   {
+     "work": {"config_dir": null, "folders": ["/Users/me/projects/work"]},
+     "personal": {"config_dir": "/Users/me/.claude-personal", "folders": ["/Users/me/projects/own"]}
+   }
+   ```
+3. **Apply it.** With the macOS setup script, pass it in once; re-runs keep it, and an
+   empty value removes it:
+
+   ```sh
+   AGENT_BRIDGE_ACCOUNTS='{"work": {"config_dir": null, "folders": ["/Users/me/projects/work"]}}' \
+     agent-bridge/deploy/setup-macos.sh
+   ```
+
+   By hand, add it to the plist's `EnvironmentVariables`, or on Linux to the env file in
+   single quotes, and restart agent-bridge. A mistake stops startup with a line naming
+   it, e.g. `AGENT_BRIDGE_ACCOUNTS (work.config): Extra inputs are not permitted`.
+4. **Trust the default config's folders by hand.** agent-bridge never edits Claude Code's
+   default config, so it can't mark folders trusted for an account with
+   `"config_dir": null`. Open `claude` once in each of those projects (or a folder above
+   them) and accept. Until then, starts there stop with `409 folder_not_trusted`.
+
+A new agent gets the account named in the request (`"account"` in `POST /agents`, any
+case; in the Claude app, e.g. "start grafik on my personal account"), else the account
+whose folder holds its folder most closely, else `AGENT_BRIDGE_CLAUDE_CONFIG_DIR`, which
+counts as the account with the same `config_dir` if there is one. The reply names the
+account. An unknown name is refused with `422 unknown_account`, listing the accounts.
+Folder trust (below) is written to the account's own config, and never to the default
+one.
 
 ### Folder trust
 
