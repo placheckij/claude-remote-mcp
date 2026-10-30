@@ -10,10 +10,10 @@ import unicodedata
 from collections.abc import Awaitable
 from pathlib import Path
 
-from agent_bridge.config import Settings
+from agent_bridge.config import Settings, claude_env
 from agent_bridge.errors import BridgeError
 from agent_bridge.herdr import Herdr, HerdrError
-from agent_bridge.schemas import AgentSummary, Output, PromptResult, cap, summarize
+from agent_bridge.schemas import AgentSummary, Output, PromptResult, StartedAgent, cap, summarize
 from agent_bridge.screen import SNAPSHOT_LINES, last_lines, last_question
 from agent_bridge.trust import TrustError, trust_folder
 
@@ -111,23 +111,46 @@ class AgentService:
         await self._controllable(agent_id)
         await self.herdr.send_keys(agent_id, keys)
 
-    async def start_agent(self, cwd: str, name: str) -> AgentSummary:
+    async def start_agent(self, cwd: str, name: str, account: str | None = None) -> StartedAgent:
         folder = self._allowed_folder(cwd)
+        account, config_dir = self._account(folder, account)
         async with self._start_lock:
             running = await self._check_agent_limit()
             name = herdr_name(name, {agent.get("name") for agent in running})
-            await self._trust(folder)
-            agent = await self._start_with_one_retry(name, folder)
-        return summarize(agent)
+            await self._trust(folder, config_dir)
+            agent = await self._start_with_one_retry(name, folder, config_dir)
+        return StartedAgent(**summarize(agent).model_dump(), account=account)
 
-    async def _start_with_one_retry(self, name: str, folder: Path) -> dict:
+    def _account(self, folder: Path, asked: str | None) -> tuple[str | None, Path | None]:
+        """The account to start in `folder` with and its config dir: the one asked for,
+        else the one whose folders hold it, else AGENT_BRIDGE_CLAUDE_CONFIG_DIR (named after
+        the account with that config dir, if one has it)."""
+        accounts = self.settings.accounts
+        if asked is not None:
+            name = asked.strip().lower()
+            if name not in accounts:
+                known = (
+                    f"The accounts are {', '.join(sorted(accounts))}."
+                    if accounts
+                    else "No accounts are set up (AGENT_BRIDGE_ACCOUNTS)."
+                )
+                raise BridgeError(422, "unknown_account", f"There is no account named {asked!r}. {known}")
+            return name, accounts[name].config_dir
+        name = self.settings.account_for(folder)
+        if name is not None:
+            return name, accounts[name].config_dir
+        config_dir = self.settings.claude_config_dir
+        same = [name for name, account in accounts.items() if account.config_dir == config_dir]
+        return (same[0] if len(same) == 1 else None), config_dir
+
+    async def _start_with_one_retry(self, name: str, folder: Path, config_dir: Path | None) -> dict:
         # herdr 0.8.0 once failed a start with "expected claude, detected " (no agent seen
         # in the pane yet); 20 later tries all worked. The failed attempt's workspace is
         # already closed, so one more try in a fresh workspace is safe.
         for attempt in (1, 2):
             try:
                 return await self.herdr.start_agent(
-                    name, str(folder), self.settings.claude_env(), self.settings.claude_args
+                    name, str(folder), claude_env(config_dir), self.settings.claude_args
                 )
             except HerdrError as error:
                 if error.code == "folder_not_trusted":
@@ -235,13 +258,13 @@ class AgentService:
             )
         return running
 
-    async def _trust(self, folder: Path) -> None:
+    async def _trust(self, folder: Path, config_dir: Path | None) -> None:
         trust_root = self.settings.trust_root
         if not trust_root or not folder.is_relative_to(trust_root.expanduser().resolve()):
             return
         # Without a config dir agents use the default config, which trust_folder always
         # refuses to edit.
-        config_dir = self.settings.claude_config_dir or Path.home()
+        config_dir = config_dir or Path.home()
         try:
             await asyncio.to_thread(trust_folder, config_dir, folder, trust_root)
         except TrustError as error:

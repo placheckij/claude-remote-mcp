@@ -387,6 +387,103 @@ def test_start_passes_a_configured_claude_config_dir(root: Path) -> None:
     assert f"CLAUDE_CONFIG_DIR={config_dir}" in runner.called("workspace", "create")[0]
 
 
+def accounts_client(runner: FakeRunner, root: Path, **overrides) -> TestClient:
+    """Work in root/work on the default config, personal everywhere else in root."""
+    (root / "work" / "app").mkdir(parents=True)
+    overrides.setdefault("claude_config_dir", root / ".claude-personal")
+    return client(
+        runner,
+        root,
+        accounts={
+            "work": {"config_dir": None, "folders": [root / "work"]},
+            "personal": {"config_dir": root / ".claude-personal", "folders": []},
+        },
+        **overrides,
+    )
+
+
+def start_config(runner: FakeRunner) -> str | None:
+    create = runner.called("workspace", "create")[-1]
+    found = [arg for arg in create if arg.startswith("CLAUDE_CONFIG_DIR=")]
+    return found[0].removeprefix("CLAUDE_CONFIG_DIR=") if found else None
+
+
+def test_start_uses_the_account_of_its_folder(root: Path) -> None:
+    runner = FakeRunner(start_responses(trust_dialog=False))
+    c = accounts_client(runner, root)
+    response = c.post("/agents", headers=AUTH, json={"cwd": str(root / "work" / "app"), "name": "x"})
+    assert response.status_code == 201 and response.json()["account"] == "work"
+    # The work login is Claude Code's default config: no CLAUDE_CONFIG_DIR at all.
+    assert start_config(runner) is None
+    response = c.post("/agents", headers=AUTH, json={"cwd": str(root / "project"), "name": "x"})
+    # Outside every account's folders: AGENT_BRIDGE_CLAUDE_CONFIG_DIR, named after the
+    # account with that config dir.
+    assert response.json()["account"] == "personal"
+    assert start_config(runner) == str(root / ".claude-personal")
+
+
+def test_start_can_be_told_the_account(root: Path) -> None:
+    runner = FakeRunner(start_responses(trust_dialog=False))
+    response = accounts_client(runner, root).post(
+        "/agents", headers=AUTH, json={"cwd": str(root / "work" / "app"), "name": "x", "account": " Personal "}
+    )
+    assert response.status_code == 201 and response.json()["account"] == "personal"
+    assert start_config(runner) == str(root / ".claude-personal")
+
+
+def test_start_refuses_an_unknown_account(root: Path) -> None:
+    runner = FakeRunner(start_responses(trust_dialog=False))
+    response = accounts_client(runner, root).post(
+        "/agents", headers=AUTH, json={"cwd": str(root / "project"), "name": "x", "account": "private"}
+    )
+    assert response.status_code == 422
+    assert response.json()["error"] == {
+        "code": "unknown_account",
+        "message": "There is no account named 'private'. The accounts are personal, work.",
+    }
+    assert runner.calls == []
+
+
+def test_an_unnamed_default_config_starts_without_an_account(root: Path) -> None:
+    runner = FakeRunner(start_responses(trust_dialog=False))
+    response = accounts_client(runner, root, claude_config_dir=root / ".claude-other").post(
+        "/agents", headers=AUTH, json={"cwd": str(root / "project"), "name": "x"}
+    )
+    assert response.status_code == 201 and response.json()["account"] is None
+    assert start_config(runner) == str(root / ".claude-other")
+
+
+def test_listed_agents_carry_no_account(root: Path) -> None:
+    # Only a start knows the account; a listing would have to guess.
+    runner = FakeRunner({("agent", "list"): ok({"agents": [agent()]}), ("agent", "read"): (0, "", "")})
+    assert "account" not in accounts_client(runner, root).get("/agents", headers=AUTH).json()[0]
+
+
+def test_folders_are_trusted_in_the_accounts_own_config(root: Path) -> None:
+    config_dir = root / ".claude-personal"
+    config_dir.mkdir()
+    (config_dir / ".claude.json").write_text("{}")
+    runner = FakeRunner(start_responses(trust_dialog=False))
+    response = accounts_client(runner, root, trust_root=root, claude_config_dir=root / ".claude-other").post(
+        "/agents", headers=AUTH, json={"cwd": str(root / "project"), "name": "x", "account": "personal"}
+    )
+    assert response.status_code == 201
+    assert str((root / "project").resolve()) in json.loads((config_dir / ".claude.json").read_text())["projects"]
+
+
+def test_a_work_folder_under_the_trust_root_is_not_trusted_in_the_default_config(
+    root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    home = separate_home(root, monkeypatch)
+    (home / ".claude.json").write_text("{}")
+    runner = FakeRunner(start_responses(trust_dialog=False))
+    response = accounts_client(runner, root, trust_root=root).post(
+        "/agents", headers=AUTH, json={"cwd": str(root / "work" / "app"), "name": "x"}
+    )
+    assert response.status_code == 409 and response.json()["error"]["code"] == "trust_refused"
+    assert (home / ".claude.json").read_text() == "{}"
+
+
 def test_start_retries_while_the_new_shell_is_busy(
     root: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
