@@ -471,17 +471,34 @@ def test_folders_are_trusted_in_the_accounts_own_config(root: Path) -> None:
     assert str((root / "project").resolve()) in json.loads((config_dir / ".claude.json").read_text())["projects"]
 
 
-def test_a_work_folder_under_the_trust_root_is_not_trusted_in_the_default_config(
+def test_a_work_folder_under_the_trust_root_starts_without_touching_the_default_config(
     root: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    # Refusing it (trust_refused) made every start on an account with the default config
+    # fail whenever the trust root covered its folders.
     home = separate_home(root, monkeypatch)
     (home / ".claude.json").write_text("{}")
     runner = FakeRunner(start_responses(trust_dialog=False))
     response = accounts_client(runner, root, trust_root=root).post(
         "/agents", headers=AUTH, json={"cwd": str(root / "work" / "app"), "name": "x"}
     )
-    assert response.status_code == 409 and response.json()["error"]["code"] == "trust_refused"
+    assert response.status_code == 201 and response.json()["account"] == "work"
     assert (home / ".claude.json").read_text() == "{}"
+
+
+def test_an_untrusted_work_folder_says_to_trust_it_by_hand(
+    root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    separate_home(root, monkeypatch)
+    runner = FakeRunner(start_responses(trust_dialog=True))
+    response = accounts_client(runner, root, trust_root=root).post(
+        "/agents", headers=AUTH, json={"cwd": str(root / "work" / "app"), "name": "x"}
+    )
+    assert response.status_code == 409
+    error = response.json()["error"]
+    assert error["code"] == "folder_not_trusted"
+    assert "default config, which agent-bridge never edits" in error["message"]
+    assert runner.called("workspace", "close")
 
 
 def test_start_retries_while_the_new_shell_is_busy(
@@ -735,20 +752,19 @@ def test_start_refuses_when_config_is_the_default_one(
     assert not runner.called("workspace", "create")
 
 
-def test_start_refuses_to_trust_without_a_separate_config(
+def test_start_without_a_separate_config_never_trusts(
     root: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    # No config dir means agents use the default config, which is never edited.
+    # No config dir means agents use the default config, which is never edited; the start
+    # goes ahead, and the trust dialog check stops it if the folder isn't trusted.
     home = separate_home(root, monkeypatch)
     (home / ".claude.json").write_text("{}")
     runner = FakeRunner(start_responses(trust_dialog=False))
     response = client(runner, root, trust_root=root).post(
         "/agents", headers=AUTH, json={"cwd": str(root / "project"), "name": "probe"}
     )
-    assert response.status_code == 409
-    assert response.json()["error"]["code"] == "trust_refused"
+    assert response.status_code == 201
     assert (home / ".claude.json").read_text() == "{}"
-    assert not runner.called("workspace", "create")
 
 
 def test_start_without_a_trust_root_never_writes_trust(root: Path) -> None:
