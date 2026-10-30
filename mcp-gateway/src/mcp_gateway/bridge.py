@@ -12,8 +12,12 @@ from mcp_gateway.replies import invalid
 CONNECT_TIMEOUT_S = 5.0
 DEFAULT_TIMEOUT_S = 30.0
 # agent-bridge answers a wait right after its deadline; this covers reading the output.
-# It is kept small because claude.ai gives up on the whole tool call after about 60 s.
-WAIT_MARGIN_S = 10
+# It is kept small because claude.ai gives up on the whole tool call after about 30 s in
+# voice mode (see tools.MAX_WAIT_SECONDS).
+WAIT_MARGIN_S = 5
+# A start waits for the shell, for Claude Code and for 5 s of trust-dialog check, and can
+# take longer than claude.ai listens; past this the tool says the agent may still be starting.
+START_TIMEOUT_S = 25
 
 
 class BridgeError(Exception):
@@ -88,7 +92,9 @@ class AgentBridge:
 
     async def start_agent(self, cwd: str, name: str) -> dict:
         # Starting waits for Claude to boot and for the trust check.
-        return await self._request("POST", "/agents", json={"cwd": cwd, "name": name}, timeout=120)
+        return await self._request(
+            "POST", "/agents", json={"cwd": cwd, "name": name}, timeout=START_TIMEOUT_S
+        )
 
     async def rename_agent(self, agent_id: str, name: str) -> dict:
         return await self._request("PATCH", f"/agents/{agent_id}", json={"name": name})
