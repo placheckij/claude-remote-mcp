@@ -68,7 +68,7 @@ All routes require `Authorization: Bearer $AGENT_BRIDGE_TOKEN`.
 | `POST /agents/{id}/prompt` `{text, timeout_s?, lines?}` | `agent prompt --wait` | waits until idle/done/blocked (the agent includes `question`); on timeout returns `timed_out: true` with current status, and `unconfirmed: true` if the text was typed but the agent didn't react within 5 s (don't resend). Refused with `409 agent_blocked` while the agent is `blocked` (the Enter would answer its question), and with `409 agent_busy` while it is `working` or another prompt to it is running |
 | `POST /agents/{id}/wait` `{timeout_s?, lines?, expect_change?}` | `agent wait` | same result as `/prompt`, without sending anything; `expect_change` (after `/keys`) first gives the agent 5 s to leave its old `blocked` state |
 | `POST /agents/{id}/keys` `{keys}` | `agent send-keys` | answer a `blocked` agent's question |
-| `POST /agents` `{cwd, name}` | `workspace create` + `agent start --kind claude` | start an agent in a project folder (see below). `name` may be any words: it becomes a name herdr accepts (lower-case ASCII, starting with a letter, at most 32 characters, e.g. `Grafik fix!` → `grafik-fix`), with `-2`, `-3`, … if a live agent already has it |
+| `POST /agents` `{cwd, name, account?}` | `workspace create` + `agent start --kind claude` | start an agent in a project folder, on the folder's Claude account or the one named (see below); the reply adds the `account` used. `name` may be any words: it becomes a name herdr accepts (lower-case ASCII, starting with a letter, at most 32 characters, e.g. `Grafik fix!` → `grafik-fix`), with `-2`, `-3`, … if a live agent already has it |
 | `PATCH /agents/{id}` `{name}` | `agent rename` + `workspace rename` | give the agent and its workspace the same new name, made the way `POST /agents` makes one (`-2`, `-3`, … only if *another* live agent has it); returns the agent |
 | `DELETE /agents/{id}` | `agent get` + `pane close` | close the agent's pane; `404` if the id isn't an agent (a shell or dev-server pane) |
 
@@ -99,6 +99,26 @@ allowed roots.
 Agents start with `AGENT_BRIDGE_CLAUDE_ARGS` (default `--permission-mode auto`) and, if
 `AGENT_BRIDGE_CLAUDE_CONFIG_DIR` is set, with `CLAUDE_CONFIG_DIR` pointing there. Each
 one gets its own herdr workspace, labelled with the name.
+
+### Claude accounts
+
+If you use more than one Claude login, e.g. a work and a personal one, each in its own
+Claude config, name them in `AGENT_BRIDGE_ACCOUNTS` (JSON) with the folders each is for:
+
+```json
+{
+  "work": {"config_dir": null, "folders": ["/Users/me/projects/work"]},
+  "personal": {"config_dir": "/Users/me/.claude-personal", "folders": ["/Users/me/projects/own"]}
+}
+```
+
+`config_dir` becomes the agent's `CLAUDE_CONFIG_DIR`; `null` leaves Claude Code on its
+default config (`~/.claude`). A new agent gets the account named in the request
+(`"account"` in `POST /agents`, any case), else the account whose folder holds its
+folder most closely, else `AGENT_BRIDGE_CLAUDE_CONFIG_DIR`, which counts as the account
+with the same `config_dir` if there is one. An unknown name is refused with
+`422 unknown_account`, listing the accounts. Folder trust (below) is written to the
+account's own config, and never to the default one.
 
 ### Folder trust
 
@@ -138,6 +158,7 @@ the variable.
 | `AGENT_BRIDGE_TOKEN` | — | required, at least 32 characters; mcp-gateway's `MCP_GATEWAY_BRIDGE_TOKEN` |
 | `AGENT_BRIDGE_ALLOWED_ROOTS` | — | required, `:`-separated absolute folders agents may start in; `/`, the home folder or anything above it is refused |
 | `AGENT_BRIDGE_CLAUDE_CONFIG_DIR` | unset | `CLAUDE_CONFIG_DIR` for new agents; unset uses Claude Code's default config |
+| `AGENT_BRIDGE_ACCOUNTS` | none | named Claude logins and the folders they're for, as JSON (see [Claude accounts](#claude-accounts)); names are lower-case, e.g. `work` |
 | `AGENT_BRIDGE_CLAUDE_ARGS` | `--permission-mode auto` | extra `claude` arguments, shell-quoted; set it empty for none |
 | `AGENT_BRIDGE_HERDR_BIN` | `herdr` | use the full path under a service manager, e.g. `~/.local/bin/herdr` |
 | `AGENT_BRIDGE_TRUST_ROOT` | unset | auto-trust folders under it; needs `AGENT_BRIDGE_CLAUDE_CONFIG_DIR`; absolute, and like the allowed roots never `/` or the home folder |
@@ -211,8 +232,10 @@ At the end it prints the URL, token and projects folder to give mcp-gateway's
 To skip the questions, pass the answers as variables, e.g.
 `HOST=192.168.1.20 ALLOWED_ROOTS=/Users/me/projects agent-bridge/deploy/setup-macos.sh`.
 The other variables are `PORT`, `HERDR_BIN`, `AGENT_BRIDGE_CLAUDE_CONFIG_DIR` and
-`TRUST_ROOT` (pass these two empty for no folder trust), `AGENT_BRIDGE_TOKEN`, and
-`ROTATE_TOKEN=1` to replace the installed token with a new generated one.
+`TRUST_ROOT` (pass these two empty for no folder trust), `AGENT_BRIDGE_TOKEN`,
+`ROTATE_TOKEN=1` to replace the installed token with a new generated one, and
+`AGENT_BRIDGE_ACCOUNTS` (never asked for; the installed value is kept unless you pass
+one, and an empty one removes it).
 
 Re-run it after pulling new code or to change a setting. It offers the installed values,
 so Enter keeps them, the token included.

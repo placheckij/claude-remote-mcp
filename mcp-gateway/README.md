@@ -43,7 +43,7 @@ or with a NUL character) come back the same way as one sentence.
 | `send_prompt` | prompt, wait up to `wait_seconds` (default and most 20, see below), return status + output; flags `blocked` and still-working. A `blocked` agent refuses prompts until its question is answered. If agent-bridge doesn't answer in time, it says the prompt may have been sent instead of failing, so it isn't sent twice |
 | `wait_for_agent` | keep waiting for an agent still working (e.g. after `send_prompt` ran out of time); same result format |
 | `answer_agent` | key presses for a blocked agent's question, e.g. `["1"]`, `["Enter"]`; with `wait_seconds` also waits for the result. Marked destructive, so Claude asks first |
-| `start_agent` | new agent in a project: one folder name under `MCP_GATEWAY_PROJECTS_ROOT` (names with `/`, `..` or `~`, and `.`, are refused) or an absolute path. If agent-bridge takes over 25 s, it says the agent may still be starting instead of failing |
+| `start_agent` | new agent in a project: one folder name under `MCP_GATEWAY_PROJECTS_ROOT` (names with `/`, `..` or `~`, and `.`, are refused) or an absolute path. Optional `account` (e.g. `work`) picks the Claude login; by default agent-bridge uses the one set up for the folder, and the reply names it. If agent-bridge takes over 25 s, it says the agent may still be starting instead of failing |
 | `rename_agent` | new name for an agent and its herdr workspace, any words; agent-bridge turns it into a slug (`Grafik fix!` → `grafik-fix`, `-2` if another agent has it) and the reply says the name it got |
 | `stop_agent` | close an agent's pane (marked destructive, so Claude asks first) |
 
