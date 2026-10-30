@@ -11,7 +11,8 @@
 # start in. Optional: PORT (8765), AGENT_BRIDGE_CLAUDE_CONFIG_DIR and TRUST_ROOT (folder
 # trust, see agent-bridge/README.md; not CLAUDE_CONFIG_DIR, which Claude Code itself reads
 # and may already be set), HERDR_BIN (found on PATH), ROTATE_TOKEN=1, AGENT_BRIDGE_TOKEN
-# (use this token instead of generating one).
+# (use this token instead of generating one), AGENT_BRIDGE_ACCOUNTS (named Claude logins as
+# JSON, see agent-bridge/README.md; kept from the installed settings, empty removes them).
 
 set -euo pipefail
 
@@ -133,6 +134,9 @@ if [[ -n $AGENT_BRIDGE_CLAUDE_CONFIG_DIR && ! -f $AGENT_BRIDGE_CLAUDE_CONFIG_DIR
   echo "warning: $AGENT_BRIDGE_CLAUDE_CONFIG_DIR has no Claude login yet (see the end)"
 fi
 
+# Never asked for (it's JSON); passed in, or kept from the installed settings.
+ACCOUNTS="${AGENT_BRIDGE_ACCOUNTS-$(installed EnvironmentVariables:AGENT_BRIDGE_ACCOUNTS)}"
+
 # A token passed in or typed wins; otherwise keep the installed one, unless rotating.
 INSTALLED_TOKEN="$(installed EnvironmentVariables:AGENT_BRIDGE_TOKEN)"
 TOKEN="${AGENT_BRIDGE_TOKEN:-}"
@@ -175,6 +179,7 @@ ENV_ENTRIES="$(
   env_entry AGENT_BRIDGE_HERDR_BIN "$HERDR_BIN"
   env_entry AGENT_BRIDGE_CLAUDE_CONFIG_DIR "$AGENT_BRIDGE_CLAUDE_CONFIG_DIR"
   env_entry AGENT_BRIDGE_TRUST_ROOT "$TRUST_ROOT"
+  env_entry AGENT_BRIDGE_ACCOUNTS "$ACCOUNTS"
 )"
 mkdir -p "$(dirname "$PLIST")"
 # mktemp makes the file 0600: it holds the token.

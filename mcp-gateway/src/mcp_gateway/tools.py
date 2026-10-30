@@ -186,14 +186,23 @@ def build_server(settings: Settings, bridge: AgentBridge) -> MCPServer:
             str | None,
             Field(description="Short agent name, any words; turned into a slug like \"my-agent\". Defaults to the folder name."),
         ] = None,
+        account: Annotated[
+            str | None,
+            Field(
+                min_length=1,
+                max_length=64,
+                description='Claude account to start it with, e.g. "work" or "personal". Only when '
+                "the user names one; by default the agent host picks the account set up for the folder.",
+            ),
+        ] = None,
     ) -> str:
         """Start a new Claude Code agent in a project folder on the agent host. Refused when too
-        many agents are already running or the folder is not allowed."""
+        many agents are already running, the folder is not allowed or the account is unknown."""
         cwd = _project_folder(settings.projects_root, project)
         # Names come from speech ("my agent"); agent-bridge only takes [\w.-].
         agent_name = _safe_name(name or posixpath.basename(cwd))
         try:
-            agent = await bridge.start_agent(cwd, agent_name)
+            agent = await bridge.start_agent(cwd, agent_name, account)
         except BridgeTimeout as error:
             # Not a tool error: the agent may still come up, and starting it again would
             # make a second one.
@@ -203,7 +212,8 @@ def build_server(settings: Settings, bridge: AgentBridge) -> MCPServer:
             )
         except BridgeError as error:
             raise ToolError(str(error)) from error
-        return f"Started {describe(agent, root)}"
+        started = f"Started on the {agent['account']} account:" if agent.get("account") else "Started"
+        return f"{started} {describe(agent, root)}"
 
     @mcp.tool(annotations=ACTION)
     async def rename_agent(
