@@ -40,22 +40,27 @@ or with a NUL character) come back the same way as one sentence.
 | `list_agents` | one line per agent: id · name · status · folder (a folder under `MCP_GATEWAY_PROJECTS_ROOT` by its name there, e.g. `grafik`) |
 | `agent_details` | the same line for one agent |
 | `read_output` | last N meaningful terminal lines (default 20, at most 60; the same for `lines` on the waiting tools) |
-| `send_prompt` | prompt, wait up to `wait_seconds` (default and most 45, see below), return status + output; flags `blocked` and still-working. A `blocked` agent refuses prompts until its question is answered. If agent-bridge doesn't answer in time, it says the prompt may have been sent instead of failing, so it isn't sent twice |
+| `send_prompt` | prompt, wait up to `wait_seconds` (default and most 20, see below), return status + output; flags `blocked` and still-working. A `blocked` agent refuses prompts until its question is answered. If agent-bridge doesn't answer in time, it says the prompt may have been sent instead of failing, so it isn't sent twice |
 | `wait_for_agent` | keep waiting for an agent still working (e.g. after `send_prompt` ran out of time); same result format |
 | `answer_agent` | key presses for a blocked agent's question, e.g. `["1"]`, `["Enter"]`; with `wait_seconds` also waits for the result. Marked destructive, so Claude asks first |
-| `start_agent` | new agent in a project: one folder name under `MCP_GATEWAY_PROJECTS_ROOT` (names with `/`, `..` or `~`, and `.`, are refused) or an absolute path |
+| `start_agent` | new agent in a project: one folder name under `MCP_GATEWAY_PROJECTS_ROOT` (names with `/`, `..` or `~`, and `.`, are refused) or an absolute path. If agent-bridge takes over 25 s, it says the agent may still be starting instead of failing |
 | `rename_agent` | new name for an agent and its herdr workspace, any words; agent-bridge turns it into a slug (`Grafik fix!` → `grafik-fix`, `-2` if another agent has it) and the reply says the name it got |
 | `stop_agent` | close an agent's pane (marked destructive, so Claude asks first) |
 
 The server's instructions tell Claude the user is probably driving: short, speakable
 answers, no code read aloud, and no approvals without asking.
 
-**Waits are capped at 45 s** because claude.ai gives up on a tool call after about 60 s,
-whatever its docs say (240 s): measured through the connector, a 55 s wait comes back and
-a 60 s one fails with *The operation timed out*. Nothing is sent before a tool returns,
+**Waits are capped at 20 s** because claude.ai gives up on a tool call long before its
+docs' 240 s. Through the connector in Claude Code a 55 s wait comes back and a 60 s one
+fails with *The operation timed out*; in voice mode a prompt that took 30 s came back as
+*MCP tool call failed*, though it had been typed. Nothing is sent before a tool returns,
 so a longer wait would end in a generic failure after the prompt was typed. For longer
-work Claude calls `wait_for_agent` again. agent-bridge's answer gets `wait_seconds` + 10 s
+work Claude calls `wait_for_agent` again. agent-bridge's answer gets `wait_seconds` + 5 s
 before mcp-gateway gives up on it.
+
+Voice mode also asks you to approve each tool call, reading ones included, and gives up
+after 30 s with *approval timed out after 30s; not executed*. To use it hands-free, set
+the tools to *Always allow* in the connector's settings in claude.ai.
 
 ## Configuration
 
@@ -294,8 +299,8 @@ reverse proxy:
    Keep it running with your system's service manager (systemd, launchd, NSSM, …).
 3. Publish only `/mcp` over HTTPS at `MCP_GATEWAY_PUBLIC_HOST`: a
    [Cloudflare Tunnel](#cloudflare-tunnel) set up by hand, or any reverse proxy that
-   terminates TLS, with a request timeout of at least 60 s (`wait_seconds` goes up to
-   45 s, plus up to 10 s for agent-bridge's answer).
+   terminates TLS, with a request timeout of at least 30 s (`wait_seconds` goes up to
+   20 s, plus up to 5 s for agent-bridge's answer).
    Don't publish `/healthz` or anything else.
 
 ## Cloudflare Tunnel
