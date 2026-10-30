@@ -132,12 +132,40 @@ def test_output_keeps_the_tail_when_capped(root: Path) -> None:
 def test_output_of_a_busy_agent_falls_back_to_the_visible_screen(root: Path) -> None:
     runner = FakeRunner(
         {
-            ("agent", "read", "w1:p1", "--lines", "500", "--source", "recent"): err("agent_not_idle"),
             ("agent", "read", "w1:p1", "--lines", "500", "--source", "visible"): (0, "Allow rm?\n", ""),
+            ("agent", "read", "w1:p1", "--lines", "41", "--source", "recent"): err("agent_not_idle"),
+            ("agent", "read", "w1:p1", "--lines", "41", "--source", "visible"): (0, "Allow rm?\n", ""),
         }
     )
     response = client(runner, root).get("/agents/w1:p1/output", headers=AUTH)
     assert response.json() == {"text": "Allow rm?", "truncated": False}
+
+
+SCREEN = "\n".join(f"line {n}" for n in range(1, 61)) + "\n"
+
+
+def test_output_comes_from_the_screen_when_it_holds_enough(root: Path) -> None:
+    # herdr takes ~37 ms per line of history above the screen: 16 s for the 500 lines this
+    # used to read, on top of every prompt's wait.
+    runner = FakeRunner({("agent", "read"): (0, SCREEN, "")})
+    response = client(runner, root).get("/agents/w1:p1/output?lines=20", headers=AUTH)
+    assert response.json()["text"].splitlines() == [f"line {n}" for n in range(41, 61)]
+    assert runner.calls == [["agent", "read", "w1:p1", "--lines", "500", "--source", "visible",
+                             "--format", "text"]]
+
+
+def test_output_reads_history_only_for_what_the_screen_lacks(root: Path) -> None:
+    screen = "\n".join(f"line {n}" for n in range(71, 101)) + "\n"
+    history = "\n".join(f"line {n}" for n in range(1, 101)) + "\n"
+    runner = FakeRunner(
+        {
+            ("agent", "read", "w1:p1", "--lines", "500", "--source", "visible"): (0, screen, ""),
+            # The screen's 30 rows plus the 60 lines wanted.
+            ("agent", "read", "w1:p1", "--lines", "90", "--source", "recent"): (0, history, ""),
+        }
+    )
+    response = client(runner, root).get("/agents/w1:p1/output?lines=60", headers=AUTH)
+    assert response.json()["text"].splitlines() == [f"line {n}" for n in range(41, 101)]
 
 
 def test_visible_read_failures_are_not_retried(root: Path) -> None:
