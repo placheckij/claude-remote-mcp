@@ -7,7 +7,7 @@ last N raw lines would return mostly padding and chrome, so drop those first.
 
 import re
 
-# Enough to cover a full screen plus some scrollback; trimmed down afterwards.
+# The most read at once: a full screen plus some scrollback; trimmed down afterwards.
 SNAPSHOT_LINES = 500
 
 _RULE = re.compile(r"^\s*─{10,}\s*$")

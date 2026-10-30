@@ -44,8 +44,19 @@ class AgentService:
         return summarize(await self.herdr.get_agent(agent_id))
 
     async def read_output(self, agent_id: str, lines: int, source: str) -> Output:
-        snapshot = await self.herdr.read(agent_id, SNAPSHOT_LINES, source)
-        return cap(last_lines(snapshot, lines), self.settings.max_output_chars)
+        return cap(await self._tail(agent_id, lines, source), self.settings.max_output_chars)
+
+    async def _tail(self, agent_id: str, lines: int, source: str = "recent") -> str:
+        """The last `lines` meaningful lines. herdr reads the visible screen at once, but
+        each line of history above it costs ~37 ms (16 s for 500 lines), which claude.ai
+        doesn't wait for: so the screen comes first, and history only for what's missing."""
+        screen = await self.herdr.read(agent_id, SNAPSHOT_LINES, "visible")
+        tail = last_lines(screen, lines)
+        if source == "visible" or (source == "recent" and len(tail.splitlines()) >= lines):
+            return tail
+        # The screen's rows plus the lines still wanted (some are padding and chrome).
+        rows = len(screen.splitlines()) + lines
+        return last_lines(await self.herdr.read(agent_id, min(rows, SNAPSHOT_LINES), source), lines)
 
     async def prompt(
         self, agent_id: str, text: str, timeout_s: int | None, lines: int
@@ -177,7 +188,7 @@ class AgentService:
             timed_out = error.code == "timeout"
             unconfirmed = error.code == "agent_prompt_stalled"
             agent = await self.herdr.get_agent(agent_id)
-        output = last_lines(await self.herdr.read(agent_id, SNAPSHOT_LINES), lines)
+        output = await self._tail(agent_id, lines)
         return PromptResult(
             agent=summarize(agent),
             output=cap(output, self.settings.max_output_chars),
