@@ -579,6 +579,46 @@ def test_a_folder_that_wont_sync_still_hands_out_the_new_tokens(
     assert "couldn't sync its folder" in caplog.text
 
 
+def full_disk(*args) -> None:
+    raise OSError(errno.ENOSPC, "No space left on device")
+
+
+@pytest.mark.parametrize("failing", ["fsync", "replace"])
+def test_a_refresh_that_cant_be_saved_keeps_the_old_tokens(
+    client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failing: str
+) -> None:
+    # The client never gets the new tokens; if the old ones were gone too, it would be
+    # signed out until a restart read them back from the file.
+    client_id, tokens = connect(client)
+    saved = (tmp_path / "oauth.json").read_text()
+    with monkeypatch.context() as patch:
+        patch.setattr(os, failing, full_disk)
+        with pytest.raises(OSError, match="No space left"):
+            refresh(client, client_id, tokens["refresh_token"])
+    assert (tmp_path / "oauth.json").read_text() == saved
+    assert list_tools(client, tokens["access_token"]).status_code == 200
+    renewed = refresh(client, client_id, tokens["refresh_token"])
+    assert renewed.status_code == 200, renewed.text
+    assert list_tools(client, renewed.json()["access_token"]).status_code == 200
+
+
+@pytest.mark.parametrize("failing", ["fsync", "replace"])
+def test_a_revocation_that_cant_be_saved_changes_nothing(
+    client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failing: str
+) -> None:
+    # What the gateway accepts stays what the file says, so a restart doesn't change it.
+    client_id, tokens = connect(client)
+    saved = (tmp_path / "oauth.json").read_text()
+    with monkeypatch.context() as patch:
+        patch.setattr(os, failing, full_disk)
+        with pytest.raises(OSError, match="No space left"):
+            client.post(
+                "/revoke", data={"token": tokens["refresh_token"], "client_id": client_id, "client_secret": ""}
+            )
+    assert (tmp_path / "oauth.json").read_text() == saved
+    assert list_tools(client, tokens["access_token"]).status_code == 200
+
+
 HOLD_STATE = """
 import sys
 from pathlib import Path
