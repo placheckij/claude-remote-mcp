@@ -15,6 +15,7 @@ from urllib.parse import parse_qs, urlsplit
 
 import httpx
 import pytest
+from mcp.shared.auth import OAuthClientInformationFull
 from starlette.testclient import TestClient
 
 from mcp_gateway.bridge import AgentBridge
@@ -26,6 +27,7 @@ from mcp_gateway.oauth import (
     MAX_FAILURES_ALL,
     MAX_TRIES_PER_SIGN_IN,
     GatewayOAuth,
+    TokenStore,
 )
 from mcp_gateway.server import create_app
 
@@ -557,30 +559,64 @@ def test_saving_syncs_the_file_before_the_rename_and_the_folder_after(
     assert steps == ["sync file", "rename", "sync folder"]
 
 
+def logged(caplog: pytest.LogCaptureFixture, level: str, text: str) -> bool:
+    return any(record.levelname == level and text in record.getMessage() for record in caplog.records)
+
+
+def folder_sync_failing(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Every folder sync fails; files still sync."""
+    fsync = os.fsync
+
+    def failing_fsync(fd: int) -> None:
+        if stat.S_ISDIR(os.fstat(fd).st_mode):
+            raise OSError(errno.EIO, "Input/output error")
+        fsync(fd)
+
+    monkeypatch.setattr(os, "fsync", failing_fsync)
+
+
+def full_disk(*args) -> None:
+    raise OSError(errno.ENOSPC, "No space left on device")
+
+
+def read_only(monkeypatch: pytest.MonkeyPatch) -> list:
+    """Renaming and deleting oauth.json fail, as on a disk remounted read-only. Other files
+    can still be deleted, so a save gets as far as the rename. Returns the renames tried."""
+    renames, unlink = [], os.unlink
+
+    def refuse(*args) -> None:
+        renames.append(args)
+        raise OSError(errno.EROFS, "Read-only file system")
+
+    def unlink_all_but_the_state(path, *args, **kwargs) -> None:
+        if Path(path).name == "oauth.json":
+            raise OSError(errno.EROFS, "Read-only file system")
+        unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(os, "replace", refuse)
+    monkeypatch.setattr(os, "unlink", unlink_all_but_the_state)
+    return renames
+
+
+def revoke(client: TestClient, client_id: str, token: str) -> httpx.Response:
+    # The SDK's revocation form requires client_secret, even empty for a public client.
+    return client.post("/revoke", data={"token": token, "client_id": client_id, "client_secret": ""})
+
+
 @pytest.mark.skipif(os.name != "posix", reason="folders are synced on POSIX only")
 def test_a_folder_that_wont_sync_still_hands_out_the_new_tokens(
     client: TestClient, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
     # By then the new state is in place and the old refresh token gone: failing the request
-    # would sign the client out.
-    fsync = os.fsync
-
-    def failing_fsync(fd: int) -> None:
-        if stat.S_ISDIR(os.fstat(fd).st_mode):
-            raise OSError(5, "Input/output error")
-        fsync(fd)
-
+    # would sign the client out. With no revocation at stake, it's only a warning.
     client_id, tokens = connect(client)
-    monkeypatch.setattr(os, "fsync", failing_fsync)
+    folder_sync_failing(monkeypatch)
     with caplog.at_level("WARNING", logger="mcp_gateway.oauth"):
         renewed = refresh(client, client_id, tokens["refresh_token"])
     assert renewed.status_code == 200, renewed.text
     assert list_tools(client, renewed.json()["access_token"]).status_code == 200
-    assert "couldn't sync its folder" in caplog.text
-
-
-def full_disk(*args) -> None:
-    raise OSError(errno.ENOSPC, "No space left on device")
+    assert logged(caplog, "WARNING", "couldn't sync its folder")
+    assert not [record for record in caplog.records if record.levelname == "ERROR"]
 
 
 @pytest.mark.parametrize("failing", ["fsync", "replace"])
@@ -605,11 +641,11 @@ def test_a_refresh_that_cant_be_saved_keeps_the_old_tokens(
 
 
 @pytest.mark.parametrize(
-    ("failing", "logged"),
+    ("failing", "level", "message"),
     [
         # With every fsync failing, the deletion's folder sync fails too: said, not claimed safe.
-        ("fsync", "so deleted it, but couldn't sync its folder"),
-        ("replace", "so deleted it: a restart before the next successful save signs every client out"),
+        ("fsync", "ERROR", "so deleted it, but couldn't sync its folder"),
+        ("replace", "WARNING", "so deleted it: a restart before the next successful save signs every client out"),
     ],
 )
 def test_a_revocation_that_cant_be_saved_still_revokes(
@@ -618,7 +654,8 @@ def test_a_revocation_that_cant_be_saved_still_revokes(
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
     failing: str,
-    logged: str,
+    level: str,
+    message: str,
 ) -> None:
     # A token revoked because it leaked must stop working, whatever the disk does.
     client_id, tokens = connect(client)
@@ -626,15 +663,35 @@ def test_a_revocation_that_cant_be_saved_still_revokes(
     with monkeypatch.context() as patch, caplog.at_level("WARNING", logger="mcp_gateway.oauth"):
         patch.setattr(os, failing, full_disk)
         with pytest.raises(OSError, match="No space left"):
-            client.post(
-                "/revoke", data={"token": tokens["refresh_token"], "client_id": client_id, "client_secret": ""}
-            )
-    assert logged in caplog.text
+            revoke(client, client_id, tokens["refresh_token"])
+    assert logged(caplog, level, message)
     assert list_tools(client, tokens["access_token"]).status_code == 401
     assert refresh(client, client_id, tokens["refresh_token"]).json()["error"] == "invalid_grant"
     # The next save that succeeds writes the state down again, without the revoked grant.
     assert refresh(client, other_id, other["refresh_token"]).status_code == 200
     assert hashlib.sha256(tokens["access_token"].encode()).hexdigest() not in (tmp_path / "oauth.json").read_text()
+
+
+def test_a_revocation_interrupted_while_saving_still_revokes(
+    tmp_path: Path, clock: Clock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Not only disk errors: whatever stops the save, the revoked tokens stop working. (On the
+    # store itself: an exception that isn't an Exception would stop the test client too.)
+    class Interrupted(BaseException):
+        pass
+
+    def interrupted(*args) -> None:
+        raise Interrupted
+
+    store = TokenStore(tmp_path / "oauth.json", clock)
+    claude = OAuthClientInformationFull(client_id="c1", redirect_uris=[CALLBACK], token_endpoint_auth_method="none")
+    tokens = store.issue(claude, ["agents"])
+    with monkeypatch.context() as patch:
+        patch.setattr(os, "replace", interrupted)
+        with pytest.raises(Interrupted):
+            store.revoke(tokens.refresh_token)
+    assert store.find(tokens.access_token, "access") is None
+    assert not (tmp_path / "oauth.json").exists()
 
 
 def test_a_revocation_that_cant_be_saved_survives_a_restart(
@@ -647,11 +704,9 @@ def test_a_revocation_that_cant_be_saved_survives_a_restart(
     with monkeypatch.context() as patch, caplog.at_level("WARNING", logger="mcp_gateway.oauth"):
         patch.setattr(os, "replace", full_disk)
         with pytest.raises(OSError, match="No space left"):
-            client.post(
-                "/revoke", data={"token": tokens["refresh_token"], "client_id": client_id, "client_secret": ""}
-            )
+            revoke(client, client_id, tokens["refresh_token"])
     assert not (tmp_path / "oauth.json").exists()
-    assert "signs every client out" in caplog.text
+    assert logged(caplog, "WARNING", "signs every client out")
     restarted = make_client()
     assert list_tools(restarted, tokens["access_token"]).status_code == 401
     # The client went with the file.
@@ -661,54 +716,57 @@ def test_a_revocation_that_cant_be_saved_survives_a_restart(
 def test_a_revocation_that_cant_be_saved_or_deleted_says_what_to_do(
     client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
-    renames = []
-    unlink = os.unlink
-
-    def read_only(*args) -> None:
-        renames.append(args)
-        raise OSError(errno.EROFS, "Read-only file system")
-
-    def unlink_all_but_the_state(path, *args, **kwargs) -> None:
-        # The temporary file still goes, so the save gets as far as the rename.
-        if Path(path).name == "oauth.json":
-            raise OSError(errno.EROFS, "Read-only file system")
-        unlink(path, *args, **kwargs)
-
     client_id, tokens = connect(client)
     with monkeypatch.context() as patch, caplog.at_level("ERROR", logger="mcp_gateway.oauth"):
-        patch.setattr(os, "replace", read_only)
-        patch.setattr(os, "unlink", unlink_all_but_the_state)
+        renames = read_only(patch)
         with pytest.raises(OSError, match="Read-only"):
-            client.post(
-                "/revoke", data={"token": tokens["refresh_token"], "client_id": client_id, "client_secret": ""}
-            )
+            revoke(client, client_id, tokens["refresh_token"])
     assert len(renames) == 1
     assert (tmp_path / "oauth.json").exists()
-    assert "stop mcp-gateway and delete the file before it starts again" in caplog.text
+    assert logged(caplog, "ERROR", "stop mcp-gateway, delete the file (every client signs in again) and start it")
     assert list_tools(client, tokens["access_token"]).status_code == 401
 
 
 @pytest.mark.skipif(os.name != "posix", reason="folders are synced on POSIX only")
-def test_a_revocation_whose_folder_wont_sync_says_so(
+def test_a_revocation_whose_folder_wont_sync_says_what_to_do(
     client: TestClient, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
-    # The file is in place, so the revocation stands, but a power cut could undo the rename.
-    fsync = os.fsync
-
-    def failing_fsync(fd: int) -> None:
-        if stat.S_ISDIR(os.fstat(fd).st_mode):
-            raise OSError(errno.EIO, "Input/output error")
-        fsync(fd)
-
+    # The file is in place, so the revocation stands; but if the power goes before another
+    # save is fully on disk, the old file comes back and every save after that keeps it.
     client_id, tokens = connect(client)
     with monkeypatch.context() as patch, caplog.at_level("ERROR", logger="mcp_gateway.oauth"):
-        patch.setattr(os, "fsync", failing_fsync)
-        response = client.post(
-            "/revoke", data={"token": tokens["refresh_token"], "client_id": client_id, "client_secret": ""}
-        )
+        folder_sync_failing(patch)
+        response = revoke(client, client_id, tokens["refresh_token"])
     assert response.status_code == 200
-    assert "Revoked a grant" in caplog.text and "after a power cut" in caplog.text
+    assert logged(caplog, "ERROR", "Revoked a grant")
+    assert logged(caplog, "ERROR", "every save after that keeps them: then stop mcp-gateway, delete")
     assert list_tools(client, tokens["access_token"]).status_code == 401
+
+
+@pytest.mark.skipif(os.name != "posix", reason="folders are synced on POSIX only")
+def test_a_save_that_holds_the_only_record_of_a_revocation_is_an_error_until_one_is_on_disk(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    client_id, tokens = connect(client)
+    other_id, other = connect(client)
+    # The revocation exists only in memory: neither saved nor deleted.
+    with monkeypatch.context() as patch:
+        read_only(patch)
+        with pytest.raises(OSError, match="Read-only"):
+            revoke(client, client_id, tokens["refresh_token"])
+    # The next save is its only record, so a folder that won't sync is an error.
+    with monkeypatch.context() as patch, caplog.at_level("WARNING", logger="mcp_gateway.oauth"):
+        folder_sync_failing(patch)
+        other = refresh(client, other_id, other["refresh_token"]).json()
+    assert logged(caplog, "ERROR", "the only record of a revocation")
+    # Once a save is fully on disk, the revocation is safe and a later one is a warning again.
+    other = refresh(client, other_id, other["refresh_token"]).json()
+    caplog.clear()
+    with monkeypatch.context() as patch, caplog.at_level("WARNING", logger="mcp_gateway.oauth"):
+        folder_sync_failing(patch)
+        refresh(client, other_id, other["refresh_token"])
+    assert logged(caplog, "WARNING", "couldn't sync its folder")
+    assert not logged(caplog, "ERROR", "the only record of a revocation")
 
 
 HOLD_STATE = """
