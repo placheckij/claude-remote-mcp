@@ -604,19 +604,32 @@ def test_a_refresh_that_cant_be_saved_keeps_the_old_tokens(
     assert list_tools(client, renewed.json()["access_token"]).status_code == 200
 
 
-@pytest.mark.parametrize("failing", ["fsync", "replace"])
+@pytest.mark.parametrize(
+    ("failing", "logged"),
+    [
+        # With every fsync failing, the deletion's folder sync fails too: said, not claimed safe.
+        ("fsync", "so deleted it, but couldn't sync its folder"),
+        ("replace", "so deleted it: a restart before the next successful save signs every client out"),
+    ],
+)
 def test_a_revocation_that_cant_be_saved_still_revokes(
-    client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failing: str
+    client: TestClient,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    failing: str,
+    logged: str,
 ) -> None:
     # A token revoked because it leaked must stop working, whatever the disk does.
     client_id, tokens = connect(client)
     other_id, other = connect(client)
-    with monkeypatch.context() as patch:
+    with monkeypatch.context() as patch, caplog.at_level("WARNING", logger="mcp_gateway.oauth"):
         patch.setattr(os, failing, full_disk)
         with pytest.raises(OSError, match="No space left"):
             client.post(
                 "/revoke", data={"token": tokens["refresh_token"], "client_id": client_id, "client_secret": ""}
             )
+    assert logged in caplog.text
     assert list_tools(client, tokens["access_token"]).status_code == 401
     assert refresh(client, client_id, tokens["refresh_token"]).json()["error"] == "invalid_grant"
     # The next save that succeeds writes the state down again, without the revoked grant.
@@ -638,7 +651,7 @@ def test_a_revocation_that_cant_be_saved_survives_a_restart(
                 "/revoke", data={"token": tokens["refresh_token"], "client_id": client_id, "client_secret": ""}
             )
     assert not (tmp_path / "oauth.json").exists()
-    assert "every client signs in again" in caplog.text
+    assert "signs every client out" in caplog.text
     restarted = make_client()
     assert list_tools(restarted, tokens["access_token"]).status_code == 401
     # The client went with the file.
@@ -648,19 +661,53 @@ def test_a_revocation_that_cant_be_saved_survives_a_restart(
 def test_a_revocation_that_cant_be_saved_or_deleted_says_what_to_do(
     client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
+    renames = []
+    unlink = os.unlink
+
     def read_only(*args) -> None:
+        renames.append(args)
         raise OSError(errno.EROFS, "Read-only file system")
+
+    def unlink_all_but_the_state(path, *args, **kwargs) -> None:
+        # The temporary file still goes, so the save gets as far as the rename.
+        if Path(path).name == "oauth.json":
+            raise OSError(errno.EROFS, "Read-only file system")
+        unlink(path, *args, **kwargs)
 
     client_id, tokens = connect(client)
     with monkeypatch.context() as patch, caplog.at_level("ERROR", logger="mcp_gateway.oauth"):
         patch.setattr(os, "replace", read_only)
-        patch.setattr(os, "unlink", read_only)
+        patch.setattr(os, "unlink", unlink_all_but_the_state)
         with pytest.raises(OSError, match="Read-only"):
             client.post(
                 "/revoke", data={"token": tokens["refresh_token"], "client_id": client_id, "client_secret": ""}
             )
+    assert len(renames) == 1
     assert (tmp_path / "oauth.json").exists()
-    assert "delete it by hand" in caplog.text
+    assert "stop mcp-gateway and delete the file before it starts again" in caplog.text
+    assert list_tools(client, tokens["access_token"]).status_code == 401
+
+
+@pytest.mark.skipif(os.name != "posix", reason="folders are synced on POSIX only")
+def test_a_revocation_whose_folder_wont_sync_says_so(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    # The file is in place, so the revocation stands, but a power cut could undo the rename.
+    fsync = os.fsync
+
+    def failing_fsync(fd: int) -> None:
+        if stat.S_ISDIR(os.fstat(fd).st_mode):
+            raise OSError(errno.EIO, "Input/output error")
+        fsync(fd)
+
+    client_id, tokens = connect(client)
+    with monkeypatch.context() as patch, caplog.at_level("ERROR", logger="mcp_gateway.oauth"):
+        patch.setattr(os, "fsync", failing_fsync)
+        response = client.post(
+            "/revoke", data={"token": tokens["refresh_token"], "client_id": client_id, "client_secret": ""}
+        )
+    assert response.status_code == 200
+    assert "Revoked a grant" in caplog.text and "after a power cut" in caplog.text
     assert list_tools(client, tokens["access_token"]).status_code == 401
 
 
