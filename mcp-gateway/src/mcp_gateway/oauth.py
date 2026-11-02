@@ -325,19 +325,20 @@ class TokenStore:
         return record
 
     def issue(self, client: OAuthClientInformationFull, scopes: list[str], grant: str | None = None) -> OAuthToken:
+        """Tokens for a new grant, or in place of `grant`'s current ones."""
+        tokens = self._without(grant) if grant else dict(self.tokens)
         grant = grant or secrets.token_urlsafe(16)
         now = int(self.clock())
         access, refresh = secrets.token_urlsafe(32), secrets.token_urlsafe(32)
         for token, kind, ttl in ((access, "access", ACCESS_TOKEN_TTL_S), (refresh, "refresh", REFRESH_TOKEN_TTL_S)):
-            self.tokens[_hash(token)] = {
+            tokens[_hash(token)] = {
                 "kind": kind,
                 "client_id": client.client_id,
                 "grant": grant,
                 "scopes": scopes,
                 "expires_at": now + ttl,
             }
-        self.clients[client.client_id] = client
-        self._save()
+        self._save(tokens, {**self.clients, client.client_id: client})
         return OAuthToken(
             access_token=access,
             expires_in=ACCESS_TOKEN_TTL_S,
@@ -349,30 +350,31 @@ class TokenStore:
         record = self.find(refresh_token, "refresh")
         if record is None:
             raise TokenError("invalid_grant", "refresh token does not exist")
-        self._end(record["grant"])
         return self.issue(client, scopes, record["grant"])
 
     def revoke(self, token: str) -> None:
         record = self.tokens.get(_hash(token))
         if record is not None:
-            self._end(record["grant"])
-            self._save()
+            self._save(self._without(record["grant"]), self.clients)
 
-    def _end(self, grant: str) -> None:
-        self.tokens = {key: record for key, record in self.tokens.items() if record["grant"] != grant}
+    def _without(self, grant: str) -> dict[str, dict]:
+        """The tokens, but not those of `grant`."""
+        return {key: record for key, record in self.tokens.items() if record["grant"] != grant}
 
-    def _save(self) -> None:
+    def _save(self, tokens: dict[str, dict], clients: dict[str, OAuthClientInformationFull]) -> None:
+        """Writes the new state, and only then makes it the current one: if writing fails,
+        what the gateway accepts stays what the file says, and the client's tokens work."""
         now = self.clock()
-        self.tokens = {key: record for key, record in self.tokens.items() if record["expires_at"] >= now}
+        tokens = {key: record for key, record in tokens.items() if record["expires_at"] >= now}
         # A client with no tokens left would have to sign in again anyway.
-        signed_in = {record["client_id"] for record in self.tokens.values()}
-        self.clients = {client_id: client for client_id, client in self.clients.items() if client_id in signed_in}
+        signed_in = {record["client_id"] for record in tokens.values()}
+        clients = {client_id: client for client_id, client in clients.items() if client_id in signed_in}
         data = {
             "clients": {
                 client_id: client.model_dump(mode="json", exclude_none=True)
-                for client_id, client in self.clients.items()
+                for client_id, client in clients.items()
             },
-            "tokens": self.tokens,
+            "tokens": tokens,
         }
         self.path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
         # Written beside it and renamed over it, so a crash never leaves half a file. A
@@ -395,6 +397,7 @@ class TokenStore:
                     os.close(folder)
             except OSError as error:
                 log.warning("Saved %s but couldn't sync its folder: %s", self.path, error)
+        self.tokens, self.clients = tokens, clients
 
 
 class _TokenRecord(BaseModel):
