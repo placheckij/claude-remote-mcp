@@ -6,15 +6,17 @@ its tokens; auth.py checks them in front of the MCP endpoint.
 """
 
 import logging
+import sys
 
 from mcp.server.transport_security import TransportSecuritySettings
 from starlette.datastructures import Headers
 from starlette.responses import JSONResponse
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
+from uvicorn.config import STARTUP_FAILURE
 
 from mcp_gateway.auth import BearerAuth
 from mcp_gateway.bridge import AgentBridge
-from mcp_gateway.config import Settings
+from mcp_gateway.config import Settings, StartupError
 from mcp_gateway.oauth import GatewayOAuth
 from mcp_gateway.tools import build_server
 
@@ -39,7 +41,7 @@ def create_app(
             allowed_origins=list(ALLOWED_ORIGINS),
         ),
     )
-    return BearerAuth(StatelessEdges(app, bridge), oauth.load_access_token, oauth.resource_metadata_url)
+    return BearerAuth(StatelessEdges(app, bridge, oauth), oauth.load_access_token, oauth.resource_metadata_url)
 
 
 class StatelessEdges:
@@ -49,12 +51,13 @@ class StatelessEdges:
       likely came from the Claude app, and every call will fail the same way;
     - GET /mcp answers 405, as the spec allows: stateless mode never sends anything on a GET
       stream, which would only hold a task open until the client hangs up;
-    - on shutdown the agent-bridge client is closed.
+    - on shutdown the agent-bridge client is closed and the state folder unlocked.
     """
 
-    def __init__(self, app: ASGIApp, bridge: AgentBridge):
+    def __init__(self, app: ASGIApp, bridge: AgentBridge, oauth: GatewayOAuth):
         self.app = app
         self.bridge = bridge
+        self.oauth = oauth
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope["type"] == "lifespan":
@@ -80,6 +83,7 @@ class StatelessEdges:
         async def wrapped(message: Message) -> None:
             if message["type"] == "lifespan.shutdown.complete":
                 await self.bridge.aclose()
+                self.oauth.close()
             await send(message)
 
         return wrapped
@@ -87,4 +91,12 @@ class StatelessEdges:
 
 def main() -> ASGIApp:
     """uvicorn factory: `uvicorn mcp_gateway.server:main --factory`."""
-    return create_app(Settings.from_env())
+    try:
+        return create_app(Settings.from_env())
+    except StartupError as error:
+        # Bad settings or state, or another process on the state folder: the message is enough.
+        log.error("%s", error)
+    except Exception:
+        log.exception("mcp-gateway could not start")
+    # With --workers, uvicorn stops on this exit code instead of starting the worker again and again.
+    sys.exit(STARTUP_FAILURE)
