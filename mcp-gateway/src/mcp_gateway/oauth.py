@@ -339,7 +339,10 @@ class TokenStore:
                 "scopes": scopes,
                 "expires_at": now + ttl,
             }
-        self._save(tokens, {**self.clients, client.client_id: client})
+        # Failing to sync the folder isn't worth failing the request: the new tokens are in
+        # place, and the client would never get them.
+        if unsynced := self._save(tokens, {**self.clients, client.client_id: client}):
+            log.warning("Saved %s but couldn't sync its folder: %s", self.path, unsynced)
         return OAuthToken(
             access_token=access,
             expires_in=ACCESS_TOKEN_TTL_S,
@@ -358,21 +361,28 @@ class TokenStore:
         if record is not None:
             tokens = self._without(record["grant"])
             try:
-                self._save(tokens, self.clients)
+                unsynced = self._save(tokens, self.clients)
             except BaseException:
                 # Unlike a refresh, a revocation must not fail open: the tokens stop working
                 # now, and the file, which still lists them, goes until a save succeeds.
                 self.tokens = tokens
                 self._forget_file()
                 raise
+            if unsynced:
+                log.error(
+                    "Revoked a grant in %s but couldn't sync its folder (%s): after a power cut "
+                    "its tokens could work again until the next save. Check the disk.",
+                    self.path, unsynced,
+                )
 
     def _without(self, grant: str) -> dict[str, dict]:
         """The tokens, but not those of `grant`."""
         return {key: record for key, record in self.tokens.items() if record["grant"] != grant}
 
-    def _save(self, tokens: dict[str, dict], clients: dict[str, OAuthClientInformationFull]) -> None:
+    def _save(self, tokens: dict[str, dict], clients: dict[str, OAuthClientInformationFull]) -> OSError | None:
         """Writes the new state, and only then makes it the current one: if writing fails,
-        what the gateway accepts stays what the file says, and the client's tokens work."""
+        the state in memory stays as it was. Returns the error if the file is in place but
+        its folder couldn't be synced, so a power cut could still undo the save."""
         now = self.clock()
         tokens = {key: record for key, record in tokens.items() if record["expires_at"] >= now}
         # A client with no tokens left would have to sign in again anyway.
@@ -401,13 +411,12 @@ class TokenStore:
             with contextlib.suppress(OSError):
                 temporary.unlink()
             raise
-        # Failing this isn't worth failing the request: the new tokens are in place, and the
-        # client would never get them.
+        self.tokens, self.clients = tokens, clients
         try:
             self._sync_folder()
         except OSError as error:
-            log.warning("Saved %s but couldn't sync its folder: %s", self.path, error)
-        self.tokens, self.clients = tokens, clients
+            return error
+        return None
 
     def _forget_file(self) -> None:
         """Deletes oauth.json after a revocation that couldn't be written into it, so a
@@ -417,15 +426,29 @@ class TokenStore:
         try:
             self.path.unlink(missing_ok=True)
         except OSError as error:
+            # Most likely the disk went read-only; nothing here can make the revocation stick.
             log.error(
-                "Couldn't save a revocation in %s or delete it (%s): after a restart the revoked "
-                "tokens would work again, so delete it by hand before restarting.",
+                "Couldn't save a revocation in %s or delete it (%s): if mcp-gateway restarts "
+                "before a save succeeds, the revoked tokens work again. Check the disk; to be "
+                "sure, stop mcp-gateway and delete the file before it starts again.",
                 self.path, error,
             )
             return
-        with contextlib.suppress(OSError):
+        try:
             self._sync_folder()
-        log.warning("Couldn't save a revocation in %s, so deleted it: after a restart every client signs in again.", self.path)
+        except OSError as error:
+            log.error(
+                "Couldn't save a revocation in %s, so deleted it, but couldn't sync its folder "
+                "(%s): after a power cut the revoked tokens could work again until a save "
+                "succeeds. Check the disk.",
+                self.path, error,
+            )
+            return
+        log.warning(
+            "Couldn't save a revocation in %s, so deleted it: a restart before the next "
+            "successful save signs every client out.",
+            self.path,
+        )
 
     def _sync_folder(self) -> None:
         """Makes a rename or deletion in the state folder survive a power cut."""
