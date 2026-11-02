@@ -17,6 +17,7 @@ multiply the guesses allowed. It holds a lock on the state folder to refuse a se
 process. Running more than one would need that state, and the counting, in a shared store.
 """
 
+import errno
 import hashlib
 import hmac
 import html
@@ -99,7 +100,11 @@ class GatewayOAuth:
         self.resource_metadata_url = f"{self.issuer}/.well-known/oauth-protected-resource/mcp"
         self.clock = clock
         self._lock = _lock_state_dir(settings.state_dir)
-        self.store = TokenStore(settings.state_dir / "oauth.json", clock)
+        try:
+            self.store = TokenStore(settings.state_dir / "oauth.json", clock)
+        except BaseException:
+            self.close()
+            raise
         self._new_clients: OrderedDict[str, OAuthClientInformationFull] = OrderedDict()
         self._logins: OrderedDict[str, _SignIn] = OrderedDict()
         self._codes: OrderedDict[str, AuthorizationCode] = OrderedDict()
@@ -118,6 +123,12 @@ class GatewayOAuth:
             ),
             revocation_options=RevocationOptions(enabled=True),
         )
+
+    def close(self) -> None:
+        """Unlocks the state folder, at shutdown."""
+        if self._lock is not None:
+            os.close(self._lock)
+            self._lock = None
 
     # --- Clients ----------------------------------------------------------------------
 
@@ -291,10 +302,10 @@ class TokenStore:
             except ValidationError as error:
                 # Without the values: a client record may hold a secret.
                 problem = "; ".join(
-                    f"{'.'.join(map(str, item['loc'])) or 'file'}: {item['msg']}"
+                    f"{_where(item['loc'])}: {item['msg']}"
                     for item in error.errors(include_input=False, include_url=False)
                 )
-            if problem:
+            if problem is not None:
                 raise RuntimeError(
                     f"Can't read the OAuth state in {path} ({problem}). Deleting it signs the "
                     "connector out; then connect it again in claude.ai."
@@ -368,13 +379,17 @@ class TokenStore:
             file.flush()
             os.fsync(file.fileno())
         os.replace(temporary, self.path)
-        # The rename is only on disk once the folder is.
+        # The rename is only on disk once the folder is. Failing that isn't worth failing the
+        # request: the new tokens are in place, and the client would never get them.
         if os.name == "posix":
-            folder = os.open(self.path.parent, os.O_RDONLY)
             try:
-                os.fsync(folder)
-            finally:
-                os.close(folder)
+                folder = os.open(self.path.parent, os.O_RDONLY)
+                try:
+                    os.fsync(folder)
+                finally:
+                    os.close(folder)
+            except OSError as error:
+                log.warning("Saved %s but couldn't sync its folder: %s", self.path, error)
 
 
 class _TokenRecord(BaseModel):
@@ -403,10 +418,20 @@ class _State(BaseModel):
             uris = {str(uri) for uri in client.redirect_uris or ()}
             if not uris or not uris <= REDIRECT_URIS:
                 return f"clients.{client_id}: redirect_uris must be {', '.join(sorted(REDIRECT_URIS))}"
-        for key, record in self.tokens.items():
+        # Token keys stay out of the messages (see _where).
+        for record in self.tokens.values():
             if record.client_id not in self.clients:
-                return f"tokens.{key}: client {record.client_id!r} is not in clients"
+                return f"tokens: a token's client {record.client_id!r} is not in clients"
+            if SCOPE not in record.scopes:
+                return f"tokens: a token without the {SCOPE!r} scope"
         return None
+
+
+def _where(loc: tuple) -> str:
+    """A field's place in oauth.json, without the token keys: written by _save they are
+    hashes, but in a hand-edited file they could be the tokens themselves."""
+    parts = ["<token>" if (n, loc[0]) == (1, "tokens") else str(part) for n, part in enumerate(loc)]
+    return ".".join(part for part in parts if part != "[key]") or "file"
 
 
 def _lock_state_dir(state_dir: Path) -> int | None:
@@ -421,8 +446,10 @@ def _lock_state_dir(state_dir: Path) -> int | None:
     lock = os.open(state_dir / "oauth.lock", os.O_RDWR | os.O_CREAT, 0o600)
     try:
         fcntl.lockf(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-    except OSError:
+    except OSError as error:
         os.close(lock)
+        if error.errno not in (errno.EACCES, errno.EAGAIN):
+            raise
         raise RuntimeError(
             f"Another mcp-gateway process is using {state_dir}. Run one process only (no "
             "uvicorn --workers): sign-ins and wrong-passphrase counts are kept in its memory."

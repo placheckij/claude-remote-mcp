@@ -2,6 +2,7 @@
 client registration, /authorize, the sign-in page, then tokens on /mcp."""
 
 import base64
+import errno
 import hashlib
 import json
 import os
@@ -499,6 +500,7 @@ def test_a_valid_state_file_loads(tmp_path: Path) -> None:
         pytest.param(lambda state: state["tokens"][TOKEN_HASH].update(kind="id"), id="unknown token kind"),
         pytest.param(lambda state: state["tokens"][TOKEN_HASH].update(expires_at="soon"), id="expiry not a number"),
         pytest.param(lambda state: state["tokens"][TOKEN_HASH].update(scopes="agents"), id="scopes not a list"),
+        pytest.param(lambda state: state["tokens"][TOKEN_HASH].update(scopes=["other"]), id="token without the scope"),
         pytest.param(lambda state: state["tokens"][TOKEN_HASH].update(client_id="c2"), id="token for unknown client"),
         pytest.param(lambda state: state["tokens"].update(plain=state["tokens"].pop(TOKEN_HASH)), id="key not a hash"),
     ],
@@ -513,12 +515,14 @@ def test_a_malformed_state_file_stops_startup_with_the_fix(tmp_path: Path, chang
 def test_a_state_file_error_shows_no_values(tmp_path: Path) -> None:
     def change(state: dict) -> None:
         state["clients"]["c1"].update(client_secret=CLIENT_SECRET, redirect_uris=CLIENT_SECRET)
+        # A token written by hand where its hash belongs.
+        state["tokens"][STATIC_TOKEN] = state["tokens"].pop(TOKEN_HASH)
 
     (tmp_path / "oauth.json").write_text(json.dumps(state_file(change)))
     with pytest.raises(RuntimeError) as error:
         GatewayOAuth(settings(tmp_path))
-    assert "redirect_uris" in str(error.value)
-    assert CLIENT_SECRET not in str(error.value)
+    assert "clients.c1.redirect_uris" in str(error.value) and "tokens.<token>" in str(error.value)
+    assert CLIENT_SECRET not in str(error.value) and STATIC_TOKEN not in str(error.value)
 
 
 def test_a_leftover_temporary_file_does_not_loosen_the_mode(client: TestClient, tmp_path: Path) -> None:
@@ -531,6 +535,7 @@ def test_a_leftover_temporary_file_does_not_loosen_the_mode(client: TestClient, 
     assert not leftover.exists()
 
 
+@pytest.mark.skipif(os.name != "posix", reason="folders are synced on POSIX only")
 def test_saving_syncs_the_file_before_the_rename_and_the_folder_after(
     client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -551,6 +556,28 @@ def test_saving_syncs_the_file_before_the_rename_and_the_folder_after(
     assert steps == ["sync file", "rename", "sync folder"]
 
 
+@pytest.mark.skipif(os.name != "posix", reason="folders are synced on POSIX only")
+def test_a_folder_that_wont_sync_still_hands_out_the_new_tokens(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    # By then the new state is in place and the old refresh token gone: failing the request
+    # would sign the client out.
+    fsync = os.fsync
+
+    def failing_fsync(fd: int) -> None:
+        if stat.S_ISDIR(os.fstat(fd).st_mode):
+            raise OSError(5, "Input/output error")
+        fsync(fd)
+
+    client_id, tokens = connect(client)
+    monkeypatch.setattr(os, "fsync", failing_fsync)
+    with caplog.at_level("WARNING", logger="mcp_gateway.oauth"):
+        renewed = refresh(client, client_id, tokens["refresh_token"])
+    assert renewed.status_code == 200, renewed.text
+    assert list_tools(client, renewed.json()["access_token"]).status_code == 200
+    assert "couldn't sync its folder" in caplog.text
+
+
 HOLD_STATE = """
 import sys
 from pathlib import Path
@@ -563,13 +590,19 @@ sys.stdin.read()
 """
 
 
+def hold_state(state_dir: Path) -> subprocess.Popen:
+    """Another process with a gateway on `state_dir`; it ends when its stdin closes."""
+    return subprocess.Popen(
+        [sys.executable, "-c", HOLD_STATE, str(state_dir)],
+        stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+    )
+
+
+@pytest.mark.skipif(os.name != "posix", reason="no lock without fcntl")
 def test_a_second_process_cannot_use_the_same_state(tmp_path: Path) -> None:
     # Sign-ins in progress and wrong-passphrase counts live in one process's memory: a
     # second (uvicorn --workers, another instance) would lose sign-ins and multiply guesses.
-    holder = subprocess.Popen(
-        [sys.executable, "-c", HOLD_STATE, str(tmp_path)],
-        stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True,
-    )
+    holder = hold_state(tmp_path)
     try:
         assert holder.stdout.readline() == "started\n"
         with pytest.raises(RuntimeError, match="Another mcp-gateway process"):
@@ -577,7 +610,43 @@ def test_a_second_process_cannot_use_the_same_state(tmp_path: Path) -> None:
     finally:
         holder.communicate("")
     # Once it has exited, the state is free again.
-    GatewayOAuth(settings(tmp_path))
+    assert_state_is_free(tmp_path)
+
+
+def assert_state_is_free(state_dir: Path) -> None:
+    holder = hold_state(state_dir)
+    try:
+        assert holder.stdout.readline() == "started\n"
+    finally:
+        holder.communicate("")
+
+
+@pytest.mark.skipif(os.name != "posix", reason="no lock without fcntl")
+def test_the_state_is_unlocked_at_shutdown(tmp_path: Path, clock: Clock) -> None:
+    with TestClient(create_app(settings(tmp_path), bridge(), GatewayOAuth(settings(tmp_path), clock=clock))):
+        pass
+    assert_state_is_free(tmp_path)
+
+
+@pytest.mark.skipif(os.name != "posix", reason="no lock without fcntl")
+def test_the_state_is_unlocked_when_it_cant_be_read(tmp_path: Path) -> None:
+    (tmp_path / "oauth.json").write_text("{not json")
+    with pytest.raises(RuntimeError):
+        GatewayOAuth(settings(tmp_path))
+    (tmp_path / "oauth.json").unlink()
+    assert_state_is_free(tmp_path)
+
+
+@pytest.mark.skipif(os.name != "posix", reason="no lock without fcntl")
+def test_a_lock_that_fails_otherwise_is_not_blamed_on_another_process(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def no_locks(fd: int, operation: int) -> None:
+        raise OSError(errno.ENOLCK, "No locks available")
+
+    monkeypatch.setattr("mcp_gateway.oauth.fcntl.lockf", no_locks)
+    with pytest.raises(OSError, match="No locks available"):
+        GatewayOAuth(settings(tmp_path))
 
 
 # --- The static token -------------------------------------------------------------------

@@ -132,7 +132,7 @@ the connector is added, claude.ai:
 | Callback | only `https://claude.ai/api/mcp/auth_callback` can be registered, so a sign-in can't hand a code to anyone else. Claude Code's loopback callback isn't accepted |
 | Wrong passphrases | logged with the source address; a sign-in link dies after 5, and an address with 10 within 15 minutes is refused until they age out, so one stranger guessing doesn't lock you out. The address is Cloudflare's `CF-Connecting-IP` when the request comes from the local cloudflared, else the peer's; IPv6 counts by /64. Changing addresses doesn't buy more: 100 from all sources together stop every sign-in for those 15 minutes (tokens already issued keep working) |
 | Phishing | someone could send you a sign-in link they started. The code can only go to claude.ai, where it only completes the sign-in that claude.ai itself started (its `state`), and the page says to continue only while you are connecting in Claude |
-| Storage | `MCP_GATEWAY_STATE_DIR/oauth.json`: the clients that signed in and SHA-256 hashes of their tokens, never the tokens. A registration that never signs in is kept in memory only (at most 100). Written to a new temporary file, synced to disk and renamed over the old one, so a crash or power cut leaves either the old file or the new one. Checked whole at startup: a damaged file stops the gateway with a message naming the file and the bad fields |
+| Storage | `MCP_GATEWAY_STATE_DIR/oauth.json`: the clients that signed in and SHA-256 hashes of their tokens, never the tokens. A registration that never signs in is kept in memory only (at most 100). Written to a new temporary file, synced to disk and renamed over the old one, so a crash leaves either the old file or the new one; on Linux, so does a power cut. Checked whole at startup: a damaged file stops the gateway with a message naming the file and the bad fields, not their values |
 | Revocation | `/revoke` ends a token and its pair |
 | Restart | tokens survive it; a sign-in page or code that was open is lost (sign in again) |
 
@@ -147,7 +147,8 @@ that process's memory, so a second process would break sign-ins started in the f
 and allow each one its own guesses. The setup script's service runs one. When installing
 by hand, don't pass uvicorn `--workers` and don't start a second instance on the same
 `MCP_GATEWAY_STATE_DIR`: the running gateway locks the folder, and a second process
-there stops at startup with *Another mcp-gateway process is using …*. The lock can't
+there stops at startup with *Another mcp-gateway process is using …* (with `--workers`,
+uvicorn then stops all of them). The lock can't
 catch instances on separate hosts. Running more than one process would first need that
 state and the wrong-passphrase counts in a shared store with atomic updates.
 
