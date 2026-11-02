@@ -603,20 +603,23 @@ def test_a_refresh_that_cant_be_saved_keeps_the_old_tokens(
 
 
 @pytest.mark.parametrize("failing", ["fsync", "replace"])
-def test_a_revocation_that_cant_be_saved_changes_nothing(
+def test_a_revocation_that_cant_be_saved_still_revokes(
     client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failing: str
 ) -> None:
-    # What the gateway accepts stays what the file says, so a restart doesn't change it.
+    # A token revoked because it leaked must stop working, whatever the disk does.
     client_id, tokens = connect(client)
-    saved = (tmp_path / "oauth.json").read_text()
+    other_id, other = connect(client)
     with monkeypatch.context() as patch:
         patch.setattr(os, failing, full_disk)
         with pytest.raises(OSError, match="No space left"):
             client.post(
                 "/revoke", data={"token": tokens["refresh_token"], "client_id": client_id, "client_secret": ""}
             )
-    assert (tmp_path / "oauth.json").read_text() == saved
-    assert list_tools(client, tokens["access_token"]).status_code == 200
+    assert list_tools(client, tokens["access_token"]).status_code == 401
+    assert refresh(client, client_id, tokens["refresh_token"]).json()["error"] == "invalid_grant"
+    # The next save that succeeds writes the revocation down.
+    assert refresh(client, other_id, other["refresh_token"]).status_code == 200
+    assert hashlib.sha256(tokens["access_token"].encode()).hexdigest() not in (tmp_path / "oauth.json").read_text()
 
 
 HOLD_STATE = """

@@ -355,7 +355,14 @@ class TokenStore:
     def revoke(self, token: str) -> None:
         record = self.tokens.get(_hash(token))
         if record is not None:
-            self._save(self._without(record["grant"]), self.clients)
+            tokens = self._without(record["grant"])
+            try:
+                self._save(tokens, self.clients)
+            except BaseException:
+                # Unlike a refresh, a revocation must not fail open: the tokens stop working
+                # now, and the next save that succeeds writes that down.
+                self.tokens = tokens
+                raise
 
     def _without(self, grant: str) -> dict[str, dict]:
         """The tokens, but not those of `grant`."""
