@@ -9,8 +9,17 @@ The SDK's handlers check PKCE, code expiry, redirect URIs and which client owns 
 this module keeps the records. Tokens are stored as SHA-256 hashes in
 <state_dir>/oauth.json, so a copy of the file can't call the server, and a client is only
 written there once it has signed in: registering is open to anyone.
+
+oauth.json is read once, at startup, and everything else (new registrations, sign-ins in
+progress, codes, wrong-passphrase counts) lives in this process's memory, so the gateway
+must run as one process: a second one (uvicorn --workers, another instance on the same
+state) would refuse the first one's tokens, overwrite them on its next save, lose
+sign-ins halfway and multiply the guesses allowed. It holds a lock on the state folder to
+refuse a second process. Running more than one would need the tokens, that state and the
+counting in a shared store.
 """
 
+import errno
 import hashlib
 import hmac
 import html
@@ -24,6 +33,7 @@ from collections import OrderedDict, deque
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Annotated, Literal
 from urllib.parse import urlsplit
 
 from mcp.server.auth.provider import (
@@ -38,10 +48,16 @@ from mcp.server.auth.provider import (
 )
 from mcp.server.auth.settings import AuthSettings, ClientRegistrationOptions, RevocationOptions
 from mcp.shared.auth import OAuthClientInformationFull, OAuthToken
+from pydantic import BaseModel, ConfigDict, StringConstraints, ValidationError
 from starlette.requests import Request
 from starlette.responses import HTMLResponse, RedirectResponse, Response
 
-from mcp_gateway.config import Settings
+from mcp_gateway.config import Settings, StartupError
+
+try:
+    import fcntl
+except ImportError:  # Windows: no lock, one process is up to whoever runs it.
+    fcntl = None
 
 log = logging.getLogger(__name__)
 
@@ -85,7 +101,12 @@ class GatewayOAuth:
         self.resource = f"{self.issuer}/mcp"
         self.resource_metadata_url = f"{self.issuer}/.well-known/oauth-protected-resource/mcp"
         self.clock = clock
-        self.store = TokenStore(settings.state_dir / "oauth.json", clock)
+        self._lock = _lock_state_dir(settings.state_dir)
+        try:
+            self.store = TokenStore(settings.state_dir / "oauth.json", clock)
+        except BaseException:
+            self.close()
+            raise
         self._new_clients: OrderedDict[str, OAuthClientInformationFull] = OrderedDict()
         self._logins: OrderedDict[str, _SignIn] = OrderedDict()
         self._codes: OrderedDict[str, AuthorizationCode] = OrderedDict()
@@ -104,6 +125,12 @@ class GatewayOAuth:
             ),
             revocation_options=RevocationOptions(enabled=True),
         )
+
+    def close(self) -> None:
+        """Unlocks the state folder, at shutdown or when starting fails."""
+        if self._lock is not None:
+            os.close(self._lock)
+            self._lock = None
 
     # --- Clients ----------------------------------------------------------------------
 
@@ -269,17 +296,27 @@ class TokenStore:
         self.tokens: dict[str, dict] = {}
         if path.exists():
             try:
-                data = json.loads(path.read_text())
-                self.clients = {
-                    client_id: OAuthClientInformationFull.model_validate(client)
-                    for client_id, client in data["clients"].items()
-                }
-                self.tokens = data["tokens"]
-            except (OSError, ValueError, KeyError, TypeError) as error:
-                raise RuntimeError(
-                    f"Can't read the OAuth state in {path} ({error}). Deleting it signs the "
+                text = path.read_bytes()
+            except OSError as error:
+                # Not a reason to delete it: that would sign the connector out.
+                raise StartupError(f"Can't read {path} ({error.strerror}).{_advice(error)}") from None
+            # Checked whole here, so a bad record stops startup rather than a request later.
+            try:
+                state = _State.model_validate_json(text)
+                problem = state.inconsistency()
+            except ValidationError as error:
+                # Without the values: a client record may hold a secret.
+                problem = "; ".join(
+                    f"{_where(item['loc'])}: {item['msg']}"
+                    for item in error.errors(include_input=False, include_url=False)
+                )
+            if problem is not None:
+                raise StartupError(
+                    f"Can't read the OAuth state in {path} ({problem}). Deleting it signs the "
                     "connector out; then connect it again in claude.ai."
-                ) from None
+                )
+            self.clients = state.clients
+            self.tokens = {key: record.model_dump() for key, record in state.tokens.items()}
 
     def find(self, token: str, kind: str) -> dict | None:
         record = self.tokens.get(_hash(token))
@@ -338,11 +375,104 @@ class TokenStore:
             "tokens": self.tokens,
         }
         self.path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-        # Written beside it and renamed over it, so a crash never leaves half a file.
+        # Written beside it and renamed over it, so a crash never leaves half a file. A
+        # leftover temporary file is removed first: opening it would keep its old mode.
         temporary = self.path.with_name(f"{self.path.name}.tmp")
-        with os.fdopen(os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w") as file:
+        temporary.unlink(missing_ok=True)
+        with os.fdopen(os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "w") as file:
             json.dump(data, file)
+            file.flush()
+            os.fsync(file.fileno())
         os.replace(temporary, self.path)
+        # The rename is only on disk once the folder is. Failing that isn't worth failing the
+        # request: the new tokens are in place, and the client would never get them.
+        if os.name == "posix":
+            try:
+                folder = os.open(self.path.parent, os.O_RDONLY)
+                try:
+                    os.fsync(folder)
+                finally:
+                    os.close(folder)
+            except OSError as error:
+                log.warning("Saved %s but couldn't sync its folder: %s", self.path, error)
+
+
+class _TokenRecord(BaseModel):
+    model_config = ConfigDict(strict=True, extra="forbid")
+
+    kind: Literal["access", "refresh"]
+    client_id: str
+    grant: str
+    scopes: list[str]
+    expires_at: int
+
+
+class _State(BaseModel):
+    """oauth.json, as TokenStore._save writes it."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    clients: dict[str, OAuthClientInformationFull]
+    tokens: dict[Annotated[str, StringConstraints(pattern=r"^[0-9a-f]{64}$")], _TokenRecord]
+
+    def inconsistency(self) -> str | None:
+        for client_id, client in self.clients.items():
+            if client.client_id != client_id:
+                return f"clients.{client_id}: has client_id {client.client_id!r}"
+            # The same rule as registering.
+            uris = {str(uri) for uri in client.redirect_uris or ()}
+            if not uris or not uris <= REDIRECT_URIS:
+                return f"clients.{client_id}: redirect_uris must be {', '.join(sorted(REDIRECT_URIS))}"
+        # Token keys stay out of the messages (see _where).
+        for record in self.tokens.values():
+            if record.client_id not in self.clients:
+                return f"tokens: a token's client {record.client_id!r} is not in clients"
+            if SCOPE not in record.scopes:
+                return f"tokens: a token without the {SCOPE!r} scope"
+        return None
+
+
+def _where(loc: tuple) -> str:
+    """A field's place in oauth.json, without the token keys: written by _save they are
+    hashes, but in a hand-edited file they could be the tokens themselves."""
+    parts = ["<token>" if (n, loc[0]) == (1, "tokens") else str(part) for n, part in enumerate(loc)]
+    return ".".join(part for part in parts if part != "[key]") or "file"
+
+
+def _lock_state_dir(state_dir: Path) -> int | None:
+    """Locks the state folder for this process, or fails if another one has (see the top).
+
+    A POSIX lock is per process, so a restart within one process (as in the tests) can
+    take it again, and the system drops it when the process ends, however it ends.
+    """
+    path = state_dir / "oauth.lock"
+    try:
+        state_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+        if fcntl is None:
+            return None
+        lock = os.open(path, os.O_RDWR | os.O_CREAT, 0o600)
+    except OSError as error:
+        advice = _advice(error, otherwise=" MCP_GATEWAY_STATE_DIR must be a writable folder.")
+        raise StartupError(f"Can't open {path} ({error.strerror}).{advice}") from None
+    try:
+        fcntl.lockf(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError as error:
+        os.close(lock)
+        if error.errno not in (errno.EACCES, errno.EAGAIN):
+            raise StartupError(f"Can't lock {path} ({error.strerror}).") from None
+        raise StartupError(
+            f"Another mcp-gateway process is using {state_dir}. Run one process only (no "
+            "uvicorn --workers): each reads oauth.json only at startup and keeps sign-ins and "
+            "wrong-passphrase counts in its memory."
+        ) from None
+    return lock
+
+
+def _advice(error: OSError, otherwise: str = "") -> str:
+    # E.g. a file left owned by root after starting the gateway by hand as root.
+    if error.errno in (errno.EACCES, errno.EPERM):
+        return " The folder and its files must belong to the user mcp-gateway runs as."
+    return otherwise
 
 
 @dataclass

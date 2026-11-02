@@ -7,14 +7,14 @@ from starlette.testclient import TestClient
 
 from mcp_gateway.bridge import AgentBridge
 from mcp_gateway.config import Settings
-from mcp_gateway.server import create_app
+from mcp_gateway.server import create_app, main
 
 TOKEN = "g" * 32
 HOST = "mcp.example.com"
 SETTINGS = Settings(
     token=TOKEN,
     oauth_passphrase="p" * 24,
-    # Nothing here signs in, so nothing is written; a write would fail loudly.
+    # Replaced with a test's own folder by app(): the gateway locks it at startup.
     state_dir=Path("/nonexistent/mcp-gateway-state"),
     bridge_url="http://agents.lan:8765",
     bridge_token="b" * 32,
@@ -57,18 +57,22 @@ class FakeAgentBridge:
         return response
 
 
+def app(bridge: AgentBridge, state_dir: Path):
+    return create_app(SETTINGS.model_copy(update={"state_dir": state_dir}), bridge)
+
+
 @pytest.fixture
 def fake() -> FakeAgentBridge:
     return FakeAgentBridge({})
 
 
 @pytest.fixture
-def client(fake: FakeAgentBridge):
+def client(fake: FakeAgentBridge, tmp_path: Path):
     bridge = AgentBridge(
         httpx.AsyncClient(base_url=SETTINGS.bridge_url, transport=httpx.MockTransport(fake),
                           headers={"Authorization": f"Bearer {'b' * 32}"})
     )
-    with TestClient(create_app(SETTINGS, bridge), base_url=f"https://{HOST}") as test_client:
+    with TestClient(app(bridge, tmp_path), base_url=f"https://{HOST}") as test_client:
         yield test_client
 
 
@@ -606,9 +610,36 @@ def test_logs_a_refused_origin_as_an_error(client: TestClient, caplog: pytest.Lo
     assert record.getMessage().startswith("403 POST /mcp: Origin 'https://evil.example' is not allowed")
 
 
-def test_closes_the_agent_bridge_client_on_shutdown() -> None:
+def test_a_startup_error_stops_every_uvicorn_worker(
+    caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # uvicorn --workers starts a worker again after any other exit code, forever.
+    monkeypatch.chdir(tmp_path)  # away from any .env, which main() would read
+    with pytest.raises(SystemExit) as exit:
+        main()
+    assert exit.value.code == 3
+    assert "Invalid settings" in caplog.text
+
+
+def test_an_unexpected_startup_error_stops_too_and_keeps_its_traceback(
+    caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def broken(settings: Settings) -> None:
+        raise ValueError("something unforeseen")
+
+    monkeypatch.setattr(Settings, "from_env", classmethod(lambda cls: SETTINGS))
+    monkeypatch.setattr("mcp_gateway.server.create_app", broken)
+    with pytest.raises(SystemExit) as exit:
+        main()
+    assert exit.value.code == 3
+    (record,) = [record for record in caplog.records if record.name == "mcp_gateway.server"]
+    assert record.getMessage() == "mcp-gateway could not start"
+    assert record.exc_info[0] is ValueError
+
+
+def test_closes_the_agent_bridge_client_on_shutdown(tmp_path: Path) -> None:
     http = httpx.AsyncClient(base_url=SETTINGS.bridge_url, transport=httpx.MockTransport(FakeAgentBridge({})))
-    with TestClient(create_app(SETTINGS, AgentBridge(http)), base_url=f"https://{HOST}"):
+    with TestClient(app(AgentBridge(http), tmp_path), base_url=f"https://{HOST}"):
         assert not http.is_closed
     assert http.is_closed
 
@@ -687,12 +718,12 @@ def test_a_sleeping_agent_host_is_reported_within_seconds(client: TestClient, fa
     assert AgentBridge.connect(SETTINGS.bridge_url, "b" * 32).client.timeout.connect <= 5
 
 
-def test_a_connect_timeout_says_the_host_may_be_asleep() -> None:
+def test_a_connect_timeout_says_the_host_may_be_asleep(tmp_path: Path) -> None:
     def asleep(request: httpx.Request) -> httpx.Response:
         raise httpx.ConnectTimeout("timed out", request=request)
 
     bridge = AgentBridge(httpx.AsyncClient(base_url=SETTINGS.bridge_url, transport=httpx.MockTransport(asleep)))
-    with TestClient(create_app(SETTINGS, bridge), base_url=f"https://{HOST}") as test_client:
+    with TestClient(app(bridge, tmp_path), base_url=f"https://{HOST}") as test_client:
         is_error, text = call_tool(test_client, "list_agents")
     assert is_error
     assert text.endswith("The agent host is not reachable (ConnectTimeout). It may be asleep or offline.")

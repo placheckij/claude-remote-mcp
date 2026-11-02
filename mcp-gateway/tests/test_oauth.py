@@ -2,9 +2,14 @@
 client registration, /authorize, the sign-in page, then tokens on /mcp."""
 
 import base64
+import errno
 import hashlib
 import json
+import os
+import select
 import stat
+import subprocess
+import sys
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
@@ -13,7 +18,7 @@ import pytest
 from starlette.testclient import TestClient
 
 from mcp_gateway.bridge import AgentBridge
-from mcp_gateway.config import Settings
+from mcp_gateway.config import Settings, StartupError
 from mcp_gateway.oauth import (
     ACCESS_TOKEN_TTL_S,
     FAILURE_WINDOW_S,
@@ -454,6 +459,234 @@ def test_an_unreadable_state_file_stops_startup_with_the_fix(tmp_path: Path) -> 
     (tmp_path / "oauth.json").write_text("{not json")
     with pytest.raises(RuntimeError, match="Deleting it signs the connector out"):
         GatewayOAuth(settings(tmp_path))
+
+
+# --- The state file ---------------------------------------------------------------------
+
+TOKEN_HASH = "a" * 64
+CLIENT_SECRET = "hunter2-hunter2-hunter2"
+
+
+def state_file(change=lambda state: None) -> dict:
+    """A valid oauth.json, then `change` applied to it."""
+    state = {
+        "clients": {"c1": {"client_id": "c1", "redirect_uris": [CALLBACK], "token_endpoint_auth_method": "none"}},
+        "tokens": {
+            TOKEN_HASH: {"kind": "refresh", "client_id": "c1", "grant": "g1", "scopes": ["agents"],
+                         "expires_at": 1_900_000_000},
+        },
+    }
+    change(state)
+    return state
+
+
+def test_a_valid_state_file_loads(tmp_path: Path) -> None:
+    (tmp_path / "oauth.json").write_text(json.dumps(state_file()))
+    store = GatewayOAuth(settings(tmp_path)).store
+    assert set(store.clients) == {"c1"}
+    assert store.tokens[TOKEN_HASH]["grant"] == "g1"
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        pytest.param(lambda state: state.pop("tokens"), id="no tokens"),
+        pytest.param(lambda state: state.update(extra=1), id="unknown key"),
+        pytest.param(lambda state: state.update(clients=[]), id="clients not an object"),
+        pytest.param(lambda state: state["clients"]["c1"].pop("redirect_uris"), id="client without redirect uris"),
+        pytest.param(lambda state: state["clients"]["c1"].update(redirect_uris=["https://evil.example/cb"]),
+                     id="client with another redirect uri"),
+        pytest.param(lambda state: state["clients"]["c1"].update(client_id="c2"), id="client under another id"),
+        pytest.param(lambda state: state["tokens"][TOKEN_HASH].pop("grant"), id="token without grant"),
+        pytest.param(lambda state: state["tokens"][TOKEN_HASH].update(kind="id"), id="unknown token kind"),
+        pytest.param(lambda state: state["tokens"][TOKEN_HASH].update(expires_at="soon"), id="expiry not a number"),
+        pytest.param(lambda state: state["tokens"][TOKEN_HASH].update(scopes="agents"), id="scopes not a list"),
+        pytest.param(lambda state: state["tokens"][TOKEN_HASH].update(scopes=["other"]), id="token without the scope"),
+        pytest.param(lambda state: state["tokens"][TOKEN_HASH].update(client_id="c2"), id="token for unknown client"),
+        pytest.param(lambda state: state["tokens"].update(plain=state["tokens"].pop(TOKEN_HASH)), id="key not a hash"),
+    ],
+)
+def test_a_malformed_state_file_stops_startup_with_the_fix(tmp_path: Path, change) -> None:
+    # Caught at startup rather than as a failed request later.
+    (tmp_path / "oauth.json").write_text(json.dumps(state_file(change)))
+    with pytest.raises(RuntimeError, match=r"oauth\.json .*Deleting it signs the connector out"):
+        GatewayOAuth(settings(tmp_path))
+
+
+def test_a_state_file_error_shows_no_values(tmp_path: Path) -> None:
+    def change(state: dict) -> None:
+        state["clients"]["c1"].update(client_secret=CLIENT_SECRET, redirect_uris=CLIENT_SECRET)
+        # A token written by hand where its hash belongs.
+        state["tokens"][STATIC_TOKEN] = state["tokens"].pop(TOKEN_HASH)
+
+    (tmp_path / "oauth.json").write_text(json.dumps(state_file(change)))
+    with pytest.raises(RuntimeError) as error:
+        GatewayOAuth(settings(tmp_path))
+    assert "clients.c1.redirect_uris" in str(error.value) and "tokens.<token>" in str(error.value)
+    assert CLIENT_SECRET not in str(error.value) and STATIC_TOKEN not in str(error.value)
+
+
+def test_a_leftover_temporary_file_does_not_loosen_the_mode(client: TestClient, tmp_path: Path) -> None:
+    # Left by a crash, or made by hand with a looser mode.
+    leftover = tmp_path / "oauth.json.tmp"
+    leftover.write_text("{}")
+    leftover.chmod(0o644)
+    connect(client)
+    assert stat.S_IMODE((tmp_path / "oauth.json").stat().st_mode) == 0o600
+    assert not leftover.exists()
+
+
+@pytest.mark.skipif(os.name != "posix", reason="folders are synced on POSIX only")
+def test_saving_syncs_the_file_before_the_rename_and_the_folder_after(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    steps = []
+    fsync, replace = os.fsync, os.replace
+
+    def recording_fsync(fd: int) -> None:
+        steps.append("sync folder" if stat.S_ISDIR(os.fstat(fd).st_mode) else "sync file")
+        fsync(fd)
+
+    def recording_replace(source, destination) -> None:
+        steps.append("rename")
+        replace(source, destination)
+
+    monkeypatch.setattr(os, "fsync", recording_fsync)
+    monkeypatch.setattr(os, "replace", recording_replace)
+    connect(client)
+    assert steps == ["sync file", "rename", "sync folder"]
+
+
+@pytest.mark.skipif(os.name != "posix", reason="folders are synced on POSIX only")
+def test_a_folder_that_wont_sync_still_hands_out_the_new_tokens(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    # By then the new state is in place and the old refresh token gone: failing the request
+    # would sign the client out.
+    fsync = os.fsync
+
+    def failing_fsync(fd: int) -> None:
+        if stat.S_ISDIR(os.fstat(fd).st_mode):
+            raise OSError(5, "Input/output error")
+        fsync(fd)
+
+    client_id, tokens = connect(client)
+    monkeypatch.setattr(os, "fsync", failing_fsync)
+    with caplog.at_level("WARNING", logger="mcp_gateway.oauth"):
+        renewed = refresh(client, client_id, tokens["refresh_token"])
+    assert renewed.status_code == 200, renewed.text
+    assert list_tools(client, renewed.json()["access_token"]).status_code == 200
+    assert "couldn't sync its folder" in caplog.text
+
+
+HOLD_STATE = """
+import sys
+from pathlib import Path
+from mcp_gateway.config import Settings
+from mcp_gateway.oauth import GatewayOAuth
+GatewayOAuth(Settings(oauth_passphrase="p" * 16, state_dir=Path(sys.argv[1]), bridge_url="http://bridge",
+                      bridge_token="b", public_host="host", projects_root="/projects"))
+print("started", flush=True)
+sys.stdin.read()
+"""
+
+
+def hold_state(state_dir: Path) -> subprocess.Popen:
+    """Another process with a gateway on `state_dir`; it ends when its stdin closes."""
+    return subprocess.Popen(
+        [sys.executable, "-c", HOLD_STATE, str(state_dir)],
+        stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+    )
+
+
+def started(holder: subprocess.Popen) -> bool:
+    """Whether the other process got the state, waiting at most 30 s rather than forever."""
+    ready, _, _ = select.select([holder.stdout], [], [], 30)
+    return bool(ready) and holder.stdout.readline() == "started\n"
+
+
+def end(holder: subprocess.Popen) -> None:
+    try:
+        holder.communicate("", timeout=30)
+    except subprocess.TimeoutExpired:
+        holder.kill()
+        holder.communicate()
+
+
+@pytest.mark.skipif(os.name != "posix", reason="no lock without fcntl")
+def test_a_second_process_cannot_use_the_same_state(tmp_path: Path) -> None:
+    # oauth.json is read once and sign-ins and wrong-passphrase counts live in one process's
+    # memory: a second (uvicorn --workers, another instance) would refuse the first one's
+    # tokens, overwrite them, lose sign-ins and multiply guesses.
+    holder = hold_state(tmp_path)
+    try:
+        assert started(holder)
+        with pytest.raises(RuntimeError, match="Another mcp-gateway process"):
+            GatewayOAuth(settings(tmp_path))
+    finally:
+        end(holder)
+    # Once it has exited, the state is free again.
+    assert_state_is_free(tmp_path)
+
+
+def assert_state_is_free(state_dir: Path) -> None:
+    holder = hold_state(state_dir)
+    try:
+        assert started(holder)
+    finally:
+        end(holder)
+
+
+@pytest.mark.skipif(os.name != "posix", reason="no lock without fcntl")
+def test_the_state_is_unlocked_at_shutdown(tmp_path: Path, clock: Clock) -> None:
+    with TestClient(create_app(settings(tmp_path), bridge(), GatewayOAuth(settings(tmp_path), clock=clock))):
+        pass
+    assert_state_is_free(tmp_path)
+
+
+@pytest.mark.skipif(os.name != "posix", reason="no lock without fcntl")
+def test_the_state_is_unlocked_when_it_cant_be_read(tmp_path: Path) -> None:
+    (tmp_path / "oauth.json").write_text("{not json")
+    with pytest.raises(RuntimeError):
+        GatewayOAuth(settings(tmp_path))
+    (tmp_path / "oauth.json").unlink()
+    assert_state_is_free(tmp_path)
+
+
+@pytest.mark.skipif(os.name != "posix", reason="no lock without fcntl")
+def test_a_lock_that_fails_otherwise_is_not_blamed_on_another_process(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def no_locks(fd: int, operation: int) -> None:
+        raise OSError(errno.ENOLCK, "No locks available")
+
+    monkeypatch.setattr("mcp_gateway.oauth.fcntl.lockf", no_locks)
+    with pytest.raises(StartupError, match=r"Can't lock .*oauth\.lock .*No locks available"):
+        GatewayOAuth(settings(tmp_path))
+
+
+@pytest.mark.skipif(os.name != "posix" or os.geteuid() == 0, reason="needs file modes that bind the owner")
+def test_a_lock_file_the_gateway_cant_open_says_whose_it_must_be(tmp_path: Path) -> None:
+    # As after starting the gateway by hand as root: the service's user can't open it.
+    (tmp_path / "oauth.lock").touch(mode=0o400)
+    with pytest.raises(StartupError, match="must belong to the user mcp-gateway runs as"):
+        GatewayOAuth(settings(tmp_path))
+
+
+@pytest.mark.skipif(os.name != "posix" or os.geteuid() == 0, reason="needs file modes that bind the owner")
+def test_a_state_file_the_gateway_cant_read_is_not_to_be_deleted(tmp_path: Path) -> None:
+    # Deleting it would sign the connector out; the fix is who owns it.
+    (tmp_path / "oauth.json").write_text(json.dumps(state_file()))
+    (tmp_path / "oauth.json").chmod(0)
+    with pytest.raises(StartupError, match="must belong to the user mcp-gateway runs as") as error:
+        GatewayOAuth(settings(tmp_path))
+    assert "Deleting" not in str(error.value)
+
+
+def test_a_state_dir_that_cant_be_made_says_so(tmp_path: Path) -> None:
+    (tmp_path / "file").touch()
+    with pytest.raises(StartupError, match="MCP_GATEWAY_STATE_DIR must be a writable folder"):
+        GatewayOAuth(settings(tmp_path / "file" / "state"))
 
 
 # --- The static token -------------------------------------------------------------------

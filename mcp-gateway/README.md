@@ -71,7 +71,7 @@ unset. An invalid setting stops startup with one line per problem, naming the va
 | Variable | |
 |---|---|
 | `MCP_GATEWAY_OAUTH_PASSPHRASE` | required, 16+ chars; typed on the [sign-in page](#oauth-sign-in) when the connector is added |
-| `MCP_GATEWAY_STATE_DIR` | required; where the signed-in clients and token hashes are kept (`oauth.json`, mode 600), e.g. `/var/lib/mcp-gateway` |
+| `MCP_GATEWAY_STATE_DIR` | required; where the signed-in clients and token hashes are kept (`oauth.json`, mode 600), e.g. `/var/lib/mcp-gateway`. The running gateway locks it (`oauth.lock`); see [One process](#one-process) |
 | `MCP_GATEWAY_TOKEN` | optional, 32+ chars; the static token from before OAuth, still accepted as `Authorization: Bearer …` while set. Leave it unset unless a connector added with request headers still uses it |
 | `MCP_GATEWAY_PUBLIC_HOST` | required; the tunnel hostname, e.g. `mcp.example.com` (requests with any other `Host` are refused). The OAuth issuer is `https://<host>` and the connector URL `https://<host>/mcp` |
 | `MCP_GATEWAY_BRIDGE_URL` | required, e.g. `http://192.168.1.20:8765` |
@@ -132,12 +132,30 @@ the connector is added, claude.ai:
 | Callback | only `https://claude.ai/api/mcp/auth_callback` can be registered, so a sign-in can't hand a code to anyone else. Claude Code's loopback callback isn't accepted |
 | Wrong passphrases | logged with the source address; a sign-in link dies after 5, and an address with 10 within 15 minutes is refused until they age out, so one stranger guessing doesn't lock you out. The address is Cloudflare's `CF-Connecting-IP` when the request comes from the local cloudflared, else the peer's; IPv6 counts by /64. Changing addresses doesn't buy more: 100 from all sources together stop every sign-in for those 15 minutes (tokens already issued keep working) |
 | Phishing | someone could send you a sign-in link they started. The code can only go to claude.ai, where it only completes the sign-in that claude.ai itself started (its `state`), and the page says to continue only while you are connecting in Claude |
-| Storage | `MCP_GATEWAY_STATE_DIR/oauth.json`: the clients that signed in and SHA-256 hashes of their tokens, never the tokens. A registration that never signs in is kept in memory only (at most 100) |
+| Storage | `MCP_GATEWAY_STATE_DIR/oauth.json`: the clients that signed in and SHA-256 hashes of their tokens, never the tokens. A registration that never signs in is kept in memory only (at most 100). Written to a new temporary file, synced to disk and renamed over the old one, so a crash leaves either the old file or the new one; on Linux, so does a power cut. Checked whole at startup: a damaged file stops the gateway with a message naming the file, the bad fields and the client ids involved (not secret), never field values or token hashes |
 | Revocation | `/revoke` ends a token and its pair |
 | Restart | tokens survive it; a sign-in page or code that was open is lost (sign in again) |
 
 To sign every connector out, stop the service, delete `oauth.json` and start it again.
 Changing the passphrase only affects the next sign-in.
+
+### One process
+
+mcp-gateway must run as a single process. It reads `oauth.json` once, at startup, and
+keeps registrations that haven't signed in yet, sign-ins in progress, authorization
+codes and the wrong-passphrase counts in memory. A second process would refuse the
+tokens the first one issued, overwrite the first one's tokens in `oauth.json` on its
+next save, break sign-ins started in the first, and allow each one its own guesses.
+
+The setup script's service runs one. When installing by hand, don't pass uvicorn
+`--workers` and don't start a second instance on the same `MCP_GATEWAY_STATE_DIR`: the
+running gateway locks the folder, and a second process there stops at startup with
+*Another mcp-gateway process is using …*. With `--workers`, uvicorn then stops all of
+them and exits with status 0, so a service manager sees a clean stop, not a failure
+(systemd's `Restart=on-failure` doesn't restart it); the message is in the log. The lock
+can't catch instances on separate hosts. Running more than one process would first need
+the tokens, that state and the wrong-passphrase counts in a shared store with atomic
+updates.
 
 ## Deploy with the setup script
 
@@ -223,7 +241,7 @@ the tunnel checks fail, try again shortly:
 |---|---|
 | `/opt/claude-remote-mcp/` | the checkout's committed files (`HEAD`; no untracked or uncommitted changes) and their `.venv`, all owned by root, so neither the service nor the checkout's owner can change the code it runs |
 | `/etc/mcp-gateway/env` | configuration, passphrase and tokens (`root:mcp-gateway`, mode 640) |
-| `/var/lib/mcp-gateway/` | `oauth.json`: signed-in clients and token hashes (systemd `StateDirectory`, owned by `mcp-gateway`, mode 700) |
+| `/var/lib/mcp-gateway/` | `oauth.json`: signed-in clients and token hashes, and `oauth.lock` (systemd `StateDirectory`, owned by `mcp-gateway`, mode 700) |
 | `/etc/systemd/system/mcp-gateway.service` | runs as the `mcp-gateway` system user on `127.0.0.1:8766`, sandboxed |
 | `/etc/cloudflared/cert.pem` | Cloudflare account cert from `tunnel login`; only needed to manage tunnels, root-only |
 | `/etc/cloudflared/claude-remote.json` | the tunnel's credentials (owned by the `cloudflared` user) |
@@ -334,7 +352,8 @@ reverse proxy:
    uv run --frozen --no-dev --package mcp-gateway \
      uvicorn mcp_gateway.server:main --factory --host 127.0.0.1 --port 8766 --no-server-header
    ```
-   Keep it running with your system's service manager (systemd, launchd, NSSM, …).
+   Keep it running with your system's service manager (systemd, launchd, NSSM, …), as
+   [one process](#one-process): no `--workers`. On Windows nothing stops a second one.
 3. Publish over HTTPS at `MCP_GATEWAY_PUBLIC_HOST` only `/mcp` and the OAuth paths:
    `/authorize`, `/login`, `/token`, `/register`, `/revoke`,
    `/.well-known/oauth-authorization-server` and
