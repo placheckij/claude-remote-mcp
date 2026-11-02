@@ -596,6 +596,8 @@ def test_a_refresh_that_cant_be_saved_keeps_the_old_tokens(
         with pytest.raises(OSError, match="No space left"):
             refresh(client, client_id, tokens["refresh_token"])
     assert (tmp_path / "oauth.json").read_text() == saved
+    # Not left taking up space on a full disk.
+    assert not (tmp_path / "oauth.json.tmp").exists()
     assert list_tools(client, tokens["access_token"]).status_code == 200
     renewed = refresh(client, client_id, tokens["refresh_token"])
     assert renewed.status_code == 200, renewed.text
@@ -617,9 +619,49 @@ def test_a_revocation_that_cant_be_saved_still_revokes(
             )
     assert list_tools(client, tokens["access_token"]).status_code == 401
     assert refresh(client, client_id, tokens["refresh_token"]).json()["error"] == "invalid_grant"
-    # The next save that succeeds writes the revocation down.
+    # The next save that succeeds writes the state down again, without the revoked grant.
     assert refresh(client, other_id, other["refresh_token"]).status_code == 200
     assert hashlib.sha256(tokens["access_token"].encode()).hexdigest() not in (tmp_path / "oauth.json").read_text()
+
+
+def test_a_revocation_that_cant_be_saved_survives_a_restart(
+    make_client, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    # The file still lists the revoked tokens, so it goes: after a restart every client
+    # signs in again, rather than the revoked tokens working again.
+    client = make_client()
+    client_id, tokens = connect(client)
+    with monkeypatch.context() as patch, caplog.at_level("WARNING", logger="mcp_gateway.oauth"):
+        patch.setattr(os, "replace", full_disk)
+        with pytest.raises(OSError, match="No space left"):
+            client.post(
+                "/revoke", data={"token": tokens["refresh_token"], "client_id": client_id, "client_secret": ""}
+            )
+    assert not (tmp_path / "oauth.json").exists()
+    assert "every client signs in again" in caplog.text
+    restarted = make_client()
+    assert list_tools(restarted, tokens["access_token"]).status_code == 401
+    # The client went with the file.
+    assert refresh(restarted, client_id, tokens["refresh_token"]).json()["error"] == "invalid_client"
+
+
+def test_a_revocation_that_cant_be_saved_or_deleted_says_what_to_do(
+    client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    def read_only(*args) -> None:
+        raise OSError(errno.EROFS, "Read-only file system")
+
+    client_id, tokens = connect(client)
+    with monkeypatch.context() as patch, caplog.at_level("ERROR", logger="mcp_gateway.oauth"):
+        patch.setattr(os, "replace", read_only)
+        patch.setattr(os, "unlink", read_only)
+        with pytest.raises(OSError, match="Read-only"):
+            client.post(
+                "/revoke", data={"token": tokens["refresh_token"], "client_id": client_id, "client_secret": ""}
+            )
+    assert (tmp_path / "oauth.json").exists()
+    assert "delete it by hand" in caplog.text
+    assert list_tools(client, tokens["access_token"]).status_code == 401
 
 
 HOLD_STATE = """
