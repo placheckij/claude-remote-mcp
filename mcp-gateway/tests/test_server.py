@@ -7,7 +7,7 @@ from starlette.testclient import TestClient
 
 from mcp_gateway.bridge import AgentBridge
 from mcp_gateway.config import Settings
-from mcp_gateway.server import create_app
+from mcp_gateway.server import create_app, main
 
 TOKEN = "g" * 32
 HOST = "mcp.example.com"
@@ -608,6 +608,14 @@ def test_logs_a_refused_origin_as_an_error(client: TestClient, caplog: pytest.Lo
     (record,) = [record for record in caplog.records if record.name.startswith("mcp_gateway")]
     assert record.levelname == "ERROR"
     assert record.getMessage().startswith("403 POST /mcp: Origin 'https://evil.example' is not allowed")
+
+
+def test_a_startup_error_stops_every_uvicorn_worker(caplog: pytest.LogCaptureFixture) -> None:
+    # uvicorn --workers starts a worker again after any other exit code, forever.
+    with pytest.raises(SystemExit) as exit:
+        main()
+    assert exit.value.code == 3
+    assert "Invalid settings" in caplog.text
 
 
 def test_closes_the_agent_bridge_client_on_shutdown(tmp_path: Path) -> None:
