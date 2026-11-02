@@ -1,4 +1,6 @@
 import json
+import logging
+import sys
 from pathlib import Path
 
 import httpx
@@ -7,7 +9,7 @@ from starlette.testclient import TestClient
 
 from mcp_gateway.bridge import AgentBridge
 from mcp_gateway.config import Settings
-from mcp_gateway.server import create_app, main
+from mcp_gateway.server import LevelFormatter, create_app, main
 
 TOKEN = "g" * 32
 HOST = "mcp.example.com"
@@ -635,6 +637,29 @@ def test_an_unexpected_startup_error_stops_too_and_keeps_its_traceback(
     (record,) = [record for record in caplog.records if record.name == "mcp_gateway.server"]
     assert record.getMessage() == "mcp-gateway could not start"
     assert record.exc_info[0] is ValueError
+
+
+def log_record(level: int, message: str, exc_info=None) -> logging.LogRecord:
+    return logging.LogRecord("mcp_gateway.oauth", level, __file__, 1, message, (), exc_info)
+
+
+def test_log_lines_say_their_level() -> None:
+    # The MCP SDK's own setup would print the bare message: a warning and an error alike.
+    assert LevelFormatter(journald=False).format(log_record(logging.WARNING, "Saved it")) == "WARNING:  Saved it"
+    assert LevelFormatter(journald=False).format(log_record(logging.ERROR, "Lost it")) == "ERROR:    Lost it"
+
+
+def test_under_systemd_every_line_carries_the_journal_priority() -> None:
+    # journald files each line by its own prefix, so `journalctl -p err` finds errors.
+    try:
+        raise ValueError("boom")
+    except ValueError:
+        record = log_record(logging.ERROR, "mcp-gateway could not start", sys.exc_info())
+    lines = LevelFormatter(journald=True).format(record).splitlines()
+    assert lines[0] == "<3>ERROR:    mcp-gateway could not start"
+    assert all(line.startswith("<3>") for line in lines)
+    assert lines[-1] == "<3>ValueError: boom"
+    assert LevelFormatter(journald=True).format(log_record(logging.WARNING, "Saved it")) == "<4>WARNING:  Saved it"
 
 
 def test_closes_the_agent_bridge_client_on_shutdown(tmp_path: Path) -> None:

@@ -299,6 +299,18 @@ class TokenStore:
         # A revocation that a restart or power cut could still undo: until a save is fully
         # on disk, any save that isn't is an error, not just a warning.
         self.revocation_at_risk = False
+        # The last process's final save may not be on disk yet, and nothing here says
+        # whether it was a revocation: if the folder won't sync now, assume it was.
+        if path.parent.exists():
+            try:
+                self._sync_folder()
+            except OSError as error:
+                self.revocation_at_risk = True
+                log.warning(
+                    "Couldn't sync %s at startup (%s): until a save is fully on disk, any that "
+                    "isn't is logged as an error.",
+                    path.parent, error,
+                )
         if path.exists():
             try:
                 text = path.read_bytes()
@@ -436,13 +448,15 @@ class TokenStore:
             self.path.unlink(missing_ok=True)
         except OSError as error:
             # Most likely the disk went read-only; nothing here can make the revocation stick.
+            # Stopping now would only lose the copy in memory, so the advice is to wait.
             self.revocation_at_risk = True
             log.error(
-                "Couldn't save a revocation in %s or delete it (%s): if mcp-gateway restarts "
-                "before a later save goes through, the revoked tokens work again, and every "
-                "save after that keeps them. Check the disk. If it restarted before that, or "
-                "to be sure, stop mcp-gateway, delete the file (every client signs in again) "
-                "and start it.",
+                "Couldn't save a revocation in %s or delete it (%s), most likely because the "
+                "disk is read-only: the revocation holds only while this process runs, and "
+                "after a restart the revoked tokens work again. Don't stop or restart "
+                "mcp-gateway while the disk can't be written. Once it can, stop mcp-gateway, "
+                "delete the file (every client signs in again) and start it; do the same if it "
+                "restarted in the meantime.",
                 self.path, error,
             )
             return
@@ -464,10 +478,11 @@ class TokenStore:
     def _power_cut_could_undo(self, what: str, error: OSError) -> None:
         self.revocation_at_risk = True
         log.error(
-            "%s (%s), so a power cut could undo a revocation. If the host loses power before a "
-            "later save goes through without this error, the revoked tokens work again after "
-            "the restart, and every save after that keeps them: then stop mcp-gateway, delete "
-            "%s (every client signs in again) and start it. Check the disk.",
+            "%s (%s), so a power cut could undo a revocation. Until a save is fully on disk, "
+            "each one that isn't logs this error again, also after a restart. If the host "
+            "loses power before then, the revoked tokens work again after the restart, and "
+            "every save after that keeps them: then stop mcp-gateway, delete %s (every client "
+            "signs in again) and start it. Check the disk.",
             what, error, self.path,
         )
 

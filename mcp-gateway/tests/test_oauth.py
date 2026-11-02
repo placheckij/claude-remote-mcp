@@ -559,6 +559,10 @@ def test_saving_syncs_the_file_before_the_rename_and_the_folder_after(
     assert steps == ["sync file", "rename", "sync folder"]
 
 
+# A client as claude.ai registers it, for tests on TokenStore itself.
+CLAUDE = OAuthClientInformationFull(client_id="c1", redirect_uris=[CALLBACK], token_endpoint_auth_method="none")
+
+
 def logged(caplog: pytest.LogCaptureFixture, level: str, text: str) -> bool:
     return any(record.levelname == level and text in record.getMessage() for record in caplog.records)
 
@@ -644,7 +648,10 @@ def test_a_refresh_that_cant_be_saved_keeps_the_old_tokens(
     ("failing", "level", "message"),
     [
         # With every fsync failing, the deletion's folder sync fails too: said, not claimed safe.
-        ("fsync", "ERROR", "so deleted it, but couldn't sync its folder"),
+        pytest.param(
+            "fsync", "ERROR", "so deleted it, but couldn't sync its folder",
+            marks=pytest.mark.skipif(os.name != "posix", reason="folders are synced on POSIX only"),
+        ),
         ("replace", "WARNING", "so deleted it: a restart before the next successful save signs every client out"),
     ],
 )
@@ -684,8 +691,7 @@ def test_a_revocation_interrupted_while_saving_still_revokes(
         raise Interrupted
 
     store = TokenStore(tmp_path / "oauth.json", clock)
-    claude = OAuthClientInformationFull(client_id="c1", redirect_uris=[CALLBACK], token_endpoint_auth_method="none")
-    tokens = store.issue(claude, ["agents"])
+    tokens = store.issue(CLAUDE, ["agents"])
     with monkeypatch.context() as patch:
         patch.setattr(os, "replace", interrupted)
         with pytest.raises(Interrupted):
@@ -723,6 +729,8 @@ def test_a_revocation_that_cant_be_saved_or_deleted_says_what_to_do(
             revoke(client, client_id, tokens["refresh_token"])
     assert len(renames) == 1
     assert (tmp_path / "oauth.json").exists()
+    # Stopping while the disk is read-only would lose the only copy of the revocation.
+    assert logged(caplog, "ERROR", "Don't stop or restart mcp-gateway while the disk can't be written")
     assert logged(caplog, "ERROR", "stop mcp-gateway, delete the file (every client signs in again) and start it")
     assert list_tools(client, tokens["access_token"]).status_code == 401
 
@@ -767,6 +775,71 @@ def test_a_save_that_holds_the_only_record_of_a_revocation_is_an_error_until_one
         refresh(client, other_id, other["refresh_token"])
     assert logged(caplog, "WARNING", "couldn't sync its folder")
     assert not logged(caplog, "ERROR", "the only record of a revocation")
+
+
+@pytest.mark.skipif(os.name != "posix", reason="folders are synced on POSIX only")
+def test_a_revocation_at_risk_stays_at_risk_across_a_restart(
+    make_client, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    # The restarted process reads the renamed file from the page cache, but it may not be
+    # on disk: while the folder still won't sync, saves that aren't on disk stay errors.
+    client = make_client()
+    client_id, tokens = connect(client)
+    other_id, other = connect(client)
+    with monkeypatch.context() as patch, caplog.at_level("WARNING", logger="mcp_gateway.oauth"):
+        folder_sync_failing(patch)
+        assert revoke(client, client_id, tokens["refresh_token"]).status_code == 200
+        restarted = make_client()
+        caplog.clear()
+        other = refresh(restarted, other_id, other["refresh_token"]).json()
+    assert logged(caplog, "ERROR", "the only record of a revocation")
+    # A restart whose folder syncs puts everything on disk: nothing is at risk any more.
+    caplog.clear()
+    restarted_again = make_client()
+    with monkeypatch.context() as patch, caplog.at_level("WARNING", logger="mcp_gateway.oauth"):
+        folder_sync_failing(patch)
+        refresh(restarted_again, other_id, other["refresh_token"])
+    assert logged(caplog, "WARNING", "couldn't sync its folder")
+    assert not logged(caplog, "ERROR", "the only record of a revocation")
+
+
+@pytest.mark.skipif(os.name != "posix", reason="folders are synced on POSIX only")
+def test_a_revocation_is_at_risk_until_one_is_fully_on_disk(
+    tmp_path: Path, clock: Clock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store = TokenStore(tmp_path / "oauth.json", clock)
+    grants = [store.issue(CLAUDE, ["agents"]) for _ in range(4)]
+    # Revoked, but the folder won't sync: a power cut could undo it.
+    with monkeypatch.context() as patch:
+        folder_sync_failing(patch)
+        store.revoke(grants[0].refresh_token)
+    assert store.revocation_at_risk
+    # A revocation fully on disk records the earlier one too.
+    store.revoke(grants[1].refresh_token)
+    assert not store.revocation_at_risk
+    with monkeypatch.context() as patch:
+        folder_sync_failing(patch)
+        store.revoke(grants[2].refresh_token)
+    assert store.revocation_at_risk
+    # So does deleting the file, once that is on disk: a restart then has no tokens at all.
+    with monkeypatch.context() as patch:
+        patch.setattr(os, "replace", full_disk)
+        with pytest.raises(OSError):
+            store.revoke(grants[3].refresh_token)
+    assert not store.revocation_at_risk
+
+
+def test_a_sign_in_that_cant_be_saved_changes_nothing(
+    tmp_path: Path, clock: Clock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store = TokenStore(tmp_path / "oauth.json", clock)
+    store.issue(CLAUDE, ["agents"])
+    tokens, clients = dict(store.tokens), dict(store.clients)
+    with monkeypatch.context() as patch:
+        patch.setattr(os, "replace", full_disk)
+        with pytest.raises(OSError):
+            store.issue(CLAUDE, ["agents"])
+    assert (store.tokens, store.clients) == (tokens, clients)
 
 
 HOLD_STATE = """
