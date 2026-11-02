@@ -127,7 +127,7 @@ class GatewayOAuth:
         )
 
     def close(self) -> None:
-        """Unlocks the state folder, at shutdown."""
+        """Unlocks the state folder, at shutdown or when starting fails."""
         if self._lock is not None:
             os.close(self._lock)
             self._lock = None
@@ -295,12 +295,15 @@ class TokenStore:
         # sha256 of the token -> {kind, client_id, grant, scopes, expires_at}
         self.tokens: dict[str, dict] = {}
         if path.exists():
+            try:
+                text = path.read_bytes()
+            except OSError as error:
+                # Not a reason to delete it: that would sign the connector out.
+                raise StartupError(f"Can't read {path} ({error.strerror}).{_advice(error)}") from None
             # Checked whole here, so a bad record stops startup rather than a request later.
             try:
-                state = _State.model_validate_json(path.read_bytes())
+                state = _State.model_validate_json(text)
                 problem = state.inconsistency()
-            except OSError as error:
-                problem = str(error)
             except ValidationError as error:
                 # Without the values: a client record may hold a secret.
                 problem = "; ".join(
@@ -449,24 +452,27 @@ def _lock_state_dir(state_dir: Path) -> int | None:
             return None
         lock = os.open(path, os.O_RDWR | os.O_CREAT, 0o600)
     except OSError as error:
-        # E.g. a lock file left owned by root after starting the gateway by hand as root.
-        advice = (
-            " The folder and its files must belong to the user mcp-gateway runs as."
-            if error.errno in (errno.EACCES, errno.EPERM)
-            else " MCP_GATEWAY_STATE_DIR must be a writable folder."
-        )
-        raise StartupError(f"Can't open {path} ({error}).{advice}") from None
+        advice = _advice(error, otherwise=" MCP_GATEWAY_STATE_DIR must be a writable folder.")
+        raise StartupError(f"Can't open {path} ({error.strerror}).{advice}") from None
     try:
         fcntl.lockf(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except OSError as error:
         os.close(lock)
         if error.errno not in (errno.EACCES, errno.EAGAIN):
-            raise StartupError(f"Can't lock {path} ({error}).") from None
+            raise StartupError(f"Can't lock {path} ({error.strerror}).") from None
         raise StartupError(
             f"Another mcp-gateway process is using {state_dir}. Run one process only (no "
-            "uvicorn --workers): sign-ins and wrong-passphrase counts are kept in its memory."
+            "uvicorn --workers): each reads oauth.json only at startup and keeps sign-ins and "
+            "wrong-passphrase counts in its memory."
         ) from None
     return lock
+
+
+def _advice(error: OSError, otherwise: str = "") -> str:
+    # E.g. a file left owned by root after starting the gateway by hand as root.
+    if error.errno in (errno.EACCES, errno.EPERM):
+        return " The folder and its files must belong to the user mcp-gateway runs as."
+    return otherwise
 
 
 @dataclass
