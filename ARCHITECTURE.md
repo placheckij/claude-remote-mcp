@@ -7,20 +7,41 @@ the map; the component READMEs have the details.
 ```mermaid
 flowchart TB
   subgraph interaction["Interaction layer"]
-    app["Claude app<br/>voice · mobile · CarPlay · web · desktop"]
+    direction LR
+    app(["<b>Claude app</b><br/>voice · mobile · CarPlay · web · desktop"])
   end
-  subgraph orchestration["Orchestration layer (gateway host)"]
-    gateway["mcp-gateway<br/>OAuth · authentication · tool routing · agent operations"]
+
+  subgraph orchestration["Orchestration#nbsp;layer#nbsp;·#nbsp;gateway#nbsp;host"]
+    direction LR
+    gateway("<b>mcp-gateway</b><br/>OAuth · authentication<br/>tool routing<br/>agent operations")
+    tokens[("oauth.json<br/>clients · token hashes")]
+    gateway -.- tokens
   end
-  subgraph execution["Execution layer (agent host)"]
-    bridge["agent-bridge"]
-    herdr["herdr<br/>workspaces · panes"]
-    sessions["Claude Code sessions"]
+
+  subgraph execution["Execution#nbsp;layer#nbsp;·#nbsp;agent#nbsp;host"]
+    direction LR
+    bridge("<b>agent-bridge</b><br/>HTTP API · no state")
+    herdr("<b>herdr</b><br/>workspaces · panes")
+    sessions(["<b>Claude Code</b><br/>sessions"])
+    bridge -- "herdr CLI" --> herdr --> sessions
   end
-  app -- "MCP over HTTPS · Cloudflare Tunnel · OAuth access token" --> gateway
-  gateway -- "HTTP over the LAN · agent-bridge's bearer token" --> bridge
-  bridge -- "herdr CLI" --> herdr
-  herdr --> sessions
+
+  %% Linking the layers, not the boxes in them, keeps each layer laid out left to right.
+  interaction == "MCP over HTTPS<br/>Cloudflare Tunnel<br/>OAuth access token" ==> orchestration
+  orchestration == "HTTP over the LAN<br/>agent-bridge's bearer token" ==> execution
+
+  classDef interactionNode fill:#ffffff,stroke:#0284c7,stroke-width:2px,color:#0c4a6e
+  classDef orchestrationNode fill:#ffffff,stroke:#7c3aed,stroke-width:2px,color:#3b0764
+  classDef executionNode fill:#ffffff,stroke:#059669,stroke-width:2px,color:#064e3b
+  classDef store fill:#f5f3ff,stroke:#7c3aed,stroke-width:1px,stroke-dasharray:4 3,color:#3b0764
+  class app interactionNode
+  class gateway orchestrationNode
+  class tokens store
+  class bridge,herdr,sessions executionNode
+  style interaction fill:#e0f2fe,stroke:#0284c7,stroke-width:1px,color:#0c4a6e
+  style orchestration fill:#ede9fe,stroke:#7c3aed,stroke-width:1px,color:#3b0764
+  style execution fill:#d1fae5,stroke:#059669,stroke-width:1px,color:#064e3b
+  linkStyle default stroke:#64748b,stroke-width:2px
 ```
 
 ## Interaction layer: the Claude app
