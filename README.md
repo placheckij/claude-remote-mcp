@@ -19,8 +19,9 @@ Claude app (voice)
 
 ## Components
 
-Each component has its own README with system requirements, configuration, deployment
-and tests.
+How the layers fit together, where state lives and the trust boundaries:
+[ARCHITECTURE.md](ARCHITECTURE.md). Each component has its own README with system
+requirements, configuration, deployment and tests.
 
 | Directory | Runs on | Role |
 |---|---|---|
