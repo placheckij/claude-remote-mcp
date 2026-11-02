@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Installs mcp-gateway as a systemd service on a Debian-based Linux host (e.g. Debian,
 # Ubuntu) and publishes it through a Cloudflare Tunnel. Safe to re-run: it
-# updates the code, keeps the connector token and the settings below, and reuses the
-# existing tunnel.
+# updates the code, keeps the sign-in passphrase, the OAuth tokens and the settings below,
+# and reuses the existing tunnel.
 #
 # Run from a checkout of this repo on the gateway host:
 #   sudo PUBLIC_HOST=mcp.example.com \
@@ -14,8 +14,9 @@
 # on the command line (shell history, process list): let the script ask, or export
 # them and pass them with sudo --preserve-env=NAME. PROJECTS_ROOT is the folder on the agent
 # host that project names given to start_agent resolve against. Optional: TUNNEL_NAME
-# (claude-remote), PORT (8766), ROTATE_TOKEN=1, MCP_GATEWAY_TOKEN (use this connector
-# token instead of generating one).
+# (claude-remote), PORT (8766), MCP_GATEWAY_OAUTH_PASSPHRASE (use this sign-in passphrase
+# instead of generating one), ROTATE_PASSPHRASE=1, MCP_GATEWAY_TOKEN (also accept this
+# static token, from before OAuth), REMOVE_TOKEN=1 (stop accepting the static token).
 
 set -euo pipefail
 
@@ -23,6 +24,8 @@ REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 APP_DIR=/opt/claude-remote-mcp
 ENV_DIR=/etc/mcp-gateway
 ENV_FILE="$ENV_DIR/env"
+# systemd's StateDirectory=; holds the OAuth clients and token hashes.
+STATE_DIR=/var/lib/mcp-gateway
 SERVICE_USER=mcp-gateway
 CF_DIR=/etc/cloudflared
 CF_USER=cloudflared
@@ -32,6 +35,9 @@ ORIGIN_CERT="$CF_DIR/cert.pem"
 CREDENTIALS="$CF_DIR/$TUNNEL_NAME.json"
 TUNNEL_CONFIG="$CF_DIR/$TUNNEL_NAME.yml"
 TUNNEL_SERVICE="cloudflared-$TUNNEL_NAME"
+# The MCP endpoint and the OAuth sign-in: its metadata, registration, the sign-in page,
+# tokens and revocation. Keep in sync with mcp-gateway/README.md.
+INGRESS_PATH='^/(mcp|authorize|login|token|register|revoke|\.well-known/oauth-(authorization-server|protected-resource/mcp))$'
 
 log() { printf '\n==> %s\n' "$*"; }
 die() { printf 'error: %s\n' "$*" >&2; exit 1; }
@@ -77,8 +83,16 @@ ask PROJECTS_ROOT "Projects folder on the agent host (e.g. /home/me/projects)"
 # Hostnames are case-insensitive, but the SDK's Host check compares them exactly.
 PUBLIC_HOST="${PUBLIC_HOST,,}"
 
+if [[ -n ${MCP_GATEWAY_OAUTH_PASSPHRASE:-} ]]; then
+  [[ -z ${ROTATE_PASSPHRASE:-} ]] || die "set MCP_GATEWAY_OAUTH_PASSPHRASE or ROTATE_PASSPHRASE, not both"
+  [[ ${#MCP_GATEWAY_OAUTH_PASSPHRASE} -ge 16 ]] \
+    || die "MCP_GATEWAY_OAUTH_PASSPHRASE must be at least 16 characters"
+  # No quotes, backslashes or $: systemd would interpret them in the env file.
+  [[ $MCP_GATEWAY_OAUTH_PASSPHRASE =~ ^[A-Za-z0-9\ ._~+/=:,!?@#%^\&*()-]+$ ]] \
+    || die "MCP_GATEWAY_OAUTH_PASSPHRASE may only contain letters, digits, spaces and . _ ~ + / = : , ! ? @ # % ^ & * ( ) -"
+fi
 if [[ -n ${MCP_GATEWAY_TOKEN:-} ]]; then
-  [[ -z ${ROTATE_TOKEN:-} ]] || die "set MCP_GATEWAY_TOKEN or ROTATE_TOKEN, not both"
+  [[ -z ${REMOVE_TOKEN:-} ]] || die "set MCP_GATEWAY_TOKEN or REMOVE_TOKEN, not both"
   [[ ${#MCP_GATEWAY_TOKEN} -ge 32 ]] || die "MCP_GATEWAY_TOKEN must be at least 32 characters"
   # The characters a bearer token may have (RFC 6750), which also keep the env file plain.
   [[ $MCP_GATEWAY_TOKEN =~ ^[A-Za-z0-9._~+/-]+=*$ ]] \
@@ -125,20 +139,28 @@ rsync -a --delete --chown=root:root --exclude /.venv --exclude /python "$STAGE/"
 
 log "Writing $ENV_FILE"
 install -d -m 0750 -g "$SERVICE_USER" "$ENV_DIR"
-# A token passed in wins; otherwise keep the existing one, unless rotating.
-TOKEN="${MCP_GATEWAY_TOKEN:-}"
-TOKEN_SOURCE=given
-if [[ -z $TOKEN && -f $ENV_FILE && -z ${ROTATE_TOKEN:-} ]]; then
-  TOKEN="$(env_value MCP_GATEWAY_TOKEN)"
-  TOKEN_SOURCE=kept
+# A passphrase passed in wins; otherwise keep the existing one, unless rotating.
+PASSPHRASE="${MCP_GATEWAY_OAUTH_PASSPHRASE:-}"
+PASSPHRASE_SOURCE=given
+if [[ -z $PASSPHRASE && -z ${ROTATE_PASSPHRASE:-} ]]; then
+  PASSPHRASE="$(env_value MCP_GATEWAY_OAUTH_PASSPHRASE)"
+  PASSPHRASE_SOURCE=kept
 fi
-if [[ -z $TOKEN ]]; then
-  TOKEN="$(openssl rand -hex 32)"
-  TOKEN_SOURCE=new
+if [[ -z $PASSPHRASE ]]; then
+  # 96 random bits in groups of four, e.g. 3f9a-0c41-…: typed once, on a phone.
+  PASSPHRASE="$(openssl rand -hex 12 | sed 's/..../&-/g; s/-$//')"
+  PASSPHRASE_SOURCE=new
+fi
+# The static token is only kept for connectors added before OAuth; none is made any more.
+TOKEN="${MCP_GATEWAY_TOKEN:-}"
+if [[ -z $TOKEN && -z ${REMOVE_TOKEN:-} ]]; then
+  TOKEN="$(env_value MCP_GATEWAY_TOKEN)"
 fi
 umask 027
 cat >"$ENV_FILE" <<EOF
-MCP_GATEWAY_TOKEN=$TOKEN
+MCP_GATEWAY_OAUTH_PASSPHRASE=$PASSPHRASE
+MCP_GATEWAY_STATE_DIR=$STATE_DIR
+${TOKEN:+MCP_GATEWAY_TOKEN=$TOKEN}
 MCP_GATEWAY_PUBLIC_HOST=$PUBLIC_HOST
 MCP_GATEWAY_BRIDGE_URL=$AGENT_BRIDGE_URL
 MCP_GATEWAY_BRIDGE_TOKEN=$AGENT_BRIDGE_TOKEN
@@ -162,6 +184,9 @@ WorkingDirectory=$APP_DIR
 ExecStart=$APP_DIR/.venv/bin/uvicorn mcp_gateway.server:main --factory --host 127.0.0.1 --port $PORT --no-server-header
 Restart=on-failure
 RestartSec=5
+# $STATE_DIR, the one place the service can write (ProtectSystem=strict).
+StateDirectory=mcp-gateway
+StateDirectoryMode=0700
 NoNewPrivileges=yes
 ProtectSystem=strict
 ProtectHome=yes
@@ -222,13 +247,14 @@ log "Routing $PUBLIC_HOST to tunnel $TUNNEL_NAME"
 cloudflared tunnel route dns "$TUNNEL_NAME" "$PUBLIC_HOST" \
   || echo "warning: DNS route not created (does a record for $PUBLIC_HOST already exist?)"
 
-# Only /mcp is published; the health check and anything else stay on this host.
+# Only /mcp and the OAuth sign-in are published; the health check and anything else stay
+# on this host.
 cat >"$TUNNEL_CONFIG" <<EOF
 tunnel: $TUNNEL_ID
 credentials-file: $CREDENTIALS
 ingress:
   - hostname: $PUBLIC_HOST
-    path: ^/mcp$
+    path: $INGRESS_PATH
     service: http://127.0.0.1:$PORT
   - service: http_status:404
 EOF
@@ -296,33 +322,40 @@ check "agent host reachable with its token" 200 -H @- "$AGENT_BRIDGE_URL/agents"
   < <(printf 'Authorization: Bearer %s\n' "$AGENT_BRIDGE_TOKEN")
 # The tunnel takes a few seconds to register at Cloudflare's edge; until then it answers 530.
 # Once it has answered, it is registered, so the second check needn't wait.
-check -w "$tunnel_wait" "tunnel refuses requests without the token" 401 -X POST "https://$PUBLIC_HOST/mcp"
-check "tunnel hides everything but /mcp" 404 "https://$PUBLIC_HOST/healthz"
+check -w "$tunnel_wait" "tunnel refuses requests without a token" 401 -X POST "https://$PUBLIC_HOST/mcp"
+check "tunnel serves the OAuth metadata" 200 "https://$PUBLIC_HOST/.well-known/oauth-protected-resource/mcp"
+check "tunnel hides the rest" 404 "https://$PUBLIC_HOST/healthz"
 
 if [[ ${#FAILED[@]} -eq 0 ]]; then
   cat <<EOF
 
 Done. Add the connector in claude.ai -> Customize -> Connectors -> Add custom connector:
-  URL:             https://$PUBLIC_HOST/mcp
-  Authentication:  No sign-in
-  Request header:  authorization = Bearer <MCP_GATEWAY_TOKEN>
-(Request headers are a beta; see mcp-gateway/README.md if the dialog has none.)
+  URL:  https://$PUBLIC_HOST/mcp
+  Leave the OAuth client ID and secret empty. Then click Connect and sign in with the
+  passphrase below.
 EOF
 else
   printf '\nNot working yet: %d check(s) failed:\n' "${#FAILED[@]}"
   printf '  - %s\n' "${FAILED[@]}"
   cat <<EOF
-Fix the cause (see the logs below) and re-run this script; it keeps the connector token.
+Fix the cause (see the logs below) and re-run this script; it keeps the passphrase and tokens.
 If only the tunnel checks failed for a new hostname, DNS may need a few more minutes:
   curl -i -X POST https://$PUBLIC_HOST/mcp    should answer 401.
 EOF
 fi
-# claude.ai can't edit a connector's headers, so a changed token means re-adding it.
-readd="If the connector already exists in claude.ai, remove it and add it again with this token."
-case $TOKEN_SOURCE in
-  new) echo "MCP_GATEWAY_TOKEN (new): $TOKEN"; echo "$readd" ;;
-  given) echo "MCP_GATEWAY_TOKEN is the one you passed in. $readd" ;;
-  kept) echo "MCP_GATEWAY_TOKEN is unchanged; read it with: sudo grep MCP_GATEWAY_TOKEN $ENV_FILE" ;;
+case $PASSPHRASE_SOURCE in
+  new) echo "Sign-in passphrase (new): $PASSPHRASE" ;;
+  given) echo "The sign-in passphrase is the one you passed in." ;;
+  kept) echo "The sign-in passphrase is unchanged; read it with: sudo grep PASSPHRASE $ENV_FILE" ;;
 esac
+# A new passphrase only guards the next sign-in; tokens issued before stay valid.
+if [[ $PASSPHRASE_SOURCE != kept && -s $STATE_DIR/oauth.json ]]; then
+  echo "Connectors already signed in stay signed in. To sign them out:"
+  echo "  sudo rm $STATE_DIR/oauth.json && sudo systemctl restart mcp-gateway"
+fi
+if [[ -n $TOKEN ]]; then
+  echo "The static MCP_GATEWAY_TOKEN is still accepted. Once the connector is signed in with"
+  echo "OAuth, re-run with REMOVE_TOKEN=1 to stop accepting it."
+fi
 echo "Logs: journalctl -u mcp-gateway -u $TUNNEL_SERVICE -f"
 [[ ${#FAILED[@]} -eq 0 ]] || exit 1
