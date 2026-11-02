@@ -19,6 +19,7 @@ refuse a second process. Running more than one would need the tokens, that state
 counting in a shared store.
 """
 
+import contextlib
 import errno
 import hashlib
 import hmac
@@ -360,8 +361,9 @@ class TokenStore:
                 self._save(tokens, self.clients)
             except BaseException:
                 # Unlike a refresh, a revocation must not fail open: the tokens stop working
-                # now, and the next save that succeeds writes that down.
+                # now, and the file, which still lists them, goes until a save succeeds.
                 self.tokens = tokens
+                self._forget_file()
                 raise
 
     def _without(self, grant: str) -> dict[str, dict]:
@@ -388,23 +390,52 @@ class TokenStore:
         # leftover temporary file is removed first: opening it would keep its old mode.
         temporary = self.path.with_name(f"{self.path.name}.tmp")
         temporary.unlink(missing_ok=True)
-        with os.fdopen(os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "w") as file:
-            json.dump(data, file)
-            file.flush()
-            os.fsync(file.fileno())
-        os.replace(temporary, self.path)
-        # The rename is only on disk once the folder is. Failing that isn't worth failing the
-        # request: the new tokens are in place, and the client would never get them.
-        if os.name == "posix":
-            try:
-                folder = os.open(self.path.parent, os.O_RDONLY)
-                try:
-                    os.fsync(folder)
-                finally:
-                    os.close(folder)
-            except OSError as error:
-                log.warning("Saved %s but couldn't sync its folder: %s", self.path, error)
+        try:
+            with os.fdopen(os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "w") as file:
+                json.dump(data, file)
+                file.flush()
+                os.fsync(file.fileno())
+            os.replace(temporary, self.path)
+        except BaseException:
+            # On a full disk it would hold the space the next save needs.
+            with contextlib.suppress(OSError):
+                temporary.unlink()
+            raise
+        # Failing this isn't worth failing the request: the new tokens are in place, and the
+        # client would never get them.
+        try:
+            self._sync_folder()
+        except OSError as error:
+            log.warning("Saved %s but couldn't sync its folder: %s", self.path, error)
         self.tokens, self.clients = tokens, clients
+
+    def _forget_file(self) -> None:
+        """Deletes oauth.json after a revocation that couldn't be written into it, so a
+        restart signs every client out rather than bringing the revoked tokens back.
+        Deleting needs no space, so it works on a full disk; the next save that succeeds
+        writes the file again."""
+        try:
+            self.path.unlink(missing_ok=True)
+        except OSError as error:
+            log.error(
+                "Couldn't save a revocation in %s or delete it (%s): after a restart the revoked "
+                "tokens would work again, so delete it by hand before restarting.",
+                self.path, error,
+            )
+            return
+        with contextlib.suppress(OSError):
+            self._sync_folder()
+        log.warning("Couldn't save a revocation in %s, so deleted it: after a restart every client signs in again.", self.path)
+
+    def _sync_folder(self) -> None:
+        """Makes a rename or deletion in the state folder survive a power cut."""
+        if os.name != "posix":
+            return
+        folder = os.open(self.path.parent, os.O_RDONLY)
+        try:
+            os.fsync(folder)
+        finally:
+            os.close(folder)
 
 
 class _TokenRecord(BaseModel):
