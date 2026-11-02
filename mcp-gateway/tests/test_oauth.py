@@ -6,6 +6,7 @@ import errno
 import hashlib
 import json
 import os
+import select
 import stat
 import subprocess
 import sys
@@ -598,17 +599,32 @@ def hold_state(state_dir: Path) -> subprocess.Popen:
     )
 
 
+def started(holder: subprocess.Popen) -> bool:
+    """Whether the other process got the state, waiting at most 30 s rather than forever."""
+    ready, _, _ = select.select([holder.stdout], [], [], 30)
+    return bool(ready) and holder.stdout.readline() == "started\n"
+
+
+def end(holder: subprocess.Popen) -> None:
+    try:
+        holder.communicate("", timeout=30)
+    except subprocess.TimeoutExpired:
+        holder.kill()
+        holder.communicate()
+
+
 @pytest.mark.skipif(os.name != "posix", reason="no lock without fcntl")
 def test_a_second_process_cannot_use_the_same_state(tmp_path: Path) -> None:
-    # Sign-ins in progress and wrong-passphrase counts live in one process's memory: a
-    # second (uvicorn --workers, another instance) would lose sign-ins and multiply guesses.
+    # oauth.json is read once and sign-ins and wrong-passphrase counts live in one process's
+    # memory: a second (uvicorn --workers, another instance) would refuse the first one's
+    # tokens, overwrite them, lose sign-ins and multiply guesses.
     holder = hold_state(tmp_path)
     try:
-        assert holder.stdout.readline() == "started\n"
+        assert started(holder)
         with pytest.raises(RuntimeError, match="Another mcp-gateway process"):
             GatewayOAuth(settings(tmp_path))
     finally:
-        holder.communicate("")
+        end(holder)
     # Once it has exited, the state is free again.
     assert_state_is_free(tmp_path)
 
@@ -616,9 +632,9 @@ def test_a_second_process_cannot_use_the_same_state(tmp_path: Path) -> None:
 def assert_state_is_free(state_dir: Path) -> None:
     holder = hold_state(state_dir)
     try:
-        assert holder.stdout.readline() == "started\n"
+        assert started(holder)
     finally:
-        holder.communicate("")
+        end(holder)
 
 
 @pytest.mark.skipif(os.name != "posix", reason="no lock without fcntl")
@@ -655,6 +671,16 @@ def test_a_lock_file_the_gateway_cant_open_says_whose_it_must_be(tmp_path: Path)
     (tmp_path / "oauth.lock").touch(mode=0o400)
     with pytest.raises(StartupError, match="must belong to the user mcp-gateway runs as"):
         GatewayOAuth(settings(tmp_path))
+
+
+@pytest.mark.skipif(os.name != "posix" or os.geteuid() == 0, reason="needs file modes that bind the owner")
+def test_a_state_file_the_gateway_cant_read_is_not_to_be_deleted(tmp_path: Path) -> None:
+    # Deleting it would sign the connector out; the fix is who owns it.
+    (tmp_path / "oauth.json").write_text(json.dumps(state_file()))
+    (tmp_path / "oauth.json").chmod(0)
+    with pytest.raises(StartupError, match="must belong to the user mcp-gateway runs as") as error:
+        GatewayOAuth(settings(tmp_path))
+    assert "Deleting" not in str(error.value)
 
 
 def test_a_state_dir_that_cant_be_made_says_so(tmp_path: Path) -> None:
