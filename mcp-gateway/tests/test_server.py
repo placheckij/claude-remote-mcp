@@ -14,7 +14,7 @@ HOST = "mcp.example.com"
 SETTINGS = Settings(
     token=TOKEN,
     oauth_passphrase="p" * 24,
-    # Nothing here signs in, so nothing is written; a write would fail loudly.
+    # Replaced with a test's own folder by app(): the gateway locks it at startup.
     state_dir=Path("/nonexistent/mcp-gateway-state"),
     bridge_url="http://agents.lan:8765",
     bridge_token="b" * 32,
@@ -57,18 +57,22 @@ class FakeAgentBridge:
         return response
 
 
+def app(bridge: AgentBridge, state_dir: Path):
+    return create_app(SETTINGS.model_copy(update={"state_dir": state_dir}), bridge)
+
+
 @pytest.fixture
 def fake() -> FakeAgentBridge:
     return FakeAgentBridge({})
 
 
 @pytest.fixture
-def client(fake: FakeAgentBridge):
+def client(fake: FakeAgentBridge, tmp_path: Path):
     bridge = AgentBridge(
         httpx.AsyncClient(base_url=SETTINGS.bridge_url, transport=httpx.MockTransport(fake),
                           headers={"Authorization": f"Bearer {'b' * 32}"})
     )
-    with TestClient(create_app(SETTINGS, bridge), base_url=f"https://{HOST}") as test_client:
+    with TestClient(app(bridge, tmp_path), base_url=f"https://{HOST}") as test_client:
         yield test_client
 
 
@@ -606,9 +610,9 @@ def test_logs_a_refused_origin_as_an_error(client: TestClient, caplog: pytest.Lo
     assert record.getMessage().startswith("403 POST /mcp: Origin 'https://evil.example' is not allowed")
 
 
-def test_closes_the_agent_bridge_client_on_shutdown() -> None:
+def test_closes_the_agent_bridge_client_on_shutdown(tmp_path: Path) -> None:
     http = httpx.AsyncClient(base_url=SETTINGS.bridge_url, transport=httpx.MockTransport(FakeAgentBridge({})))
-    with TestClient(create_app(SETTINGS, AgentBridge(http)), base_url=f"https://{HOST}"):
+    with TestClient(app(AgentBridge(http), tmp_path), base_url=f"https://{HOST}"):
         assert not http.is_closed
     assert http.is_closed
 
@@ -687,12 +691,12 @@ def test_a_sleeping_agent_host_is_reported_within_seconds(client: TestClient, fa
     assert AgentBridge.connect(SETTINGS.bridge_url, "b" * 32).client.timeout.connect <= 5
 
 
-def test_a_connect_timeout_says_the_host_may_be_asleep() -> None:
+def test_a_connect_timeout_says_the_host_may_be_asleep(tmp_path: Path) -> None:
     def asleep(request: httpx.Request) -> httpx.Response:
         raise httpx.ConnectTimeout("timed out", request=request)
 
     bridge = AgentBridge(httpx.AsyncClient(base_url=SETTINGS.bridge_url, transport=httpx.MockTransport(asleep)))
-    with TestClient(create_app(SETTINGS, bridge), base_url=f"https://{HOST}") as test_client:
+    with TestClient(app(bridge, tmp_path), base_url=f"https://{HOST}") as test_client:
         is_error, text = call_tool(test_client, "list_agents")
     assert is_error
     assert text.endswith("The agent host is not reachable (ConnectTimeout). It may be asleep or offline.")

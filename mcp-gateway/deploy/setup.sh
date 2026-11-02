@@ -181,6 +181,7 @@ User=$SERVICE_USER
 Group=$SERVICE_USER
 EnvironmentFile=$ENV_FILE
 WorkingDirectory=$APP_DIR
+# One process (no --workers): sign-ins in progress and wrong-passphrase counts are in its memory.
 ExecStart=$APP_DIR/.venv/bin/uvicorn mcp_gateway.server:main --factory --host 127.0.0.1 --port $PORT --no-server-header
 Restart=on-failure
 RestartSec=5
