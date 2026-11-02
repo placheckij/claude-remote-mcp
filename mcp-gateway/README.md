@@ -132,11 +132,13 @@ the connector is added, claude.ai:
 | Callback | only `https://claude.ai/api/mcp/auth_callback` can be registered, so a sign-in can't hand a code to anyone else. Claude Code's loopback callback isn't accepted |
 | Wrong passphrases | logged with the source address; a sign-in link dies after 5, and an address with 10 within 15 minutes is refused until they age out, so one stranger guessing doesn't lock you out. The address is Cloudflare's `CF-Connecting-IP` when the request comes from the local cloudflared, else the peer's; IPv6 counts by /64. Changing addresses doesn't buy more: 100 from all sources together stop every sign-in for those 15 minutes (tokens already issued keep working) |
 | Phishing | someone could send you a sign-in link they started. The code can only go to claude.ai, where it only completes the sign-in that claude.ai itself started (its `state`), and the page says to continue only while you are connecting in Claude |
-| Storage | `MCP_GATEWAY_STATE_DIR/oauth.json`: the clients that signed in and SHA-256 hashes of their tokens, never the tokens. A registration that never signs in is kept in memory only (at most 100). Written to a new temporary file, synced to disk and renamed over the old one, so a crash leaves either the old file or the new one; on Linux, so does a power cut. If writing fails (e.g. a full disk), a sign-in or refresh fails and nothing changes: a client signing in again keeps its tokens from before. A revocation fails too, but the revoked tokens stop working at once, and `oauth.json`, which still lists them, is deleted (that needs no space), so a restart before the next successful save signs every client out instead of bringing them back; that save writes the file again. If it can't be deleted either (most likely the disk went read-only), an error in the log says to stop mcp-gateway and delete the file before it starts again. A revocation whose folder sync fails is logged as an error too, since a power cut could undo it. Checked whole at startup: a damaged file stops the gateway with a message naming the file, the bad fields and the client ids involved (not secret), never field values or token hashes |
+| Storage | `MCP_GATEWAY_STATE_DIR/oauth.json`: the clients that signed in and SHA-256 hashes of their tokens, never the tokens. A registration that never signs in is kept in memory only (at most 100). Written to a new temporary file, synced to disk and renamed over the old one, so a crash leaves either the old file or the new one; on Linux, so does a power cut. Checked whole at startup: a damaged file stops the gateway with a message naming the file, the bad fields and the client ids involved (not secret), never field values or token hashes |
+| Failed saves | A sign-in or refresh whose save fails (e.g. a full disk) fails and changes nothing: a refresh can be retried with the same refresh token, a sign-in is started again. A revocation whose save fails still revokes at once, and `oauth.json`, which still lists the revoked tokens, is deleted (that needs no space): a restart before the next successful save signs every client out instead of bringing them back, and that save writes the file again. When a revocation can't be made safe on disk (the file can't be deleted, or the folder won't sync, so a power cut could undo it), an error in the log says so and what to do: stop mcp-gateway, delete `oauth.json` and start it again. Until a save is fully on disk, every save that isn't is logged as an error too |
 | Revocation | `/revoke` ends a token and its pair |
-| Restart | tokens survive it; a sign-in page or code that was open is lost (sign in again) |
+| Restart | tokens survive it, except after a revocation that couldn't be saved (see *Failed saves*); a sign-in page or code that was open is lost (sign in again) |
 
-To sign every connector out, stop the service, delete `oauth.json` and start it again.
+To sign every connector out, stop the service, delete `oauth.json` and start it again, in
+that order: a running gateway writes the file back from memory on its next save.
 Changing the passphrase only affects the next sign-in.
 
 ### One process
@@ -258,8 +260,8 @@ the tunnel checks fail, try again shortly:
   tunnel. Only committed code is installed.
 - **Change the passphrase:** re-run with `ROTATE_PASSPHRASE=1` (it prints the new one),
   or with `MCP_GATEWAY_OAUTH_PASSPHRASE` as above. Connectors already signed in stay
-  signed in; to sign them out too, `sudo rm /var/lib/mcp-gateway/oauth.json && sudo
-  systemctl restart mcp-gateway`.
+  signed in; to sign them out too, `sudo systemctl stop mcp-gateway && sudo rm
+  /var/lib/mcp-gateway/oauth.json && sudo systemctl start mcp-gateway`.
 - **Stop accepting the static token:** re-run with `REMOVE_TOKEN=1`.
 - **Change agent-bridge's URL or token, or the projects folder:** re-run with just the
   values that change; the rest are kept:
@@ -443,7 +445,8 @@ claude.ai → **Customize → Connectors → Add custom connector**:
 Then click **Connect**. A page from your gateway asks for the passphrase
 (`MCP_GATEWAY_OAUTH_PASSPHRASE`); after **Allow** you are back in claude.ai, connected.
 claude.ai keeps the connector signed in by refreshing its token; if it was signed out
-(e.g. after 90 days unused, or `oauth.json` was deleted), it asks you to connect again.
+(e.g. after 90 days unused, or `oauth.json` was deleted, by hand or after a revocation
+that couldn't be saved; see [Failed saves](#oauth-sign-in)), it asks you to connect again.
 See [Claude's connector docs](https://claude.com/docs/connectors/custom/add-unlisted).
 
 ### Move a connector to OAuth
