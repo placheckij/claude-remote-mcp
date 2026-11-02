@@ -610,12 +610,31 @@ def test_logs_a_refused_origin_as_an_error(client: TestClient, caplog: pytest.Lo
     assert record.getMessage().startswith("403 POST /mcp: Origin 'https://evil.example' is not allowed")
 
 
-def test_a_startup_error_stops_every_uvicorn_worker(caplog: pytest.LogCaptureFixture) -> None:
+def test_a_startup_error_stops_every_uvicorn_worker(
+    caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     # uvicorn --workers starts a worker again after any other exit code, forever.
+    monkeypatch.chdir(tmp_path)  # away from any .env, which main() would read
     with pytest.raises(SystemExit) as exit:
         main()
     assert exit.value.code == 3
     assert "Invalid settings" in caplog.text
+
+
+def test_an_unexpected_startup_error_stops_too_and_keeps_its_traceback(
+    caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def broken(settings: Settings) -> None:
+        raise ValueError("something unforeseen")
+
+    monkeypatch.setattr(Settings, "from_env", classmethod(lambda cls: SETTINGS))
+    monkeypatch.setattr("mcp_gateway.server.create_app", broken)
+    with pytest.raises(SystemExit) as exit:
+        main()
+    assert exit.value.code == 3
+    (record,) = [record for record in caplog.records if record.name == "mcp_gateway.server"]
+    assert record.getMessage() == "mcp-gateway could not start"
+    assert record.exc_info[0] is ValueError
 
 
 def test_closes_the_agent_bridge_client_on_shutdown(tmp_path: Path) -> None:

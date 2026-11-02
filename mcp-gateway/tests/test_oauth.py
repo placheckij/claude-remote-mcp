@@ -17,7 +17,7 @@ import pytest
 from starlette.testclient import TestClient
 
 from mcp_gateway.bridge import AgentBridge
-from mcp_gateway.config import Settings
+from mcp_gateway.config import Settings, StartupError
 from mcp_gateway.oauth import (
     ACCESS_TOKEN_TTL_S,
     FAILURE_WINDOW_S,
@@ -645,7 +645,15 @@ def test_a_lock_that_fails_otherwise_is_not_blamed_on_another_process(
         raise OSError(errno.ENOLCK, "No locks available")
 
     monkeypatch.setattr("mcp_gateway.oauth.fcntl.lockf", no_locks)
-    with pytest.raises(OSError, match="No locks available"):
+    with pytest.raises(StartupError, match=r"Can't lock .*oauth\.lock .*No locks available"):
+        GatewayOAuth(settings(tmp_path))
+
+
+@pytest.mark.skipif(os.name != "posix" or os.geteuid() == 0, reason="needs file modes that bind the owner")
+def test_a_lock_file_the_gateway_cant_open_says_whose_it_must_be(tmp_path: Path) -> None:
+    # As after starting the gateway by hand as root: the service's user can't open it.
+    (tmp_path / "oauth.lock").touch(mode=0o400)
+    with pytest.raises(StartupError, match="must belong to the user mcp-gateway runs as"):
         GatewayOAuth(settings(tmp_path))
 
 
