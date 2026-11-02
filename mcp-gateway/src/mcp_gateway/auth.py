@@ -1,8 +1,8 @@
-"""Bearer-token check in front of the whole MCP app, with redacted logging of rejections."""
+"""Token check in front of the MCP endpoint, with redacted logging of rejections."""
 
 import hashlib
-import hmac
 import logging
+from collections.abc import Awaitable, Callable
 
 from starlette.responses import JSONResponse
 from starlette.types import ASGIApp, Receive, Scope, Send
@@ -22,18 +22,29 @@ KNOWN_SCHEMES = frozenset({"bearer", "basic", "digest", "token"})
 
 
 class BearerAuth:
-    """Rejects every request without the connector's token, except the health check.
+    """Rejects every request to the protected paths (the MCP endpoint) without a valid
+    token: an OAuth access token, or the static one while it is set. Everything else (the
+    OAuth endpoints, the sign-in page, the health check) passes; those check what they need.
 
-    Each rejection is logged with the request's headers, secrets redacted, so a client
-    that sends the token differently can be diagnosed without exposing the token.
+    The SDK checks the token again behind this; this layer is here so that each rejection
+    is logged with the request's headers, secrets redacted, and so that what runs behind it
+    (StatelessEdges) knows the caller had a valid token.
     """
 
-    def __init__(self, app: ASGIApp, token: str, open_paths: frozenset[str] = frozenset({"/healthz"})):
+    def __init__(
+        self,
+        app: ASGIApp,
+        verify: Callable[[str], Awaitable[object | None]],
+        resource_metadata_url: str,
+        protected_paths: frozenset[str] = frozenset({"/mcp"}),
+    ):
         self.app = app
-        self.expected = token.encode()
-        self.open_paths = open_paths
+        self.verify = verify
+        # claude.ai starts the OAuth sign-in from a 401 that points at this document.
+        self.challenge = f'Bearer resource_metadata="{resource_metadata_url}"'
+        self.protected_paths = protected_paths
 
-    def _rejection(self, header: bytes | None) -> str | None:
+    async def _rejection(self, header: bytes | None) -> str | None:
         """Why the Authorization header is refused, or None if it is accepted."""
         if header is None:
             return "no authorization header"
@@ -42,22 +53,20 @@ class BearerAuth:
         scheme, _, provided = header.partition(b" ")
         if scheme.lower() != b"bearer":
             return "scheme is not Bearer"
-        if not hmac.compare_digest(provided, self.expected):
-            return "wrong token"
+        if not provided or await self.verify(provided.decode("latin-1")) is None:
+            return "unknown or expired token"
         return None
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
-        if scope["type"] == "http" and scope["path"] not in self.open_paths:
-            reason = self._rejection(dict(scope["headers"]).get(b"authorization"))
+        if scope["type"] == "http" and scope["path"] in self.protected_paths:
+            reason = await self._rejection(dict(scope["headers"]).get(b"authorization"))
             if reason:
                 log.warning(
-                    "401 %s %s: %s; expected token %s; headers: %s",
-                    scope["method"], scope["path"], reason,
-                    _describe_token(self.expected), _describe_headers(scope["headers"]),
+                    "401 %s %s: %s; headers: %s",
+                    scope["method"], scope["path"], reason, _describe_headers(scope["headers"]),
                 )
-                # RFC 9110 and the MCP spec: a 401 names the scheme it expects.
                 response = JSONResponse(
-                    {"error": "unauthorized"}, status_code=401, headers={"WWW-Authenticate": "Bearer"}
+                    {"error": "unauthorized"}, status_code=401, headers={"WWW-Authenticate": self.challenge}
                 )
                 await response(scope, receive, send)
                 return

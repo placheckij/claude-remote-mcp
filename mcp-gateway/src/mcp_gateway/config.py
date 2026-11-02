@@ -1,6 +1,8 @@
 """Settings read from MCP_GATEWAY_* environment variables, or a `.env` file in the working
 directory (the environment wins)."""
 
+from pathlib import Path
+
 from pydantic import Field, ValidationError
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -14,8 +16,13 @@ class Settings(BaseSettings):
         env_prefix="MCP_GATEWAY_", frozen=True, extra="ignore", env_ignore_empty=True
     )
 
-    # Sent by claude.ai as `Authorization: Bearer <token>` (connector request header).
-    token: str = Field(min_length=32)
+    # Typed on the OAuth sign-in page when the connector is added in claude.ai.
+    oauth_passphrase: str = Field(min_length=16)
+    # Where the OAuth clients and tokens are kept, so a restart doesn't sign the connector out.
+    state_dir: Path
+    # The static token from before OAuth, sent by claude.ai as `Authorization: Bearer <token>`
+    # (connector request header); still accepted while set, for moving connectors over.
+    token: str | None = Field(default=None, min_length=32)
     bridge_url: str
     bridge_token: str
     # Host header the tunnel forwards, e.g. mcp.example.com; checked against DNS rebinding.
