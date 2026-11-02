@@ -354,7 +354,7 @@ esac
 if [[ $PASSPHRASE_SOURCE != kept && -s $STATE_DIR/oauth.json ]]; then
   # Stopped first: a running gateway writes the file back from memory on its next save.
   echo "Connectors already signed in stay signed in. To sign them out:"
-  echo "  sudo systemctl stop mcp-gateway && sudo rm $STATE_DIR/oauth.json && sudo systemctl start mcp-gateway"
+  echo "  sudo systemctl stop mcp-gateway && sudo rm -f $STATE_DIR/oauth.json && sudo systemctl start mcp-gateway"
 fi
 if [[ -n $TOKEN ]]; then
   echo "The static MCP_GATEWAY_TOKEN is still accepted. Once the connector is signed in with"

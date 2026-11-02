@@ -6,6 +6,7 @@ its tokens; auth.py checks them in front of the MCP endpoint.
 """
 
 import logging
+import os
 import sys
 
 from mcp.server.transport_security import TransportSecuritySettings
@@ -89,8 +90,39 @@ class StatelessEdges:
         return wrapped
 
 
+class LevelFormatter(logging.Formatter):
+    """Log lines with their level in front, like uvicorn's own (`WARNING:  …`).
+
+    Under systemd each line also starts with its syslog priority (`<4>`), which journald
+    takes off and files the line by, so `journalctl -p err` shows the errors. Every line of
+    a traceback gets it, since journald reads each line on its own.
+    """
+
+    PRIORITIES = {logging.DEBUG: 7, logging.INFO: 6, logging.WARNING: 4, logging.ERROR: 3, logging.CRITICAL: 2}
+
+    def __init__(self, journald: bool):
+        super().__init__("%(message)s")
+        self.journald = journald
+
+    def format(self, record: logging.LogRecord) -> str:
+        text = f"{record.levelname + ':':<10}{super().format(record)}"
+        if not self.journald:
+            return text
+        priority = self.PRIORITIES.get(record.levelno, 6)
+        return "\n".join(f"<{priority}>{line}" for line in text.splitlines())
+
+
+def configure_logging() -> None:
+    # Before the app: the MCP SDK sets up logging when its server is built, with bare
+    # messages, but only if nothing has yet. systemd sets JOURNAL_STREAM for the journal.
+    handler = logging.StreamHandler()
+    handler.setFormatter(LevelFormatter(journald="JOURNAL_STREAM" in os.environ))
+    logging.basicConfig(level=logging.INFO, handlers=[handler])
+
+
 def main() -> ASGIApp:
     """uvicorn factory: `uvicorn mcp_gateway.server:main --factory`."""
+    configure_logging()
     try:
         return create_app(Settings.from_env())
     except StartupError as error:
