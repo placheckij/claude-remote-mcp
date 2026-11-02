@@ -181,6 +181,8 @@ User=$SERVICE_USER
 Group=$SERVICE_USER
 EnvironmentFile=$ENV_FILE
 WorkingDirectory=$APP_DIR
+# One process (no --workers): it reads oauth.json only at startup and keeps sign-ins in progress
+# and wrong-passphrase counts in memory.
 ExecStart=$APP_DIR/.venv/bin/uvicorn mcp_gateway.server:main --factory --host 127.0.0.1 --port $PORT --no-server-header
 Restart=on-failure
 RestartSec=5

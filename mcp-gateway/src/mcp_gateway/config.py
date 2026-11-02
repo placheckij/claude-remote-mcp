@@ -9,6 +9,10 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 ENV_FILE = ".env"
 
 
+class StartupError(RuntimeError):
+    """A setting or the state the gateway can't start with; the message says what to fix."""
+
+
 class Settings(BaseSettings):
     # No env_file here: only from_env() reads `.env`, so constructing Settings directly
     # (as tests do) never picks up a stray file. An empty variable counts as unset.
@@ -36,7 +40,7 @@ class Settings(BaseSettings):
         try:
             return cls(_env_file=ENV_FILE)
         except ValidationError as error:
-            raise RuntimeError(describe(error, cls.model_config["env_prefix"])) from None
+            raise StartupError(describe(error, cls.model_config["env_prefix"])) from None
 
 
 def describe(error: ValidationError, prefix: str) -> str:
