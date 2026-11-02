@@ -50,7 +50,7 @@ from pydantic import BaseModel, ConfigDict, StringConstraints, ValidationError
 from starlette.requests import Request
 from starlette.responses import HTMLResponse, RedirectResponse, Response
 
-from mcp_gateway.config import Settings
+from mcp_gateway.config import Settings, StartupError
 
 try:
     import fcntl
@@ -306,7 +306,7 @@ class TokenStore:
                     for item in error.errors(include_input=False, include_url=False)
                 )
             if problem is not None:
-                raise RuntimeError(
+                raise StartupError(
                     f"Can't read the OAuth state in {path} ({problem}). Deleting it signs the "
                     "connector out; then connect it again in claude.ai."
                 )
@@ -440,17 +440,25 @@ def _lock_state_dir(state_dir: Path) -> int | None:
     A POSIX lock is per process, so a restart within one process (as in the tests) can
     take it again, and the system drops it when the process ends, however it ends.
     """
-    state_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
-    if fcntl is None:
-        return None
-    lock = os.open(state_dir / "oauth.lock", os.O_RDWR | os.O_CREAT, 0o600)
+    path = state_dir / "oauth.lock"
+    try:
+        state_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+        if fcntl is None:
+            return None
+        lock = os.open(path, os.O_RDWR | os.O_CREAT, 0o600)
+    except OSError as error:
+        # E.g. a lock file left owned by root after starting the gateway by hand as root.
+        raise StartupError(
+            f"Can't open {path} ({error}). The folder and its files must belong to the user "
+            "mcp-gateway runs as."
+        ) from None
     try:
         fcntl.lockf(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except OSError as error:
         os.close(lock)
         if error.errno not in (errno.EACCES, errno.EAGAIN):
-            raise
-        raise RuntimeError(
+            raise StartupError(f"Can't lock {path} ({error}).") from None
+        raise StartupError(
             f"Another mcp-gateway process is using {state_dir}. Run one process only (no "
             "uvicorn --workers): sign-ins and wrong-passphrase counts are kept in its memory."
         ) from None

@@ -16,7 +16,7 @@ from uvicorn.config import STARTUP_FAILURE
 
 from mcp_gateway.auth import BearerAuth
 from mcp_gateway.bridge import AgentBridge
-from mcp_gateway.config import Settings
+from mcp_gateway.config import Settings, StartupError
 from mcp_gateway.oauth import GatewayOAuth
 from mcp_gateway.tools import build_server
 
@@ -93,8 +93,10 @@ def main() -> ASGIApp:
     """uvicorn factory: `uvicorn mcp_gateway.server:main --factory`."""
     try:
         return create_app(Settings.from_env())
-    except RuntimeError as error:
-        # Bad settings or state, or another process on the state folder: with --workers,
-        # uvicorn stops on this exit code instead of starting the worker again and again.
+    except StartupError as error:
+        # Bad settings or state, or another process on the state folder: the message is enough.
         log.error("%s", error)
-        sys.exit(STARTUP_FAILURE)
+    except Exception:
+        log.exception("mcp-gateway could not start")
+    # With --workers, uvicorn stops on this exit code instead of starting the worker again and again.
+    sys.exit(STARTUP_FAILURE)
