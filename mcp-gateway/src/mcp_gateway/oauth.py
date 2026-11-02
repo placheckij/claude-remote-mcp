@@ -10,11 +10,13 @@ this module keeps the records. Tokens are stored as SHA-256 hashes in
 <state_dir>/oauth.json, so a copy of the file can't call the server, and a client is only
 written there once it has signed in: registering is open to anyone.
 
-Everything else (new registrations, sign-ins in progress, codes, wrong-passphrase counts)
-lives in this process's memory, so the gateway must run as one process: a second one
-(uvicorn --workers, another instance on the same state) would lose sign-ins halfway and
-multiply the guesses allowed. It holds a lock on the state folder to refuse a second
-process. Running more than one would need that state, and the counting, in a shared store.
+oauth.json is read once, at startup, and everything else (new registrations, sign-ins in
+progress, codes, wrong-passphrase counts) lives in this process's memory, so the gateway
+must run as one process: a second one (uvicorn --workers, another instance on the same
+state) would refuse the first one's tokens, overwrite them on its next save, lose
+sign-ins halfway and multiply the guesses allowed. It holds a lock on the state folder to
+refuse a second process. Running more than one would need the tokens, that state and the
+counting in a shared store.
 """
 
 import errno
@@ -448,10 +450,12 @@ def _lock_state_dir(state_dir: Path) -> int | None:
         lock = os.open(path, os.O_RDWR | os.O_CREAT, 0o600)
     except OSError as error:
         # E.g. a lock file left owned by root after starting the gateway by hand as root.
-        raise StartupError(
-            f"Can't open {path} ({error}). The folder and its files must belong to the user "
-            "mcp-gateway runs as."
-        ) from None
+        advice = (
+            " The folder and its files must belong to the user mcp-gateway runs as."
+            if error.errno in (errno.EACCES, errno.EPERM)
+            else " MCP_GATEWAY_STATE_DIR must be a writable folder."
+        )
+        raise StartupError(f"Can't open {path} ({error}).{advice}") from None
     try:
         fcntl.lockf(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except OSError as error:

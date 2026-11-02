@@ -657,6 +657,12 @@ def test_a_lock_file_the_gateway_cant_open_says_whose_it_must_be(tmp_path: Path)
         GatewayOAuth(settings(tmp_path))
 
 
+def test_a_state_dir_that_cant_be_made_says_so(tmp_path: Path) -> None:
+    (tmp_path / "file").touch()
+    with pytest.raises(StartupError, match="MCP_GATEWAY_STATE_DIR must be a writable folder"):
+        GatewayOAuth(settings(tmp_path / "file" / "state"))
+
+
 # --- The static token -------------------------------------------------------------------
 
 
