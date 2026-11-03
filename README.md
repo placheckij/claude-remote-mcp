@@ -5,8 +5,7 @@
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue.svg)](pyproject.toml)
 
-Drive your Claude Code agents by voice from the Claude app (e.g. on CarPlay), through a
-custom MCP connector added to your Claude account.
+Voice-driven remote orchestration for Claude Code agents. Manage and supervise AI coding agents from anywhere using natural language.
 
 ```
 Claude app (voice)
