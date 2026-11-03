@@ -1,0 +1,193 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="680" viewBox="0 0 960 680" role="img" aria-labelledby="title desc">
+  <title id="title">claude-remote-mcp architecture</title>
+  <desc id="desc">Three layers. Interaction: the Claude app (voice, mobile, CarPlay, web, desktop). It reaches the orchestration layer on the gateway host over MCP over HTTPS through a Cloudflare Tunnel with an OAuth access token: mcp-gateway handles OAuth, authentication, tool routing and agent operations, and keeps clients and token hashes in oauth.json. mcp-gateway reaches the execution layer on the agent host over HTTP on the LAN with agent-bridge's bearer token: agent-bridge, a stateless HTTP API, drives herdr workspaces and panes through the herdr CLI, and herdr runs many Claude Code sessions, one per pane.</desc>
+  <style>
+    .sans { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', sans-serif; }
+    .mono { font-family: ui-monospace, 'SF Mono', 'JetBrains Mono', Menlo, Consolas, monospace; }
+    .bg { fill: #02080e; }
+    .frame, .bracket { fill: none; stroke: #5fd4ff; stroke-width: 1.6; stroke-linecap: square; }
+    .frame { opacity: 0.85; }
+    .bracket { opacity: 0.7; }
+    .ruler { fill: none; stroke: rgba(95,212,255,0.28); stroke-width: 1; }
+    .head-l { fill: #5fd4ff; font-size: 11px; letter-spacing: 3px; }
+    .head-r { fill: #86aabb; font-size: 10px; letter-spacing: 2px; }
+    .panel { fill: rgba(95,212,255,0.035); stroke: rgba(95,212,255,0.28); stroke-width: 1; }
+    .label { fill: #5fd4ff; font-size: 11px; letter-spacing: 2.5px; }
+    .tag { fill: #86aabb; font-size: 10px; letter-spacing: 2px; }
+    .node { fill: #04131c; }
+    .edge { fill: none; stroke: #5fd4ff; stroke-width: 1.2; opacity: 0.8; filter: url(#glow); }
+    .accent { fill: none; stroke: #9fe6ff; stroke-width: 3; }
+    .title { fill: #e2f6ff; font-size: 16px; font-weight: 600; }
+    .sub { fill: #86aabb; font-size: 11px; }
+    .sessiontitle { fill: #e2f6ff; font-size: 13px; font-weight: 600; }
+    .store { fill: rgba(95,212,255,0.035); stroke: #5fd4ff; stroke-width: 1.1; stroke-dasharray: 4 3; opacity: 0.9; }
+    .storetitle { fill: #e2f6ff; font-size: 13px; font-weight: 600; }
+    .rotitle { fill: #5fd4ff; font-size: 10px; letter-spacing: 2px; }
+    .rokey { fill: #86aabb; font-size: 11px; }
+    .roval { fill: #b9d9e8; font-size: 11px; }
+    .wire { fill: none; stroke: #5fd4ff; stroke-width: 1.4; opacity: 0.6; }
+    .dotted { fill: none; stroke: #5fd4ff; stroke-width: 1.2; stroke-dasharray: 2 4; opacity: 0.7; }
+    .head { fill: #5fd4ff; }
+    .wiretag { fill: #02080e; stroke: rgba(95,212,255,0.28); stroke-width: 1; }
+    .wirestub { fill: none; stroke: rgba(95,212,255,0.28); stroke-width: 1; }
+    .wiretext { fill: #b9d9e8; font-size: 11px; }
+    .wirelabel { fill: #86aabb; font-size: 10px; letter-spacing: 1px; }
+    .boundary { fill: none; stroke: #ff5a6a; stroke-width: 1; stroke-dasharray: 4 6; opacity: 0.55; }
+    .bdiamond { fill: #ff5a6a; }
+    .btext { fill: #ff5a6a; font-size: 10px; letter-spacing: 2px; }
+    .spark { fill: none; stroke: #9fe6ff; stroke-width: 2.6; stroke-linecap: round; stroke-dasharray: 7 300; stroke-dashoffset: 7; }
+    .s1 { animation: s1 5.6s ease-in-out infinite; }
+    .s2 { animation: s2 5.6s ease-in-out infinite; }
+    .s3 { animation: s3 5.6s ease-in-out infinite; }
+    .s4 { animation: s4 5.6s ease-in-out infinite; }
+    @keyframes s1 { 0% { stroke-dashoffset: 7; } 24%, 100% { stroke-dashoffset: -100; } }
+    @keyframes s2 { 0%, 26% { stroke-dashoffset: 7; } 50%, 100% { stroke-dashoffset: -100; } }
+    @keyframes s3 { 0%, 52% { stroke-dashoffset: 7; } 66%, 100% { stroke-dashoffset: -100; } }
+    @keyframes s4 { 0%, 68% { stroke-dashoffset: 7; } 82%, 100% { stroke-dashoffset: -100; } }
+    @media (prefers-reduced-motion: reduce) { .spark { animation: none; opacity: 0; } }
+  </style>
+  <defs>
+    <pattern id="hex" width="20.78" height="36" patternUnits="userSpaceOnUse">
+      <path d="M0 6L10.39 0L20.78 6V18L10.39 24L0 18Z M10.39 24V36" fill="none" stroke="#5fd4ff" stroke-opacity="0.07" stroke-width="1"/>
+    </pattern>
+    <filter id="glow" x="-20%" y="-40%" width="140%" height="180%">
+      <feGaussianBlur stdDeviation="3.2" result="b"/>
+      <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+  </defs>
+
+  <rect class="bg" width="960" height="680"/>
+  <rect width="960" height="680" fill="url(#hex)"/>
+  <path class="frame" d="M12,34 V12 H34"/>
+<path class="frame" d="M926,12 H948 V34"/>
+<path class="frame" d="M948,646 V668 H926"/>
+<path class="frame" d="M34,668 H12 V646"/>
+
+  <text class="mono head-l" x="40" y="34">CLAUDE-REMOTE-MCP // SYSTEM MAP</text>
+  <text class="mono head-r" x="920" y="34" text-anchor="end">3 LAYERS · 2 TRUST BOUNDARIES</text>
+  <path class="ruler" d="M40,48 H920 M40,48 V42 M60,48 V45 M80,48 V45 M100,48 V45 M120,48 V45 M140,48 V42 M160,48 V45 M180,48 V45 M200,48 V45 M220,48 V45 M240,48 V42 M260,48 V45 M280,48 V45 M300,48 V45 M320,48 V45 M340,48 V42 M360,48 V45 M380,48 V45 M400,48 V45 M420,48 V45 M440,48 V42 M460,48 V45 M480,48 V45 M500,48 V45 M520,48 V45 M540,48 V42 M560,48 V45 M580,48 V45 M600,48 V45 M620,48 V45 M640,48 V42 M660,48 V45 M680,48 V45 M700,48 V45 M720,48 V45 M740,48 V42 M760,48 V45 M780,48 V45 M800,48 V45 M820,48 V45 M840,48 V42 M860,48 V45 M880,48 V45 M900,48 V45 M920,48 V45 "/>
+
+  <path class="panel" d="M40,60 H902 L920,78 V172 L920,172 H58 L40,154 V60 Z"/>
+  <text class="mono label" x="58" y="81">L1 // INTERACTION</text>
+  <text class="mono tag" x="900" y="81" text-anchor="end">ANY CLAUDE CLIENT</text>
+
+  <path class="node" d="M82,94 H370 L370,94 V140 L358,152 H70 L70,152 V106 Z"/>
+  <path class="edge" d="M82,94 H370 L370,94 V140 L358,152 H70 L70,152 V106 Z"/>
+  <path class="accent" d="M90,94 H120"/>
+  <text class="sans title" x="220.0" y="118" text-anchor="middle">Claude app</text>
+  <text class="mono sub" x="220.0" y="138" text-anchor="middle">voice · mobile · CarPlay · web · desktop</text>
+
+  <path class="bracket" d="M600,100 V92 H608"/>
+<path class="bracket" d="M892,92 H900 V100"/>
+<path class="bracket" d="M900,150 V158 H892"/>
+<path class="bracket" d="M608,158 H600 V150"/>
+  <text class="mono rotitle" x="614" y="109">CLIENT LIMITS</text>
+  <text class="mono rokey" x="614" y="127">voice tool call</text>
+  <text class="mono roval" x="886" y="127" text-anchor="end">~30 s</text>
+  <text class="mono rokey" x="614" y="142">tool wait</text>
+  <text class="mono roval" x="886" y="142" text-anchor="end">≤ 20 s</text>
+  <text class="mono rokey" x="614" y="157">replies</text>
+  <text class="mono roval" x="886" y="157" text-anchor="end">a few spoken lines</text>
+
+  <path class="wire" d="M220,152 V286"/>
+  <path class="head" d="M215,278 L220,286 L225,278 Z"/>
+
+  <path class="boundary" d="M40,214 H920"/>
+  <path class="bdiamond" d="M40,210 L44,214 L40,218 L36,214 Z"/>
+  <text class="mono btext" x="916" y="207" text-anchor="end">TRUST BOUNDARY 01 · INTERNET → GATEWAY</text>
+
+  <path class="wiretag" d="M242,182 H387.2 L394.2,189 V241 L394.2,241 H249 L242,234 V182 Z"/>
+  <path class="wirestub" d="M226,211.5 H242"/>
+  <text class="mono wiretext" x="256" y="201">MCP over HTTPS</text>
+  <text class="mono wiretext" x="256" y="216">Cloudflare Tunnel</text>
+  <text class="mono wiretext" x="256" y="231">OAuth access token</text>
+
+  <path class="panel" d="M40,252 H902 L920,270 V394 L920,394 H58 L40,376 V252 Z"/>
+  <text class="mono label" x="58" y="273">L2 // ORCHESTRATION</text>
+  <text class="mono tag" x="900" y="273" text-anchor="end">GATEWAY HOST</text>
+
+  <path class="node" d="M82,286 H370 L370,286 V360 L358,372 H70 L70,372 V298 Z"/>
+  <path class="edge" d="M82,286 H370 L370,286 V360 L358,372 H70 L70,372 V298 Z"/>
+  <path class="accent" d="M90,286 H120"/>
+  <text class="sans title" x="220.0" y="310" text-anchor="middle">mcp-gateway</text>
+  <text class="mono sub" x="220.0" y="330" text-anchor="middle">OAuth · authentication</text>
+  <text class="mono sub" x="220.0" y="345" text-anchor="middle">tool routing</text>
+  <text class="mono sub" x="220.0" y="360" text-anchor="middle">agent operations</text>
+  <path class="dotted" d="M370,329 H420"/>
+
+  <path class="store" d="M430,300 H640 L640,300 V348 L630,358 H420 L420,358 V310 Z"/>
+  <text class="mono storetitle" x="530.0" y="326" text-anchor="middle">oauth.json</text>
+  <text class="mono sub" x="530.0" y="345" text-anchor="middle">clients · token hashes</text>
+
+  <path class="bracket" d="M670,298 V290 H678"/>
+<path class="bracket" d="M892,290 H900 V298"/>
+<path class="bracket" d="M900,356 V364 H892"/>
+<path class="bracket" d="M678,364 H670 V356"/>
+  <text class="mono rotitle" x="684" y="307">SIGN-IN</text>
+  <text class="mono rokey" x="684" y="325">access token</text>
+  <text class="mono roval" x="886" y="325" text-anchor="end">1 h</text>
+  <text class="mono rokey" x="684" y="340">refresh token</text>
+  <text class="mono roval" x="886" y="340" text-anchor="end">90 d, rotated</text>
+  <text class="mono rokey" x="684" y="355">credential</text>
+  <text class="mono roval" x="886" y="355" text-anchor="end">passphrase</text>
+
+  <path class="wire" d="M220,372 V536"/>
+  <path class="head" d="M215,528 L220,536 L225,528 Z"/>
+
+  <path class="boundary" d="M40,436 H920"/>
+  <path class="bdiamond" d="M40,432 L44,436 L40,440 L36,436 Z"/>
+  <text class="mono btext" x="916" y="429" text-anchor="end">TRUST BOUNDARY 02 · GATEWAY → AGENT HOST</text>
+
+  <path class="wiretag" d="M242,414 H449.3 L456.3,421 V458 L456.3,458 H249 L242,451 V414 Z"/>
+  <path class="wirestub" d="M226,436.0 H242"/>
+  <text class="mono wiretext" x="256" y="433">HTTP over the LAN</text>
+  <text class="mono wiretext" x="256" y="448">agent-bridge's bearer token</text>
+
+  <path class="panel" d="M40,474 H902 L920,492 V650 L920,650 H58 L40,632 V474 Z"/>
+  <text class="mono label" x="58" y="495">L3 // EXECUTION</text>
+  <text class="mono tag" x="900" y="495" text-anchor="end">AGENT HOST</text>
+
+  <path class="node" d="M82,536 H370 L370,536 V592 L358,604 H70 L70,604 V548 Z"/>
+  <path class="edge" d="M82,536 H370 L370,536 V592 L358,604 H70 L70,604 V548 Z"/>
+  <path class="accent" d="M90,536 H120"/>
+  <text class="sans title" x="220.0" y="563" text-anchor="middle">agent-bridge</text>
+  <text class="mono sub" x="220.0" y="583" text-anchor="middle">HTTP API · no state</text>
+
+  <path class="node" d="M452,536 H640 L640,536 V592 L628,604 H440 L440,604 V548 Z"/>
+  <path class="edge" d="M452,536 H640 L640,536 V592 L628,604 H440 L440,604 V548 Z"/>
+  <path class="accent" d="M460,536 H490"/>
+  <text class="sans title" x="540.0" y="563" text-anchor="middle">herdr</text>
+  <text class="mono sub" x="540.0" y="583" text-anchor="middle">workspaces · panes</text>
+  <path class="wire" d="M370,570 H440"/>
+  <path class="head" d="M432,565 L440,570 L432,575 Z"/>
+  <text class="mono wirelabel" x="405" y="561" text-anchor="middle">herdr CLI</text>
+
+  <path class="node" d="M728,508 H900 L900,508 V536 L892,544 H720 L720,544 V516 Z"/>
+  <path class="edge" d="M728,508 H900 L900,508 V536 L892,544 H720 L720,544 V516 Z"/>
+  <text class="sans sessiontitle" x="734" y="531">Claude Code</text>
+  <text class="mono sub" x="886" y="531" text-anchor="end">w1:p1</text>
+  <path class="wire" d="M640,570 H656 L700,526 H720"/>
+  <path class="head" d="M712,521 L720,526 L712,531 Z"/>
+
+  <path class="node" d="M728,552 H900 L900,552 V580 L892,588 H720 L720,588 V560 Z"/>
+  <path class="edge" d="M728,552 H900 L900,552 V580 L892,588 H720 L720,588 V560 Z"/>
+  <text class="sans sessiontitle" x="734" y="575">Claude Code</text>
+  <text class="mono sub" x="886" y="575" text-anchor="end">w2:p1</text>
+  <path class="wire" d="M640,570 H720"/>
+  <path class="head" d="M712,565 L720,570 L712,575 Z"/>
+
+  <path class="node" d="M728,596 H900 L900,596 V624 L892,632 H720 L720,632 V604 Z"/>
+  <path class="edge" d="M728,596 H900 L900,596 V624 L892,632 H720 L720,632 V604 Z"/>
+  <text class="sans sessiontitle" x="734" y="619">Claude Code</text>
+  <text class="mono sub" x="886" y="619" text-anchor="end">w3:p1</text>
+  <path class="wire" d="M640,570 H656 L700,614 H720"/>
+  <path class="head" d="M712,609 L720,614 L712,619 Z"/>
+
+  <path class="ruler" d="M40,666 H920 M40,666 V660 M60,666 V663 M80,666 V663 M100,666 V663 M120,666 V663 M140,666 V660 M160,666 V663 M180,666 V663 M200,666 V663 M220,666 V663 M240,666 V660 M260,666 V663 M280,666 V663 M300,666 V663 M320,666 V663 M340,666 V660 M360,666 V663 M380,666 V663 M400,666 V663 M420,666 V663 M440,666 V660 M460,666 V663 M480,666 V663 M500,666 V663 M520,666 V663 M540,666 V660 M560,666 V663 M580,666 V663 M600,666 V663 M620,666 V663 M640,666 V660 M660,666 V663 M680,666 V663 M700,666 V663 M720,666 V663 M740,666 V660 M760,666 V663 M780,666 V663 M800,666 V663 M820,666 V663 M840,666 V660 M860,666 V663 M880,666 V663 M900,666 V663 M920,666 V663 "/>
+  <path class="spark s1" pathLength="100" d="M220,152 V286"/>
+  <path class="spark s2" pathLength="100" d="M220,372 V536"/>
+  <path class="spark s3" pathLength="100" d="M370,570 H440"/>
+  <path class="spark s4" pathLength="100" d="M640,570 H656 L700,526 H720"/>
+  <path class="spark s4" pathLength="100" d="M640,570 H720"/>
+  <path class="spark s4" pathLength="100" d="M640,570 H656 L700,614 H720"/>
+</svg>
