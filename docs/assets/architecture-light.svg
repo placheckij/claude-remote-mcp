@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="960" height="680" viewBox="0 0 960 680" role="img" aria-labelledby="title desc">
   <title id="title">claude-remote-mcp architecture</title>
-  <desc id="desc">Three layers. Interaction: the Claude app (voice, mobile, CarPlay, web, desktop). It reaches the orchestration layer on the gateway host over MCP over HTTPS through a Cloudflare Tunnel with an OAuth access token: mcp-gateway handles OAuth, authentication, tool routing and agent operations, and keeps clients and token hashes in oauth.json. mcp-gateway reaches the execution layer on the agent host over HTTP on the LAN with agent-bridge's bearer token: agent-bridge, a stateless HTTP API, drives herdr workspaces and panes through the herdr CLI, and herdr runs many Claude Code sessions, one per pane.</desc>
+  <desc id="desc">Three layers. Interaction: the Claude app (voice, mobile, CarPlay, web, desktop). It reaches the orchestration layer on the gateway host over MCP over HTTPS through a Cloudflare Tunnel with an OAuth access token: mcp-gateway handles OAuth, authentication, tool routing and agent operations, and keeps clients and token hashes in oauth.json. mcp-gateway reaches the execution layer on the agent host over HTTP on the LAN with agent-bridge's bearer token: agent-bridge, a stateless HTTP API that only changes agents under its allowed roots, drives herdr workspaces and panes through the herdr CLI, and herdr runs many Claude Code sessions, one per pane.</desc>
   <style>
     .sans { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', sans-serif; }
     .mono { font-family: ui-monospace, 'SF Mono', 'JetBrains Mono', Menlo, Consolas, monospace; }
@@ -147,7 +147,7 @@
   <path class="edge" d="M82,536 H370 L370,536 V592 L358,604 H70 L70,604 V548 Z"/>
   <path class="accent" d="M90,536 H120"/>
   <text class="sans title" x="220.0" y="563" text-anchor="middle">agent-bridge</text>
-  <text class="mono sub" x="220.0" y="583" text-anchor="middle">HTTP API · no state</text>
+  <text class="mono sub" x="220.0" y="583" text-anchor="middle">HTTP API · no state · allowed roots</text>
 
   <path class="node" d="M452,536 H640 L640,536 V592 L628,604 H440 L440,604 V548 Z"/>
   <path class="edge" d="M452,536 H640 L640,536 V592 L628,604 H440 L440,604 V548 Z"/>
