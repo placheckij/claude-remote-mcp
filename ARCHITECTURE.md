@@ -4,45 +4,10 @@ claude-remote-mcp has three layers. Each runs in a different place, holds its ow
 state, and reaches the layer below only with that layer's own credential. This page is
 the map; the component READMEs have the details.
 
-```mermaid
-flowchart TB
-  subgraph interaction["Interaction layer"]
-    direction LR
-    app(["<b>Claude app</b><br/>voice · mobile · CarPlay · web · desktop"])
-  end
-
-  subgraph orchestration["Orchestration#nbsp;layer#nbsp;·#nbsp;gateway#nbsp;host"]
-    direction LR
-    gateway("<b>mcp-gateway</b><br/>OAuth · authentication<br/>tool routing<br/>agent operations")
-    tokens[("oauth.json<br/>clients · token hashes")]
-    gateway -.- tokens
-  end
-
-  subgraph execution["Execution#nbsp;layer#nbsp;·#nbsp;agent#nbsp;host"]
-    direction LR
-    bridge("<b>agent-bridge</b><br/>HTTP API · no state")
-    herdr("<b>herdr</b><br/>workspaces · panes")
-    sessions(["<b>Claude Code</b><br/>sessions"])
-    bridge -- "herdr CLI" --> herdr --> sessions
-  end
-
-  %% Linking the layers, not the boxes in them, keeps each layer laid out left to right.
-  interaction == "MCP over HTTPS<br/>Cloudflare Tunnel<br/>OAuth access token" ==> orchestration
-  orchestration == "HTTP over the LAN<br/>agent-bridge's bearer token" ==> execution
-
-  classDef interactionNode fill:#ffffff,stroke:#0284c7,stroke-width:2px,color:#0c4a6e
-  classDef orchestrationNode fill:#ffffff,stroke:#7c3aed,stroke-width:2px,color:#3b0764
-  classDef executionNode fill:#ffffff,stroke:#059669,stroke-width:2px,color:#064e3b
-  classDef store fill:#f5f3ff,stroke:#7c3aed,stroke-width:1px,stroke-dasharray:4 3,color:#3b0764
-  class app interactionNode
-  class gateway orchestrationNode
-  class tokens store
-  class bridge,herdr,sessions executionNode
-  style interaction fill:#e0f2fe,stroke:#0284c7,stroke-width:1px,color:#0c4a6e
-  style orchestration fill:#ede9fe,stroke:#7c3aed,stroke-width:1px,color:#3b0764
-  style execution fill:#d1fae5,stroke:#059669,stroke-width:1px,color:#064e3b
-  linkStyle default stroke:#64748b,stroke-width:2px
-```
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/architecture-dark.svg">
+  <img src="docs/assets/architecture-light.svg" width="100%" alt="Three layers. The Claude app reaches mcp-gateway on the gateway host over MCP over HTTPS, through a Cloudflare Tunnel, with an OAuth access token; mcp-gateway keeps clients and token hashes in oauth.json. mcp-gateway reaches agent-bridge on the agent host over HTTP on the LAN with agent-bridge's bearer token. agent-bridge drives herdr through the herdr CLI, and herdr runs many Claude Code sessions, one per pane.">
+</picture>
 
 ## Interaction layer: the Claude app
 
