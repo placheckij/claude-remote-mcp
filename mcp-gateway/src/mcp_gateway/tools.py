@@ -33,9 +33,24 @@ wait_for_agent again. If a call fails without saying why, it may still have gone
 check with read_output before sending the same prompt again. Agent ids look like "w1:p1".
 """
 
-READ_ONLY = ToolAnnotations(read_only_hint=True, open_world_hint=False)
-ACTION = ToolAnnotations(read_only_hint=False, destructive_hint=False, open_world_hint=False)
-DESTRUCTIVE = ToolAnnotations(read_only_hint=False, destructive_hint=True, open_world_hint=False)
+# Every tool sets all four hints: some directories (OpenAI's) reject a tool missing any.
+# Idempotent means a repeated call changes nothing more, so a client may retry it.
+def _hints(read_only: bool, destructive: bool, idempotent: bool) -> ToolAnnotations:
+    return ToolAnnotations(
+        read_only_hint=read_only,
+        destructive_hint=destructive,
+        idempotent_hint=idempotent,
+        open_world_hint=False,
+    )
+
+
+READ_ONLY = _hints(read_only=True, destructive=False, idempotent=True)
+ACTION = _hints(read_only=False, destructive=False, idempotent=False)
+# The agent's own name doesn't count as taken, so renaming it again gives the same name.
+RENAME = _hints(read_only=False, destructive=False, idempotent=True)
+DESTRUCTIVE = _hints(read_only=False, destructive=True, idempotent=False)
+# herdr never reuses a closed pane's id, so stopping again can't close another agent.
+STOP = _hints(read_only=False, destructive=True, idempotent=True)
 
 # Checked here so nothing else (paths, query strings, options) ends up in the bridge's URL.
 AgentId = Annotated[
@@ -224,7 +239,7 @@ def build_server(settings: Settings, bridge: AgentBridge, oauth: GatewayOAuth) -
         started = f"Started on the {agent['account']} account:" if agent.get("account") else "Started"
         return f"{started} {describe(agent, root)}"
 
-    @mcp.tool(annotations=ACTION)
+    @mcp.tool(annotations=RENAME)
     async def rename_agent(
         agent_id: AgentId,
         name: Annotated[
@@ -238,7 +253,7 @@ def build_server(settings: Settings, bridge: AgentBridge, oauth: GatewayOAuth) -
         agent = await call(bridge.rename_agent(agent_id, name))
         return f"Renamed {agent_id} to {agent['name']}."
 
-    @mcp.tool(annotations=DESTRUCTIVE)
+    @mcp.tool(annotations=STOP)
     async def stop_agent(agent_id: AgentId) -> str:
         """Stop an agent and close its terminal pane. Ask the user to confirm first."""
         await call(bridge.stop_agent(agent_id))
