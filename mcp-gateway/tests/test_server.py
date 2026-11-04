@@ -515,6 +515,45 @@ def test_answering_an_agent_is_marked_destructive(client: TestClient) -> None:
     assert "never" in tools["answer_agent"]["description"].lower()
 
 
+HINTS = ("readOnlyHint", "destructiveHint", "idempotentHint", "openWorldHint")
+
+
+@pytest.mark.parametrize(
+    ("name", "hints"),
+    [
+        ("list_agents", (True, False, True, False)),
+        ("agent_details", (True, False, True, False)),
+        ("read_output", (True, False, True, False)),
+        ("wait_for_agent", (True, False, True, False)),
+        # Sending again types the prompt again, and starting again starts a second agent.
+        ("send_prompt", (False, False, False, False)),
+        ("start_agent", (False, False, False, False)),
+        # The agent's own name doesn't count as taken, so renaming again changes nothing.
+        ("rename_agent", (False, False, True, False)),
+        # Answering again presses the keys again, in whatever prompt comes next.
+        ("answer_agent", (False, True, False, False)),
+        # herdr never reuses a closed pane's id, so stopping again can't hit another agent.
+        ("stop_agent", (False, True, True, False)),
+    ],
+)
+def test_every_tool_declares_all_four_hints(
+    client: TestClient, name: str, hints: tuple[bool, ...]
+) -> None:
+    # Directories such as OpenAI's reject a tool unless every hint is an explicit boolean.
+    tools = {tool["name"]: tool for tool in rpc(client, "tools/list").json()["result"]["tools"]}
+    annotations = tools[name]["annotations"]
+    assert tuple(annotations.get(hint) for hint in HINTS) == hints
+
+
+def test_hints_are_checked_for_every_tool(client: TestClient) -> None:
+    # A new tool must be added to the table above.
+    tools = {tool["name"] for tool in rpc(client, "tools/list").json()["result"]["tools"]}
+    assert tools == {
+        "list_agents", "agent_details", "read_output", "wait_for_agent", "send_prompt",
+        "start_agent", "rename_agent", "answer_agent", "stop_agent",
+    }
+
+
 def test_refusals_from_the_bridge_reach_the_model_verbatim(client: TestClient, fake: FakeAgentBridge) -> None:
     message = (
         "Refusing to start a new agent: 10 agents are already running "
