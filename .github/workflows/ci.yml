@@ -36,6 +36,8 @@ jobs:
         run: uv run --frozen --package agent-bridge pytest agent-bridge
       - name: mcp-gateway tests
         run: uv run --frozen --package mcp-gateway pytest mcp-gateway
+      - name: root tests (both packages in one run)
+        run: uv run --frozen pytest
 
   shellcheck:
     name: shellcheck
