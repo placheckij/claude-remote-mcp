@@ -31,9 +31,10 @@ class Settings(BaseSettings):
     bridge_token: str
     # Host header the tunnel forwards, e.g. mcp.example.com; checked against DNS rebinding.
     public_host: str
-    # Relative project paths given to start_agent resolve against this folder on the
-    # agent host, e.g. /home/me/projects.
-    projects_root: str
+    # Only for an agent-bridge from before /info, which can't look up project names: names
+    # given to start_agent resolve against this folder on the agent host, e.g.
+    # /home/me/projects. Without it such a host takes absolute paths only.
+    projects_root: str | None = None
 
     @classmethod
     def from_env(cls) -> "Settings":

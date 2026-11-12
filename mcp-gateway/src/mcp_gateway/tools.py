@@ -2,6 +2,7 @@
 
 import posixpath
 import re
+from time import monotonic
 from typing import Annotated
 
 from mcp.server.mcpserver import MCPServer
@@ -11,7 +12,7 @@ from pydantic import AfterValidator, Field, ValidationError
 from starlette.requests import Request
 from starlette.responses import PlainTextResponse
 
-from mcp_gateway.bridge import AgentBridge, BridgeError, BridgeTimeout
+from mcp_gateway.bridge import START_TIMEOUT_S, AgentBridge, BridgeError, BridgeTimeout
 from mcp_gateway.config import Settings
 from mcp_gateway.oauth import LOGIN_PATH, GatewayOAuth
 from mcp_gateway.replies import count, describe, invalid, report, with_truncation_note
@@ -202,7 +203,7 @@ def build_server(settings: Settings, bridge: AgentBridge, oauth: GatewayOAuth) -
             str,
             Field(
                 min_length=1,
-                description=f"Project folder: one folder name under {settings.projects_root} "
+                description="Project folder: one folder name in the agent host's project folders "
                 "(e.g. \"grafik\") or an absolute path on the agent host.",
             ),
         ],
@@ -222,11 +223,19 @@ def build_server(settings: Settings, bridge: AgentBridge, oauth: GatewayOAuth) -
     ) -> str:
         """Start a new Claude Code agent in a project folder on the agent host. Refused when too
         many agents are already running, the folder is not allowed or the account is unknown."""
-        cwd = _project_folder(settings.projects_root, project)
-        # Names come from speech ("my agent"); agent-bridge only takes [\w.-].
-        agent_name = _safe_name(name or posixpath.basename(cwd))
+        # The start's time also covers this question (bridge.START_TIMEOUT_S).
+        asked = monotonic()
+        if await call(bridge.info()) is not None:
+            where = {"project": project}
+        else:
+            where = {"cwd": _project_folder(root, project)}
+            name = name or posixpath.basename(where["cwd"])
+        # Names come from speech ("my agent"); agent-bridge before /info only takes [\w.-].
+        # Without one, agent-bridge names the agent after its folder.
+        agent_name = _safe_name(name) if name else None
+        timeout = max(START_TIMEOUT_S - (monotonic() - asked), 1)
         try:
-            agent = await bridge.start_agent(cwd, agent_name, account)
+            agent = await bridge.start_agent(**where, name=agent_name, account=account, timeout=timeout)
         except BridgeTimeout as error:
             # Not a tool error: the agent may still come up, and starting it again would
             # make a second one.
@@ -266,15 +275,18 @@ def build_server(settings: Settings, bridge: AgentBridge, oauth: GatewayOAuth) -
     return mcp
 
 
-def _project_folder(projects_root: str, project: str) -> str:
-    """The folder start_agent asks for: an absolute path as given (agent-bridge checks it
-    against its allowlist), or one folder name directly under the projects root."""
+def _project_folder(projects_root: str | None, project: str) -> str:
+    """The folder to start in on an agent-bridge before /info, which can't resolve project
+    names: an absolute path as given (agent-bridge checks it against its allowlist), or
+    one folder name directly under the projects root."""
     if posixpath.isabs(project):
         return posixpath.normpath(project)
     # ".." would climb out of the root, "." would be the root itself (an agent over every
     # project), and "~" is not expanded on the agent host.
     if any(part in project for part in ("..", "/", "~")) or project.strip() == ".":
         raise ToolError('Give the project as one folder name, like "grafik", or as an absolute path.')
+    if projects_root is None:
+        raise ToolError("This agent host can't look up project names; give the project as an absolute path.")
     return posixpath.join(projects_root, project)
 
 

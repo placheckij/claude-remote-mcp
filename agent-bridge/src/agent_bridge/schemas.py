@@ -5,7 +5,7 @@ Responses are trimmed to what a voice-driven caller needs; raw terminal output i
 
 from typing import Annotated
 
-from pydantic import AfterValidator, BaseModel, Field
+from pydantic import AfterValidator, BaseModel, Field, model_validator
 
 # Prompts go to herdr as one command-line argument; Linux caps a single argument at
 # 128 KiB, and 20 000 characters stay below it even at 4 bytes each.
@@ -32,6 +32,9 @@ class AgentSummary(BaseModel):
     # The question an idle or done agent ended its turn with, if any: it is waiting for
     # the user's answer, though herdr can't tell that from any other finished turn.
     question: str | None = None
+    # The folder under an allowed root that `cwd` is in (agents.project_of); None at a
+    # root itself or outside every root.
+    project: str | None = None
 
 
 class StartedAgent(AgentSummary):
@@ -74,16 +77,46 @@ class KeysRequest(BaseModel):
 
 
 class StartRequest(BaseModel):
-    cwd: ArgvText
-    # Any spoken name; it's turned into one herdr accepts (agents.herdr_name).
-    name: str = Field(min_length=1, max_length=200)
+    # A folder name under an allowed root, or an absolute path; exactly one of this and
+    # `cwd` is given.
+    project: ArgvText | None = Field(default=None, min_length=1)
+    # An absolute path, as gateways before `project` send it. Kept for one release.
+    cwd: ArgvText | None = None
+    # Any spoken name; it's turned into one herdr accepts (agents.herdr_name). By default
+    # the folder's name.
+    name: str | None = Field(default=None, min_length=1, max_length=200)
     # One of AGENT_BRIDGE_ACCOUNTS, any case; by default the one for the folder.
     account: str | None = Field(default=None, min_length=1, max_length=64)
+
+    @model_validator(mode="after")
+    def _one_folder(self) -> "StartRequest":
+        if (self.project is None) == (self.cwd is None):
+            raise ValueError("give either project or cwd")
+        return self
 
 
 class RenameRequest(BaseModel):
     # As in StartRequest.
     name: str = Field(min_length=1, max_length=200)
+
+
+class HostInfo(BaseModel):
+    # 1 is the API before /info; a gateway tells them apart by /info answering 404.
+    api_version: int
+    name: str
+    platform: str
+    bridge_version: str
+    # None when herdr can't be run.
+    herdr_version: str | None
+    roots: list[str]
+    # Where a bare project name was looked for before /projects: the first root.
+    projects_root: str
+    accounts: list[str]
+    max_agents: int
+
+
+class ProjectFolder(BaseModel):
+    cwd: str
 
 
 def summarize(agent: dict) -> AgentSummary:

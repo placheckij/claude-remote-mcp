@@ -79,6 +79,10 @@ class Herdr:
             raise HerdrError(envelope["error"]["code"], envelope["error"]["message"])
         return envelope["result"]
 
+    async def version(self) -> str:
+        """herdr's version, e.g. "0.9.5" from `herdr 0.9.5`."""
+        return (await self._run("--version")).strip().removeprefix("herdr").strip()
+
     async def list_agents(self) -> list[dict]:
         return (await self._json("agent", "list"))["agents"]
 
