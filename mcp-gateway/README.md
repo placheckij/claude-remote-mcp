@@ -99,7 +99,7 @@ change before its next request.
 - **Versions:** the gateway calls bridges at its own API version (2) and one behind. Any
   other shows in `list_agents` as needing an update and isn't called.
 - **Upgrading from one bridge:** if `MCP_GATEWAY_BRIDGE_URL` and `_TOKEN` are set and
-  there are no hosts yet, the first start imports them as one host, named by its
+  there is no `bridges.json` yet, the first start imports them as one host, named by its
   `/info` (`host` if it doesn't answer). The setup script then drops them from the env
   file.
 
