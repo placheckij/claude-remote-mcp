@@ -811,7 +811,9 @@ def test_start_agent_refuses_project_names_that_leave_the_projects_root(
 @pytest.mark.parametrize(
     ("project", "cwd", "name"),
     [("/home/me/projects/grafik", "/home/me/projects/grafik", "grafik"),
-     ("/srv/work/app/", "/srv/work/app", "app"), ("my-app.v2", "/home/me/projects/my-app.v2", "my-app.v2")],
+     ("/srv/work/app/", "/srv/work/app", "app"), ("my-app.v2", "/home/me/projects/my-app.v2", "my-app.v2"),
+     # Such a bridge needs a name; it refuses the folder itself.
+     ("/", "/", "agent")],
 )
 def test_start_agent_passes_absolute_paths_and_plain_names(
     client: TestClient, fake: FakeAgentBridge, project: str, cwd: str, name: str
