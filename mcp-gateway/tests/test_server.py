@@ -768,14 +768,14 @@ def test_folders_are_named_by_their_project(client: TestClient, fake: FakeAgentB
     # Read aloud, "/home/me/projects/grafik" after every agent is noise; the project is
     # what the user said when starting it. Folders outside every project keep their path.
     fake.routes[("GET", "/agents")] = httpx.Response(200, json=[
-        {**AGENT, "cwd": "/home/me/projects/grafik/api"},
+        {**AGENT, "cwd": "/home/me/projects/grafik/api", "project": "grafik/api"},
         {**AGENT, "id": "w2:p1", "name": "notes", "cwd": "C:\\Users\\me\\notes", "project": None},
         {**AGENT, "id": "w3:p1", "name": "lost", "cwd": None, "project": None},
     ])
     assert call_tool(client, "list_agents") == (
         False,
         "3 agents:\n"
-        "w1:p1 · grafik · idle · grafik\n"
+        "w1:p1 · grafik · idle · grafik/api\n"
         "w2:p1 · notes · idle · C:\\Users\\me\\notes\n"
         "w3:p1 · lost · idle · ?",
     )

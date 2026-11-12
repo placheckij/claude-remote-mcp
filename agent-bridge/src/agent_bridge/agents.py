@@ -374,16 +374,17 @@ def is_project_name(name: str) -> bool:
 
 
 def project_of(cwd: str | None, roots: Sequence[PurePath]) -> str | None:
-    """The folder under the closest root that `cwd` is in, e.g. "grafik" for
-    <root>/grafik/api; None at a root itself or outside every root. `cwd` is read as the
-    roots' kind of path, so Windows paths compare as Windows does (ignoring case)."""
+    """`cwd` under the closest root, joined with "/" on every platform since it is read
+    out rather than used as a path, e.g. "grafik/api" for <root>/grafik/api; None at a
+    root itself or outside every root. `cwd` is read as the roots' kind of path, so
+    Windows paths compare as Windows does (ignoring case)."""
     if not cwd:
         return None
     path = type(roots[0])(cwd)
     inside = [
         path.relative_to(root).parts for root in roots if path != root and path.is_relative_to(root)
     ]
-    return min(inside, key=len)[0] if inside else None
+    return "/".join(min(inside, key=len)) if inside else None
 
 
 # herdr's rule for agent names: lower-case ASCII, starting with a letter, at most 32 long.

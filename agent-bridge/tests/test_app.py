@@ -1270,13 +1270,14 @@ def test_agents_say_which_project_they_work_in(tmp_path: Path) -> None:
     working = [agent(f"w{i}:p1", status="working", cwd=str(cwd)) for i, cwd in enumerate(cwds)]
     runner = FakeRunner({("agent", "list"): ok({"agents": working})})
     listed = roots_client(runner, roots).get("/agents", headers=AUTH).json()
-    assert [a["project"] for a in listed] == ["grafik", "billing", None, None]
+    assert [a["project"] for a in listed] == ["grafik/api", "billing", None, None]
 
 
 @pytest.mark.parametrize(
     ("cwd", "roots", "project"),
     [
-        ("/home/me/projects/grafik/api", ("/home/me/projects",), "grafik"),
+        ("/home/me/projects/grafik/api", ("/home/me/projects",), "grafik/api"),
+        ("/home/me/projects/grafik", ("/home/me/projects",), "grafik"),
         ("/home/me/projects", ("/home/me/projects",), None),
         ("/home/me/projects-old/x", ("/home/me/projects",), None),
         ("/home/me/projects/work/billing", ("/home/me/projects", "/home/me/projects/work"), "billing"),
@@ -1291,7 +1292,8 @@ def test_projects_of_posix_folders(cwd: str | None, roots: tuple[str, ...], proj
 @pytest.mark.parametrize(
     ("cwd", "project"),
     [
-        ("C:\\Users\\me\\projects\\grafik\\api", "grafik"),
+        # Joined with "/" on every platform: it is a name to read out, not a path.
+        ("C:\\Users\\me\\projects\\grafik\\api", "grafik/api"),
         ("c:\\users\\ME\\Projects\\grafik", "grafik"),
         ("C:\\Users\\me\\projects", None),
         ("D:\\projects\\grafik", None),
