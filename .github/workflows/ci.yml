@@ -41,6 +41,27 @@ jobs:
       - name: root tests (both packages in one run)
         run: uv run --frozen --exact pytest
 
+  # Native Windows, for the agent-bridge only: the gateway runs on Linux.
+  windows:
+    name: agent-bridge tests (windows-latest, Python ${{ matrix.python }})
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.11", "3.13"]
+    env:
+      UV_PYTHON: ${{ matrix.python }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install uv
+        run: pipx install uv==0.11.15
+      - name: Install dependencies
+        run: uv sync --package agent-bridge --frozen
+      - name: agent-bridge tests
+        run: uv run --frozen --package agent-bridge pytest agent-bridge
+
   shellcheck:
     name: shellcheck
     runs-on: ubuntu-latest

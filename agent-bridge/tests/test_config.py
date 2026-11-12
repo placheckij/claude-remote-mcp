@@ -1,3 +1,6 @@
+import json
+import os
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
@@ -47,11 +50,11 @@ def test_refuses_a_trust_root_without_a_separate_config(env: pytest.MonkeyPatch,
 
 @pytest.mark.parametrize("config_dir", ["", ".claude", ".claude/nested"])
 def test_refuses_the_default_config_as_the_separate_one(
-    env: pytest.MonkeyPatch, tmp_path: Path, config_dir: str
+    env: pytest.MonkeyPatch, tmp_path: Path, config_dir: str, set_home: Callable[[Path], None]
 ) -> None:
     # The allowed root must not be the home folder itself, so keep them apart.
     home = tmp_path / "home"
-    env.setenv("HOME", str(home))
+    set_home(home)
     env.setenv("AGENT_BRIDGE_ALLOWED_ROOTS", str(tmp_path / "projects"))
     (home / config_dir).mkdir(parents=True, exist_ok=True)
     env.setenv("AGENT_BRIDGE_CLAUDE_CONFIG_DIR", str(home / config_dir))
@@ -61,7 +64,7 @@ def test_refuses_the_default_config_as_the_separate_one(
 
 def test_splits_roots_and_shell_quoted_args(env: pytest.MonkeyPatch, tmp_path: Path) -> None:
     (tmp_path / "a").mkdir()
-    env.setenv("AGENT_BRIDGE_ALLOWED_ROOTS", f"{tmp_path / 'a'}::{tmp_path / 'b'}")
+    env.setenv("AGENT_BRIDGE_ALLOWED_ROOTS", os.pathsep.join([str(tmp_path / "a"), "", str(tmp_path / "b")]))
     env.setenv("AGENT_BRIDGE_CLAUDE_ARGS", "--model 'opus 5' --verbose")
     settings = Settings.from_env()
     assert settings.allowed_roots == ((tmp_path / "a").resolve(), (tmp_path / "b").resolve())
@@ -97,7 +100,7 @@ def test_reads_a_dotenv_file_under_the_environment(env: pytest.MonkeyPatch, tmp_
     [
         ("AGENT_BRIDGE_TOKEN", "short", "AGENT_BRIDGE_TOKEN: .*at least 32"),
         ("AGENT_BRIDGE_ALLOWED_ROOTS", "", "AGENT_BRIDGE_ALLOWED_ROOTS: must list at least one"),
-        ("AGENT_BRIDGE_ALLOWED_ROOTS", ":", "AGENT_BRIDGE_ALLOWED_ROOTS: must list at least one"),
+        ("AGENT_BRIDGE_ALLOWED_ROOTS", os.pathsep, "AGENT_BRIDGE_ALLOWED_ROOTS: must list at least one"),
         ("AGENT_BRIDGE_MAX_AGENTS", "ten", "AGENT_BRIDGE_MAX_AGENTS: .*integer"),
     ],
 )
@@ -119,23 +122,29 @@ def test_required_settings_must_be_set(env: pytest.MonkeyPatch, name: str) -> No
 @pytest.mark.parametrize("variable", ["AGENT_BRIDGE_ALLOWED_ROOTS", "AGENT_BRIDGE_TRUST_ROOT"])
 @pytest.mark.parametrize("root", ["/", "{home}", "{home}/..", "projects", "./projects"])
 def test_refuses_roots_that_are_too_broad_or_relative(
-    env: pytest.MonkeyPatch, tmp_path: Path, variable: str, root: str
+    env: pytest.MonkeyPatch,
+    tmp_path: Path,
+    variable: str,
+    root: str,
+    set_home: Callable[[Path], None],
 ) -> None:
     # "/" or the home folder would let agents start (or be trusted) anywhere; a relative
     # path would resolve against launchd's working folder, which is "/".
     home = tmp_path / "home" / "me"
     home.mkdir(parents=True)
-    env.setenv("HOME", str(home))
+    set_home(home)
     env.setenv("AGENT_BRIDGE_CLAUDE_CONFIG_DIR", str(home / ".claude-agents"))
     env.setenv(variable, root.format(home=home))
     with pytest.raises(RuntimeError, match=variable):
         Settings.from_env()
 
 
-def test_accepts_a_project_folder_under_home(env: pytest.MonkeyPatch, tmp_path: Path) -> None:
+def test_accepts_a_project_folder_under_home(
+    env: pytest.MonkeyPatch, tmp_path: Path, set_home: Callable[[Path], None]
+) -> None:
     home = tmp_path / "home" / "me"
     (home / "projects").mkdir(parents=True)
-    env.setenv("HOME", str(home))
+    set_home(home)
     env.setenv("AGENT_BRIDGE_ALLOWED_ROOTS", "~/projects")
     env.setenv("AGENT_BRIDGE_CLAUDE_CONFIG_DIR", str(home / ".claude-agents"))
     env.setenv("AGENT_BRIDGE_TRUST_ROOT", str(home / "projects"))
@@ -145,11 +154,11 @@ def test_accepts_a_project_folder_under_home(env: pytest.MonkeyPatch, tmp_path: 
 
 def test_reads_accounts_as_json(env: pytest.MonkeyPatch, tmp_path: Path) -> None:
     (tmp_path / "work" / "app").mkdir(parents=True)
-    env.setenv(
-        "AGENT_BRIDGE_ACCOUNTS",
-        f'{{"work": {{"config_dir": null, "folders": ["{tmp_path}/work"]}},'
-        f' "personal": {{"config_dir": "{tmp_path}/.claude-personal", "folders": ["{tmp_path}"]}}}}',
-    )
+    accounts = {
+        "work": {"config_dir": None, "folders": [str(tmp_path / "work")]},
+        "personal": {"config_dir": str(tmp_path / ".claude-personal"), "folders": [str(tmp_path)]},
+    }
+    env.setenv("AGENT_BRIDGE_ACCOUNTS", json.dumps(accounts))
     settings = Settings.from_env()
     assert settings.accounts["work"].config_dir is None
     assert settings.accounts["personal"].config_dir == tmp_path / ".claude-personal"
@@ -164,12 +173,14 @@ def test_reads_accounts_as_json(env: pytest.MonkeyPatch, tmp_path: Path) -> None
     [
         ('{"Work": {}}', "lower-case"),
         ('{"work": {"config_dir": "relative/dir"}}', "absolute"),
-        ('{"work": {"folders": ["/"]}}', "too broad"),
+        ('{"work": {"folders": ["{drive}"]}}', "too broad"),
         ('{"work": {"folders": ["{root}"]}, "home": {"folders": ["{root}"]}}', "in both"),
         ('{"work": {"config": "/x"}}', r"AGENT_BRIDGE_ACCOUNTS \(work.config\): Extra inputs"),
     ],
 )
 def test_refuses_bad_accounts(env: pytest.MonkeyPatch, tmp_path: Path, accounts: str, problem: str) -> None:
-    env.setenv("AGENT_BRIDGE_ACCOUNTS", accounts.replace("{root}", str(tmp_path)))
+    # "/" on macOS and Linux, "C:/" on Windows.
+    drive = Path(tmp_path.anchor).as_posix()
+    env.setenv("AGENT_BRIDGE_ACCOUNTS", accounts.replace("{root}", tmp_path.as_posix()).replace("{drive}", drive))
     with pytest.raises(RuntimeError, match=problem):
         Settings.from_env()
