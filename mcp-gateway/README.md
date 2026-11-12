@@ -176,8 +176,6 @@ Cloudflare Tunnel, and generates the sign-in passphrase.
 - agent-bridge running on the agent host (see [its README](../agent-bridge/README.md)),
   its LAN URL, and its token. Give the agent host a fixed LAN address (a DHCP
   reservation on the router) so the URL stays valid.
-- The projects folder on the agent host that `start_agent` should resolve project names
-  against.
 
 ### Run it
 

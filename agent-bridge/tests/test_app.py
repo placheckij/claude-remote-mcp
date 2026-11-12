@@ -1232,6 +1232,21 @@ def test_start_takes_a_project_name_and_names_the_agent_after_it(tmp_path: Path)
     assert runner.called("agent", "start")[0][2] == "billing"
 
 
+@pytest.mark.parametrize("given", ["alias", "{root}/alias"])
+def test_start_names_the_agent_after_the_project_as_given(tmp_path: Path, given: str) -> None:
+    # Not after the folder a link leads to: the user said "alias".
+    roots = two_roots(tmp_path)
+    (roots[0] / "alias").symlink_to(roots[0] / "grafik")
+    runner = FakeRunner(start_responses(trust_dialog=False))
+    response = roots_client(runner, roots).post(
+        "/agents", headers=AUTH, json={"project": given.format(root=roots[0])}
+    )
+    assert response.status_code == 201, response.text
+    created = runner.called("workspace", "create")[0]
+    assert created[created.index("--cwd") + 1] == str((roots[0] / "grafik").resolve())
+    assert runner.called("agent", "start")[0][2] == "alias"
+
+
 def test_start_takes_an_absolute_project_path(tmp_path: Path) -> None:
     roots = two_roots(tmp_path)
     runner = FakeRunner(start_responses(trust_dialog=False))
