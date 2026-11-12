@@ -367,10 +367,10 @@ class AgentService:
 def is_project_name(name: str) -> bool:
     """True for one folder name: ".." would climb out of a root, "." would be the root
     itself (an agent over every project), "~" is never expanded, and separators or a
-    drive ("C:") of either platform would reach another folder."""
+    drive ("C:") of either platform would reach another folder; no path holds a NUL."""
     if name.strip() in ("", "."):
         return False
-    return not any(part in name for part in ("..", "/", "\\", "~", ":"))
+    return not any(part in name for part in ("..", "/", "\\", "~", ":", "\0"))
 
 
 def project_of(cwd: str | None, roots: Sequence[PurePath]) -> str | None:

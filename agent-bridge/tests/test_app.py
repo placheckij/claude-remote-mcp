@@ -1195,10 +1195,13 @@ def test_projects_are_looked_up_under_each_root_in_turn(
         assert response.json() == {"cwd": str((tmp_path / folder).resolve())}
 
 
-@pytest.mark.parametrize("name", [".", "x..y", "~grafik", "a\\b", "C:grafik", " "])
+@pytest.mark.parametrize(
+    "name", [".", "x..y", "~grafik", "a\\b", "C:grafik", " ", "a%00b", "grafik/api", "grafik%2Fapi", ""]
+)
 def test_project_lookups_refuse_anything_but_a_folder_name(tmp_path: Path, name: str) -> None:
     response = roots_client(FakeRunner({}), two_roots(tmp_path)).get(f"/projects/{name}", headers=AUTH)
     assert response.status_code == 404
+    assert response.json()["error"]["code"] == "project_not_found"
 
 
 def test_project_lookups_skip_links_out_of_the_roots(tmp_path: Path) -> None:
@@ -1230,7 +1233,24 @@ def test_start_takes_an_absolute_project_path(tmp_path: Path) -> None:
     assert created[created.index("--cwd") + 1] == str(roots[0] / "grafik" / "api")
 
 
-@pytest.mark.parametrize("project", ["..", ".", "grafik/api", "x..y", "~", "a\\b", "C:grafik"])
+@pytest.mark.parametrize(
+    ("folder", "status", "code"),
+    [("outside", 403, "path_not_allowed"), ("projects/missing", 404, "not_a_directory")],
+)
+def test_start_refuses_an_absolute_project_path_it_may_not_use(
+    tmp_path: Path, folder: str, status: int, code: str
+) -> None:
+    (tmp_path / "outside").mkdir()
+    runner = FakeRunner({})
+    response = roots_client(runner, two_roots(tmp_path)).post(
+        "/agents", headers=AUTH, json={"project": str(tmp_path / folder)}
+    )
+    assert response.status_code == status
+    assert response.json()["error"]["code"] == code
+    assert runner.calls == []
+
+
+@pytest.mark.parametrize("project", ["..",".", "grafik/api", "x..y", "~", "a\\b", "C:grafik"])
 def test_start_refuses_a_project_that_is_neither_name_nor_absolute_path(
     tmp_path: Path, project: str
 ) -> None:
@@ -1308,7 +1328,7 @@ def test_projects_of_windows_folders(cwd: str, project: str | None) -> None:
     ("name", "valid"),
     [("grafik", True), ("my-app.v2", True), ("łódź", True), ("..", False), (".", False),
      ("", False), (" ", False), ("a/b", False), ("a\\b", False), ("~", False), ("C:x", False),
-     ("x..y", False)],
+     ("x..y", False), ("a\0b", False)],
 )
 def test_project_names_are_one_folder_on_any_platform(name: str, valid: bool) -> None:
     # Separators and drive letters of both kinds are refused, whatever the bridge runs on.
