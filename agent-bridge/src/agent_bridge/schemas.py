@@ -32,8 +32,8 @@ class AgentSummary(BaseModel):
     # The question an idle or done agent ended its turn with, if any: it is waiting for
     # the user's answer, though herdr can't tell that from any other finished turn.
     question: str | None = None
-    # The folder under an allowed root that `cwd` is in (agents.project_of); None at a
-    # root itself or outside every root.
+    # `cwd` under the closest allowed root, e.g. "grafik/api" (agents.project_of); None at
+    # a root itself or outside every root.
     project: str | None = None
 
 
