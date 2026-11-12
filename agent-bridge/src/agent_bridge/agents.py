@@ -76,11 +76,13 @@ class AgentService:
             return None
         for root in self.settings.allowed_roots:
             # Resolved and checked again: a link in a root may point out of every root.
-            folder = (root / name).resolve()
+            # Not found either: a name too long for the file system (OSError), or a symlink
+            # loop (RuntimeError before Python 3.13).
             try:
+                folder = (root / name).resolve()
                 if self.settings.is_allowed(folder) and folder.is_dir():
                     return folder
-            except OSError:  # e.g. a name too long for the file system: no such folder
+            except (OSError, RuntimeError):
                 continue
         return None
 
@@ -384,9 +386,9 @@ def project_of(cwd: str | None, roots: Sequence[PurePath]) -> str | None:
     if not cwd:
         return None
     path = type(roots[0])(cwd)
-    inside = [
-        path.relative_to(root).parts for root in roots if path != root and path.is_relative_to(root)
-    ]
+    if path in roots:  # also a root inside another: it is the closest
+        return None
+    inside = [path.relative_to(root).parts for root in roots if path.is_relative_to(root)]
     return "/".join(min(inside, key=len)) if inside else None
 
 
