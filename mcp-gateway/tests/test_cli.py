@@ -47,8 +47,19 @@ class Bridges:
 
 
 @pytest.fixture
-def bridges(tmp_path: Path, capsys: pytest.CaptureFixture) -> Bridges:
+def bridges(tmp_path: Path, capsys: pytest.CaptureFixture, monkeypatch: pytest.MonkeyPatch) -> Bridges:
+    # The token is asked for, unless one is exported; keep the caller's own out.
+    monkeypatch.delenv("AGENT_BRIDGE_TOKEN", raising=False)
     return Bridges(tmp_path, capsys)
+
+
+def test_add_takes_an_exported_token_without_asking(bridges: Bridges, monkeypatch: pytest.MonkeyPatch) -> None:
+    # For a run without a terminal, e.g. setup.sh with sudo --preserve-env=AGENT_BRIDGE_TOKEN.
+    monkeypatch.setenv("AGENT_BRIDGE_TOKEN", "e" * 32)
+    code = cli.main(["--state-dir", str(bridges.state_dir), "bridges", "add", "http://mac:8765"],
+                    ask_token=lambda prompt: pytest.fail("asked for the token"), connect=bridges.connect)
+    assert code == 0 and bridges.saved()[0]["token"] == "e" * 32
+    assert bridges.seen[0].headers["authorization"] == f"Bearer {'e' * 32}"
 
 
 def test_add_takes_the_name_and_the_rest_from_info(bridges: Bridges) -> None:

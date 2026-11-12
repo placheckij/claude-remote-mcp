@@ -91,8 +91,9 @@ sudo mcp-gateway bridges remove studio
 ```
 
 `add` takes the name and everything else from the bridge's `/info`, and refuses a
-bridge without it (`--name` picks another name). The running gateway picks up each
-change before its next request.
+bridge without it (`--name` picks another name). Without a terminal it takes the token
+from an exported `AGENT_BRIDGE_TOKEN` (`sudo --preserve-env=AGENT_BRIDGE_TOKEN`). The
+running gateway picks up each change before its next request.
 
 - **Agent ids** carry their host, e.g. `mac/w1:p1`. While only one host is set up, bare
   ids (`w1:p1`) are shown and accepted, as before.
@@ -213,7 +214,8 @@ sudo PUBLIC_HOST=mcp.example.com \
 ```
 
 `AGENT_BRIDGE_URL` adds that agent host with `mcp-gateway bridges add`, which asks for
-its token (`AGENT_BRIDGE_TOKEN` from the agent host) without showing it; left out, the
+its token (`AGENT_BRIDGE_TOKEN` from the agent host) without showing it, or takes it
+exported as above; left out, the
 script offers to add one while there are none. Keep tokens out of the command itself:
 there they end up in your shell history and, while the script runs, in the process list
 that other users on the host can read. `PUBLIC_HOST` left out is asked for; on later

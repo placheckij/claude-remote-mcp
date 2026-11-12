@@ -124,11 +124,15 @@ def _add(
     parts = urlsplit(url)
     if parts.scheme not in ("http", "https") or not parts.hostname or parts.path or parts.query:
         raise _Refused(f"Give the agent-bridge's address, like {EXAMPLE_URL}.")
-    try:
-        token = ask_token("agent-bridge token (AGENT_BRIDGE_TOKEN on the agent host): ").strip()
-    except (EOFError, KeyboardInterrupt):
-        # No terminal to ask on (stdin closed), Ctrl-D or Ctrl-C.
-        token = ""
+    # From the environment for a run without a terminal, e.g. setup.sh with
+    # sudo --preserve-env=AGENT_BRIDGE_TOKEN; never from the command line, where others see it.
+    token = os.environ.get("AGENT_BRIDGE_TOKEN", "").strip()
+    if not token:
+        try:
+            token = ask_token("agent-bridge token (AGENT_BRIDGE_TOKEN on the agent host): ").strip()
+        except (EOFError, KeyboardInterrupt):
+            # No terminal to ask on (stdin closed), Ctrl-D or Ctrl-C.
+            token = ""
     if not token:
         raise _Refused("The token is needed: AGENT_BRIDGE_TOKEN in the agent host's settings.")
     info = asyncio.run(_info(connect(url, token)))
