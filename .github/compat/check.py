@@ -44,7 +44,7 @@ def main() -> int:
         for root_set in (True, False):
             name = f"gateway {gateway} / bridge {bridge}, projects root {'set' if root_set else 'unset'}"
             print(f"\n== {name}", flush=True)
-            if not Run(sides[gateway], sides[bridge], root_set).check():
+            if not Run(sides[gateway], sides[bridge], root_set, old_gateway=gateway == "old").check():
                 failed.append(name)
     print()
     for name in failed:
@@ -54,14 +54,16 @@ def main() -> int:
 
 
 class Skip(Exception):
-    """This gateway can't run in this setup, e.g. one that needs a projects root."""
+    """The old gateway can't run in this setup, e.g. one that needs a projects root."""
 
 
 class Run:
-    def __init__(self, gateway: Path, bridge: Path, root_set: bool):
+    def __init__(self, gateway: Path, bridge: Path, root_set: bool, old_gateway: bool):
         self.gateway_dir = gateway
         self.bridge_dir = bridge
         self.root_set = root_set
+        # Only the old gateway may skip: this branch's must run in every setup.
+        self.old_gateway = old_gateway
         self.failures = 0
 
     def check(self) -> bool:
@@ -134,7 +136,7 @@ class Run:
             self.wait_until_up("gateway", process, f"{self.gateway_url}/healthz", None)
         except RuntimeError:
             output = (self.tmp / "gateway.out").read_text()
-            if not self.root_set and "MCP_GATEWAY_PROJECTS_ROOT" in output:
+            if self.old_gateway and not self.root_set and "MCP_GATEWAY_PROJECTS_ROOT" in output:
                 raise Skip("this gateway needs MCP_GATEWAY_PROJECTS_ROOT") from None
             raise
 
