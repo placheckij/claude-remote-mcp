@@ -499,10 +499,10 @@ uv sync --all-packages
 uv run --package mcp-gateway pytest mcp-gateway
 
 # Local run against an agent-bridge on this machine
+uv run --package mcp-gateway mcp-gateway --state-dir /tmp/mcp-gateway-state bridges add http://127.0.0.1:8765
 MCP_GATEWAY_OAUTH_PASSPHRASE=$(openssl rand -hex 12) MCP_GATEWAY_STATE_DIR=/tmp/mcp-gateway-state \
 MCP_GATEWAY_TOKEN=$(openssl rand -hex 32) MCP_GATEWAY_PUBLIC_HOST=localhost \
   uv run --package mcp-gateway uvicorn mcp_gateway.server:main --factory --host 127.0.0.1 --port 8766
-uv run --package mcp-gateway mcp-gateway --state-dir /tmp/mcp-gateway-state bridges add http://127.0.0.1:8765
 ```
 
 Tests drive the real MCP app over JSON-RPC with a fake agent-bridge behind

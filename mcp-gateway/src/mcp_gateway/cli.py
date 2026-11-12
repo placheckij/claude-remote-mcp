@@ -121,8 +121,12 @@ def _add(
     connect: Callable[[str, str], AgentBridge],
 ) -> None:
     url = url.rstrip("/")
-    parts = urlsplit(url)
-    if parts.scheme not in ("http", "https") or not parts.hostname or parts.path or parts.query:
+    try:
+        parts = urlsplit(url)
+        parts.port  # parsed only when read; raises on e.g. ":87a5"
+    except ValueError:
+        parts = None
+    if not parts or parts.scheme not in ("http", "https") or not parts.hostname or parts.path or parts.query:
         raise _Refused(f"Give the agent-bridge's address, like {EXAMPLE_URL}.")
     # From the environment for a run without a terminal, e.g. setup.sh with
     # sudo --preserve-env=AGENT_BRIDGE_TOKEN; never from the command line, where others see it.
