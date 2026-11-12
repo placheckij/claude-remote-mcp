@@ -1,4 +1,6 @@
 import json
+import sys
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
@@ -7,8 +9,8 @@ from agent_bridge.trust import TrustError, trust_folder
 
 
 @pytest.fixture
-def home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    monkeypatch.setenv("HOME", str(tmp_path))
+def home(tmp_path: Path, set_home: Callable[[Path], None]) -> Path:
+    set_home(tmp_path)
     return tmp_path
 
 
@@ -28,6 +30,11 @@ def trust_root(home: Path) -> Path:
     return path
 
 
+def key(folder: Path) -> str:
+    """The key Claude Code looks `folder` up by: its resolved path with "/" separators."""
+    return folder.resolve().as_posix()
+
+
 def projects(config_dir: Path) -> dict:
     return json.loads((config_dir / ".claude.json").read_text())["projects"]
 
@@ -38,15 +45,16 @@ def test_trusts_exactly_the_folder_and_keeps_other_settings(
     assert trust_folder(config_dir, trust_root / "app", trust_root) is True
     config = json.loads((config_dir / ".claude.json").read_text())
     assert config["userID"] == "u"
-    assert config["projects"] == {str(trust_root / "app"): {"hasTrustDialogAccepted": True}}
-    assert (config_dir / ".claude.json").stat().st_mode & 0o777 == 0o600
+    assert config["projects"] == {key(trust_root / "app"): {"hasTrustDialogAccepted": True}}
+    if sys.platform != "win32":  # Windows keeps only a read-only flag
+        assert (config_dir / ".claude.json").stat().st_mode & 0o777 == 0o600
 
 
 def test_skips_when_a_parent_is_already_trusted(config_dir: Path, trust_root: Path) -> None:
     trust_folder(config_dir, trust_root / "app", trust_root)
     (trust_root / "app" / "sub").mkdir()
     assert trust_folder(config_dir, trust_root / "app" / "sub", trust_root) is False
-    assert str(trust_root / "app" / "sub") not in projects(config_dir)
+    assert key(trust_root / "app" / "sub") not in projects(config_dir)
 
 
 @pytest.mark.parametrize("folder", ["", "other", "projects-evil"])
@@ -96,11 +104,11 @@ def test_never_edits_the_default_config_spelled_differently(
 
 
 def test_never_edits_a_config_file_linked_to_the_default(
-    home: Path, config_dir: Path, trust_root: Path
+    home: Path, config_dir: Path, trust_root: Path, symlink: Callable[[Path, Path], None]
 ) -> None:
     (home / ".claude.json").write_text("{}")
     (config_dir / ".claude.json").unlink()
-    (config_dir / ".claude.json").symlink_to(home / ".claude.json")
+    symlink(config_dir / ".claude.json", home / ".claude.json")
     with pytest.raises(TrustError, match="default Claude config"):
         trust_folder(config_dir, trust_root / "app", trust_root)
     assert (home / ".claude.json").read_text() == "{}"
@@ -134,21 +142,53 @@ def test_null_project_entries_are_tolerated(
 ) -> None:
     (config_dir / ".claude.json").write_text(json.dumps({"projects": projects}))
     assert trust_folder(config_dir, trust_root / "app", trust_root) is True
-    assert projects_of(config_dir)[str(trust_root / "app")] == {"hasTrustDialogAccepted": True}
+    assert projects_of(config_dir)[key(trust_root / "app")] == {"hasTrustDialogAccepted": True}
 
 
 def test_a_symlinked_config_file_is_updated_through_the_link(
-    home: Path, config_dir: Path, trust_root: Path
+    home: Path, config_dir: Path, trust_root: Path, symlink: Callable[[Path, Path], None]
 ) -> None:
     real = home / "dotfiles" / "claude.json"
     real.parent.mkdir()
     real.write_text(json.dumps({"projects": {}}))
     (config_dir / ".claude.json").unlink()
-    (config_dir / ".claude.json").symlink_to(real)
+    symlink(config_dir / ".claude.json", real)
     trust_folder(config_dir, trust_root / "app", trust_root)
     assert (config_dir / ".claude.json").is_symlink()
-    assert str(trust_root / "app") in json.loads(real.read_text())["projects"]
+    assert key(trust_root / "app") in json.loads(real.read_text())["projects"]
 
 
 def projects_of(config_dir: Path) -> dict:
     return json.loads((config_dir / ".claude.json").read_text())["projects"]
+
+
+def test_keeps_non_ascii_paths_in_the_config_intact(config_dir: Path, trust_root: Path) -> None:
+    # Read with the system's code page (cp1250 on a Polish Windows), "ż" came back garbled.
+    other = {"/home/me/zażółć": {"hasTrustDialogAccepted": False}}
+    (config_dir / ".claude.json").write_text(json.dumps({"projects": other}, ensure_ascii=False), encoding="utf-8")
+    trust_folder(config_dir, trust_root / "app", trust_root)
+    assert projects(config_dir)["/home/me/zażółć"] == {"hasTrustDialogAccepted": False}
+
+
+windows_only = pytest.mark.skipif(sys.platform != "win32", reason="Windows paths")
+
+
+@windows_only
+def test_writes_the_key_claude_code_reads_on_windows(config_dir: Path, trust_root: Path) -> None:
+    # Claude Code ignores `C:\Users\me\app` and `c:/Users/me/app`: only `C:/Users/me/app`
+    # (slashes, an upper-case drive, the folder's real casing) is honoured.
+    trust_folder(config_dir, Path(str(trust_root / "app").lower()), trust_root)
+    [written] = projects(config_dir)
+    assert written == (trust_root / "app").resolve().as_posix()
+    assert "\\" not in written and written[0].isupper() and written[1] == ":"
+
+
+@windows_only
+@pytest.mark.parametrize("spell", [str, lambda path: path.as_posix().lower(), lambda path: path.as_posix().upper()])
+def test_sees_a_parent_trusted_under_another_spelling_on_windows(
+    config_dir: Path, trust_root: Path, spell: Callable[[Path], str]
+) -> None:
+    trusted = {spell(trust_root.resolve()): {"hasTrustDialogAccepted": True}}
+    (config_dir / ".claude.json").write_text(json.dumps({"projects": trusted}))
+    assert trust_folder(config_dir, trust_root / "app", trust_root) is False
+    assert projects(config_dir) == trusted

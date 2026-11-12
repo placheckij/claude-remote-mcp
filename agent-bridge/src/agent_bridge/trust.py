@@ -5,6 +5,12 @@ Claude Code keeps folder trust in `<config dir>/.claude.json` under
 inside it. Without it, a new agent sits on the trust dialog whose default answer is
 "No, exit".
 
+Claude Code looks a folder up by the exact string of its working folder with "/"
+separators: `/Users/me/app` on macOS, `C:/Users/me/app` on Windows, where a
+`C:\\Users\\me\\app` or `c:/Users/me/app` key is ignored. Agents start in the resolved
+folder, so the key is that folder's path with "/": its real casing and an upper-case
+drive letter.
+
 Guard rails: only a separate config dir (CLAUDE_CONFIG_DIR) is ever written (never the default
 `~/.claude.json` or `~/.claude/`), and only the exact folder being started is trusted,
 and only when it lies under the trust root.
@@ -65,7 +71,9 @@ def trust_folder(config_dir: Path, folder: Path, trust_root: Path) -> bool:
     # a copy (is_default_config has already refused a link to ~/.claude.json).
     path = (config_dir / CONFIG_FILE).resolve()
     try:
-        config = json.loads(path.read_text())
+        # UTF-8 as Claude Code writes it, whatever the system's code page: read as cp1250
+        # (Polish Windows), every non-ASCII path in the file would be garbled.
+        config = json.loads(path.read_text(encoding="utf-8"))
     except FileNotFoundError:
         raise TrustError(
             f"{config_dir} has no Claude login yet ({CONFIG_FILE} is missing). Run "
@@ -76,15 +84,30 @@ def trust_folder(config_dir: Path, folder: Path, trust_root: Path) -> bool:
     # Claude Code may leave null where an object is expected; treat it as empty.
     projects = config.get("projects") or {}
     config["projects"] = projects
-    if any(
-        (projects.get(str(candidate)) or {}).get("hasTrustDialogAccepted")
-        for candidate in (folder, *folder.parents)
-    ):
+    if _is_trusted(projects, folder):
         return False
 
-    projects[str(folder)] = {**(projects.get(str(folder)) or {}), "hasTrustDialogAccepted": True}
+    key = project_key(folder)
+    projects[key] = {**(projects.get(key) or {}), "hasTrustDialogAccepted": True}
     _replace_atomically(path, json.dumps(config, indent=2))
     return True
+
+
+def project_key(folder: Path) -> str:
+    """The key Claude Code reads a resolved `folder`'s settings from."""
+    return folder.as_posix()
+
+
+def _is_trusted(projects: dict, folder: Path) -> bool:
+    """True if `folder` or a parent is trusted, under any spelling of its key on Windows:
+    Claude Code has written both `c:/…` and `C:/…` there, and older bridges `C:\\…`. This
+    only decides whether to write; what is written is always the exact key."""
+    trusted = {
+        os.path.normcase(key)
+        for key, entry in projects.items()
+        if isinstance(entry, dict) and entry.get("hasTrustDialogAccepted")
+    }
+    return any(os.path.normcase(candidate) in trusted for candidate in (folder, *folder.parents))
 
 
 def _replace_atomically(path: Path, content: str) -> None:
@@ -92,7 +115,7 @@ def _replace_atomically(path: Path, content: str) -> None:
     # reader never sees a half-written config.
     fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=f"{path.name}.", suffix=".tmp")
     try:
-        with os.fdopen(fd, "w") as file:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="") as file:
             file.write(content)
         os.chmod(tmp, path.stat().st_mode & 0o777)
         os.replace(tmp, path)
