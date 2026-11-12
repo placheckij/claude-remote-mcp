@@ -134,7 +134,8 @@ class Herdr:
                     "prompt_too_long",
                     f"The prompt is too long to hand to herdr on Windows: quoted, its command "
                     f"line takes {length:,} characters and Windows allows "
-                    f"{WINDOWS_COMMAND_LINE_MAX:,}. Each double quote and emoji counts twice. "
+                    f"{WINDOWS_COMMAND_LINE_MAX:,}. Double quotes, backslashes before them and "
+                    "emoji count twice. "
                     "Send it in shorter parts.",
                 )
         return (await self._json(*args))["agent"]
