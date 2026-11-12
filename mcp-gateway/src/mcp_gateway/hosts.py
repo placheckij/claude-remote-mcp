@@ -64,7 +64,12 @@ class Hosts:
         legacy, self.legacy = self.legacy, None
         # Only before there was ever a registry: one emptied with `bridges remove` stays empty.
         if legacy and not self.registry.path.exists():
-            await self._import_legacy(*legacy)
+            try:
+                await self._import_legacy(*legacy)
+            except Exception:
+                # Raised from the lifespan startup, it would leave /mcp unserved with only
+                # an INFO line from uvicorn; logged whole instead, and the gateway runs on.
+                log.exception("Couldn't import MCP_GATEWAY_BRIDGE_URL")
         self.registry.reload()
         self._sync()
 

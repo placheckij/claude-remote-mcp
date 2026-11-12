@@ -42,6 +42,23 @@ def test_the_legacy_bridge_is_optional_but_whole(env: pytest.MonkeyPatch) -> Non
         Settings.from_env()
 
 
+@pytest.mark.parametrize(
+    ("name", "value", "says"),
+    [("MCP_GATEWAY_BRIDGE_URL", "http://[::1", "agent-bridge's address"),
+     ("MCP_GATEWAY_BRIDGE_URL", "agents.lan:8765", "agent-bridge's address"),
+     ("MCP_GATEWAY_BRIDGE_TOKEN", "b" * 31 + " ", "printable ASCII")],
+)
+def test_a_legacy_bridge_that_cant_be_called_stops_startup(
+    env: pytest.MonkeyPatch, name: str, value: str, says: str
+) -> None:
+    # Found at the import, after startup, it would leave the MCP endpoint unserved.
+    env.setenv("MCP_GATEWAY_BRIDGE_URL", "http://agents.lan:8765")
+    env.setenv("MCP_GATEWAY_BRIDGE_TOKEN", "b" * 32)
+    env.setenv(name, value)
+    with pytest.raises(RuntimeError, match=f"{name}: .*{says}"):
+        Settings.from_env()
+
+
 def test_the_static_token_is_optional(env: pytest.MonkeyPatch) -> None:
     # Unset, only OAuth tokens are accepted.
     assert Settings.from_env().token is None

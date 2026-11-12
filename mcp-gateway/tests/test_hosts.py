@@ -11,7 +11,7 @@ import pytest
 from starlette.testclient import TestClient
 
 from mcp_gateway import tools
-from mcp_gateway.bridge import AgentBridge
+from mcp_gateway.bridge import AgentBridge, BridgeError
 from mcp_gateway.config import Settings
 from mcp_gateway.hosts import Hosts
 from mcp_gateway.registry import Registry
@@ -472,6 +472,29 @@ def test_a_legacy_import_that_cant_be_saved_leaves_the_gateway_running(
         is_error, text = call_tool(client, "list_agents")
     assert is_error and text.endswith("Add one on the gateway host with `sudo mcp-gateway bridges add <url>`.")
     assert "Couldn't import MCP_GATEWAY_BRIDGE_URL" in caplog.text
+
+
+def test_an_unexpected_failure_at_the_legacy_import_still_serves_mcp(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    # Raised during the lifespan startup, it would leave /mcp unserved; logged instead.
+    def broken(request: httpx.Request) -> httpx.Response:
+        raise RuntimeError("unforeseen")
+
+    fake = FakeAgentBridge({("GET", "/info"): broken})
+    with caplog.at_level(logging.ERROR), legacy_gateway(tmp_path, fake) as client:
+        is_error, text = call_tool(client, "list_agents")
+    assert is_error and text.endswith("Add one on the gateway host with `sudo mcp-gateway bridges add <url>`.")
+    assert "Couldn't import MCP_GATEWAY_BRIDGE_URL" in caplog.text
+
+
+@pytest.mark.parametrize("answer", [{}, {"cwd": 5}, ["/srv/grafik"]])
+def test_a_projects_answer_without_a_folder_is_a_host_failing(answer) -> None:
+    fake = FakeAgentBridge({("GET", "/projects/grafik"): httpx.Response(200, json=answer)})
+    bridge = AgentBridge(httpx.AsyncClient(base_url=url("mac"), transport=httpx.MockTransport(fake),
+                                           headers={"Authorization": f"Bearer {TOKEN}"}))
+    with pytest.raises(BridgeError, match="answered /projects without a folder"):
+        asyncio.run(bridge.find_project("grafik"))
 
 
 def test_the_legacy_bridge_stays_removed(tmp_path: Path) -> None:
