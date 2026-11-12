@@ -101,8 +101,8 @@ running gateway picks up each change before its next request.
   other shows in `list_agents` as needing an update and isn't called.
 - **Upgrading from one bridge:** if `MCP_GATEWAY_BRIDGE_URL` and `_TOKEN` are set and
   there is no `bridges.json` yet, the first start imports them as one host, named by its
-  `/info` (`host` if it doesn't answer). The setup script then drops them from the env
-  file.
+  `/info` (`host` if it doesn't answer; one that refuses, e.g. a wrong token, isn't
+  imported). The setup script then drops them from the env file.
 
 ## Security
 

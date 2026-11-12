@@ -452,6 +452,19 @@ def test_a_legacy_bridge_that_cant_say_its_name_is_imported_as_host(tmp_path: Pa
     assert (bridge["name"], bridge["info"]) == ("host", stored)
 
 
+@pytest.mark.parametrize("status", [401, 403, 500])
+def test_a_legacy_bridge_that_refuses_isnt_imported(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture, status: int
+) -> None:
+    # A wrong token would make every call fail; left in the settings, setup.sh reports it.
+    fake = FakeAgentBridge({("GET", "/info"): httpx.Response(status, json={"detail": "Invalid token."})})
+    with caplog.at_level(logging.ERROR), legacy_gateway(tmp_path, fake) as client:
+        is_error, text = call_tool(client, "list_agents")
+    assert not (tmp_path / "bridges.json").exists()
+    assert is_error and text.endswith("Add one on the gateway host with `sudo mcp-gateway bridges add <url>`.")
+    assert "refused the import (Invalid token.)" in caplog.text
+
+
 def test_the_legacy_bridge_is_ignored_once_there_are_hosts(tmp_path: Path) -> None:
     Registry(tmp_path / "bridges.json").add("linux", url("linux"), TOKEN, info("linux"))
     fake = FakeAgentBridge({})

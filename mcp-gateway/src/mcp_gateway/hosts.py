@@ -166,6 +166,15 @@ class Hosts:
         try:
             info = await bridge.info() or NO_INFO
         except BridgeError as error:
+            if error.status is not None:
+                # It answered and refused, e.g. 401 for a wrong token: importing that would
+                # only fail every call. Left in the settings to fix and import at a restart.
+                log.error(
+                    "The agent host at %s refused the import (%s); fix MCP_GATEWAY_BRIDGE_URL or "
+                    "MCP_GATEWAY_BRIDGE_TOKEN and restart, or add it with `mcp-gateway bridges add`.",
+                    url, error,
+                )
+                return
             # Imported anyway: the host may only be asleep, and nothing would work without it.
             log.warning("The agent host at %s didn't answer at the import (%s).", url, error)
             info = None
