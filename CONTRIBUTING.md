@@ -16,8 +16,9 @@ invitation**: only the people listed below can open them.
 
 - Work on a branch and open a pull request against `main`. Keep each one to one change.
 - Every pull request needs the maintainer's approval and passing CI (tests on Linux and
-  macOS, `shellcheck` on the setup scripts). New commits after an approval need a new
-  one.
+  macOS, `shellcheck` on the setup scripts, and for changes between the gateway and the
+  bridge, the mixed-versions check in `.github/compat/`). New commits after an approval
+  need a new one.
 - Add or update tests with the change: a bug fix comes with a test that fails without it.
 - Set up and run the tests as in the README's [Development](README.md#development)
   section.
