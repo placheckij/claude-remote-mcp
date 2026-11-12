@@ -7,13 +7,22 @@ Agents are addressed by their herdr pane id (e.g. `w1:p1`).
 import asyncio
 import re
 import unicodedata
-from collections.abc import Awaitable
-from pathlib import Path
+from collections.abc import Awaitable, Sequence
+from pathlib import Path, PurePath
 
 from agent_bridge.config import Settings, claude_env
 from agent_bridge.errors import BridgeError
 from agent_bridge.herdr import Herdr, HerdrError
-from agent_bridge.schemas import AgentSummary, Output, PromptResult, StartedAgent, cap, summarize
+from agent_bridge.host import API_VERSION, bridge_version, host_name, platform_name
+from agent_bridge.schemas import (
+    AgentSummary,
+    HostInfo,
+    Output,
+    PromptResult,
+    StartedAgent,
+    cap,
+    summarize,
+)
 from agent_bridge.screen import SNAPSHOT_LINES, last_lines, last_question
 from agent_bridge.trust import TrustError, trust_folder
 
@@ -42,12 +51,48 @@ class AgentService:
         # One prompt at a time per agent; a second one is refused rather than typed in.
         self._prompt_locks: dict[str, asyncio.Lock] = {}
 
+    async def info(self) -> HostInfo:
+        try:
+            herdr_version = await self.herdr.version()
+        except HerdrError:
+            herdr_version = None
+        roots = [str(root) for root in self.settings.allowed_roots]
+        return HostInfo(
+            api_version=API_VERSION,
+            name=host_name(),
+            platform=platform_name(),
+            bridge_version=bridge_version(),
+            herdr_version=herdr_version,
+            roots=roots,
+            projects_root=roots[0],
+            accounts=sorted(self.settings.accounts),
+            max_agents=self.settings.max_agents,
+        )
+
+    def find_project(self, name: str) -> Path | None:
+        """The folder `name` under the first allowed root that has one, if `name` is a
+        plain folder name."""
+        if not is_project_name(name):
+            return None
+        for root in self.settings.allowed_roots:
+            # Resolved and checked again: a link in a root may point out of every root.
+            folder = (root / name).resolve()
+            if self.settings.is_allowed(folder) and folder.is_dir():
+                return folder
+        return None
+
+    def _summarize(self, agent: dict) -> AgentSummary:
+        summary = summarize(agent)
+        return summary.model_copy(
+            update={"project": project_of(summary.cwd, self.settings.allowed_roots)}
+        )
+
     async def list_agents(self) -> list[AgentSummary]:
-        agents = [summarize(agent) for agent in await self.herdr.list_agents()]
+        agents = [self._summarize(agent) for agent in await self.herdr.list_agents()]
         return list(await asyncio.gather(*(self._with_question(agent) for agent in agents)))
 
     async def get_agent(self, agent_id: str) -> AgentSummary:
-        return await self._with_question(summarize(await self.herdr.get_agent(agent_id)))
+        return await self._with_question(self._summarize(await self.herdr.get_agent(agent_id)))
 
     async def _with_question(self, agent: AgentSummary) -> AgentSummary:
         if agent.status not in FINISHED:
@@ -111,15 +156,41 @@ class AgentService:
         await self._controllable(agent_id)
         await self.herdr.send_keys(agent_id, keys)
 
-    async def start_agent(self, cwd: str, name: str, account: str | None = None) -> StartedAgent:
-        folder = self._allowed_folder(cwd)
+    async def start_agent(
+        self,
+        name: str | None,
+        account: str | None = None,
+        *,
+        project: str | None = None,
+        cwd: str | None = None,
+    ) -> StartedAgent:
+        folder = self._allowed_folder(cwd) if cwd is not None else self._project_folder(project)
         account, config_dir = self._account(folder, account)
         async with self._start_lock:
             running = await self._check_agent_limit()
-            name = herdr_name(name, {agent.get("name") for agent in running})
+            name = herdr_name(name or folder.name, {agent.get("name") for agent in running})
             await self._trust(folder, config_dir)
             agent = await self._start_with_one_retry(name, folder, config_dir)
-        return StartedAgent(**summarize(agent).model_dump(), account=account)
+        return StartedAgent(**self._summarize(agent).model_dump(), account=account)
+
+    def _project_folder(self, project: str) -> Path:
+        """The folder `project` names: an absolute path as given, or a folder name under
+        the first allowed root that has it."""
+        if Path(project).is_absolute():
+            return self._allowed_folder(project)
+        if not is_project_name(project):
+            raise BridgeError(
+                422,
+                "bad_project",
+                'Give the project as one folder name, like "grafik", or as an absolute path.',
+            )
+        folder = self.find_project(project)
+        if folder is None:
+            roots = " or ".join(str(root) for root in self.settings.allowed_roots)
+            raise BridgeError(
+                404, "project_not_found", f"There is no project named {project!r} in {roots}."
+            )
+        return folder
 
     def _account(self, folder: Path, asked: str | None) -> tuple[str | None, Path | None]:
         """The account to start in `folder` with and its config dir: the one asked for,
@@ -176,7 +247,7 @@ class AgentService:
             name = herdr_name(name, {a.get("name") for a in running if a["pane_id"] != agent_id})
             renamed = await self.herdr.rename_agent(agent_id, name)
             await self.herdr.rename_workspace(agent.workspace_id, name)
-        return summarize(renamed)
+        return self._summarize(renamed)
 
     async def stop_agent(self, agent_id: str) -> None:
         # Looking the agent up first also refuses panes that aren't agents (a shell, a dev
@@ -233,7 +304,7 @@ class AgentService:
             agent = await self.herdr.get_agent(agent_id)
         output = await self._tail(agent_id, lines)
         return PromptResult(
-            agent=await self._with_question(summarize(agent)),
+            agent=await self._with_question(self._summarize(agent)),
             output=cap(output, self.settings.max_output_chars),
             timed_out=timed_out,
             unconfirmed=unconfirmed,
@@ -291,6 +362,29 @@ class AgentService:
             f"{head} It is outside the trust root {self.settings.trust_root}: trust it once by "
             "opening Claude Code there."
         )
+
+
+def is_project_name(name: str) -> bool:
+    """True for one folder name: ".." would climb out of a root, "." would be the root
+    itself (an agent over every project), "~" is never expanded, and separators or a
+    drive ("C:") of either platform would reach another folder."""
+    if name.strip() in ("", "."):
+        return False
+    return not any(part in name for part in ("..", "/", "\\", "~", ":"))
+
+
+def project_of(cwd: str | None, roots: Sequence[PurePath]) -> str | None:
+    """`cwd` under the closest root, joined with "/" on every platform since it is read
+    out rather than used as a path, e.g. "grafik/api" for <root>/grafik/api; None at a
+    root itself or outside every root. `cwd` is read as the roots' kind of path, so
+    Windows paths compare as Windows does (ignoring case)."""
+    if not cwd:
+        return None
+    path = type(roots[0])(cwd)
+    inside = [
+        path.relative_to(root).parts for root in roots if path != root and path.is_relative_to(root)
+    ]
+    return "/".join(min(inside, key=len)) if inside else None
 
 
 # herdr's rule for agent names: lower-case ASCII, starting with a letter, at most 32 long.
