@@ -12,6 +12,8 @@ SNAPSHOT_LINES = 500
 
 # A named session (`/rename`) shows its name at the end of the box's top rule.
 _RULE = re.compile(r"^\s*─{10,}(?: \S.* ─+)?\s*$")
+# Claude Code starts each message with "⏺" on macOS, and with "●" elsewhere (Windows, Linux).
+MESSAGE_MARKS = ("⏺", "●")
 # Longer questions are cut to their last sentence; they are read aloud.
 MAX_QUESTION_CHARS = 300
 # Claude Code wraps a paragraph at a word, so a wrapped line can end this far short of
@@ -52,14 +54,14 @@ def last_question(snapshot: str) -> str | None:
         if lines[i].startswith("✻"):
             lines = lines[:i]
             break
-    starts = [i for i, line in enumerate(lines) if line.startswith("⏺")]
+    starts = [i for i, line in enumerate(lines) if line.startswith(MESSAGE_MARKS)]
     if not starts:
         return None
-    message = [lines[starts[-1]].removeprefix("⏺").strip()]
+    message = [lines[starts[-1]][1:].strip()]
     previous = lines[starts[-1]]
     for line in lines[starts[-1] + 1 :]:
         if line.lstrip().startswith(("⎿", "※")):
-            # Right after the ⏺ line, this is a tool call's output, not a message.
+            # Right after the ⏺ (●) line, this is a tool call's output, not a message.
             if len(message) == 1:
                 return None
             break
