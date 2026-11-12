@@ -4,21 +4,25 @@ They are read aloud in the car, so every reply is a few lines, with detail only 
 """
 
 
-def describe(agent: dict, projects_root: str) -> str:
+def describe(agent: dict, projects_root: str | None) -> str:
     label = agent.get("name") or agent.get("title") or "unnamed"
     # agent-bridge finds the question an idle or done agent ended its turn with; herdr's
     # status alone would make it sound finished.
     question = agent.get("question")
     status = "waiting for an answer" if question else agent["status"]
-    line = f"{agent['id']} · {label} · {status} · {folder(agent.get('cwd'), projects_root)}"
+    line = f"{agent['id']} · {label} · {status} · {folder(agent, projects_root)}"
     return f"{line}\n  Asked: {question}" if question else line
 
 
-def folder(cwd: str | None, projects_root: str) -> str:
-    """A folder under the projects root by its name there, as the user said it to
-    start_agent ("grafik"), not the whole path; any other folder by its full path."""
-    prefix = projects_root.rstrip("/") + "/"
-    if cwd and cwd.startswith(prefix) and cwd != prefix:
+def folder(agent: dict, projects_root: str | None) -> str:
+    """Where the agent works: its project, as the user said it to start_agent ("grafik"),
+    not the whole path; outside every project, its full path."""
+    cwd = agent.get("cwd")
+    if "project" in agent:
+        return agent["project"] or cwd or "?"
+    # An agent-bridge before /info doesn't say; the legacy projects root does.
+    prefix = projects_root.rstrip("/") + "/" if projects_root else None
+    if cwd and prefix and cwd.startswith(prefix) and cwd != prefix:
         return cwd.removeprefix(prefix)
     return cwd or "?"
 
@@ -27,7 +31,7 @@ def count(n: int, noun: str) -> str:
     return f"{n} {noun}" if n == 1 else f"{n} {noun}s"
 
 
-def report(result: dict, wait_seconds: int, projects_root: str) -> str:
+def report(result: dict, wait_seconds: int, projects_root: str | None) -> str:
     """Status headline, the agent line, then its latest output."""
     agent = result["agent"]
     if result.get("unconfirmed"):

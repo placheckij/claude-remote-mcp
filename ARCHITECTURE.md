@@ -36,8 +36,10 @@ Cloudflare Tunnel. See [mcp-gateway/README.md](mcp-gateway/README.md).
 - **Authentication.** Every `/mcp` request needs a valid access token. The tunnel only
   publishes `/mcp` and the OAuth paths, and the server only accepts its own hostname and
   requests from claude.ai or claude.com (or with no origin).
-- **Tool routing.** Each MCP tool becomes one agent-bridge call. Arguments (agent ids,
-  project names, prompt length, waits) are checked before anything is sent.
+- **Tool routing.** Each MCP tool becomes one agent-bridge call; `start_agent` first asks
+  the host about itself (`GET /info`). Arguments (agent ids, prompt length, waits) are
+  checked before anything is sent. Project names and paths go to agent-bridge as given:
+  it resolves and checks them, and reports each agent's project.
 - **Agent operations.** `list_agents`, `agent_details`, `read_output`, `send_prompt`,
   `wait_for_agent`, `answer_agent`, `start_agent`, `rename_agent` and `stop_agent`.
   agent-bridge's JSON comes back as one short line per agent plus the last output lines.

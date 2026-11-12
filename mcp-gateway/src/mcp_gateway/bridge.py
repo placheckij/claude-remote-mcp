@@ -17,11 +17,19 @@ DEFAULT_TIMEOUT_S = 30.0
 WAIT_MARGIN_S = 5
 # A start waits for the shell, for Claude Code and for 5 s of trust-dialog check, and can
 # take longer than claude.ai listens; past this the tool says the agent may still be starting.
+# It covers asking the host about itself first (tools.start_agent).
 START_TIMEOUT_S = 25
+# /info answers at once; it only runs `herdr --version`.
+INFO_TIMEOUT_S = 5
 
 
 class BridgeError(Exception):
-    """A refusal or failure reported by agent-bridge, with its human-readable message."""
+    """A refusal or failure reported by agent-bridge, with its human-readable message and,
+    if it answered, the HTTP status."""
+
+    def __init__(self, message: str, status: int | None = None):
+        super().__init__(message)
+        self.status = status
 
 
 class BridgeTimeout(BridgeError):
@@ -60,7 +68,16 @@ class AgentBridge:
             raise BridgeError(f"The agent host is not reachable ({type(error).__name__}).") from error
         if response.is_success:
             return response.json() if response.content else None
-        raise BridgeError(_message(response))
+        raise BridgeError(_message(response), response.status_code)
+
+    async def info(self) -> dict | None:
+        """What the agent host says about itself; None from an agent-bridge before /info."""
+        try:
+            return await self._request("GET", "/info", timeout=INFO_TIMEOUT_S)
+        except BridgeError as error:
+            if error.status == 404:
+                return None
+            raise
 
     async def list_agents(self) -> list[dict]:
         return await self._request("GET", "/agents")
@@ -90,10 +107,21 @@ class AgentBridge:
     async def send_keys(self, agent_id: str, keys: list[str]) -> None:
         await self._request("POST", f"/agents/{agent_id}/keys", json={"keys": keys})
 
-    async def start_agent(self, cwd: str, name: str, account: str | None = None) -> dict:
-        body = {"cwd": cwd, "name": name} | ({"account": account} if account else {})
+    async def start_agent(
+        self,
+        *,
+        project: str | None = None,
+        cwd: str | None = None,
+        name: str | None = None,
+        account: str | None = None,
+        timeout: float = START_TIMEOUT_S,
+    ) -> dict:
+        """Start in `project` (agent-bridge resolves it), or in `cwd` on an agent-bridge
+        before /info. Without a name the agent is named after its folder."""
+        fields = {"project": project, "cwd": cwd, "name": name, "account": account}
+        body = {key: value for key, value in fields.items() if value}
         # Starting waits for Claude to boot and for the trust check.
-        return await self._request("POST", "/agents", json=body, timeout=START_TIMEOUT_S)
+        return await self._request("POST", "/agents", json=body, timeout=timeout)
 
     async def rename_agent(self, agent_id: str, name: str) -> dict:
         return await self._request("PATCH", f"/agents/{agent_id}", json={"name": name})

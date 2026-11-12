@@ -5,10 +5,13 @@ from typing import Annotated, Literal
 from fastapi import APIRouter, Depends, Path, Query, Request
 
 from agent_bridge.agents import AgentService
+from agent_bridge.errors import BridgeError
 from agent_bridge.schemas import (
     AgentSummary,
+    HostInfo,
     KeysRequest,
     Output,
+    ProjectFolder,
     PromptRequest,
     PromptResult,
     RenameRequest,
@@ -28,6 +31,19 @@ Agents = Annotated[AgentService, Depends(get_agents)]
 # herdr pane ids, e.g. "w1:p1" or "w1F:p1". Anything else, notably a leading "-" that herdr
 # would read as an option, is refused before it reaches the CLI.
 AgentId = Annotated[str, Path(pattern=r"^w[0-9A-Za-z]+:p[0-9A-Za-z]+$")]
+
+
+@router.get("/info")
+async def info(agents: Agents) -> HostInfo:
+    return await agents.info()
+
+
+@router.get("/projects/{name}")
+async def find_project(name: str, agents: Agents) -> ProjectFolder:
+    folder = agents.find_project(name)
+    if folder is None:
+        raise BridgeError(404, "project_not_found", f"There is no project named {name!r}.")
+    return ProjectFolder(cwd=str(folder))
 
 
 @router.get("/agents")
@@ -67,7 +83,7 @@ async def send_keys(agent_id: AgentId, body: KeysRequest, agents: Agents) -> Non
 
 @router.post("/agents", status_code=201)
 async def start_agent(body: StartRequest, agents: Agents) -> StartedAgent:
-    return await agents.start_agent(body.cwd, body.name, body.account)
+    return await agents.start_agent(body.name, body.account, project=body.project, cwd=body.cwd)
 
 
 @router.patch("/agents/{agent_id}")

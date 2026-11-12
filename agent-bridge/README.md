@@ -62,13 +62,15 @@ All routes require `Authorization: Bearer $AGENT_BRIDGE_TOKEN`.
 
 | Route | herdr | Notes |
 |---|---|---|
-| `GET /agents` | `agent list` | every herdr agent, in any folder. An `idle` or `done` agent whose last message ends with a question has it in `question` (read from its screen with `agent read`, so it is a guess; herdr itself can't tell that agent from one that simply finished) |
+| `GET /info` | `--version` | the host: `api_version` (2; a bridge without `/info` is 1), `name` (the hostname as a slug), `platform` (`darwin`, `linux` or `windows`), `bridge_version`, `herdr_version` (`null` if herdr can't be run), `roots`, `projects_root` (the first root), the `accounts`' names and `max_agents` |
+| `GET /projects/{name}` | | `{"cwd": …}` of the folder `name` under the first allowed root that has one; `404 project_not_found` otherwise, also for anything but one folder name (`..`, `.`, `~`, `/`, `\`, `:`) |
+| `GET /agents` | `agent list` | every herdr agent, in any folder. `project` is the agent's folder under the closest allowed root, joined with `/` on every platform (`grafik/api` for `<root>/grafik/api`), `null` at a root or outside them. An `idle` or `done` agent whose last message ends with a question has it in `question` (read from its screen with `agent read`, so it is a guess; herdr itself can't tell that agent from one that simply finished) |
 | `GET /agents/{id}` | `agent get` | the same, including `question` |
 | `GET /agents/{id}/output?lines=40` | `agent read` | last N meaningful lines: padding, input box (also when it shows the session's name) and status bar dropped; the visible screen only while the agent is working or blocked (herdr can't scroll its history then) |
 | `POST /agents/{id}/prompt` `{text, timeout_s?, lines?}` | `agent prompt --wait` | waits until idle/done/blocked (the agent includes `question`); on timeout returns `timed_out: true` with current status, and `unconfirmed: true` if the text was typed but the agent didn't react within 5 s (don't resend). Refused with `409 agent_blocked` while the agent is `blocked` (the Enter would answer its question), and with `409 agent_busy` while it is `working` or another prompt to it is running |
 | `POST /agents/{id}/wait` `{timeout_s?, lines?, expect_change?}` | `agent wait` | same result as `/prompt`, without sending anything; `expect_change` (after `/keys`) first gives the agent 5 s to leave its old `blocked` state |
 | `POST /agents/{id}/keys` `{keys}` | `agent send-keys` | answer a `blocked` agent's question |
-| `POST /agents` `{cwd, name, account?}` | `workspace create` + `agent start --kind claude` | start an agent in a project folder, on the folder's Claude account or the one named (see below); the reply adds the `account` used. `name` may be any words: it becomes a name herdr accepts (lower-case ASCII, starting with a letter, at most 32 characters, e.g. `Grafik fix!` → `grafik-fix`), with `-2`, `-3`, … if a live agent already has it |
+| `POST /agents` `{project, name?, account?}` | `workspace create` + `agent start --kind claude` | start an agent in a project: a folder name, looked up as `GET /projects/{name}` does, or an absolute path. `{cwd}` (an absolute path) is still taken instead of `project`, for gateways from before it. On the folder's Claude account or the one named (see below); the reply adds the `account` used. `name` (by default the folder's) may be any words: it becomes a name herdr accepts (lower-case ASCII, starting with a letter, at most 32 characters, e.g. `Grafik fix!` → `grafik-fix`), with `-2`, `-3`, … if a live agent already has it |
 | `PATCH /agents/{id}` `{name}` | `agent rename` + `workspace rename` | give the agent and its workspace the same new name, made the way `POST /agents` makes one (`-2`, `-3`, … only if *another* live agent has it); returns the agent |
 | `DELETE /agents/{id}` | `agent get` + `pane close` | close the agent's pane; `404` if the id isn't an agent (a shell or dev-server pane) |
 
@@ -88,10 +90,12 @@ allowed roots.
 
 `POST /agents` refuses, in this order:
 
-1. `403` if `cwd` is outside `AGENT_BRIDGE_ALLOWED_ROOTS` (symlinks and `..` are
-   resolved first).
-2. `404` if the folder doesn't exist.
-3. `409 agent_limit_reached` if `AGENT_BRIDGE_MAX_AGENTS` (10) or more herdr agents
+1. `422 bad_project` if `project` is neither one folder name nor an absolute path, and
+   `404 project_not_found` if no allowed root has a folder of that name.
+2. `403` if an absolute path is outside `AGENT_BRIDGE_ALLOWED_ROOTS` (symlinks and `..`
+   are resolved first).
+3. `404` if the folder doesn't exist.
+4. `409 agent_limit_reached` if `AGENT_BRIDGE_MAX_AGENTS` (10) or more herdr agents
    already exist: *"Refusing to start a new agent: 10 agents are already running and the
    limit is 10. Stop an agent first."* The count and the start are serialized, so
    parallel requests can't slip past the limit.

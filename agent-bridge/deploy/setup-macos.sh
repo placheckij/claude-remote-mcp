@@ -251,7 +251,6 @@ $LOGIN_HINT
 
 For mcp-gateway's setup.sh on the gateway host:
   AGENT_BRIDGE_URL=$URL
-  PROJECTS_ROOT=${ROOTS%%:*}   (or another folder under $ROOTS)
 EOF
 case $TOKEN_SOURCE in
   new) echo "  AGENT_BRIDGE_TOKEN=$TOKEN   (new: re-run mcp-gateway's setup.sh with it)" ;;
