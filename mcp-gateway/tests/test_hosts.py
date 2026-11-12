@@ -436,6 +436,18 @@ def test_the_legacy_bridge_is_ignored_once_there_are_hosts(tmp_path: Path) -> No
     assert fake.requests == []
 
 
+def test_the_legacy_bridge_stays_removed(tmp_path: Path) -> None:
+    # Once imported, removing it empties the registry; a restart with the old settings
+    # still set must not bring it back.
+    registry = Registry(tmp_path / "bridges.json")
+    registry.add("mac", url("mac"), TOKEN, INFO)
+    registry.remove("mac")
+    fake = FakeAgentBridge({})
+    with legacy_gateway(tmp_path, fake):
+        assert saved(tmp_path) == []
+    assert fake.requests == []
+
+
 # --- Clients --------------------------------------------------------------------------
 
 

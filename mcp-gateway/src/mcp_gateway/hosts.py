@@ -62,7 +62,8 @@ class Hosts:
         """Takes in changes to the registry file; called before every MCP request."""
         # Taken before awaiting, so requests at the same time don't import it twice.
         legacy, self.legacy = self.legacy, None
-        if legacy and not self.registry.bridges:
+        # Only before there was ever a registry: one emptied with `bridges remove` stays empty.
+        if legacy and not self.registry.path.exists():
             await self._import_legacy(*legacy)
         self.registry.reload()
         self._sync()
