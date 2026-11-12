@@ -568,6 +568,23 @@ def test_a_new_url_or_token_gets_a_new_client(tmp_path: Path, field: str, value:
     assert old.client.is_closed and host.bridge.client.is_closed
 
 
+def test_a_new_url_taken_in_by_the_gateways_own_save_gets_a_new_client(tmp_path: Path) -> None:
+    # The edit arrives through seen()'s save rather than a reload; the host's record then
+    # already shows the new URL when the clients are compared.
+    hosts, registry, _ = hosts_on(tmp_path)
+    (host,) = hosts.all()
+    old = host.bridge
+    path = tmp_path / "bridges.json"
+    data = json.loads(path.read_text())
+    data["bridges"][0]["url"] = url("studio")
+    path.write_text(json.dumps(data))
+    registry.seen(host.record.bridge_id, info("mac", 1))
+    host.record = registry.bridges[0]
+    (host,) = hosts.all()
+    assert host.bridge is not old
+    assert str(host.bridge.client.base_url).rstrip("/") == url("studio")
+
+
 def test_a_removed_hosts_client_is_closed_only_at_shutdown(tmp_path: Path) -> None:
     # A request that looked it up before the removal may still be using it.
     hosts, _, clients = hosts_on(tmp_path)

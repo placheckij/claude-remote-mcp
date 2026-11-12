@@ -138,6 +138,25 @@ def test_a_file_it_cant_even_look_at_stops_startup_but_not_a_running_gateway(
     assert caplog.text.count("Keeping the agent hosts from before") == 1
 
 
+@pytest.mark.parametrize(
+    ("edit", "says"),
+    [(lambda records: records[0].update(name="Mac"), "must be a host name"),
+     (lambda records: records[1].update(name="mac"), "two hosts have the same name"),
+     (lambda records: records[1].update(url="http://mac:8765"), "two hosts have the same url")],
+)
+def test_a_file_with_names_the_tools_cant_use_is_refused(tmp_path: Path, clock: Clock, edit, says: str) -> None:
+    # A hand edit like these would leave a host unreachable, or let remove drop two.
+    registry = open_registry(tmp_path, clock)
+    registry.add("mac", "http://mac:8765", "t", INFO)
+    registry.add("linux", "http://linux:8765", "t", INFO)
+    records = saved(tmp_path)
+    edit(records)
+    (tmp_path / "bridges.json").write_text(json.dumps({"version": 1, "bridges": records}))
+    with pytest.raises(RegistryError, match=says):
+        open_registry(tmp_path, clock)
+    assert not registry.reload() and registry.names() == ["mac", "linux"]
+
+
 @pytest.mark.parametrize("info", [{"platform": "darwin"}, {"api_version": "2"}, {"api_version": 2.5}])
 def test_a_record_whose_info_has_no_api_version_is_refused(tmp_path: Path, clock: Clock, info: dict) -> None:
     # The gateway compares api_version as a whole number to decide whether to call the host.

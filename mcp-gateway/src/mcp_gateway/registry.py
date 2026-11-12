@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Annotated
 
 import httpx
-from pydantic import AfterValidator, BaseModel, ConfigDict, ValidationError
+from pydantic import AfterValidator, BaseModel, ConfigDict, ValidationError, model_validator
 
 try:
     import fcntl
@@ -65,11 +65,18 @@ def check_info(value: dict | None) -> dict | None:
     return value
 
 
+def check_name_format(value: str) -> str:
+    if not re.fullmatch(NAME_PATTERN, value):
+        raise ValueError("must be a host name, like mac or linux-box")
+    return value
+
+
 class Bridge(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     bridge_id: str
-    name: str
+    # Checked on reading too, as the tools only take names of this form.
+    name: Annotated[str, AfterValidator(check_name_format)]
     # Checked on reading too: a hand edit that no client can be made for would otherwise
     # fail every host, not just its own.
     url: Annotated[str, AfterValidator(check_url)]
@@ -84,6 +91,15 @@ class Bridge(BaseModel):
 class _File(BaseModel):
     version: int = 1
     bridges: list[Bridge]
+
+    @model_validator(mode="after")
+    def _one_record_each(self) -> "_File":
+        # As add() keeps them; a hand edit with two "mac"s would make remove drop both.
+        for field in ("bridge_id", "name", "url"):
+            values = [getattr(bridge, field) for bridge in self.bridges]
+            if len(values) != len(set(values)):
+                raise ValueError(f"two hosts have the same {field}")
+        return self
 
 
 class Registry:
