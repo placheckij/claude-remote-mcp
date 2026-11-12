@@ -7,13 +7,13 @@
 # Run from a checkout of this repo on the gateway host:
 #   sudo PUBLIC_HOST=mcp.example.com \
 #        AGENT_BRIDGE_URL=http://192.168.1.20:8765 \
-#        PROJECTS_ROOT=/home/me/projects \
 #        mcp-gateway/deploy/setup.sh
 # On a re-run, values not given are taken from /etc/mcp-gateway/env; pass one to change
 # it. Missing values are asked for interactively; tokens without echoing. Don't put tokens
 # on the command line (shell history, process list): let the script ask, or export
-# them and pass them with sudo --preserve-env=NAME. PROJECTS_ROOT is the folder on the agent
-# host that project names given to start_agent resolve against. Optional: TUNNEL_NAME
+# them and pass them with sudo --preserve-env=NAME. Optional: PROJECTS_ROOT (only for an
+# agent-bridge without /info: the folder on the agent host that project names given to
+# start_agent resolve against), TUNNEL_NAME
 # (claude-remote), PORT (8766), MCP_GATEWAY_OAUTH_PASSPHRASE (use this sign-in passphrase
 # instead of generating one), ROTATE_PASSPHRASE=1, MCP_GATEWAY_TOKEN (also accept this
 # static token, from before OAuth), REMOVE_TOKEN=1 (stop accepting the static token).
@@ -79,7 +79,6 @@ fi
 ask PUBLIC_HOST "Public hostname for the MCP server (e.g. mcp.example.com)"
 ask AGENT_BRIDGE_URL "agent-bridge URL on the LAN (e.g. http://192.168.1.20:8765)"
 ask AGENT_BRIDGE_TOKEN "agent-bridge token (AGENT_BRIDGE_TOKEN on the agent host)" secret
-ask PROJECTS_ROOT "Projects folder on the agent host (e.g. /home/me/projects)"
 # Hostnames are case-insensitive, but the SDK's Host check compares them exactly.
 PUBLIC_HOST="${PUBLIC_HOST,,}"
 
@@ -164,7 +163,7 @@ ${TOKEN:+MCP_GATEWAY_TOKEN=$TOKEN}
 MCP_GATEWAY_PUBLIC_HOST=$PUBLIC_HOST
 MCP_GATEWAY_BRIDGE_URL=$AGENT_BRIDGE_URL
 MCP_GATEWAY_BRIDGE_TOKEN=$AGENT_BRIDGE_TOKEN
-MCP_GATEWAY_PROJECTS_ROOT=$PROJECTS_ROOT
+${PROJECTS_ROOT:+MCP_GATEWAY_PROJECTS_ROOT=$PROJECTS_ROOT}
 EOF
 umask 022
 chown root:"$SERVICE_USER" "$ENV_FILE"

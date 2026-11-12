@@ -44,7 +44,7 @@ The gateway and the agent host can be one machine.
 2. **Agent host:** start [agent-bridge](agent-bridge/README.md#run) on its LAN address
    and note its token.
 3. **Gateway host:** run [`mcp-gateway/deploy/setup.sh`](mcp-gateway/README.md#deploy-with-the-setup-script)
-   with that subdomain, agent-bridge's URL and token, and the projects folder. On the
+   with that subdomain and agent-bridge's URL and token. On the
    first run it prints a Cloudflare login URL: open it in any browser and pick your
    domain. It then sets up the service and the
    [Cloudflare Tunnel](mcp-gateway/README.md#cloudflare-tunnel) and prints the
