@@ -38,7 +38,8 @@ async def info(agents: Agents) -> HostInfo:
     return await agents.info()
 
 
-@router.get("/projects/{name}")
+# A path, so a name with "/" in it reaches the lookup and is refused like any other.
+@router.get("/projects/{name:path}")
 async def find_project(name: str, agents: Agents) -> ProjectFolder:
     folder = agents.find_project(name)
     if folder is None:

@@ -75,6 +75,11 @@ if [[ ${#kept[@]} -gt 0 ]]; then
   log "Keeping from $ENV_FILE (pass a variable to change it):"
   printf '    %s\n' "${kept[@]}"
 fi
+# Kept from before agent-bridge had /info, it now does nothing there: say so, since names
+# then resolve under the agent host's allowed roots, which may hold other folders.
+if [[ -n ${PROJECTS_ROOT:-} ]]; then
+  log "PROJECTS_ROOT is only used with an agent-bridge without /info. A newer one looks project names up in its own AGENT_BRIDGE_ALLOWED_ROOTS (the first root that has the folder)."
+fi
 
 ask PUBLIC_HOST "Public hostname for the MCP server (e.g. mcp.example.com)"
 ask AGENT_BRIDGE_URL "agent-bridge URL on the LAN (e.g. http://192.168.1.20:8765)"

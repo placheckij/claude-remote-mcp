@@ -12,6 +12,7 @@ from agent_bridge.app import create_app
 from agent_bridge.config import Settings
 from agent_bridge.errors import BridgeError
 from agent_bridge.herdr import Herdr, subprocess_runner
+from agent_bridge.host import host_name, platform_name
 
 TOKEN = "t" * 32
 AUTH = {"Authorization": f"Bearer {TOKEN}"}
@@ -1180,6 +1181,22 @@ def test_info_without_a_working_herdr_has_no_herdr_version(tmp_path: Path) -> No
 
 
 @pytest.mark.parametrize(
+    ("hostname", "name"), [("Studio-Mac.local", "studio-mac"), ("my_box", "my-box"), ("---.lan", "agent-host")]
+)
+def test_host_names_are_slugs(monkeypatch: pytest.MonkeyPatch, hostname: str, name: str) -> None:
+    monkeypatch.setattr("agent_bridge.host.socket.gethostname", lambda: hostname)
+    assert host_name() == name
+
+
+@pytest.mark.parametrize(
+    ("sys_platform", "name"), [("darwin", "darwin"), ("linux", "linux"), ("win32", "windows")]
+)
+def test_platforms_are_named_alike(monkeypatch: pytest.MonkeyPatch, sys_platform: str, name: str) -> None:
+    monkeypatch.setattr("agent_bridge.host.sys.platform", sys_platform)
+    assert platform_name() == name
+
+
+@pytest.mark.parametrize(
     ("name", "folder"),
     [("grafik", "projects/grafik"), ("billing", "work/billing"), ("api", None), ("missing", None)],
 )
@@ -1195,10 +1212,14 @@ def test_projects_are_looked_up_under_each_root_in_turn(
         assert response.json() == {"cwd": str((tmp_path / folder).resolve())}
 
 
-@pytest.mark.parametrize("name", [".", "x..y", "~grafik", "a\\b", "C:grafik", " "])
+@pytest.mark.parametrize(
+    "name",
+    [".", "x..y", "~grafik", "a\\b", "C:grafik", " ", "a%00b", "grafik/api", "grafik%2Fapi", "", "a" * 300],
+)
 def test_project_lookups_refuse_anything_but_a_folder_name(tmp_path: Path, name: str) -> None:
     response = roots_client(FakeRunner({}), two_roots(tmp_path)).get(f"/projects/{name}", headers=AUTH)
     assert response.status_code == 404
+    assert response.json()["error"]["code"] == "project_not_found"
 
 
 def test_project_lookups_skip_links_out_of_the_roots(tmp_path: Path) -> None:
@@ -1209,6 +1230,15 @@ def test_project_lookups_skip_links_out_of_the_roots(tmp_path: Path) -> None:
     assert response.status_code == 404
 
 
+def test_project_lookups_skip_a_symlink_loop(tmp_path: Path) -> None:
+    # "billing" is a folder under the second root; the first has a loop by that name.
+    roots = two_roots(tmp_path)
+    (roots[0] / "billing").symlink_to(roots[0] / "loop")
+    (roots[0] / "loop").symlink_to(roots[0] / "billing")
+    response = roots_client(FakeRunner({}), roots).get("/projects/billing", headers=AUTH)
+    assert response.json() == {"cwd": str((roots[1] / "billing").resolve())}
+
+
 def test_start_takes_a_project_name_and_names_the_agent_after_it(tmp_path: Path) -> None:
     roots = two_roots(tmp_path)
     runner = FakeRunner(start_responses(trust_dialog=False))
@@ -1217,6 +1247,21 @@ def test_start_takes_a_project_name_and_names_the_agent_after_it(tmp_path: Path)
     created = runner.called("workspace", "create")[0]
     assert created[created.index("--cwd") + 1] == str(roots[1] / "billing")
     assert runner.called("agent", "start")[0][2] == "billing"
+
+
+@pytest.mark.parametrize("given", ["alias", "{root}/alias"])
+def test_start_names_the_agent_after_the_project_as_given(tmp_path: Path, given: str) -> None:
+    # Not after the folder a link leads to: the user said "alias".
+    roots = two_roots(tmp_path)
+    (roots[0] / "alias").symlink_to(roots[0] / "grafik")
+    runner = FakeRunner(start_responses(trust_dialog=False))
+    response = roots_client(runner, roots).post(
+        "/agents", headers=AUTH, json={"project": given.format(root=roots[0])}
+    )
+    assert response.status_code == 201, response.text
+    created = runner.called("workspace", "create")[0]
+    assert created[created.index("--cwd") + 1] == str((roots[0] / "grafik").resolve())
+    assert runner.called("agent", "start")[0][2] == "alias"
 
 
 def test_start_takes_an_absolute_project_path(tmp_path: Path) -> None:
@@ -1230,7 +1275,24 @@ def test_start_takes_an_absolute_project_path(tmp_path: Path) -> None:
     assert created[created.index("--cwd") + 1] == str(roots[0] / "grafik" / "api")
 
 
-@pytest.mark.parametrize("project", ["..", ".", "grafik/api", "x..y", "~", "a\\b", "C:grafik"])
+@pytest.mark.parametrize(
+    ("folder", "status", "code"),
+    [("outside", 403, "path_not_allowed"), ("projects/missing", 404, "not_a_directory")],
+)
+def test_start_refuses_an_absolute_project_path_it_may_not_use(
+    tmp_path: Path, folder: str, status: int, code: str
+) -> None:
+    (tmp_path / "outside").mkdir()
+    runner = FakeRunner({})
+    response = roots_client(runner, two_roots(tmp_path)).post(
+        "/agents", headers=AUTH, json={"project": str(tmp_path / folder)}
+    )
+    assert response.status_code == status
+    assert response.json()["error"]["code"] == code
+    assert runner.calls == []
+
+
+@pytest.mark.parametrize("project", ["..",".", "grafik/api", "x..y", "~", "a\\b", "C:grafik"])
 def test_start_refuses_a_project_that_is_neither_name_nor_absolute_path(
     tmp_path: Path, project: str
 ) -> None:
@@ -1281,6 +1343,7 @@ def test_agents_say_which_project_they_work_in(tmp_path: Path) -> None:
         ("/home/me/projects", ("/home/me/projects",), None),
         ("/home/me/projects-old/x", ("/home/me/projects",), None),
         ("/home/me/projects/work/billing", ("/home/me/projects", "/home/me/projects/work"), "billing"),
+        ("/home/me/projects/work", ("/home/me/projects", "/home/me/projects/work"), None),
         (None, ("/home/me/projects",), None),
     ],
 )
@@ -1308,7 +1371,7 @@ def test_projects_of_windows_folders(cwd: str, project: str | None) -> None:
     ("name", "valid"),
     [("grafik", True), ("my-app.v2", True), ("łódź", True), ("..", False), (".", False),
      ("", False), (" ", False), ("a/b", False), ("a\\b", False), ("~", False), ("C:x", False),
-     ("x..y", False)],
+     ("x..y", False), ("a\0b", False)],
 )
 def test_project_names_are_one_folder_on_any_platform(name: str, valid: bool) -> None:
     # Separators and drive letters of both kinds are refused, whatever the bridge runs on.

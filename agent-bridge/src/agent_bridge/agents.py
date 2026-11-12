@@ -76,9 +76,14 @@ class AgentService:
             return None
         for root in self.settings.allowed_roots:
             # Resolved and checked again: a link in a root may point out of every root.
-            folder = (root / name).resolve()
-            if self.settings.is_allowed(folder) and folder.is_dir():
-                return folder
+            # Not found either: a name too long for the file system (OSError), or a symlink
+            # loop (RuntimeError before Python 3.13).
+            try:
+                folder = (root / name).resolve()
+                if self.settings.is_allowed(folder) and folder.is_dir():
+                    return folder
+            except (OSError, RuntimeError):
+                continue
         return None
 
     def _summarize(self, agent: dict) -> AgentSummary:
@@ -166,9 +171,12 @@ class AgentService:
     ) -> StartedAgent:
         folder = self._allowed_folder(cwd) if cwd is not None else self._project_folder(project)
         account, config_dir = self._account(folder, account)
+        # Named after the folder as given, not where a link to it leads.
+        given = PurePath(cwd if cwd is not None else project).name
+        default_name = given if is_project_name(given) else folder.name
         async with self._start_lock:
             running = await self._check_agent_limit()
-            name = herdr_name(name or folder.name, {agent.get("name") for agent in running})
+            name = herdr_name(name or default_name, {agent.get("name") for agent in running})
             await self._trust(folder, config_dir)
             agent = await self._start_with_one_retry(name, folder, config_dir)
         return StartedAgent(**self._summarize(agent).model_dump(), account=account)
@@ -367,10 +375,10 @@ class AgentService:
 def is_project_name(name: str) -> bool:
     """True for one folder name: ".." would climb out of a root, "." would be the root
     itself (an agent over every project), "~" is never expanded, and separators or a
-    drive ("C:") of either platform would reach another folder."""
+    drive ("C:") of either platform would reach another folder; no path holds a NUL."""
     if name.strip() in ("", "."):
         return False
-    return not any(part in name for part in ("..", "/", "\\", "~", ":"))
+    return not any(part in name for part in ("..", "/", "\\", "~", ":", "\0"))
 
 
 def project_of(cwd: str | None, roots: Sequence[PurePath]) -> str | None:
@@ -381,9 +389,9 @@ def project_of(cwd: str | None, roots: Sequence[PurePath]) -> str | None:
     if not cwd:
         return None
     path = type(roots[0])(cwd)
-    inside = [
-        path.relative_to(root).parts for root in roots if path != root and path.is_relative_to(root)
-    ]
+    if path in roots:  # also a root inside another: it is the closest
+        return None
+    inside = [path.relative_to(root).parts for root in roots if path.is_relative_to(root)]
     return "/".join(min(inside, key=len)) if inside else None
 
 
