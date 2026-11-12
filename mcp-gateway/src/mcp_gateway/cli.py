@@ -63,7 +63,7 @@ def main(
         print(error, file=sys.stderr)
         return 1
     except OSError as error:
-        print(f"Can't change {error.filename or 'the agent hosts'} ({error.strerror}).", file=sys.stderr)
+        print(f"Can't use {error.filename or 'the agent hosts'} ({error.strerror}).", file=sys.stderr)
         return 1
     return 0
 
@@ -139,6 +139,9 @@ def _add(
             token = ""
     if not token:
         raise _Refused("The token is needed: AGENT_BRIDGE_TOKEN in the agent host's settings.")
+    # It goes in an HTTP header, which takes printable ASCII only; a typo shouldn't end in a traceback.
+    if not (token.isascii() and token.isprintable()):
+        raise _Refused("That isn't an agent-bridge token: it has characters other than printable ASCII.")
     info = asyncio.run(_info(connect(url, token)))
     if info is None:
         raise _Refused(f"The agent-bridge at {url} has no /info: update agent-bridge on it first.")
