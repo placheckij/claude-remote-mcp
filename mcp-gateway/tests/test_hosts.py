@@ -547,6 +547,24 @@ def test_a_change_taken_in_by_the_gateways_own_save_gets_a_client(tmp_path: Path
     assert [host.name for host in hosts.all()] == ["mac", "linux"]
 
 
+@pytest.mark.parametrize(("field", "value"), [("url", url("studio")), ("token", "n" * 32)])
+def test_a_new_url_or_token_gets_a_new_client(tmp_path: Path, field: str, value: str) -> None:
+    hosts, _, clients = hosts_on(tmp_path)
+    old = hosts.all()[0].bridge
+    path = tmp_path / "bridges.json"
+    data = json.loads(path.read_text())
+    data["bridges"][0][field] = value
+    path.write_text(json.dumps(data))
+    asyncio.run(hosts.refresh())
+    (host,) = hosts.all()
+    assert host.bridge is not old and (host.record.url, host.record.token)[field == "token"] == value
+    assert str(host.bridge.client.base_url).rstrip("/") == host.record.url
+    # The old one may still be in use by a request; closed at shutdown.
+    assert not old.client.is_closed
+    asyncio.run(hosts.aclose())
+    assert old.client.is_closed and host.bridge.client.is_closed
+
+
 def test_a_removed_hosts_client_is_closed_only_at_shutdown(tmp_path: Path) -> None:
     # A request that looked it up before the removal may still be using it.
     hosts, _, clients = hosts_on(tmp_path)

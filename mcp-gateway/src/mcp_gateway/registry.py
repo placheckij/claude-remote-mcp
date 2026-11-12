@@ -15,8 +15,10 @@ import time
 import uuid
 from collections.abc import Callable
 from pathlib import Path
+from typing import Annotated
 
-from pydantic import BaseModel, ConfigDict, ValidationError
+import httpx
+from pydantic import AfterValidator, BaseModel, ConfigDict, ValidationError
 
 try:
     import fcntl
@@ -39,13 +41,32 @@ class RegistryError(Exception):
     """A change the registry refuses, or a file it can't read; the message says why."""
 
 
+def check_url(value: str) -> str:
+    """An agent-bridge's address a client can be made for; also checks the legacy setting."""
+    try:
+        url = httpx.URL(value)
+    except httpx.InvalidURL:
+        url = None
+    if url is None or url.scheme not in ("http", "https") or not url.host:
+        raise ValueError("must be the agent-bridge's address, like http://192.168.1.20:8765")
+    return value
+
+
+def check_token(value: str) -> str:
+    if not (value.isascii() and value.isprintable()):
+        raise ValueError("must be printable ASCII, as it goes in an HTTP header")
+    return value
+
+
 class Bridge(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     bridge_id: str
     name: str
-    url: str
-    token: str
+    # Checked on reading too: a hand edit that no client can be made for would otherwise
+    # fail every host, not just its own.
+    url: Annotated[str, AfterValidator(check_url)]
+    token: Annotated[str, AfterValidator(check_token)]
     # The last /info: {"api_version": 1} for an agent-bridge from before /info, None until
     # it first answers.
     info: dict | None
@@ -97,10 +118,15 @@ class Registry:
         url = url.rstrip("/")
         _check_name(name)
         now = int(self.clock())
-        bridge = Bridge(
-            bridge_id=uuid.uuid4().hex, name=name, url=url, token=token, info=info,
-            enrolled_at=now, last_seen=now if info is not None else None,
-        )
+        try:
+            bridge = Bridge(
+                bridge_id=uuid.uuid4().hex, name=name, url=url, token=token, info=info,
+                enrolled_at=now, last_seen=now if info is not None else None,
+            )
+        except ValidationError as error:
+            # Without the input: it may be the token.
+            field, problem = error.errors()[0]["loc"][0], error.errors()[0]["msg"].removeprefix("Value error, ")
+            raise RegistryError(f"The {field} {problem}.") from None
 
         def add(bridges: list[Bridge]) -> list[Bridge]:
             _check_free(bridges, name)
