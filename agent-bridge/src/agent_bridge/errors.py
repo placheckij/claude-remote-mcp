@@ -10,6 +10,7 @@ HERDR_STATUS = {
     "agent_not_found": 404,
     "pane_not_found": 404,
     "folder_not_trusted": 409,
+    "prompt_too_long": 422,
     "timeout": 504,
 }
 

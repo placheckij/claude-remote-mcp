@@ -127,3 +127,42 @@ def test_a_question_claude_code_wrapped_comes_back_whole() -> None:
     assert last_question(snapshot.replace(rule, "─" * 200)) == (
         "Configuration. Should the new client use the shared one?"
     )
+
+
+# Claude Code under Windows' ConPTY: messages start with "●" instead of "⏺", tool output
+# with "⎿" and a no-break space, and the screen here is 92 columns wide.
+CONPTY_RULE = "─" * 92
+CONPTY = "\n".join(
+    [
+        " ▐▛███▛█   Claude Code",
+        "❯ Run this once and tell me its output in one line: Start-Sleep -Seconds 20; 'slept'",
+        "● PowerShell(Start-Sleep -Seconds 20; 'slept')",
+        "  ⎿  slept",
+        "● The output was: slept. Should I continue with the next step of the plan, or stop",
+        "  here?",
+        "✻ Churned for 23s · done 14:46",
+        *[""] * 20,
+        CONPTY_RULE,
+        "❯",
+        CONPTY_RULE,
+        "  ⏸ manual mode on · ? for shortcuts",
+    ]
+)
+
+
+def test_finds_the_question_on_a_windows_screen() -> None:
+    assert last_question(CONPTY) == (
+        "The output was: slept. Should I continue with the next step of the plan, or stop here?"
+    )
+
+
+def test_a_question_in_windows_tool_output_is_not_the_agents() -> None:
+    snapshot = "\n".join(
+        ["❯ Look for it.", r"● PowerShell(Select-String 'why?' docs\faq.md)",
+         "  ⎿ \u00a0docs\\faq.md:1:why?", "✻ Churned for 3s", CONPTY_RULE, "❯", CONPTY_RULE]
+    )
+    assert last_question(snapshot) is None
+
+
+def test_trims_a_windows_screen_like_any_other() -> None:
+    assert last_lines(CONPTY, 2) == "  here?\n✻ Churned for 23s · done 14:46"
