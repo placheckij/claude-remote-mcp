@@ -1213,6 +1213,15 @@ def test_project_lookups_skip_links_out_of_the_roots(tmp_path: Path) -> None:
     assert response.status_code == 404
 
 
+def test_project_lookups_skip_a_symlink_loop(tmp_path: Path) -> None:
+    # "billing" is a folder under the second root; the first has a loop by that name.
+    roots = two_roots(tmp_path)
+    (roots[0] / "billing").symlink_to(roots[0] / "loop")
+    (roots[0] / "loop").symlink_to(roots[0] / "billing")
+    response = roots_client(FakeRunner({}), roots).get("/projects/billing", headers=AUTH)
+    assert response.json() == {"cwd": str((roots[1] / "billing").resolve())}
+
+
 def test_start_takes_a_project_name_and_names_the_agent_after_it(tmp_path: Path) -> None:
     roots = two_roots(tmp_path)
     runner = FakeRunner(start_responses(trust_dialog=False))
@@ -1302,6 +1311,7 @@ def test_agents_say_which_project_they_work_in(tmp_path: Path) -> None:
         ("/home/me/projects", ("/home/me/projects",), None),
         ("/home/me/projects-old/x", ("/home/me/projects",), None),
         ("/home/me/projects/work/billing", ("/home/me/projects", "/home/me/projects/work"), "billing"),
+        ("/home/me/projects/work", ("/home/me/projects", "/home/me/projects/work"), None),
         (None, ("/home/me/projects",), None),
     ],
 )
