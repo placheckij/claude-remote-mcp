@@ -4,7 +4,8 @@ The MCP server that the Claude app talks to. It runs on an always-on host (the
 *gateway host*), is published to the internet through a Cloudflare Tunnel, and is added
 to the Claude account as a custom connector, which signs in with OAuth. Every tool call
 is checked against the connector's access token and forwarded over the LAN to
-[`agent-bridge`](../agent-bridge/), which drives herdr on the *agent host*.
+[`agent-bridge`](../agent-bridge/), which drives herdr on an *agent host*. One gateway
+serves several agent hosts (see [Agent hosts](#agent-hosts)).
 
 ```
 Claude app ──HTTPS──> Cloudflare edge ──tunnel──> cloudflared ──> mcp-gateway :8766     (gateway host)
@@ -37,13 +38,13 @@ or with a NUL character) come back the same way as one sentence.
 
 | Tool | Does |
 |---|---|
-| `list_agents` | one line per agent: id · name · status · folder (the project agent-bridge reports, e.g. `grafik`; the full path outside every project). An agent that ended its turn with a question shows `waiting for an answer` and, on the next line, the question |
+| `list_agents` | one line per agent: id · name · status · folder (the project agent-bridge reports, e.g. `grafik`; the full path outside every project). An agent that ended its turn with a question shows `waiting for an answer` and, on the next line, the question. With several hosts, agents are grouped by host, and hosts with no agents, that didn't answer within 8 s, or that [need an update](#agent-hosts) are named; one host down never fails the call |
 | `agent_details` | the same line for one agent |
 | `read_output` | last N meaningful terminal lines (default 20, at most 60; the same for `lines` on the waiting tools) |
 | `send_prompt` | prompt, wait up to `wait_seconds` (default and most 20, see below), return status + output; flags `blocked` and still-working. A `blocked` agent refuses prompts until its question is answered. If agent-bridge doesn't answer in time, it says the prompt may have been sent instead of failing, so it isn't sent twice |
 | `wait_for_agent` | keep waiting for an agent still working (e.g. after `send_prompt` ran out of time); same result format |
 | `answer_agent` | key presses for a blocked agent's question, e.g. `["1"]`, `["Enter"]`; with `wait_seconds` also waits for the result. Marked destructive, so Claude asks first |
-| `start_agent` | new agent in a project: one folder name in agent-bridge's allowed roots, or an absolute path. The gateway passes it on as it is; agent-bridge resolves and checks it. Optional `account` (e.g. `work`) picks the Claude login; by default agent-bridge uses the one set up for the folder, and the reply names it. If agent-bridge takes over 25 s, it says the agent may still be starting instead of failing |
+| `start_agent` | new agent in a project: one folder name in agent-bridge's allowed roots, or an absolute path. The gateway passes it on as it is; agent-bridge resolves and checks it. Optional `host`; without it and with several hosts, the gateway asks each (`GET /projects/{name}`) and starts on the one that has the project, or answers which hosts do. An absolute path needs `host` when there are several. Optional `account` (e.g. `work`) picks the Claude login; by default agent-bridge uses the one set up for the folder, and the reply names it. If agent-bridge takes over 25 s, it says the agent may still be starting instead of failing |
 | `rename_agent` | new name for an agent and its herdr workspace, any words; agent-bridge turns it into a slug (`Grafik fix!` → `grafik-fix`, `-2` if another agent has it) and the reply says the name it got |
 | `stop_agent` | close an agent's pane (marked destructive, so Claude asks first) |
 
@@ -74,9 +75,33 @@ unset. An invalid setting stops startup with one line per problem, naming the va
 | `MCP_GATEWAY_STATE_DIR` | required; where the signed-in clients and token hashes are kept (`oauth.json`, mode 600), e.g. `/var/lib/mcp-gateway`. The running gateway locks it (`oauth.lock`); see [One process](#one-process) |
 | `MCP_GATEWAY_TOKEN` | optional, 32+ chars; the static token from before OAuth, still accepted as `Authorization: Bearer …` while set. Leave it unset unless a connector added with request headers still uses it |
 | `MCP_GATEWAY_PUBLIC_HOST` | required; the tunnel hostname, e.g. `mcp.example.com` (requests with any other `Host` are refused). The OAuth issuer is `https://<host>` and the connector URL `https://<host>/mcp` |
-| `MCP_GATEWAY_BRIDGE_URL` | required, e.g. `http://192.168.1.20:8765` |
-| `MCP_GATEWAY_BRIDGE_TOKEN` | required; agent-bridge's `AGENT_BRIDGE_TOKEN` |
+| `MCP_GATEWAY_BRIDGE_URL`, `MCP_GATEWAY_BRIDGE_TOKEN` | legacy, both or neither; see [Agent hosts](#agent-hosts) |
 | `MCP_GATEWAY_PROJECTS_ROOT` | optional; only for an agent-bridge without `GET /info`, which can't look up project names: where `start_agent` finds them, as a path on the agent host, e.g. `/home/me/projects`. Unset, such a host takes absolute paths only |
+
+## Agent hosts
+
+The gateway keeps its agent-bridges in `bridges.json` in `MCP_GATEWAY_STATE_DIR` (mode
+600): name, URL, token and the last `GET /info` of each. Manage them on the gateway host:
+
+```sh
+sudo mcp-gateway bridges add http://192.168.1.20:8765   # asks for its AGENT_BRIDGE_TOKEN
+sudo mcp-gateway bridges list
+sudo mcp-gateway bridges rename mac studio
+sudo mcp-gateway bridges remove studio
+```
+
+`add` takes the name and everything else from the bridge's `/info`, and refuses a
+bridge without it (`--name` picks another name). The running gateway picks up each
+change before its next request.
+
+- **Agent ids** carry their host, e.g. `mac/w1:p1`. While only one host is set up, bare
+  ids (`w1:p1`) are shown and accepted, as before.
+- **Versions:** the gateway calls bridges at its own API version (2) and one behind. Any
+  other shows in `list_agents` as needing an update and isn't called.
+- **Upgrading from one bridge:** if `MCP_GATEWAY_BRIDGE_URL` and `_TOKEN` are set and
+  there are no hosts yet, the first start imports them as one host, named by its
+  `/info` (`host` if it doesn't answer). The setup script then drops them from the env
+  file.
 
 ## Security
 
@@ -187,12 +212,14 @@ sudo PUBLIC_HOST=mcp.example.com \
      mcp-gateway/deploy/setup.sh
 ```
 
-It asks for agent-bridge's token (`AGENT_BRIDGE_TOKEN` from the agent host) without
-showing it. Keep tokens out of the command itself: there they end up in your shell
-history and, while the script runs, in the process list that other users on the host
-can read. Other values left out are asked for too; on later runs they come from
-`/etc/mcp-gateway/env` instead (see [Update and rotate](#update-and-rotate)). Optional
-variables: `PROJECTS_ROOT` (only for an agent-bridge without `/info`, see
+`AGENT_BRIDGE_URL` adds that agent host with `mcp-gateway bridges add`, which asks for
+its token (`AGENT_BRIDGE_TOKEN` from the agent host) without showing it; left out, the
+script offers to add one while there are none. Keep tokens out of the command itself:
+there they end up in your shell history and, while the script runs, in the process list
+that other users on the host can read. `PUBLIC_HOST` left out is asked for; on later
+runs it comes from `/etc/mcp-gateway/env` instead (see
+[Update and rotate](#update-and-rotate)). Optional variables: `PROJECTS_ROOT` (only for
+an agent-bridge without `/info`, see
 [Configuration](#configuration)), `TUNNEL_NAME` (default `claude-remote`), `PORT` (default `8766`),
 `MCP_GATEWAY_OAUTH_PASSPHRASE`, `ROTATE_PASSPHRASE=1`, `MCP_GATEWAY_TOKEN` and
 `REMOVE_TOKEN=1`.
@@ -205,7 +232,6 @@ without echoing and pass it through sudo's environment:
 read -rsp 'Passphrase: ' MCP_GATEWAY_OAUTH_PASSPHRASE && export MCP_GATEWAY_OAUTH_PASSPHRASE && echo
 sudo --preserve-env=MCP_GATEWAY_OAUTH_PASSPHRASE \
      PUBLIC_HOST=mcp.example.com \
-     AGENT_BRIDGE_URL=http://192.168.1.20:8765 \
      mcp-gateway/deploy/setup.sh
 ```
 
@@ -225,8 +251,7 @@ delete `/etc/cloudflared/cert.pem` and re-run to log in again. A cert left in
 `/root/.cloudflared/` by an earlier `cloudflared tunnel login` is used instead of logging
 in.
 
-At the end it checks that mcp-gateway is up, that agent-bridge answers with its token, and
-that the tunnel answers `401` on `/mcp` without a token, serves the OAuth metadata, and
+At the end it checks that mcp-gateway is up, lists the agent hosts, and checks that the tunnel answers `401` on `/mcp` without a token, serves the OAuth metadata, and
 answers `404` elsewhere (waiting up to 30 s each for the service and the tunnel to come
 up). If all pass, it prints the connector settings; if any fails, it lists the failed
 checks and exits with status 1. Either way it says where the passphrase is: when it
@@ -240,7 +265,8 @@ the tunnel checks fail, try again shortly:
 |---|---|
 | `/opt/claude-remote-mcp/` | the checkout's committed files (`HEAD`; no untracked or uncommitted changes) and their `.venv`, all owned by root, so neither the service nor the checkout's owner can change the code it runs |
 | `/etc/mcp-gateway/env` | configuration, passphrase and tokens (`root:mcp-gateway`, mode 640) |
-| `/var/lib/mcp-gateway/` | `oauth.json`: signed-in clients and token hashes, and `oauth.lock` (systemd `StateDirectory`, owned by `mcp-gateway`, mode 700) |
+| `/var/lib/mcp-gateway/` | `oauth.json`: signed-in clients and token hashes, and `oauth.lock`; `bridges.json`: the [agent hosts](#agent-hosts), and `bridges.lock` (systemd `StateDirectory`, owned by `mcp-gateway`, mode 700) |
+| `/usr/local/bin/mcp-gateway` | runs `mcp-gateway bridges …` as the `mcp-gateway` user on its state folder |
 | `/etc/systemd/system/mcp-gateway.service` | runs as the `mcp-gateway` system user on `127.0.0.1:8766`, sandboxed |
 | `/etc/cloudflared/cert.pem` | Cloudflare account cert from `tunnel login`; only needed to manage tunnels, root-only |
 | `/etc/cloudflared/claude-remote.json` | the tunnel's credentials (owned by the `cloudflared` user) |
@@ -250,11 +276,12 @@ the tunnel checks fail, try again shortly:
 ### Update and rotate
 
 - **Update the code:** `git pull` in the checkout, then re-run the script without any
-  variables: `sudo mcp-gateway/deploy/setup.sh`. It takes `PUBLIC_HOST`,
-  `AGENT_BRIDGE_URL`, `AGENT_BRIDGE_TOKEN` and, if set, `PROJECTS_ROOT` from
-  `/etc/mcp-gateway/env` and lists the ones it keeps (tokens not shown), keeps the
-  passphrase, the OAuth tokens and the static token if there is one, and reuses the
-  tunnel. Only committed code is installed. Once agent-bridge has `GET /info`, a kept
+  variables: `sudo mcp-gateway/deploy/setup.sh`. It takes `PUBLIC_HOST` and, if set,
+  `PROJECTS_ROOT` from `/etc/mcp-gateway/env` and lists the ones it keeps, keeps the
+  passphrase, the OAuth tokens, the static token if there is one and the agent hosts,
+  and reuses the tunnel. An agent-bridge set up before `bridges.json` is imported as a
+  host and dropped from the env file (see [Agent hosts](#agent-hosts)). Only committed
+  code is installed. Once agent-bridge has `GET /info`, a kept
   `PROJECTS_ROOT` does nothing: project names resolve under the first of
   `AGENT_BRIDGE_ALLOWED_ROOTS` that has the folder, so check those hold the projects
   you mean.
@@ -263,13 +290,9 @@ the tunnel checks fail, try again shortly:
   signed in; to sign them out too, `sudo systemctl stop mcp-gateway && sudo rm -f
   /var/lib/mcp-gateway/oauth.json && sudo systemctl start mcp-gateway`.
 - **Stop accepting the static token:** re-run with `REMOVE_TOKEN=1`.
-- **Change agent-bridge's URL or token, or the projects folder:** re-run with just the
-  values that change; the rest are kept:
-  ```sh
-  sudo AGENT_BRIDGE_URL=http://192.168.1.21:8765 mcp-gateway/deploy/setup.sh
-  ```
-  For a new agent-bridge token, export it as shown for `MCP_GATEWAY_TOKEN` above and
-  pass it with `sudo --preserve-env=AGENT_BRIDGE_TOKEN`.
+- **Change an agent-bridge's URL or token:** `sudo mcp-gateway bridges remove <name>`,
+  then `sudo mcp-gateway bridges add <url>`. **The projects folder:** re-run with
+  `PROJECTS_ROOT`.
 - **Change the hostname:** re-run with the new `PUBLIC_HOST`. It gets a new DNS record;
   delete the old one in the Cloudflare dashboard, and re-add the connector in claude.ai
   with the new URL.
@@ -313,7 +336,7 @@ sudo TUNNEL_ORIGIN_CERT=/etc/cloudflared/cert.pem cloudflared tunnel delete clau
 
 # 3. Remove the code, configuration, tokens and tunnel credentials
 sudo rm -rf /opt/claude-remote-mcp /etc/mcp-gateway
-sudo rm -f /etc/cloudflared/claude-remote.json /etc/cloudflared/claude-remote.yml
+sudo rm -f /usr/local/bin/mcp-gateway /etc/cloudflared/claude-remote.json /etc/cloudflared/claude-remote.yml
 
 # 4. Remove the service user
 sudo userdel mcp-gateway
@@ -367,6 +390,8 @@ reverse proxy:
    20 s, plus up to 5 s for agent-bridge's answer).
    Don't publish `/healthz` or anything else. mcp-gateway needs a writable
    `MCP_GATEWAY_STATE_DIR`.
+4. Add the agent hosts as the user the server runs as:
+   `uv run --frozen --no-dev --package mcp-gateway mcp-gateway --state-dir <state dir> bridges add <url>`.
 
 ## Cloudflare Tunnel
 
@@ -474,8 +499,8 @@ uv run --package mcp-gateway pytest mcp-gateway
 # Local run against an agent-bridge on this machine
 MCP_GATEWAY_OAUTH_PASSPHRASE=$(openssl rand -hex 12) MCP_GATEWAY_STATE_DIR=/tmp/mcp-gateway-state \
 MCP_GATEWAY_TOKEN=$(openssl rand -hex 32) MCP_GATEWAY_PUBLIC_HOST=localhost \
-MCP_GATEWAY_BRIDGE_URL=http://127.0.0.1:8765 MCP_GATEWAY_BRIDGE_TOKEN=… \
   uv run --package mcp-gateway uvicorn mcp_gateway.server:main --factory --host 127.0.0.1 --port 8766
+uv run --package mcp-gateway mcp-gateway --state-dir /tmp/mcp-gateway-state bridges add http://127.0.0.1:8765
 ```
 
 Tests drive the real MCP app over JSON-RPC with a fake agent-bridge behind

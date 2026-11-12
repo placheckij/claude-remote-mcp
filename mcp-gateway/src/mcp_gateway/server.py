@@ -1,13 +1,15 @@
 """MCP server exposed to claude.ai as a custom connector.
 
-Layout: tools.py (the MCP tools) → bridge.py (agent-bridge client); replies.py turns
-agent-bridge's JSON into short speakable text. oauth.py signs the connector in and keeps
-its tokens; auth.py checks them in front of the MCP endpoint.
+Layout: tools.py (the MCP tools) → hosts.py (which agent host an id names) → bridge.py
+(agent-bridge client); registry.py keeps the hosts in bridges.json, and cli.py changes it.
+replies.py turns agent-bridge's JSON into short speakable text. oauth.py signs the
+connector in and keeps its tokens; auth.py checks them in front of the MCP endpoint.
 """
 
 import logging
 import os
 import sys
+from collections.abc import Callable
 
 from mcp.server.transport_security import TransportSecuritySettings
 from starlette.datastructures import Headers
@@ -18,8 +20,10 @@ from uvicorn.config import STARTUP_FAILURE
 from mcp_gateway.auth import BearerAuth
 from mcp_gateway.bridge import AgentBridge
 from mcp_gateway.config import Settings, StartupError
+from mcp_gateway.hosts import Hosts
 from mcp_gateway.oauth import GatewayOAuth
-from mcp_gateway.tools import build_server
+from mcp_gateway.registry import Registry, RegistryError
+from mcp_gateway.tools import build_server, instructions
 
 log = logging.getLogger(__name__)
 
@@ -29,11 +33,23 @@ ALLOWED_ORIGINS = ("https://claude.ai", "https://claude.com")
 
 
 def create_app(
-    settings: Settings, bridge: AgentBridge | None = None, oauth: GatewayOAuth | None = None
+    settings: Settings,
+    connect: Callable[[str, str], AgentBridge] = AgentBridge.connect,
+    oauth: GatewayOAuth | None = None,
 ) -> ASGIApp:
-    bridge = bridge or AgentBridge.connect(settings.bridge_url, settings.bridge_token)
+    """`connect` makes the client for a bridge's URL and token."""
     oauth = oauth or GatewayOAuth(settings)
-    mcp = build_server(settings, bridge, oauth)
+    try:
+        registry = Registry(settings.state_dir / "bridges.json")
+    except RegistryError as error:
+        oauth.close()
+        raise StartupError(str(error)) from None
+    legacy = (settings.bridge_url, settings.bridge_token) if settings.bridge_url else None
+    hosts = Hosts(registry, connect, legacy)
+    mcp = build_server(settings, hosts, oauth)
+    # The instructions name the hosts, so they follow the registry.
+    hosts.on_change = lambda names: setattr(mcp._lowlevel_server, "instructions", instructions(names))
+    hosts.on_change(registry.names())
     app = mcp.streamable_http_app(
         stateless_http=True,
         json_response=True,
@@ -42,7 +58,7 @@ def create_app(
             allowed_origins=list(ALLOWED_ORIGINS),
         ),
     )
-    return BearerAuth(StatelessEdges(app, bridge, oauth), oauth.load_access_token, oauth.resource_metadata_url)
+    return BearerAuth(StatelessEdges(app, hosts, oauth), oauth.load_access_token, oauth.resource_metadata_url)
 
 
 class StatelessEdges:
@@ -52,17 +68,19 @@ class StatelessEdges:
       likely came from the Claude app, and every call will fail the same way;
     - GET /mcp answers 405, as the spec allows: stateless mode never sends anything on a GET
       stream, which would only hold a task open until the client hangs up;
-    - on shutdown the agent-bridge client is closed and the state folder unlocked.
+    - at startup and before every MCP request the agent hosts are brought up to date with
+      bridges.json, which `mcp-gateway bridges` may have changed;
+    - on shutdown the agent-bridge clients are closed and the state folder unlocked.
     """
 
-    def __init__(self, app: ASGIApp, bridge: AgentBridge, oauth: GatewayOAuth):
+    def __init__(self, app: ASGIApp, hosts: Hosts, oauth: GatewayOAuth):
         self.app = app
-        self.bridge = bridge
+        self.hosts = hosts
         self.oauth = oauth
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope["type"] == "lifespan":
-            await self.app(scope, receive, self._closing_bridge_on_shutdown(send))
+            await self.app(scope, self._refreshing_hosts_on_startup(receive), self._closing_hosts_on_shutdown(send))
             return
         if scope["type"] == "http" and scope["path"] == "/mcp":
             origin = Headers(scope=scope).get("origin")
@@ -78,12 +96,23 @@ class StatelessEdges:
                 response = JSONResponse({"error": "method not allowed"}, status_code=405, headers={"Allow": "POST"})
                 await response(scope, receive, send)
                 return
+            await self.hosts.refresh()
         await self.app(scope, receive, send)
 
-    def _closing_bridge_on_shutdown(self, send: Send) -> Send:
+    def _refreshing_hosts_on_startup(self, receive: Receive) -> Receive:
+        # Imports the legacy bridge before the first request, so `bridges list` shows it.
+        async def wrapped() -> Message:
+            message = await receive()
+            if message["type"] == "lifespan.startup":
+                await self.hosts.refresh()
+            return message
+
+        return wrapped
+
+    def _closing_hosts_on_shutdown(self, send: Send) -> Send:
         async def wrapped(message: Message) -> None:
             if message["type"] == "lifespan.shutdown.complete":
-                await self.bridge.aclose()
+                await self.hosts.aclose()
                 self.oauth.close()
             await send(message)
 

@@ -3,7 +3,7 @@ directory (the environment wins)."""
 
 from pathlib import Path
 
-from pydantic import Field, ValidationError
+from pydantic import Field, ValidationError, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 ENV_FILE = ".env"
@@ -27,14 +27,22 @@ class Settings(BaseSettings):
     # The static token from before OAuth, sent by claude.ai as `Authorization: Bearer <token>`
     # (connector request header); still accepted while set, for moving connectors over.
     token: str | None = Field(default=None, min_length=32)
-    bridge_url: str
-    bridge_token: str
+    # The one agent-bridge from before the registry (bridges.json): imported as a host at
+    # the first start with no hosts, then no longer read.
+    bridge_url: str | None = None
+    bridge_token: str | None = None
     # Host header the tunnel forwards, e.g. mcp.example.com; checked against DNS rebinding.
     public_host: str
     # Only for an agent-bridge from before /info, which can't look up project names: names
     # given to start_agent resolve against this folder on the agent host, e.g.
     # /home/me/projects. Without it such a host takes absolute paths only.
     projects_root: str | None = None
+
+    @model_validator(mode="after")
+    def _bridge_url_and_token_together(self) -> "Settings":
+        if (self.bridge_url is None) != (self.bridge_token is None):
+            raise ValueError("MCP_GATEWAY_BRIDGE_URL and MCP_GATEWAY_BRIDGE_TOKEN go together: set both or neither")
+        return self
 
     @classmethod
     def from_env(cls) -> "Settings":

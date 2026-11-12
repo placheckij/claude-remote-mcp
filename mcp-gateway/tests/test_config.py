@@ -7,8 +7,6 @@ from mcp_gateway.config import Settings
 REQUIRED = {
     "MCP_GATEWAY_OAUTH_PASSPHRASE": "p" * 24,
     "MCP_GATEWAY_STATE_DIR": "/var/lib/mcp-gateway",
-    "MCP_GATEWAY_BRIDGE_URL": "http://agents.lan:8765",
-    "MCP_GATEWAY_BRIDGE_TOKEN": "b" * 32,
     "MCP_GATEWAY_PUBLIC_HOST": "mcp.example.com",
 }
 
@@ -24,6 +22,8 @@ def env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> pytest.MonkeyPatch:
 
 def test_reads_every_setting(env: pytest.MonkeyPatch) -> None:
     env.setenv("MCP_GATEWAY_PROJECTS_ROOT", "/home/me/projects")
+    env.setenv("MCP_GATEWAY_BRIDGE_URL", "http://agents.lan:8765")
+    env.setenv("MCP_GATEWAY_BRIDGE_TOKEN", "b" * 32)
     settings = Settings.from_env()
     assert (settings.bridge_url, settings.projects_root) == ("http://agents.lan:8765", "/home/me/projects")
     assert settings.state_dir == Path("/var/lib/mcp-gateway")
@@ -32,6 +32,14 @@ def test_reads_every_setting(env: pytest.MonkeyPatch) -> None:
 def test_the_projects_root_is_optional(env: pytest.MonkeyPatch) -> None:
     # Only an agent-bridge from before /info needs it, to start agents by project name.
     assert Settings.from_env().projects_root is None
+
+
+def test_the_legacy_bridge_is_optional_but_whole(env: pytest.MonkeyPatch) -> None:
+    # Only imported into the registry at the first start; hosts are added there now.
+    assert Settings.from_env().bridge_url is None
+    env.setenv("MCP_GATEWAY_BRIDGE_URL", "http://agents.lan:8765")
+    with pytest.raises(RuntimeError, match="BRIDGE_URL and MCP_GATEWAY_BRIDGE_TOKEN go together"):
+        Settings.from_env()
 
 
 def test_the_static_token_is_optional(env: pytest.MonkeyPatch) -> None:
