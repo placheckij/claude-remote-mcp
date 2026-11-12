@@ -71,7 +71,7 @@ async def test_refuses_a_prompt_too_long_for_a_windows_command_line(
 
 
 @pytest.mark.asyncio
-async def test_a_plain_prompt_of_the_largest_size_still_goes_through(on_windows: None) -> None:
+async def test_the_longest_prompt_allowed_goes_through_when_plain(on_windows: None) -> None:
     runner = Recorder({("agent", "prompt"): ok({"agent": idle("C:/p")})})
     await Herdr(binary=HERDR_EXE, runner=runner).prompt("w1:p1", "ż" * 20_000, 600_000)
     assert len(runner.calls) == 1
@@ -151,6 +151,19 @@ async def test_a_start_not_ready_for_another_reason_stays_not_ready() -> None:
         **START,
         ("agent", "start"): err("agent_not_ready"),
         ("pane", "wait-output"): err("timeout"),
+    })
+    with pytest.raises(HerdrError) as raised:
+        await Herdr(runner=runner).start_agent("probe", "C:/p", {}, ())
+    assert raised.value.code == "agent_not_ready"
+    assert runner.calls[-1][1:] == ["workspace", "close", "w5"]
+
+
+@pytest.mark.asyncio
+async def test_a_failing_dialog_check_keeps_the_reason_the_start_failed() -> None:
+    runner = Recorder({
+        **START,
+        ("agent", "start"): err("agent_not_ready"),
+        ("pane", "wait-output"): err("pane_not_found"),
     })
     with pytest.raises(HerdrError) as raised:
         await Herdr(runner=runner).start_agent("probe", "C:/p", {}, ())
