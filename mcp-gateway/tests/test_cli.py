@@ -91,7 +91,9 @@ def test_add_refuses_a_bridge_that_doesnt_answer_info(bridges: Bridges, info, sa
     assert not (bridges.state_dir / "bridges.json").exists()
 
 
-@pytest.mark.parametrize("url", ["mac:8765", "ftp://mac", "http://", "http://mac:8765/api"])
+@pytest.mark.parametrize(
+    "url", ["mac:8765", "ftp://mac", "http://", "http://mac:8765/api", "http://192.168.1.20:87a5", "http://[::1"]
+)
 def test_add_refuses_a_url_that_isnt_a_bridge_base(bridges: Bridges, url: str) -> None:
     code, _, err = bridges("add", url)
     assert code == 1 and "like http://192.168.1.20:8765" in err
