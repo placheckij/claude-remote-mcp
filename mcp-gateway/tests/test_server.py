@@ -440,6 +440,18 @@ def test_start_agent_passes_a_bad_project_refusal_through(client: TestClient, fa
     assert is_error and text.endswith(message)
 
 
+@pytest.mark.parametrize(
+    "answer", [httpx.Response(500, json={"error": {"message": "boom"}}), httpx.ReadTimeout("read timed out")]
+)
+def test_start_agent_starts_nothing_when_the_host_cannot_describe_itself(
+    client: TestClient, fake: FakeAgentBridge, answer
+) -> None:
+    # Only a 404 means an agent-bridge from before /info; anything else is a failed start.
+    fake.routes[("GET", "/info")] = answer
+    is_error, _ = call_tool(client, "start_agent", project="grafik")
+    assert is_error and [r.url.path for r in fake.requests] == ["/info"]
+
+
 def test_a_start_ends_before_claude_gives_up(client: TestClient, fake: FakeAgentBridge) -> None:
     # It used to wait 120 s for agent-bridge, long after voice mode had dropped the call.
     fake.routes[("POST", "/agents")] = httpx.Response(201, json={**AGENT, "id": "w9:p1"})
