@@ -346,10 +346,12 @@ elif [[ -n $LEGACY_URL ]]; then
   FAILED+=("import of the agent host")
 fi
 if [[ ${#FAILED[@]} -eq 0 ]]; then
-  if [[ -z ${AGENT_BRIDGE_URL:-} && -t 0 ]] && /usr/local/bin/mcp-gateway bridges list | grep -q '^No agent hosts'; then
+  if [[ -z ${AGENT_BRIDGE_URL:-} && -t 0 ]] && /usr/local/bin/mcp-gateway bridges list | grep '^No agent hosts' >/dev/null; then
     read -rp "agent-bridge URL to add as an agent host (e.g. http://192.168.1.20:8765; empty to skip): " AGENT_BRIDGE_URL
   fi
-  if [[ -n ${AGENT_BRIDGE_URL:-} ]]; then
+  # On a re-run with the same AGENT_BRIDGE_URL, it is already there.
+  if [[ -n ${AGENT_BRIDGE_URL:-} ]] \
+    && ! /usr/local/bin/mcp-gateway bridges list | awk '{print $2}' | grep -xF "${AGENT_BRIDGE_URL%/}" >/dev/null; then
     /usr/local/bin/mcp-gateway bridges add "$AGENT_BRIDGE_URL" || FAILED+=("adding $AGENT_BRIDGE_URL")
   fi
   echo "Agent hosts:"

@@ -169,3 +169,12 @@ def test_run_as_root_it_needs_the_state_folder(bridges: Bridges, as_root: list[t
 def test_run_as_root_on_a_folder_of_root_it_stays_root(bridges: Bridges, as_root: list[tuple]) -> None:
     bridges.state_dir = Path("/")
     assert bridges("list")[0] == 0 and as_root == []
+
+
+@pytest.mark.parametrize("name", ["3dprinter", "jakubs-macbook-pro-14-inch-2023-m3-max-edition", None])
+def test_add_points_to_name_when_the_bridge_names_itself_unusably(bridges: Bridges, name) -> None:
+    # agent-bridge names itself after its hostname, which may start with a digit or be long.
+    bridges.info = httpx.Response(200, json={**INFO, "name": name})
+    code, _, err = bridges("add", "http://mac:8765")
+    assert code == 1 and "Give it one with --name, like --name mac." in err
+    assert bridges("add", "http://mac:8765", "--name", "printer")[0] == 0

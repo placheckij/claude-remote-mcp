@@ -8,6 +8,7 @@ import argparse
 import asyncio
 import getpass
 import os
+import re
 import sys
 from collections.abc import Callable
 from datetime import datetime
@@ -20,7 +21,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 from mcp_gateway.bridge import AgentBridge, BridgeError
 from mcp_gateway.config import ENV_FILE
 from mcp_gateway.hosts import version_problem
-from mcp_gateway.registry import Registry, RegistryError
+from mcp_gateway.registry import NAME_PATTERN, Registry, RegistryError
 
 EXAMPLE_URL = "http://192.168.1.20:8765"
 
@@ -129,7 +130,14 @@ def _add(
     info = asyncio.run(_info(connect(url, token)))
     if info is None:
         raise _Refused(f"The agent-bridge at {url} has no /info: update agent-bridge on it first.")
-    name = name or info.get("name") or ""
+    if name is None:
+        name = info.get("name")
+        # The bridge names itself after its hostname, which may not fit a host name here.
+        if not isinstance(name, str) or not re.fullmatch(NAME_PATTERN, name):
+            raise _Refused(
+                f"The agent-bridge calls itself {name!r}, which can't name a host here. "
+                "Give it one with --name, like --name mac."
+            )
     registry.add(name, url, token, info)
     print(f"Added {name} ({info.get('platform')}, agent-bridge {info.get('bridge_version')}) at {url}.")
     if problem := version_problem(name, info.get("api_version")):

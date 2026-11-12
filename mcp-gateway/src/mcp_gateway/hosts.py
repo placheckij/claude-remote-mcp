@@ -53,7 +53,9 @@ class Hosts:
         self.legacy = legacy
         self.on_change = on_change
         self._hosts: dict[str, Host] = {}
+        # Clients of removed hosts, closed at shutdown: a request may still be using one.
         self._removed: list[AgentBridge] = []
+        self._generation: int | None = None
         self._sync()
 
     async def refresh(self) -> None:
@@ -62,11 +64,12 @@ class Hosts:
         legacy, self.legacy = self.legacy, None
         if legacy and not self.registry.bridges:
             await self._import_legacy(*legacy)
-        if self.registry.reload():
-            self._sync()
-            await self._close_removed()
+        self.registry.reload()
+        self._sync()
 
     def all(self) -> list[Host]:
+        # The registry may have taken in another process's change while saving its own.
+        self._sync()
         return [self._host(record) for record in self.registry.bridges]
 
     def named(self, name: str) -> Host:
@@ -121,9 +124,9 @@ class Hosts:
             raise ToolError(problem)
 
     async def aclose(self) -> None:
-        for host in self._hosts.values():
-            await host.bridge.aclose()
-        self._hosts = {}
+        for bridge in [host.bridge for host in self._hosts.values()] + self._removed:
+            await bridge.aclose()
+        self._hosts, self._removed = {}, []
 
     # --- Clients -----------------------------------------------------------------------
 
@@ -136,8 +139,11 @@ class Hosts:
         return next((record for record in self.registry.bridges if record.bridge_id == bridge_id), None)
 
     def _sync(self) -> None:
-        """A client for every record; a new one when its URL or token changed. Clients no
-        longer needed are closed by _close_removed()."""
+        """A client for every record, once the registry took anything from the file; a new
+        one when its URL or token changed."""
+        if self._generation == self.registry.generation:
+            return
+        self._generation = self.registry.generation
         wanted = {record.bridge_id: record for record in self.registry.bridges}
         for bridge_id, host in list(self._hosts.items()):
             record = wanted.get(bridge_id)
@@ -148,11 +154,6 @@ class Hosts:
                 self._hosts[bridge_id] = Host(record, self.connect(record.url, record.token))
         if self.on_change:
             self.on_change(self.registry.names())
-
-    async def _close_removed(self) -> None:
-        for bridge in self._removed:
-            await bridge.aclose()
-        self._removed = []
 
     async def _import_legacy(self, url: str, token: str) -> None:
         bridge = self.connect(url, token)
@@ -177,7 +178,6 @@ class Hosts:
             "MCP_GATEWAY_BRIDGE_TOKEN are no longer needed.",
             url, name, self.registry.path,
         )
-        self._sync()
 
 
 def version_problem(name: str, api_version: int | None) -> str | None:

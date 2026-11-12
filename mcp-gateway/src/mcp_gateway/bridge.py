@@ -68,17 +68,24 @@ class AgentBridge:
         except httpx.TransportError as error:
             raise BridgeError(f"The agent host is not reachable ({type(error).__name__}).") from error
         if response.is_success:
-            return response.json() if response.content else None
+            try:
+                return response.json() if response.content else None
+            except ValueError:
+                raise BridgeError("The agent host answered with something other than JSON.") from None
         raise BridgeError(_message(response), response.status_code)
 
     async def info(self) -> dict | None:
         """What the agent host says about itself; None from an agent-bridge before /info."""
         try:
-            return await self._request("GET", "/info", timeout=INFO_TIMEOUT_S)
+            info = await self._request("GET", "/info", timeout=INFO_TIMEOUT_S)
         except BridgeError as error:
             if error.status == 404:
                 return None
             raise
+        # The gateway decides by api_version whether to call the host at all.
+        if not isinstance(info, dict) or type(info.get("api_version")) is not int:
+            raise BridgeError("The agent host answered /info without an API version.")
+        return info
 
     async def find_project(self, name: str, timeout: float = INFO_TIMEOUT_S) -> str | None:
         """The folder a project name resolves to on this host, or None if it has none."""

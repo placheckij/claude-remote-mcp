@@ -122,14 +122,12 @@ def test_a_broken_file_stops_startup_but_not_a_running_gateway(tmp_path: Path, c
 def test_seen_writes_new_info_at_once_and_last_seen_hourly(tmp_path: Path, clock: Clock) -> None:
     registry = open_registry(tmp_path, clock)
     bridge = registry.add("mac", "http://mac:8765", "t", INFO)
-    clock.now += 60
-    registry.seen(bridge.bridge_id, INFO)
-    # In memory at once, on disk only hourly: the gateway runs on an SD card.
-    assert registry.bridges[0].last_seen == 1_000_060
-    assert saved(tmp_path)[0]["last_seen"] == 1_000_000
-    clock.now += SEEN_WRITE_S
-    registry.seen(bridge.bridge_id, INFO)
-    assert saved(tmp_path)[0]["last_seen"] == 1_000_060 + SEEN_WRITE_S
+    # Seen every half hour: saved hourly, as the gateway may run from an SD card, but
+    # still saved though no gap between calls is an hour long.
+    for _ in range(4):
+        clock.now += SEEN_WRITE_S / 2
+        registry.seen(bridge.bridge_id, INFO)
+    assert saved(tmp_path)[0]["last_seen"] == 1_000_000 + 2 * SEEN_WRITE_S
     newer = {**INFO, "api_version": 3}
     registry.seen(bridge.bridge_id, newer)
     assert saved(tmp_path)[0]["info"] == newer
