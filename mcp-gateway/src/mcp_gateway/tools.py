@@ -2,7 +2,6 @@
 
 import posixpath
 import re
-from collections.abc import Callable
 from pathlib import PureWindowsPath
 from time import monotonic
 from typing import Annotated
@@ -123,15 +122,16 @@ def build_server(settings: Settings, hosts: Hosts, oauth: GatewayOAuth) -> MCPSe
         agent = {**result["agent"], "id": hosts.show(host, result["agent"]["id"])}
         return report({**result, "agent": agent}, wait_seconds, root)
 
-    async def agents_on(host: Host) -> list[dict]:
+    async def agents_on(host: Host) -> list[str]:
+        """The host's agents, one line each. Described here, inside gather_hosts, so one
+        host's odd answer fails that host only, not the whole list."""
         problem = version_problem(host.name, (await hosts.info(host))["api_version"])
         if problem:
             raise _Outdated(problem)
         agents = await host.bridge.list_agents()
-        # One host's odd answer fails that host only, not the whole list.
-        if not isinstance(agents, list) or not all(isinstance(a, dict) and "id" in a for a in agents):
+        if not isinstance(agents, list):
             raise BridgeError("The agent host answered /agents with something other than a list of agents.")
-        return agents
+        return [shown(host, agent) for agent in agents]
 
     @mcp.tool(annotations=READ_ONLY)
     async def list_agents() -> str:
@@ -143,13 +143,13 @@ def build_server(settings: Settings, hosts: Hosts, oauth: GatewayOAuth) -> MCPSe
         # One host waits as long as before there were several: there is nothing else to list.
         answers = await gather_hosts(everywhere, agents_on, LIST_TIMEOUT_S if len(everywhere) > 1 else None)
         if len(everywhere) == 1:
-            (host,), (agents,) = everywhere, answers
+            (agents,) = answers
             if isinstance(agents, BaseException):
                 raise ToolError(str(agents)) from agents
             if not agents:
                 return "No agents are running."
-            return f"{count(len(agents), 'agent')}:\n" + "\n".join(shown(host, agent) for agent in agents)
-        return _by_host(everywhere, answers, shown)
+            return f"{count(len(agents), 'agent')}:\n" + "\n".join(agents)
+        return _by_host(everywhere, answers)
 
     @mcp.tool(annotations=READ_ONLY)
     async def agent_details(agent_id: AgentId) -> str:
@@ -384,9 +384,9 @@ class _Outdated(BridgeError):
     """A host the gateway doesn't call, with why."""
 
 
-def _by_host(everywhere: list[Host], answers: list, shown: Callable[[Host, dict], str]) -> str:
-    """list_agents with several hosts: each host's agents under it, then the hosts with
-    none, then those that didn't answer or need an update."""
+def _by_host(everywhere: list[Host], answers: list) -> str:
+    """list_agents with several hosts: each host's agent lines under it, then the hosts
+    with none, then those that didn't answer or need an update."""
     agents = sum(len(answer) for answer in answers if isinstance(answer, list))
     lines = [f"{count(agents, 'agent')} on {count(len(everywhere), 'host')}."]
     empty, failed = [], []
@@ -399,7 +399,7 @@ def _by_host(everywhere: list[Host], answers: list, shown: Callable[[Host, dict]
             empty.append(host.name)
         else:
             lines.append(f"{host.name}, {count(len(answer), 'agent')}:")
-            lines += [shown(host, agent) for agent in answer]
+            lines += answer
     if empty:
         lines.append(f"No agents on {_and(empty)}.")
     return "\n".join(lines + failed)
