@@ -299,7 +299,10 @@ def test_start_agent_starts_on_the_one_host_that_has_the_project(make) -> None:
     gateway.route("linux", "GET", "/projects/grafik", project("/home/me/grafik"))
     gateway.route("linux", "POST", "/agents", started())
     gateway.fakes["down"].down = True
-    assert gateway.call("start_agent", project="grafik") == (False, "Started linux/w9:p1 · grafik · idle · grafik")
+    # Starts on the one host found, and says which it couldn't ask: it may have grafik too.
+    assert gateway.call("start_agent", project="grafik") == (
+        False, "Started linux/w9:p1 · grafik · idle · grafik\nCouldn't ask down, which may have grafik too."
+    )
     assert "/agents" not in gateway.paths("mac")
 
 
@@ -588,7 +591,9 @@ def test_an_odd_answer_from_one_host_fails_that_host_only(make) -> None:
     gateway.route("odd", "GET", "/projects/grafik", project(None))
     gateway.route("linux", "GET", "/projects/grafik", project("/home/me/grafik"))
     gateway.route("linux", "POST", "/agents", started())
-    assert gateway.call("start_agent", project="grafik") == (False, "Started linux/w9:p1 · grafik · idle · grafik")
+    assert gateway.call("start_agent", project="grafik") == (
+        False, "Started linux/w9:p1 · grafik · idle · grafik\nCouldn't ask mac, which may have grafik too."
+    )
 
 
 def test_an_agent_that_cant_be_described_fails_its_host_only(

@@ -138,6 +138,17 @@ def test_a_file_it_cant_even_look_at_stops_startup_but_not_a_running_gateway(
     assert caplog.text.count("Keeping the agent hosts from before") == 1
 
 
+@pytest.mark.parametrize("info", [{"platform": "darwin"}, {"api_version": "2"}, {"api_version": 2.5}])
+def test_a_record_whose_info_has_no_api_version_is_refused(tmp_path: Path, clock: Clock, info: dict) -> None:
+    # The gateway compares api_version as a whole number to decide whether to call the host.
+    registry = open_registry(tmp_path, clock)
+    registry.add("mac", "http://mac:8765", "t", INFO)
+    records = saved(tmp_path)
+    records[0]["info"] = info
+    (tmp_path / "bridges.json").write_text(json.dumps({"version": 1, "bridges": records}))
+    assert not registry.reload() and registry.bridges[0].info == INFO
+
+
 @pytest.mark.parametrize(("field", "value"), [("url", "http://192.168.1.20:87a5"), ("token", "abcą")])
 def test_a_record_no_client_can_be_made_for_is_refused(
     tmp_path: Path, clock: Clock, field: str, value: str
