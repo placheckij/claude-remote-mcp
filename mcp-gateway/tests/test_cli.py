@@ -106,6 +106,26 @@ def test_add_refuses_an_empty_token(bridges: Bridges) -> None:
     assert code == 1 and "token" in err and bridges.seen == []
 
 
+@pytest.mark.parametrize("token", ["abcą" * 8, "abc\tdef" * 5])
+def test_add_refuses_a_token_that_cant_go_in_a_header(bridges: Bridges, token: str) -> None:
+    bridges.token = token
+    code, _, err = bridges("add", "http://mac:8765")
+    assert code == 1 and err == "That isn't an agent-bridge token: it has characters other than printable ASCII.\n"
+    assert bridges.seen == []
+
+
+@pytest.mark.skipif(os.name != "posix" or os.geteuid() == 0, reason="needs a folder this user can't enter")
+def test_a_state_folder_it_cant_use_is_one_line(bridges: Bridges) -> None:
+    # E.g. `mcp-gateway bridges list` without sudo on the gateway host's mode-700 folder.
+    os.chmod(bridges.state_dir, 0o000)
+    try:
+        code, _, err = bridges("list")
+    finally:
+        os.chmod(bridges.state_dir, 0o700)
+    assert code == 1 and err.startswith("Can't use ") and err.endswith("(Permission denied).\n")
+    assert err.count("\n") == 1
+
+
 @pytest.mark.parametrize("stop", [EOFError, KeyboardInterrupt])
 def test_add_without_a_token_answer_refuses_in_one_line(
     bridges: Bridges, capsys: pytest.CaptureFixture, stop: type[BaseException]
