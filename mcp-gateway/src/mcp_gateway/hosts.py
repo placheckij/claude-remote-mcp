@@ -28,6 +28,9 @@ class Host:
     def __init__(self, record: Bridge, bridge: AgentBridge):
         self.record = record
         self.bridge = bridge
+        # What the client was made with: `record` follows the registry and may already show
+        # a new URL or token by the time _sync compares them.
+        self.made_for = (record.url, record.token)
 
     @property
     def name(self) -> str:
@@ -153,7 +156,7 @@ class Hosts:
         wanted = {record.bridge_id: record for record in self.registry.bridges}
         for bridge_id, host in list(self._hosts.items()):
             record = wanted.get(bridge_id)
-            if record is None or (record.url, record.token) != (host.record.url, host.record.token):
+            if record is None or (record.url, record.token) != host.made_for:
                 self._removed.append(self._hosts.pop(bridge_id).bridge)
         for bridge_id, record in wanted.items():
             if bridge_id not in self._hosts:
