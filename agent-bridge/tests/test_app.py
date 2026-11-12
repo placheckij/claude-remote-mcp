@@ -1196,7 +1196,8 @@ def test_projects_are_looked_up_under_each_root_in_turn(
 
 
 @pytest.mark.parametrize(
-    "name", [".", "x..y", "~grafik", "a\\b", "C:grafik", " ", "a%00b", "grafik/api", "grafik%2Fapi", ""]
+    "name",
+    [".", "x..y", "~grafik", "a\\b", "C:grafik", " ", "a%00b", "grafik/api", "grafik%2Fapi", "", "a" * 300],
 )
 def test_project_lookups_refuse_anything_but_a_folder_name(tmp_path: Path, name: str) -> None:
     response = roots_client(FakeRunner({}), two_roots(tmp_path)).get(f"/projects/{name}", headers=AUTH)

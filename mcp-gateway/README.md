@@ -256,7 +256,10 @@ the tunnel checks fail, try again shortly:
   `AGENT_BRIDGE_URL`, `AGENT_BRIDGE_TOKEN` and, if set, `PROJECTS_ROOT` from
   `/etc/mcp-gateway/env` and lists the ones it keeps (tokens not shown), keeps the
   passphrase, the OAuth tokens and the static token if there is one, and reuses the
-  tunnel. Only committed code is installed.
+  tunnel. Only committed code is installed. Once agent-bridge has `GET /info`, a kept
+  `PROJECTS_ROOT` does nothing: project names resolve under the first of
+  `AGENT_BRIDGE_ALLOWED_ROOTS` that has the folder, so check those hold the projects
+  you mean.
 - **Change the passphrase:** re-run with `ROTATE_PASSPHRASE=1` (it prints the new one),
   or with `MCP_GATEWAY_OAUTH_PASSPHRASE` as above. Connectors already signed in stay
   signed in; to sign them out too, `sudo systemctl stop mcp-gateway && sudo rm -f

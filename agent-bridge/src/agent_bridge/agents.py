@@ -77,8 +77,11 @@ class AgentService:
         for root in self.settings.allowed_roots:
             # Resolved and checked again: a link in a root may point out of every root.
             folder = (root / name).resolve()
-            if self.settings.is_allowed(folder) and folder.is_dir():
-                return folder
+            try:
+                if self.settings.is_allowed(folder) and folder.is_dir():
+                    return folder
+            except OSError:  # e.g. a name too long for the file system: no such folder
+                continue
         return None
 
     def _summarize(self, agent: dict) -> AgentSummary:
