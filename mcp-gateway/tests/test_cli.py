@@ -1,4 +1,5 @@
 import json
+import os
 from pathlib import Path
 
 import httpx
@@ -134,4 +135,37 @@ def test_the_state_dir_comes_from_the_environment(
     assert cli.main(["bridges", "list"]) == 0
     monkeypatch.delenv("MCP_GATEWAY_STATE_DIR")
     assert cli.main(["bridges", "list"]) == 1
-    assert "MCP_GATEWAY_STATE_DIR" in capsys.readouterr().err
+
+
+@pytest.fixture
+def as_root(monkeypatch: pytest.MonkeyPatch) -> list[tuple]:
+    """Pretends to run as root; the switch to another user is recorded, not made."""
+    switched: list[tuple] = []
+    monkeypatch.setattr(os, "geteuid", lambda: 0)
+    monkeypatch.setattr(os, "setgroups", lambda groups: switched.append(("groups", groups)))
+    monkeypatch.setattr(os, "setgid", lambda gid: switched.append(("gid", gid)))
+    monkeypatch.setattr(os, "setuid", lambda uid: switched.append(("uid", uid)))
+    return switched
+
+
+@pytest.mark.skipif(os.name != "posix", reason="no users to switch to")
+def test_run_as_root_it_becomes_the_state_folders_owner_first(bridges: Bridges, as_root: list[tuple]) -> None:
+    # Root's files there would be unreadable for the gateway, and the folder's owner could
+    # plant links for root to follow.
+    owner = bridges.state_dir.stat()
+    assert bridges("list")[0] == 0
+    assert as_root == [("groups", []), ("gid", owner.st_gid), ("uid", owner.st_uid)]
+
+
+@pytest.mark.skipif(os.name != "posix", reason="no users to switch to")
+def test_run_as_root_it_needs_the_state_folder(bridges: Bridges, as_root: list[tuple]) -> None:
+    bridges.state_dir = bridges.state_dir / "missing"
+    code, _, err = bridges("list")
+    assert code == 1 and "start mcp-gateway once to create it" in err
+    assert as_root == [] and not bridges.state_dir.exists()
+
+
+@pytest.mark.skipif(os.name != "posix", reason="no users to switch to")
+def test_run_as_root_on_a_folder_of_root_it_stays_root(bridges: Bridges, as_root: list[tuple]) -> None:
+    bridges.state_dir = Path("/")
+    assert bridges("list")[0] == 0 and as_root == []

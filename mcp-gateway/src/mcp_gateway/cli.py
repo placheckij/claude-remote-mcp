@@ -7,6 +7,7 @@ installed wrapper runs this as the service user with the state folder set (setup
 import argparse
 import asyncio
 import getpass
+import os
 import sys
 from collections.abc import Callable
 from datetime import datetime
@@ -44,7 +45,9 @@ def main(
 ) -> int:
     args = _parser().parse_args(argv)
     try:
-        registry = Registry(_state_dir(args.state_dir) / "bridges.json")
+        state_dir = _state_dir(args.state_dir)
+        _become_owner_of(state_dir)
+        registry = Registry(state_dir / "bridges.json")
         if args.command == "add":
             _add(registry, args.url, args.name, ask_token, connect)
         elif args.command == "list":
@@ -90,6 +93,23 @@ def _state_dir(given: Path | None) -> Path:
         return _StateDir(_env_file=ENV_FILE).state_dir
     except ValidationError:
         raise _Refused("Set MCP_GATEWAY_STATE_DIR or pass --state-dir.") from None
+
+
+def _become_owner_of(state_dir: Path) -> None:
+    """Run as root (`sudo mcp-gateway bridges …` without the wrapper), drops to the user
+    who owns the state folder before touching anything in it: files root made there would
+    be unreadable for the gateway, and that user could plant links for root to follow."""
+    if os.name != "posix" or os.geteuid() != 0:
+        return
+    try:
+        owner = state_dir.stat()
+    except FileNotFoundError:
+        raise _Refused(f"{state_dir} doesn't exist; start mcp-gateway once to create it.") from None
+    if owner.st_uid == 0:
+        return
+    os.setgroups([])
+    os.setgid(owner.st_gid)
+    os.setuid(owner.st_uid)
 
 
 def _add(
