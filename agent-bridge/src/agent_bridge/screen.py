@@ -12,7 +12,7 @@ SNAPSHOT_LINES = 500
 
 # A named session (`/rename`) shows its name at the end of the box's top rule.
 _RULE = re.compile(r"^\s*─{10,}(?: \S.* ─+)?\s*$")
-# Claude Code starts each message with "⏺"; under Windows' ConPTY it draws "●" instead.
+# Claude Code starts each message with "⏺" on macOS, and with "●" elsewhere (Windows, Linux).
 MESSAGE_MARKS = ("⏺", "●")
 # Longer questions are cut to their last sentence; they are read aloud.
 MAX_QUESTION_CHARS = 300

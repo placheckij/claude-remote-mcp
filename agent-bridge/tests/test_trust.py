@@ -185,10 +185,19 @@ def test_writes_the_key_claude_code_reads_on_windows(config_dir: Path, trust_roo
 
 @windows_only
 @pytest.mark.parametrize("spell", [str, lambda path: path.as_posix().lower(), lambda path: path.as_posix().upper()])
-def test_sees_a_parent_trusted_under_another_spelling_on_windows(
+def test_a_parent_trusted_under_a_key_claude_code_ignores_is_not_trusted(
     config_dir: Path, trust_root: Path, spell: Callable[[Path], str]
 ) -> None:
-    trusted = {spell(trust_root.resolve()): {"hasTrustDialogAccepted": True}}
+    # `C:\…` (older bridges), `c:/…` (a session started from VS Code) or another casing:
+    # Claude Code would still show the trust dialog, so the exact key is written beside it.
+    other = {spell(trust_root.resolve()): {"hasTrustDialogAccepted": True}}
+    (config_dir / ".claude.json").write_text(json.dumps({"projects": other}))
+    assert trust_folder(config_dir, trust_root / "app", trust_root) is True
+    assert projects(config_dir) == {**other, key(trust_root / "app"): {"hasTrustDialogAccepted": True}}
+
+
+def test_a_parent_trusted_under_the_exact_key_is_enough(config_dir: Path, trust_root: Path) -> None:
+    trusted = {key(trust_root): {"hasTrustDialogAccepted": True}}
     (config_dir / ".claude.json").write_text(json.dumps({"projects": trusted}))
     assert trust_folder(config_dir, trust_root / "app", trust_root) is False
     assert projects(config_dir) == trusted
