@@ -25,7 +25,7 @@ except ImportError:  # Windows: no lock, as for oauth.lock.
 
 log = logging.getLogger(__name__)
 
-# The folder's owner could put links in it; run as root, nothing follows them.
+# Nothing here follows a link put in place of the lock or the file.
 _NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
 
 # The host part of an agent id ("mac/w1:p1"): short, speakable and without "/" or ":".
@@ -146,7 +146,6 @@ class Registry:
         self.path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
         lock = os.open(self._lock_path, os.O_RDWR | os.O_CREAT | _NOFOLLOW, 0o600)
         try:
-            _own_like_folder(lock, self.path.parent)
             if fcntl is not None:
                 fcntl.flock(lock, fcntl.LOCK_EX)
             bridges, _ = self._read()
@@ -184,7 +183,6 @@ class Registry:
         temporary.unlink(missing_ok=True)
         try:
             with os.fdopen(os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "w") as file:
-                _own_like_folder(file.fileno(), self.path.parent)
                 json.dump(data, file, indent=2)
                 file.flush()
                 os.fsync(file.fileno())
@@ -200,16 +198,6 @@ class Registry:
         except FileNotFoundError:
             return None
         return status.st_mtime_ns, status.st_size, status.st_ino
-
-
-def _own_like_folder(fd: int, folder: Path) -> None:
-    """Run as root (`sudo mcp-gateway bridges …` without the wrapper), a file it creates
-    would be root's and the gateway couldn't open it: it gets the state folder's owner.
-    Changed through the open file, never by path: the folder's owner could swap the path
-    for a link to a file root shouldn't give away."""
-    if os.name == "posix" and os.geteuid() == 0:
-        owner = folder.stat()
-        os.fchown(fd, owner.st_uid, owner.st_gid)
 
 
 def _check_name(name: str) -> None:
