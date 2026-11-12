@@ -22,7 +22,8 @@ permissions:
   contents: read
 
 concurrency:
-  group: compat-${{ github.ref }}
+  # Manual runs against different old sides don't cancel each other.
+  group: compat-${{ github.ref }}-${{ inputs.old_ref }}
   cancel-in-progress: true
 
 jobs:
