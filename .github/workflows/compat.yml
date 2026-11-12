@@ -12,18 +12,12 @@ on:
       - mcp-gateway/src/mcp_gateway/replies.py
       - .github/compat/**
       - .github/workflows/compat.yml
-  workflow_dispatch:
-    inputs:
-      old_ref:
-        description: Old side (branch, tag or commit)
-        default: main
 
 permissions:
   contents: read
 
 concurrency:
-  # Manual runs against different old sides don't cancel each other.
-  group: compat-${{ github.ref }}-${{ inputs.old_ref }}
+  group: compat-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -38,7 +32,7 @@ jobs:
       # Its own folder and venv, so the two versions never share code.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ inputs.old_ref || 'main' }}
+          ref: main
           path: old
           persist-credentials: false
       - name: Install uv
