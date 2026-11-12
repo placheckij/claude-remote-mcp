@@ -13,6 +13,7 @@ from starlette.testclient import TestClient
 from mcp_gateway import tools
 from mcp_gateway.bridge import AgentBridge
 from mcp_gateway.config import Settings
+from mcp_gateway.hosts import Hosts
 from mcp_gateway.registry import Registry
 from mcp_gateway.server import create_app
 
@@ -413,3 +414,50 @@ def test_the_legacy_bridge_is_ignored_once_there_are_hosts(tmp_path: Path) -> No
     with legacy_gateway(tmp_path, fake):
         assert [bridge["name"] for bridge in saved(tmp_path)] == ["linux"]
     assert fake.requests == []
+
+
+# --- Clients --------------------------------------------------------------------------
+
+
+def hosts_on(tmp_path: Path) -> tuple[Hosts, Registry, dict[str, AgentBridge]]:
+    """Hosts over a registry with mac, and the clients it made by URL."""
+    clients: dict[str, AgentBridge] = {}
+
+    def connect(bridge_url: str, token: str) -> AgentBridge:
+        clients[bridge_url] = AgentBridge(httpx.AsyncClient(base_url=bridge_url))
+        return clients[bridge_url]
+
+    registry = Registry(tmp_path / "bridges.json")
+    registry.add("mac", url("mac"), TOKEN, info("mac"))
+    return Hosts(registry, connect), registry, clients
+
+
+def test_a_change_taken_in_by_the_gateways_own_save_gets_a_client(tmp_path: Path) -> None:
+    # The CLI adds a host just before the gateway saves what mac said about itself; that
+    # save starts from the file, so it takes linux in without a reload.
+    hosts, registry, _ = hosts_on(tmp_path)
+    Registry(tmp_path / "bridges.json").add("linux", url("linux"), TOKEN, info("linux"))
+    registry.seen(registry.bridges[0].bridge_id, info("mac", 1))
+    assert [host.name for host in hosts.all()] == ["mac", "linux"]
+
+
+def test_a_removed_hosts_client_is_closed_only_at_shutdown(tmp_path: Path) -> None:
+    # A request that looked it up before the removal may still be using it.
+    hosts, _, clients = hosts_on(tmp_path)
+    Registry(tmp_path / "bridges.json").remove("mac")
+    asyncio.run(hosts.refresh())
+    assert hosts.all() == [] and not clients[url("mac")].client.is_closed
+    asyncio.run(hosts.aclose())
+    assert clients[url("mac")].client.is_closed
+
+
+def test_an_info_without_api_version_or_json_is_a_host_failing(make) -> None:
+    gateway = make(["mac", "odd", "garbled"])
+    gateway.route("mac", "GET", "/agents", agents())
+    gateway.route("odd", "GET", "/info", httpx.Response(200, json={"name": "odd"}))
+    gateway.route("garbled", "GET", "/info", httpx.Response(200, text="<html>"))
+    is_error, text = gateway.call("list_agents")
+    assert not is_error and text.endswith(
+        "odd didn't answer: The agent host answered /info without an API version.\n"
+        "garbled didn't answer: The agent host answered with something other than JSON."
+    )

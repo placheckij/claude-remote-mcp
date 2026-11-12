@@ -64,6 +64,9 @@ class Registry:
         self.clock = clock
         self._lock_path = path.with_name("bridges.lock")
         self.bridges, self._stamp = self._read()
+        # Counts every time `bridges` is taken from the file, which may bring in another
+        # process's changes: by a reload, or by a change of this process's own.
+        self.generation = 0
 
     def names(self) -> list[str]:
         return [bridge.name for bridge in self.bridges]
@@ -80,6 +83,7 @@ class Registry:
             self._stamp = self._file_stamp()
             log.error("%s Keeping the agent hosts from before.", error)
             return False
+        self.generation += 1
         return True
 
     def add(self, name: str, url: str, token: str, info: dict | None) -> Bridge:
@@ -127,9 +131,9 @@ class Registry:
         if current is None:
             return
         update = {"info": info, "last_seen": now}
+        # last_seen in memory is the one on disk: only a save moves it.
         stale = current.last_seen is None or now - current.last_seen >= SEEN_WRITE_S
         if current.info == info and not stale:
-            self.bridges = [b.model_copy(update=update) if b.bridge_id == bridge_id else b for b in self.bridges]
             return
         try:
             self._change(
@@ -152,6 +156,7 @@ class Registry:
             bridges = change(bridges)
             self._write(bridges)
             self.bridges, self._stamp = bridges, self._file_stamp()
+            self.generation += 1
         finally:
             os.close(lock)
 
