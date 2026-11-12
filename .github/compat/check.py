@@ -88,7 +88,13 @@ class Run:
             finally:
                 for process in self.processes:
                     process.terminate()
-                    process.wait(timeout=10)
+                for process in self.processes:
+                    try:
+                        process.wait(timeout=10)
+                    except subprocess.TimeoutExpired:
+                        # Stuck finishing a request: kill it, so the logs still print.
+                        process.kill()
+                        process.wait()
                 if self.failures:
                     for log in sorted(self.tmp.glob("*.out")):
                         print(f"--- {log.name}\n{log.read_text()}")
