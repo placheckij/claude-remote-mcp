@@ -252,7 +252,7 @@ $LOGIN_HINT
 To add it on the gateway host: sudo mcp-gateway bridges add $URL
 EOF
 case $TOKEN_SOURCE in
-  new) echo "  AGENT_BRIDGE_TOKEN=$TOKEN   (new: remove and add it again on the gateway host)" ;;
+  new) echo "  AGENT_BRIDGE_TOKEN=$TOKEN   (new: give it to bridges add; if this host was added before, bridges remove it first)" ;;
   given) echo "  AGENT_BRIDGE_TOKEN is the one you passed in" ;;
   kept) echo "  AGENT_BRIDGE_TOKEN is unchanged; read it with:"
         echo "    /usr/libexec/PlistBuddy -c 'Print :EnvironmentVariables:AGENT_BRIDGE_TOKEN' $PLIST" ;;
