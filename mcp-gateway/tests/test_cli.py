@@ -122,7 +122,15 @@ def test_a_state_folder_it_cant_use_is_one_line(bridges: Bridges) -> None:
         code, _, err = bridges("list")
     finally:
         os.chmod(bridges.state_dir, 0o700)
-    assert code == 1 and err.startswith("Can't use ") and err.endswith("(Permission denied).\n")
+    assert code == 1 and err.startswith("Can't read ") and err.endswith("(Permission denied).\n")
+    assert err.count("\n") == 1
+    # One it can read but not write: adding fails at the lock, also in one line.
+    os.chmod(bridges.state_dir, 0o500)
+    try:
+        code, _, err = bridges("add", "http://mac:8765")
+    finally:
+        os.chmod(bridges.state_dir, 0o700)
+    assert code == 1 and err.startswith("Can't use ") and err.endswith("bridges.lock (Permission denied).\n")
     assert err.count("\n") == 1
 
 

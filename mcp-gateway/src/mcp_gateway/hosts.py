@@ -202,5 +202,10 @@ async def gather_hosts(hosts: list[Host], ask: Callable[[Host], Awaitable], time
             return BridgeError(f"It didn't answer within {timeout:g} s.")
         except BridgeError as error:
             return error
+        except Exception as error:
+            # Anything else one host's answer sets off fails that host only; logged
+            # whole, as it is most likely a bug.
+            log.exception("Asking %s failed unexpectedly", host.name)
+            return BridgeError(f"Its answer couldn't be used ({type(error).__name__}).")
 
     return await asyncio.gather(*(one(host) for host in hosts))

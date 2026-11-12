@@ -521,6 +521,22 @@ def test_a_removed_hosts_client_is_closed_only_at_shutdown(tmp_path: Path) -> No
     assert clients[url("mac")].client.is_closed
 
 
+def test_an_odd_answer_from_one_host_fails_that_host_only(make) -> None:
+    gateway = make(["mac", "odd", "linux"])
+    gateway.route("mac", "GET", "/agents", agents("w1:p1"))
+    gateway.route("odd", "GET", "/agents", httpx.Response(200, json={"agents": []}))
+    gateway.route("linux", "GET", "/agents", agents())
+    is_error, text = gateway.call("list_agents")
+    assert not is_error and "mac/w1:p1 · grafik" in text
+    assert text.endswith("odd didn't answer: The agent host answered /agents with something other than a list of agents.")
+    # The same for the project lookup: the host with an odd answer counts as not asked.
+    gateway.route("mac", "GET", "/projects/grafik", httpx.Response(200, json={}))
+    gateway.route("odd", "GET", "/projects/grafik", project(None))
+    gateway.route("linux", "GET", "/projects/grafik", project("/home/me/grafik"))
+    gateway.route("linux", "POST", "/agents", started())
+    assert gateway.call("start_agent", project="grafik") == (False, "Started linux/w9:p1 · grafik · idle · grafik")
+
+
 def test_an_info_without_api_version_or_json_is_a_host_failing(make) -> None:
     gateway = make(["mac", "odd", "garbled"])
     gateway.route("mac", "GET", "/agents", agents())

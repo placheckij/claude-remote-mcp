@@ -127,7 +127,11 @@ def build_server(settings: Settings, hosts: Hosts, oauth: GatewayOAuth) -> MCPSe
         problem = version_problem(host.name, (await hosts.info(host))["api_version"])
         if problem:
             raise _Outdated(problem)
-        return await host.bridge.list_agents()
+        agents = await host.bridge.list_agents()
+        # One host's odd answer fails that host only, not the whole list.
+        if not isinstance(agents, list) or not all(isinstance(a, dict) and "id" in a for a in agents):
+            raise BridgeError("The agent host answered /agents with something other than a list of agents.")
+        return agents
 
     @mcp.tool(annotations=READ_ONLY)
     async def list_agents() -> str:

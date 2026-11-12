@@ -119,6 +119,25 @@ def test_a_broken_file_stops_startup_but_not_a_running_gateway(tmp_path: Path, c
     assert [bridge.name for bridge in registry.bridges] == ["mac"]
 
 
+@pytest.mark.skipif(os.name != "posix" or os.geteuid() == 0, reason="needs a folder this user can't enter")
+def test_a_file_it_cant_even_look_at_stops_startup_but_not_a_running_gateway(
+    tmp_path: Path, clock: Clock, caplog: pytest.LogCaptureFixture
+) -> None:
+    state = tmp_path / "state"
+    registry = Registry(state / "bridges.json", clock)
+    registry.add("mac", "http://mac:8765", "t", INFO)
+    os.chmod(state, 0o000)
+    try:
+        with pytest.raises(RegistryError, match="Can't read .*Permission denied"):
+            Registry(state / "bridges.json", clock)
+        # Kept, and logged once rather than on every request.
+        assert not registry.reload() and not registry.reload()
+    finally:
+        os.chmod(state, 0o700)
+    assert registry.names() == ["mac"]
+    assert caplog.text.count("Keeping the agent hosts from before") == 1
+
+
 def test_seen_writes_new_info_at_once_and_last_seen_hourly(tmp_path: Path, clock: Clock) -> None:
     registry = open_registry(tmp_path, clock)
     bridge = registry.add("mac", "http://mac:8765", "t", INFO)
