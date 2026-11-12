@@ -61,7 +61,7 @@ def last_question(snapshot: str) -> str | None:
     previous = lines[starts[-1]]
     for line in lines[starts[-1] + 1 :]:
         if line.lstrip().startswith(("⎿", "※")):
-            # Right after the ⏺ line, this is a tool call's output, not a message.
+            # Right after the ⏺ (●) line, this is a tool call's output, not a message.
             if len(message) == 1:
                 return None
             break
