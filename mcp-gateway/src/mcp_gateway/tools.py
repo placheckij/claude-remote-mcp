@@ -225,14 +225,14 @@ def build_server(settings: Settings, bridge: AgentBridge, oauth: GatewayOAuth) -
         many agents are already running, the folder is not allowed or the account is unknown."""
         # The start's time also covers this question (bridge.START_TIMEOUT_S).
         asked = monotonic()
+        # Names come from speech ("my agent"); agent-bridge before /info only takes [\w.-]
+        # and needs one. A newer one names an unnamed agent after its folder.
         if await call(bridge.info()) is not None:
             where = {"project": project}
+            agent_name = _safe_name(name) if name else None
         else:
             where = {"cwd": _project_folder(root, project)}
-            name = name or posixpath.basename(where["cwd"])
-        # Names come from speech ("my agent"); agent-bridge before /info only takes [\w.-].
-        # Without one, agent-bridge names the agent after its folder.
-        agent_name = _safe_name(name) if name else None
+            agent_name = _safe_name(name or posixpath.basename(where["cwd"]))
         timeout = max(START_TIMEOUT_S - (monotonic() - asked), 1)
         try:
             agent = await bridge.start_agent(**where, name=agent_name, account=account, timeout=timeout)

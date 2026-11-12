@@ -171,9 +171,12 @@ class AgentService:
     ) -> StartedAgent:
         folder = self._allowed_folder(cwd) if cwd is not None else self._project_folder(project)
         account, config_dir = self._account(folder, account)
+        # Named after the folder as given, not where a link to it leads.
+        given = PurePath(cwd if cwd is not None else project).name
+        default_name = given if is_project_name(given) else folder.name
         async with self._start_lock:
             running = await self._check_agent_limit()
-            name = herdr_name(name or folder.name, {agent.get("name") for agent in running})
+            name = herdr_name(name or default_name, {agent.get("name") for agent in running})
             await self._trust(folder, config_dir)
             agent = await self._start_with_one_retry(name, folder, config_dir)
         return StartedAgent(**self._summarize(agent).model_dump(), account=account)
