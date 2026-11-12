@@ -257,8 +257,7 @@ Then it:
 4. checks that it answers `401` without the token and `200` with it. A `200` also means
    it reached herdr.
 
-At the end it prints the URL, token and projects folder to give mcp-gateway's
-`setup.sh`.
+At the end it prints the URL and token to give mcp-gateway's `setup.sh`.
 
 To skip the questions, pass the answers as variables, e.g.
 `HOST=192.168.1.20 ALLOWED_ROOTS=/Users/me/projects agent-bridge/deploy/setup-macos.sh`.
