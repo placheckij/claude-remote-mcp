@@ -6,6 +6,8 @@ parses its JSON envelopes (`{"result": ...}` or `{"error": {"code", "message"}}`
 
 import asyncio
 import json
+import subprocess
+import sys
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 
@@ -14,6 +16,19 @@ Runner = Callable[[Sequence[str]], Awaitable[tuple[int, str, str]]]
 SHELL_READY_TIMEOUT_S = 15
 SHELL_READY_POLL_S = 0.5
 TRUST_DIALOG_TEXT = "Yes, I trust this folder"
+
+WINDOWS = sys.platform == "win32"
+# Windows hands a program its arguments as one command line of at most 32,767 UTF-16
+# units, the closing NUL included. Python quotes the arguments into it, so a `"` takes two
+# (`\"`), and so does an emoji: a 20,000-character prompt of quotes doesn't fit.
+WINDOWS_COMMAND_LINE_MAX = 32_766
+# What Windows reports for a longer one, as a FileNotFoundError.
+ERROR_FILENAME_EXCED_RANGE = 206
+
+
+def command_line_length(argv: Sequence[str]) -> int:
+    """How many of Windows' command-line units `argv` takes once quoted."""
+    return len(subprocess.list2cmdline(argv).encode("utf-16-le")) // 2
 
 
 class HerdrError(Exception):
@@ -47,7 +62,12 @@ class Herdr:
     async def _run(self, *args: str) -> str:
         try:
             code, stdout, stderr = await self.runner([self.binary, *args])
-        except FileNotFoundError:
+        except FileNotFoundError as error:
+            if getattr(error, "winerror", None) == ERROR_FILENAME_EXCED_RANGE:
+                raise HerdrError(
+                    "command_too_long",
+                    "herdr could not be run: its command line is longer than Windows allows.",
+                ) from None
             raise HerdrError(
                 "herdr_not_found",
                 f"herdr was not found at {self.binary}. Install it, or set "
@@ -106,10 +126,18 @@ class Herdr:
 
     async def prompt(self, target: str, text: str, timeout_ms: int) -> dict:
         """Submit a prompt and wait until the agent settles (idle, done or blocked)."""
-        result = await self._json(
-            "agent", "prompt", target, text, "--wait", "--timeout", str(timeout_ms)
-        )
-        return result["agent"]
+        args = ("agent", "prompt", target, text, "--wait", "--timeout", str(timeout_ms))
+        if WINDOWS:
+            length = command_line_length([self.binary, *args])
+            if length > WINDOWS_COMMAND_LINE_MAX:
+                raise HerdrError(
+                    "prompt_too_long",
+                    f"The prompt is too long to hand to herdr on Windows: quoted, its command "
+                    f"line takes {length:,} characters and Windows allows "
+                    f"{WINDOWS_COMMAND_LINE_MAX:,}. Each double quote and emoji counts twice. "
+                    "Send it in shorter parts.",
+                )
+        return (await self._json(*args))["agent"]
 
     async def wait(self, target: str, timeout_ms: int, until: Sequence[str] = ()) -> dict:
         """Wait for one of `until`, or by default until the agent settles (idle, done, blocked)."""
@@ -141,13 +169,21 @@ class Herdr:
         )
         workspace_id = created["workspace"]["workspace_id"]
         pane_id = created["root_pane"]["pane_id"]
+        untrusted = HerdrError("folder_not_trusted", f"Claude Code does not trust {cwd}")
         try:
-            started = await self._start_when_shell_ready(name, pane_id, timeout_ms, agent_args)
-            # Herdr reports the agent ready while Claude's folder-trust dialog is on
-            # screen, and that dialog defaults to "No, exit": a prompt sent now would
+            try:
+                started = await self._start_when_shell_ready(name, pane_id, timeout_ms, agent_args)
+            except HerdrError as error:
+                # On Windows herdr calls an agent on the trust dialog blocked, so the start
+                # fails as not ready during startup.
+                if error.code == "agent_not_ready" and await self._shows_trust_dialog(pane_id):
+                    raise untrusted from error
+                raise
+            # On macOS herdr reports the agent ready while Claude's folder-trust dialog is
+            # on screen, and that dialog defaults to "No, exit": a prompt sent now would
             # quit Claude. Refuse instead of leaving a trap.
             if await self._shows_trust_dialog(pane_id):
-                raise HerdrError("folder_not_trusted", f"Claude Code does not trust {cwd}")
+                raise untrusted
         except BaseException:
             # Also on cancellation; shielded so the close itself isn't cancelled, and a
             # failing close must not replace the reason the start failed.

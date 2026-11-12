@@ -1,7 +1,7 @@
 import asyncio
 import json
 import re
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from pathlib import Path, PurePosixPath, PureWindowsPath
 
 import pytest
@@ -469,7 +469,7 @@ def test_folders_are_trusted_in_the_accounts_own_config(root: Path) -> None:
         "/agents", headers=AUTH, json={"cwd": str(root / "project"), "name": "x", "account": "personal"}
     )
     assert response.status_code == 201
-    assert str((root / "project").resolve()) in json.loads((config_dir / ".claude.json").read_text())["projects"]
+    assert (root / "project").resolve().as_posix() in json.loads((config_dir / ".claude.json").read_text())["projects"]
 
 
 def test_a_work_folder_under_the_trust_root_starts_without_touching_the_default_config(
@@ -727,7 +727,7 @@ def test_start_trusts_folders_under_the_trust_root(root: Path) -> None:
     )
     assert response.status_code == 201
     trusted = json.loads((config_dir / ".claude.json").read_text())["projects"]
-    assert trusted == {str((root / "project").resolve()): {"hasTrustDialogAccepted": True}}
+    assert trusted == {(root / "project").resolve().as_posix(): {"hasTrustDialogAccepted": True}}
 
 
 def separate_home(root: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
@@ -735,6 +735,7 @@ def separate_home(root: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     home = root.parent / f"{root.name}-home"
     home.mkdir()
     monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))  # Windows
     return home
 
 
@@ -784,14 +785,14 @@ def test_start_without_a_trust_root_never_writes_trust(root: Path) -> None:
 
 
 @pytest.fixture
-def layout(tmp_path: Path) -> dict[str, Path]:
+def layout(tmp_path: Path, symlink: Callable[[Path, Path], None]) -> dict[str, Path]:
     """A typical setup: ~/projects is both allowed and trusted, with a separate Claude config."""
     home = tmp_path
     projects_dir = home / "projects"
     (projects_dir / "app").mkdir(parents=True)
     (home / "other").mkdir()
     (home / "projects-evil").mkdir()
-    (projects_dir / "link-out").symlink_to(home / "other")
+    symlink(projects_dir / "link-out", home / "other")
     config_dir = home / ".claude-agents"
     config_dir.mkdir()
     (config_dir / ".claude.json").write_text('{"projects": {}}')
@@ -1201,10 +1202,12 @@ def test_project_lookups_refuse_anything_but_a_folder_name(tmp_path: Path, name:
     assert response.status_code == 404
 
 
-def test_project_lookups_skip_links_out_of_the_roots(tmp_path: Path) -> None:
+def test_project_lookups_skip_links_out_of_the_roots(
+    tmp_path: Path, symlink: Callable[[Path, Path], None]
+) -> None:
     roots = two_roots(tmp_path)
     (tmp_path / "outside").mkdir()
-    (roots[0] / "link-out").symlink_to(tmp_path / "outside")
+    symlink(roots[0] / "link-out", tmp_path / "outside")
     response = roots_client(FakeRunner({}), roots).get("/projects/link-out", headers=AUTH)
     assert response.status_code == 404
 
