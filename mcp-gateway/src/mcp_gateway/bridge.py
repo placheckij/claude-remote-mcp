@@ -95,6 +95,8 @@ class AgentBridge:
             if error.status == 404:
                 return None
             raise
+        if not isinstance(found, dict) or not isinstance(found.get("cwd"), str):
+            raise BridgeError("The agent host answered /projects without a folder.")
         return found["cwd"]
 
     async def list_agents(self) -> list[dict]:

@@ -64,6 +64,8 @@ class Registry:
         self.clock = clock
         self._lock_path = path.with_name("bridges.lock")
         self.bridges, self._stamp = self._read()
+        # The last problem reload() logged, so it isn't logged on every call.
+        self._problem: str | None = None
         # Counts every time `bridges` is taken from the file, which may bring in another
         # process's changes: by a reload, or by a change of this process's own.
         self.generation = 0
@@ -74,15 +76,20 @@ class Registry:
     def reload(self) -> bool:
         """Takes in a change another process made; True if there was one. A file that can't
         be read keeps the bridges from before, with an error in the log."""
-        if self._file_stamp() == self._stamp:
-            return False
         try:
+            stamp = self._file_stamp()
+            if stamp == self._stamp:
+                return False
+            # Not read again until it changes, however it went.
+            self._stamp = stamp
             self.bridges, self._stamp = self._read()
         except RegistryError as error:
-            # Logged once per change to the file, not on every call until it's fixed.
-            self._stamp = self._file_stamp()
-            log.error("%s Keeping the agent hosts from before.", error)
+            # Logged once per problem, not on every call until it's fixed.
+            if str(error) != self._problem:
+                log.error("%s Keeping the agent hosts from before.", error)
+            self._problem = str(error)
             return False
+        self._problem = None
         self.generation += 1
         return True
 
@@ -202,6 +209,8 @@ class Registry:
             status = self.path.stat()
         except FileNotFoundError:
             return None
+        except OSError as error:
+            raise RegistryError(f"Can't read {self.path} ({error.strerror}).") from None
         return status.st_mtime_ns, status.st_size, status.st_ino
 
 
