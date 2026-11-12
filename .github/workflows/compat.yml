@@ -1,0 +1,50 @@
+name: Mixed versions
+
+# The gateway must work with bridges at its own API version and one behind. Both hosts
+# deploy from main, so main against this branch is the mix that runs while one host is
+# updated before the other.
+on:
+  pull_request:
+    paths:
+      - agent-bridge/src/**
+      - mcp-gateway/src/mcp_gateway/bridge.py
+      - mcp-gateway/src/mcp_gateway/tools.py
+      - mcp-gateway/src/mcp_gateway/replies.py
+      - .github/compat/**
+      - .github/workflows/compat.yml
+  workflow_dispatch:
+    inputs:
+      old_ref:
+        description: Old side (branch, tag or commit)
+        default: main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: compat-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  mixed-versions:
+    name: mixed versions (gateway and bridge)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: new
+          persist-credentials: false
+      # Its own folder and venv, so the two versions never share code.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.old_ref || 'main' }}
+          path: old
+          persist-credentials: false
+      - name: Install uv
+        run: pipx install uv==0.11.15
+      - name: Install this branch
+        run: uv sync --all-packages --frozen --directory new
+      - name: Install the old side
+        run: uv sync --all-packages --frozen --directory old
+      - name: Check every pairing
+        run: python3 new/.github/compat/check.py --new new --old old
