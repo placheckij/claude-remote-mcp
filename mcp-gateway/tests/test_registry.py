@@ -155,3 +155,25 @@ def test_seen_survives_a_disk_that_cant_be_written(
         os.chmod(tmp_path, 0o700)
     assert registry.bridges[0].info == INFO
     assert "Couldn't save" in caplog.text
+
+
+def test_never_follows_a_link_in_place_of_the_file(tmp_path: Path, clock: Clock) -> None:
+    # The state folder's owner could plant one for a root-run CLI to read or write through.
+    elsewhere = tmp_path / "elsewhere.json"
+    elsewhere.write_text('{"version": 1, "bridges": []}')
+    (tmp_path / "bridges.json").symlink_to(elsewhere)
+    with pytest.raises(RegistryError, match="Can't read"):
+        open_registry(tmp_path, clock)
+
+
+def test_run_as_root_hands_its_files_over_through_the_open_file(
+    tmp_path: Path, clock: Clock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Changing the owner by path would let the folder's owner swap in a link to any file.
+    handed: list[int] = []
+    monkeypatch.setattr(os, "geteuid", lambda: 0)
+    monkeypatch.setattr(os, "fchown", lambda fd, uid, gid: handed.append(fd))
+    monkeypatch.setattr(os, "chown", lambda *args: pytest.fail("chown by path"))
+    open_registry(tmp_path, clock).add("mac", "http://mac:8765", "t", INFO)
+    # The lock and the new file both, so the gateway can open them afterwards.
+    assert len(handed) == 2
