@@ -12,6 +12,7 @@ from agent_bridge.app import create_app
 from agent_bridge.config import Settings
 from agent_bridge.errors import BridgeError
 from agent_bridge.herdr import Herdr, subprocess_runner
+from agent_bridge.host import host_name, platform_name
 
 TOKEN = "t" * 32
 AUTH = {"Authorization": f"Bearer {TOKEN}"}
@@ -1177,6 +1178,22 @@ def test_info_without_a_working_herdr_has_no_herdr_version(tmp_path: Path) -> No
     runner = FakeRunner({("--version",): err("cli_failed")})
     info = roots_client(runner, two_roots(tmp_path)).get("/info", headers=AUTH).json()
     assert info["herdr_version"] is None
+
+
+@pytest.mark.parametrize(
+    ("hostname", "name"), [("Studio-Mac.local", "studio-mac"), ("my_box", "my-box"), ("---.lan", "agent-host")]
+)
+def test_host_names_are_slugs(monkeypatch: pytest.MonkeyPatch, hostname: str, name: str) -> None:
+    monkeypatch.setattr("agent_bridge.host.socket.gethostname", lambda: hostname)
+    assert host_name() == name
+
+
+@pytest.mark.parametrize(
+    ("sys_platform", "name"), [("darwin", "darwin"), ("linux", "linux"), ("win32", "windows")]
+)
+def test_platforms_are_named_alike(monkeypatch: pytest.MonkeyPatch, sys_platform: str, name: str) -> None:
+    monkeypatch.setattr("agent_bridge.host.sys.platform", sys_platform)
+    assert platform_name() == name
 
 
 @pytest.mark.parametrize(
