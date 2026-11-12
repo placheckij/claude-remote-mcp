@@ -99,15 +99,14 @@ def project_key(folder: Path) -> str:
 
 
 def _is_trusted(projects: dict, folder: Path) -> bool:
-    """True if `folder` or a parent is trusted, under any spelling of its key on Windows:
-    Claude Code has written both `c:/…` and `C:/…` there, and older bridges `C:\\…`. This
-    only decides whether to write; what is written is always the exact key."""
-    trusted = {
-        os.path.normcase(key)
-        for key, entry in projects.items()
-        if isinstance(entry, dict) and entry.get("hasTrustDialogAccepted")
-    }
-    return any(os.path.normcase(candidate) in trusted for candidate in (folder, *folder.parents))
+    """True if `folder` or a parent is trusted under the exact key Claude Code reads. On
+    Windows a `c:/…` key (from a session started in VS Code) or a `C:\\…` one (from older
+    bridges) doesn't count: Claude ignores those, so the exact key is written next to them."""
+    return any(
+        isinstance(entry := projects.get(project_key(candidate)), dict)
+        and entry.get("hasTrustDialogAccepted")
+        for candidate in (folder, *folder.parents)
+    )
 
 
 def _replace_atomically(path: Path, content: str) -> None:

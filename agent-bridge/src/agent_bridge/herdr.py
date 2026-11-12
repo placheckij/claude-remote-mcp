@@ -176,7 +176,13 @@ class Herdr:
             except HerdrError as error:
                 # On Windows herdr calls an agent on the trust dialog blocked, so the start
                 # fails as not ready during startup.
-                if error.code == "agent_not_ready" and await self._shows_trust_dialog(pane_id):
+                if error.code != "agent_not_ready":
+                    raise
+                try:
+                    shows_dialog = await self._shows_trust_dialog(pane_id)
+                except HerdrError:
+                    raise error from None  # the start's failure, not the probe's
+                if shows_dialog:
                     raise untrusted from error
                 raise
             # On macOS herdr reports the agent ready while Claude's folder-trust dialog is
