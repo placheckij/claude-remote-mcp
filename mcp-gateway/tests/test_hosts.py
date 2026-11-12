@@ -301,6 +301,26 @@ def test_start_agent_says_when_no_host_has_the_project(make) -> None:
     assert is_error and text.endswith("No host has a folder grafik. Couldn't ask down.")
 
 
+@pytest.mark.parametrize("api_version", [0, 3])
+def test_start_agent_refuses_a_host_out_of_range(make, api_version: int) -> None:
+    gateway = make(["mac", "old"])
+    gateway.route("old", "GET", "/info", httpx.Response(200, json=info("old", api_version)))
+    is_error, text = gateway.call("start_agent", project="grafik", host="old")
+    assert is_error and "old needs an update" in text
+    assert gateway.paths("old") == ["/info"]
+
+
+def test_start_agent_names_the_hosts_it_couldnt_ask_for_the_project(make) -> None:
+    # One needs an update; one is from before /info, so it can't look project names up.
+    gateway = make(["mac", "new", "old"])
+    gateway.route("mac", "GET", "/projects/grafik", project(None))
+    gateway.route("new", "GET", "/info", httpx.Response(200, json=info("new", 3)))
+    gateway.route("old", "GET", "/info", NO_INFO)
+    is_error, text = gateway.call("start_agent", project="grafik")
+    assert is_error and text.endswith("No host has a folder grafik. Couldn't ask new and old.")
+    assert gateway.paths("new") == gateway.paths("old") == ["/info"]
+
+
 def test_start_agent_on_a_named_host_asks_no_other(make) -> None:
     gateway = make(["mac", "linux"])
     gateway.route("mac", "POST", "/agents", started())

@@ -93,6 +93,20 @@ def test_add_refuses_an_empty_token(bridges: Bridges) -> None:
     assert code == 1 and "token" in err and bridges.seen == []
 
 
+@pytest.mark.parametrize("stop", [EOFError, KeyboardInterrupt])
+def test_add_without_a_token_answer_refuses_in_one_line(
+    bridges: Bridges, capsys: pytest.CaptureFixture, stop: type[BaseException]
+) -> None:
+    # E.g. run without a terminal, where getpass reads a closed stdin, or Ctrl-D.
+    def no_answer(prompt: str) -> str:
+        raise stop
+
+    code = cli.main(["--state-dir", str(bridges.state_dir), "bridges", "add", "http://mac:8765"],
+                    ask_token=no_answer, connect=bridges.connect)
+    assert code == 1 and capsys.readouterr().err.startswith("The token is needed")
+    assert bridges.seen == []
+
+
 def test_add_refuses_a_taken_name_and_a_bad_one(bridges: Bridges) -> None:
     bridges("add", "http://mac:8765")
     code, _, err = bridges("add", "http://other:8765")
