@@ -77,11 +77,11 @@ LEGACY_TOKEN=""
 if [[ ! -e $STATE_DIR/bridges.json ]]; then
   LEGACY_URL="$(env_value MCP_GATEWAY_BRIDGE_URL)"
   LEGACY_TOKEN="$(env_value MCP_GATEWAY_BRIDGE_TOKEN)"
-  # The same URL given again is the legacy bridge, imported with a new AGENT_BRIDGE_TOKEN
-  # if given. Another URL is refused before anything changes: replacing the legacy bridge
-  # here would lose it, and its token, if adding the new one then failed.
-  if [[ -n $LEGACY_URL && -n ${AGENT_BRIDGE_URL:-} ]]; then
-    [[ ${AGENT_BRIDGE_URL%/} == "${LEGACY_URL%/}" ]] \
+  # The legacy bridge is imported with a new AGENT_BRIDGE_TOKEN if given, with or without
+  # its URL given again. Another URL is refused before anything changes: replacing the
+  # legacy bridge here would lose it, and its token, if adding the new one then failed.
+  if [[ -n $LEGACY_URL ]]; then
+    [[ -z ${AGENT_BRIDGE_URL:-} || ${AGENT_BRIDGE_URL%/} == "${LEGACY_URL%/}" ]] \
       || die "$ENV_FILE still has the agent-bridge at $LEGACY_URL. Re-run without AGENT_BRIDGE_URL to import it, then change it with: sudo mcp-gateway bridges remove <name>, sudo mcp-gateway bridges add $AGENT_BRIDGE_URL"
     LEGACY_TOKEN="${AGENT_BRIDGE_TOKEN:-$LEGACY_TOKEN}"
     unset AGENT_BRIDGE_URL AGENT_BRIDGE_TOKEN

@@ -537,6 +537,20 @@ def test_an_odd_answer_from_one_host_fails_that_host_only(make) -> None:
     assert gateway.call("start_agent", project="grafik") == (False, "Started linux/w9:p1 · grafik · idle · grafik")
 
 
+def test_an_agent_that_cant_be_described_fails_its_host_only(
+    make, caplog: pytest.LogCaptureFixture
+) -> None:
+    # An answer nothing checks for, e.g. an agent without a status: logged whole as a bug.
+    gateway = make(["mac", "odd"])
+    gateway.route("mac", "GET", "/agents", agents("w1:p1"))
+    gateway.route("odd", "GET", "/agents", httpx.Response(200, json=[{"id": "w1:p1"}]))
+    with caplog.at_level(logging.ERROR):
+        is_error, text = gateway.call("list_agents")
+    assert not is_error and "mac/w1:p1 · grafik" in text
+    assert text.endswith("odd didn't answer: Its answer couldn't be used (KeyError).")
+    assert "Asking odd failed unexpectedly" in caplog.text
+
+
 def test_an_info_without_api_version_or_json_is_a_host_failing(make) -> None:
     gateway = make(["mac", "odd", "garbled"])
     gateway.route("mac", "GET", "/agents", agents())
