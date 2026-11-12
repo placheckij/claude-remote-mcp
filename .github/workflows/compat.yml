@@ -8,6 +8,10 @@ on:
     paths:
       - agent-bridge/src/**
       - mcp-gateway/src/mcp_gateway/bridge.py
+      - mcp-gateway/src/mcp_gateway/config.py
+      - mcp-gateway/src/mcp_gateway/hosts.py
+      - mcp-gateway/src/mcp_gateway/registry.py
+      - mcp-gateway/src/mcp_gateway/server.py
       - mcp-gateway/src/mcp_gateway/tools.py
       - mcp-gateway/src/mcp_gateway/replies.py
       - .github/compat/**

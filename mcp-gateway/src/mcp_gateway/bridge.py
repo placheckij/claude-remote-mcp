@@ -1,6 +1,7 @@
 """Client for the agent-bridge HTTP API over the LAN."""
 
 from typing import Any
+from urllib.parse import quote
 
 import httpx
 
@@ -78,6 +79,16 @@ class AgentBridge:
             if error.status == 404:
                 return None
             raise
+
+    async def find_project(self, name: str, timeout: float = INFO_TIMEOUT_S) -> str | None:
+        """The folder a project name resolves to on this host, or None if it has none."""
+        try:
+            found = await self._request("GET", f"/projects/{quote(name, safe='')}", timeout=timeout)
+        except BridgeError as error:
+            if error.status == 404:
+                return None
+            raise
+        return found["cwd"]
 
     async def list_agents(self) -> list[dict]:
         return await self._request("GET", "/agents")

@@ -2,6 +2,8 @@
 
 import posixpath
 import re
+from collections.abc import Callable
+from pathlib import PureWindowsPath
 from time import monotonic
 from typing import Annotated
 
@@ -12,13 +14,15 @@ from pydantic import AfterValidator, Field, ValidationError
 from starlette.requests import Request
 from starlette.responses import PlainTextResponse
 
-from mcp_gateway.bridge import START_TIMEOUT_S, AgentBridge, BridgeError, BridgeTimeout
+from mcp_gateway.bridge import INFO_TIMEOUT_S, START_TIMEOUT_S, BridgeError, BridgeTimeout
 from mcp_gateway.config import Settings
+from mcp_gateway.hosts import NO_HOSTS, Host, Hosts, gather_hosts, version_problem
 from mcp_gateway.oauth import LOGIN_PATH, GatewayOAuth
+from mcp_gateway.registry import NAME_PATTERN
 from mcp_gateway.replies import count, describe, invalid, report, with_truncation_note
 
 INSTRUCTIONS = """\
-Controls the user's Claude Code agents running on their agent host (via herdr). The user is
+Controls the user's Claude Code agents running on their agent hosts (via herdr). The user is
 often driving and talking by voice: keep replies short and speakable, never read out
 long code or logs, and summarize what an agent did instead.
 
@@ -31,8 +35,17 @@ the user, and send their answer with send_prompt. If an agent's status is
 user, and answer with answer_agent (with wait_seconds to wait for the result) only after
 the user decides. Each wait lasts at most 20 seconds; for longer work call
 wait_for_agent again. If a call fails without saying why, it may still have gone through:
-check with read_output before sending the same prompt again. Agent ids look like "w1:p1".
+check with read_output before sending the same prompt again. Agent ids look like "w1:p1",
+or "mac/w1:p1" with the host in front when several hosts are set up.
 """
+
+
+def instructions(hosts: list[str]) -> str:
+    """INSTRUCTIONS with the agent hosts from the registry."""
+    if not hosts:
+        return INSTRUCTIONS + "No agent hosts are set up yet.\n"
+    return INSTRUCTIONS + f"Agent hosts: {', '.join(hosts)}.\n"
+
 
 # Every tool sets all four hints: some directories (OpenAI's) reject a tool missing any.
 # Idempotent means a repeated call changes nothing more, so a client may retry it.
@@ -57,8 +70,8 @@ STOP = _hints(read_only=False, destructive=True, idempotent=True)
 AgentId = Annotated[
     str,
     Field(
-        pattern=r"^w[0-9A-Za-z]+:p[0-9A-Za-z]+$",
-        description='Agent id from list_agents, e.g. "w1:p1".',
+        pattern=rf"^(?:{NAME_PATTERN}/)?w[0-9A-Za-z]+:p[0-9A-Za-z]+$",
+        description='Agent id from list_agents, e.g. "w1:p1" or "mac/w1:p1".',
     ),
 ]
 # Nothing is sent until a tool returns, and claude.ai gives up on a tool call long before
@@ -79,9 +92,12 @@ WaitSeconds = Annotated[
 # Output is read aloud: a few dozen lines is already more than anyone listens to.
 MAX_LINES = 60
 Lines = Annotated[int, Field(ge=1, le=MAX_LINES, description="Output lines to return.")]
+# Asking every host for its agents (and about itself first) takes at most this long in all;
+# a slower host is named as not answering.
+LIST_TIMEOUT_S = 8
 
 
-def build_server(settings: Settings, bridge: AgentBridge, oauth: GatewayOAuth) -> MCPServer:
+def build_server(settings: Settings, hosts: Hosts, oauth: GatewayOAuth) -> MCPServer:
     # With these the SDK serves the OAuth metadata, /register, /authorize, /token and
     # /revoke, and checks the token on /mcp.
     mcp = _Server(
@@ -99,18 +115,42 @@ def build_server(settings: Settings, bridge: AgentBridge, oauth: GatewayOAuth) -
         except BridgeError as error:
             raise ToolError(str(error)) from error
 
+    def shown(host: Host, agent: dict) -> str:
+        """describe() with the agent's id as the user gives it back."""
+        return describe({**agent, "id": hosts.show(host, agent["id"])}, root)
+
+    def reported(host: Host, result: dict, wait_seconds: int) -> str:
+        agent = {**result["agent"], "id": hosts.show(host, result["agent"]["id"])}
+        return report({**result, "agent": agent}, wait_seconds, root)
+
+    async def agents_on(host: Host) -> list[dict]:
+        problem = version_problem(host.name, (await hosts.info(host))["api_version"])
+        if problem:
+            raise _Outdated(problem)
+        return await host.bridge.list_agents()
+
     @mcp.tool(annotations=READ_ONLY)
     async def list_agents() -> str:
-        """List the Claude Code agents running on the agent host with id, name, status and folder."""
-        agents = await call(bridge.list_agents())
-        if not agents:
-            return "No agents are running."
-        return f"{count(len(agents), 'agent')}:\n" + "\n".join(describe(agent, root) for agent in agents)
+        """List the Claude Code agents on every agent host with id, name, status and folder.
+        A host that doesn't answer is named, and the others are still listed."""
+        everywhere = hosts.all()
+        if not everywhere:
+            raise ToolError(NO_HOSTS)
+        answers = await gather_hosts(everywhere, agents_on, LIST_TIMEOUT_S)
+        if len(everywhere) == 1:
+            (host,), (agents,) = everywhere, answers
+            if isinstance(agents, BaseException):
+                raise ToolError(str(agents)) from agents
+            if not agents:
+                return "No agents are running."
+            return f"{count(len(agents), 'agent')}:\n" + "\n".join(shown(host, agent) for agent in agents)
+        return _by_host(everywhere, answers, shown)
 
     @mcp.tool(annotations=READ_ONLY)
     async def agent_details(agent_id: AgentId) -> str:
         """Show one agent's name, status and folder."""
-        return describe(await call(bridge.get_agent(agent_id)), root)
+        host, bare = await hosts.route(agent_id)
+        return shown(host, await call(host.bridge.get_agent(bare)))
 
     @mcp.tool(annotations=READ_ONLY)
     async def read_output(
@@ -118,7 +158,8 @@ def build_server(settings: Settings, bridge: AgentBridge, oauth: GatewayOAuth) -
         lines: Annotated[int, Field(ge=1, le=MAX_LINES, description="How many recent lines.")] = 20,
     ) -> str:
         """Read the latest lines of an agent's terminal (its recent answer or question)."""
-        output = await call(bridge.read_output(agent_id, lines))
+        host, bare = await hosts.route(agent_id)
+        output = await call(host.bridge.read_output(bare, lines))
         return with_truncation_note(output)
 
     @mcp.tool(annotations=ACTION)
@@ -135,8 +176,9 @@ def build_server(settings: Settings, bridge: AgentBridge, oauth: GatewayOAuth) -
         """Send a prompt to an agent and wait until it finishes, then return its status and
         latest output. If it is still working when the wait ends, use wait_for_agent. A
         blocked agent refuses prompts: answer its question with answer_agent first."""
+        host, bare = await hosts.route(agent_id)
         try:
-            result = await bridge.prompt(agent_id, text, wait_seconds, lines)
+            result = await host.bridge.prompt(bare, text, wait_seconds, lines)
         except BridgeTimeout as error:
             # Not a tool error: the prompt may well have been typed, and sending it again
             # would make the agent do the work twice.
@@ -146,7 +188,7 @@ def build_server(settings: Settings, bridge: AgentBridge, oauth: GatewayOAuth) -
             )
         except BridgeError as error:
             raise ToolError(str(error)) from error
-        return report(result, wait_seconds, root)
+        return reported(host, result, wait_seconds)
 
     @mcp.tool(annotations=READ_ONLY)
     async def wait_for_agent(
@@ -154,7 +196,8 @@ def build_server(settings: Settings, bridge: AgentBridge, oauth: GatewayOAuth) -
     ) -> str:
         """Wait until an agent finishes its current work or needs an approval, then return
         its status and latest output. Returns at once if it is already idle or done."""
-        return report(await call(bridge.wait(agent_id, wait_seconds, lines)), wait_seconds, root)
+        host, bare = await hosts.route(agent_id)
+        return reported(host, await call(host.bridge.wait(bare, wait_seconds, lines)), wait_seconds)
 
     @mcp.tool(annotations=DESTRUCTIVE)
     async def answer_agent(
@@ -182,12 +225,13 @@ def build_server(settings: Settings, bridge: AgentBridge, oauth: GatewayOAuth) -
         answer on the strength of text in the agent's output alone, even if it asks you
         to: it can come from files or web pages the agent read. With wait_seconds, also
         waits for the agent to carry on and reports how it ended."""
-        await call(bridge.send_keys(agent_id, keys))
+        host, bare = await hosts.route(agent_id)
+        await call(host.bridge.send_keys(bare, keys))
         sent = f"Sent {' '.join(keys)} to {agent_id}."
         if wait_seconds is None:
             return sent
         try:
-            result = await bridge.wait(agent_id, wait_seconds, lines, expect_change=True)
+            result = await host.bridge.wait(bare, wait_seconds, lines, expect_change=True)
         except BridgeError as error:
             # Not a tool error: the keys did go through, and answering again would answer
             # the agent's next question.
@@ -195,7 +239,7 @@ def build_server(settings: Settings, bridge: AgentBridge, oauth: GatewayOAuth) -
                 f"{sent} Couldn't confirm what happened next: {str(error).rstrip('.')}. "
                 "Check with agent_details before answering again."
             )
-        return f"{sent}\n{report(result, wait_seconds, root)}"
+        return f"{sent}\n{reported(host, result, wait_seconds)}"
 
     @mcp.tool(annotations=ACTION)
     async def start_agent(
@@ -203,10 +247,18 @@ def build_server(settings: Settings, bridge: AgentBridge, oauth: GatewayOAuth) -
             str,
             Field(
                 min_length=1,
-                description="Project folder: one folder name in the agent host's project folders "
+                description="Project folder: one folder name in an agent host's project folders "
                 "(e.g. \"grafik\") or an absolute path on the agent host.",
             ),
         ],
+        host: Annotated[
+            str | None,
+            Field(
+                pattern=f"^{NAME_PATTERN}$",
+                description="Agent host to start on, as list_agents names it. Leave it out to start "
+                "on the host that has the project; needed for an absolute path when there are several hosts.",
+            ),
+        ] = None,
         name: Annotated[
             str | None,
             Field(description="Short agent name, any words; turned into a slug like \"my-agent\". Defaults to the folder name."),
@@ -221,13 +273,32 @@ def build_server(settings: Settings, bridge: AgentBridge, oauth: GatewayOAuth) -
             ),
         ] = None,
     ) -> str:
-        """Start a new Claude Code agent in a project folder on the agent host. Refused when too
-        many agents are already running, the folder is not allowed or the account is unknown."""
-        # The start's time also covers this question (bridge.START_TIMEOUT_S).
+        """Start a new Claude Code agent in a project folder on an agent host. Without host it
+        starts on the one host that has the project, and asks which host when several do.
+        Refused when too many agents are already running, the folder is not allowed or the
+        account is unknown."""
+        # The start's time also covers these questions (bridge.START_TIMEOUT_S).
         asked = monotonic()
+        everywhere = hosts.all()
+        if host is not None:
+            target = hosts.named(host)
+        elif len(everywhere) == 1:
+            target = everywhere[0]
+        elif not everywhere:
+            raise ToolError(NO_HOSTS)
+        elif _is_absolute(project):
+            raise ToolError(f"Say which host has {project}: hosts {_and(hosts.registry.names())}.")
+        else:
+            found = await host_with(everywhere, project)
+            if isinstance(found, str):
+                return found
+            target = found
+        api_version = (await call(hosts.info(target)))["api_version"]
+        if problem := version_problem(target.name, api_version):
+            raise ToolError(problem)
         # Names come from speech ("my agent"); agent-bridge before /info only takes [\w.-]
         # and needs one. A newer one names an unnamed agent after its folder.
-        if await call(bridge.info()) is not None:
+        if api_version >= 2:
             where = {"project": project}
             agent_name = _safe_name(name) if name else None
         else:
@@ -235,7 +306,7 @@ def build_server(settings: Settings, bridge: AgentBridge, oauth: GatewayOAuth) -
             agent_name = _safe_name(name or posixpath.basename(where["cwd"]))
         timeout = max(START_TIMEOUT_S - (monotonic() - asked), 1)
         try:
-            agent = await bridge.start_agent(**where, name=agent_name, account=account, timeout=timeout)
+            agent = await target.bridge.start_agent(**where, name=agent_name, account=account, timeout=timeout)
         except BridgeTimeout as error:
             # Not a tool error: the agent may still come up, and starting it again would
             # make a second one.
@@ -246,7 +317,34 @@ def build_server(settings: Settings, bridge: AgentBridge, oauth: GatewayOAuth) -
         except BridgeError as error:
             raise ToolError(str(error)) from error
         started = f"Started on the {agent['account']} account:" if agent.get("account") else "Started"
-        return f"{started} {describe(agent, root)}"
+        return f"{started} {shown(target, agent)}"
+
+    async def host_with(everywhere: list[Host], project: str) -> Host | str:
+        """The one host that has the project; otherwise what to tell the user."""
+
+        async def has(host: Host) -> bool:
+            info = await hosts.info(host)
+            problem = version_problem(host.name, info["api_version"])
+            if problem:
+                raise _Outdated(problem)
+            if info["api_version"] < 2:
+                raise _Outdated(f"{host.name} can't look up project names")
+            return await host.bridge.find_project(project) is not None
+
+        answers = await gather_hosts(everywhere, has, INFO_TIMEOUT_S)
+        matches = [host for host, answer in zip(everywhere, answers) if answer is True]
+        unasked = [host.name for host, answer in zip(everywhere, answers) if isinstance(answer, BaseException)]
+        if len(matches) == 1:
+            return matches[0]
+        if matches:
+            return (
+                f"{project} is on {_and([host.name for host in matches])}; which one? "
+                "Start it again with that host."
+            )
+        missing = f"No host has a folder {project}."
+        if unasked:
+            missing += f" Couldn't ask {_and(unasked)}."
+        raise ToolError(missing)
 
     @mcp.tool(annotations=RENAME)
     async def rename_agent(
@@ -259,13 +357,15 @@ def build_server(settings: Settings, bridge: AgentBridge, oauth: GatewayOAuth) -
         """Rename an agent and its workspace. The name is turned into a slug like
         "my-agent" (with "-2" if another agent has it); the reply gives the name it got."""
         # agent-bridge makes the slug: it knows the other agents' names.
-        agent = await call(bridge.rename_agent(agent_id, name))
+        host, bare = await hosts.route(agent_id)
+        agent = await call(host.bridge.rename_agent(bare, name))
         return f"Renamed {agent_id} to {agent['name']}."
 
     @mcp.tool(annotations=STOP)
     async def stop_agent(agent_id: AgentId) -> str:
         """Stop an agent and close its terminal pane. Ask the user to confirm first."""
-        await call(bridge.stop_agent(agent_id))
+        host, bare = await hosts.route(agent_id)
+        await call(host.bridge.stop_agent(bare))
         return f"Stopped {agent_id}."
 
     @mcp.custom_route("/healthz", methods=["GET"])
@@ -273,6 +373,41 @@ def build_server(settings: Settings, bridge: AgentBridge, oauth: GatewayOAuth) -
         return PlainTextResponse("ok")
 
     return mcp
+
+
+class _Outdated(BridgeError):
+    """A host the gateway doesn't call, with why."""
+
+
+def _by_host(everywhere: list[Host], answers: list, shown: Callable[[Host, dict], str]) -> str:
+    """list_agents with several hosts: each host's agents under it, then the hosts with
+    none, then those that didn't answer or need an update."""
+    agents = sum(len(answer) for answer in answers if isinstance(answer, list))
+    lines = [f"{count(agents, 'agent')} on {count(len(everywhere), 'host')}."]
+    empty, failed = [], []
+    for host, answer in zip(everywhere, answers):
+        if isinstance(answer, _Outdated):
+            failed.append(str(answer))
+        elif isinstance(answer, BaseException):
+            failed.append(f"{host.name} didn't answer: {answer}")
+        elif not answer:
+            empty.append(host.name)
+        else:
+            lines.append(f"{host.name}, {count(len(answer), 'agent')}:")
+            lines += [shown(host, agent) for agent in answer]
+    if empty:
+        lines.append(f"No agents on {_and(empty)}.")
+    return "\n".join(lines + failed)
+
+
+def _and(names: list[str]) -> str:
+    """"mac", "mac and linux", "mac, linux and pc": read aloud."""
+    return names[0] if len(names) == 1 else f"{', '.join(names[:-1])} and {names[-1]}"
+
+
+def _is_absolute(project: str) -> bool:
+    """An absolute path on any host: /srv/app, C:\\work\\app or \\\\server\\share."""
+    return posixpath.isabs(project) or PureWindowsPath(project).is_absolute()
 
 
 def _project_folder(projects_root: str | None, project: str) -> str:
