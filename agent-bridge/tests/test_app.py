@@ -2,12 +2,12 @@ import asyncio
 import json
 import re
 from collections.abc import Sequence
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 
 import pytest
 from fastapi.testclient import TestClient
 
-from agent_bridge.agents import AgentService
+from agent_bridge.agents import AgentService, is_project_name, project_of
 from agent_bridge.app import create_app
 from agent_bridge.config import Settings
 from agent_bridge.errors import BridgeError
@@ -115,6 +115,7 @@ def test_lists_agents_as_summaries(root: Path) -> None:
             "cwd": "/tmp/project",
             "workspace_id": "w1",
             "question": None,
+            "project": None,
         }
     ]
 
@@ -1022,7 +1023,7 @@ def test_cancelling_a_start_still_closes_its_workspace(root: Path) -> None:
     service = AgentService(settings, Herdr(runner=runner))
 
     async def scenario() -> None:
-        task = asyncio.create_task(service.start_agent(str(root / "project"), "x"))
+        task = asyncio.create_task(service.start_agent("x", cwd=str(root / "project")))
         await started.wait()
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
@@ -1126,3 +1127,189 @@ def test_text_that_cannot_go_into_herdrs_argv_is_refused(root: Path, path: str, 
     response = client(runner, root).post(path, headers=AUTH, json=body)
     assert response.status_code == 422, response.text
     assert runner.calls == []
+
+
+# --- The host and its projects --------------------------------------------------------
+
+
+def two_roots(tmp_path: Path) -> tuple[Path, Path]:
+    first, second = tmp_path / "projects", tmp_path / "work"
+    (first / "grafik" / "api").mkdir(parents=True)
+    (second / "billing").mkdir(parents=True)
+    (second / "grafik").mkdir()
+    return first.resolve(), second.resolve()
+
+
+def roots_client(runner: FakeRunner, roots: tuple[Path, ...], **overrides) -> TestClient:
+    overrides.setdefault("trust_root", roots[0] / "no-trust-writes")
+    settings = Settings(token=TOKEN, allowed_roots=roots, **overrides)
+    return TestClient(create_app(settings, Herdr(runner=runner)))
+
+
+def test_info_describes_the_host(tmp_path: Path) -> None:
+    roots = two_roots(tmp_path)
+    runner = FakeRunner({("--version",): (0, "herdr 0.9.5\n", "")})
+    c = roots_client(
+        runner,
+        roots,
+        max_agents=4,
+        accounts={"work": {"folders": [roots[1]]}, "personal": {"config_dir": tmp_path / ".c"}},
+    )
+    info = c.get("/info", headers=AUTH).json()
+    assert info.pop("platform") in ("darwin", "linux", "windows")
+    assert re.fullmatch(r"[a-z0-9]+(-[a-z0-9]+)*", info.pop("name"))
+    assert info.pop("bridge_version")
+    assert info == {
+        "api_version": 2,
+        "herdr_version": "0.9.5",
+        "roots": [str(roots[0]), str(roots[1])],
+        "projects_root": str(roots[0]),
+        "accounts": ["personal", "work"],
+        "max_agents": 4,
+    }
+
+
+def test_info_needs_the_token(tmp_path: Path) -> None:
+    assert roots_client(FakeRunner({}), two_roots(tmp_path)).get("/info").status_code == 401
+
+
+def test_info_without_a_working_herdr_has_no_herdr_version(tmp_path: Path) -> None:
+    runner = FakeRunner({("--version",): err("cli_failed")})
+    info = roots_client(runner, two_roots(tmp_path)).get("/info", headers=AUTH).json()
+    assert info["herdr_version"] is None
+
+
+@pytest.mark.parametrize(
+    ("name", "folder"),
+    [("grafik", "projects/grafik"), ("billing", "work/billing"), ("api", None), ("missing", None)],
+)
+def test_projects_are_looked_up_under_each_root_in_turn(
+    tmp_path: Path, name: str, folder: str | None
+) -> None:
+    # The first root wins a name both have; folders deeper down are not projects.
+    response = roots_client(FakeRunner({}), two_roots(tmp_path)).get(f"/projects/{name}", headers=AUTH)
+    if folder is None:
+        assert response.status_code == 404
+        assert response.json()["error"]["code"] == "project_not_found"
+    else:
+        assert response.json() == {"cwd": str((tmp_path / folder).resolve())}
+
+
+@pytest.mark.parametrize("name", [".", "x..y", "~grafik", "a\\b", "C:grafik", " "])
+def test_project_lookups_refuse_anything_but_a_folder_name(tmp_path: Path, name: str) -> None:
+    response = roots_client(FakeRunner({}), two_roots(tmp_path)).get(f"/projects/{name}", headers=AUTH)
+    assert response.status_code == 404
+
+
+def test_project_lookups_skip_links_out_of_the_roots(tmp_path: Path) -> None:
+    roots = two_roots(tmp_path)
+    (tmp_path / "outside").mkdir()
+    (roots[0] / "link-out").symlink_to(tmp_path / "outside")
+    response = roots_client(FakeRunner({}), roots).get("/projects/link-out", headers=AUTH)
+    assert response.status_code == 404
+
+
+def test_start_takes_a_project_name_and_names_the_agent_after_it(tmp_path: Path) -> None:
+    roots = two_roots(tmp_path)
+    runner = FakeRunner(start_responses(trust_dialog=False))
+    response = roots_client(runner, roots).post("/agents", headers=AUTH, json={"project": "billing"})
+    assert response.status_code == 201, response.text
+    created = runner.called("workspace", "create")[0]
+    assert created[created.index("--cwd") + 1] == str(roots[1] / "billing")
+    assert runner.called("agent", "start")[0][2] == "billing"
+
+
+def test_start_takes_an_absolute_project_path(tmp_path: Path) -> None:
+    roots = two_roots(tmp_path)
+    runner = FakeRunner(start_responses(trust_dialog=False))
+    response = roots_client(runner, roots).post(
+        "/agents", headers=AUTH, json={"project": str(roots[0] / "grafik" / "api"), "name": "x"}
+    )
+    assert response.status_code == 201, response.text
+    created = runner.called("workspace", "create")[0]
+    assert created[created.index("--cwd") + 1] == str(roots[0] / "grafik" / "api")
+
+
+@pytest.mark.parametrize("project", ["..", ".", "grafik/api", "x..y", "~", "a\\b", "C:grafik"])
+def test_start_refuses_a_project_that_is_neither_name_nor_absolute_path(
+    tmp_path: Path, project: str
+) -> None:
+    runner = FakeRunner({})
+    response = roots_client(runner, two_roots(tmp_path)).post(
+        "/agents", headers=AUTH, json={"project": project}
+    )
+    assert response.status_code == 422
+    error = response.json()["error"]
+    assert error["code"] == "bad_project"
+    assert error["message"] == 'Give the project as one folder name, like "grafik", or as an absolute path.'
+    assert runner.calls == []
+
+
+def test_start_in_an_unknown_project_says_where_it_looked(tmp_path: Path) -> None:
+    roots = two_roots(tmp_path)
+    runner = FakeRunner({})
+    response = roots_client(runner, roots).post("/agents", headers=AUTH, json={"project": "nope"})
+    assert response.status_code == 404
+    error = response.json()["error"]
+    assert error["code"] == "project_not_found"
+    assert error["message"] == f"There is no project named 'nope' in {roots[0]} or {roots[1]}."
+    assert runner.calls == []
+
+
+@pytest.mark.parametrize("body", [{"name": "x"}, {"project": "grafik", "cwd": "/tmp", "name": "x"}])
+def test_start_needs_exactly_one_of_project_and_cwd(tmp_path: Path, body: dict) -> None:
+    runner = FakeRunner({})
+    response = roots_client(runner, two_roots(tmp_path)).post("/agents", headers=AUTH, json=body)
+    assert response.status_code == 422
+    assert runner.calls == []
+
+
+def test_agents_say_which_project_they_work_in(tmp_path: Path) -> None:
+    roots = two_roots(tmp_path)
+    cwds = [roots[0] / "grafik" / "api", roots[1] / "billing", roots[1], Path("/elsewhere/repo")]
+    working = [agent(f"w{i}:p1", status="working", cwd=str(cwd)) for i, cwd in enumerate(cwds)]
+    runner = FakeRunner({("agent", "list"): ok({"agents": working})})
+    listed = roots_client(runner, roots).get("/agents", headers=AUTH).json()
+    assert [a["project"] for a in listed] == ["grafik/api", "billing", None, None]
+
+
+@pytest.mark.parametrize(
+    ("cwd", "roots", "project"),
+    [
+        ("/home/me/projects/grafik/api", ("/home/me/projects",), "grafik/api"),
+        ("/home/me/projects/grafik", ("/home/me/projects",), "grafik"),
+        ("/home/me/projects", ("/home/me/projects",), None),
+        ("/home/me/projects-old/x", ("/home/me/projects",), None),
+        ("/home/me/projects/work/billing", ("/home/me/projects", "/home/me/projects/work"), "billing"),
+        (None, ("/home/me/projects",), None),
+    ],
+)
+def test_projects_of_posix_folders(cwd: str | None, roots: tuple[str, ...], project: str | None) -> None:
+    # The closest root counts, so a root inside another names its own projects.
+    assert project_of(cwd, [PurePosixPath(root) for root in roots]) == project
+
+
+@pytest.mark.parametrize(
+    ("cwd", "project"),
+    [
+        # Joined with "/" on every platform: it is a name to read out, not a path.
+        ("C:\\Users\\me\\projects\\grafik\\api", "grafik/api"),
+        ("c:\\users\\ME\\Projects\\grafik", "grafik"),
+        ("C:\\Users\\me\\projects", None),
+        ("D:\\projects\\grafik", None),
+        ("C:\\Users\\me\\projects-old\\grafik", None),
+    ],
+)
+def test_projects_of_windows_folders(cwd: str, project: str | None) -> None:
+    assert project_of(cwd, [PureWindowsPath("C:\\Users\\me\\projects")]) == project
+
+
+@pytest.mark.parametrize(
+    ("name", "valid"),
+    [("grafik", True), ("my-app.v2", True), ("łódź", True), ("..", False), (".", False),
+     ("", False), (" ", False), ("a/b", False), ("a\\b", False), ("~", False), ("C:x", False),
+     ("x..y", False)],
+)
+def test_project_names_are_one_folder_on_any_platform(name: str, valid: bool) -> None:
+    # Separators and drive letters of both kinds are refused, whatever the bridge runs on.
+    assert is_project_name(name) is valid
