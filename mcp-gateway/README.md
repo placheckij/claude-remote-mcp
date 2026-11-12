@@ -336,8 +336,9 @@ sudo systemctl daemon-reload
 sudo TUNNEL_ORIGIN_CERT=/etc/cloudflared/cert.pem cloudflared tunnel cleanup claude-remote
 sudo TUNNEL_ORIGIN_CERT=/etc/cloudflared/cert.pem cloudflared tunnel delete claude-remote
 
-# 3. Remove the code, configuration, tokens and tunnel credentials
-sudo rm -rf /opt/claude-remote-mcp /etc/mcp-gateway
+# 3. Remove the code, configuration, tokens (also the agent-bridges' tokens in
+#    bridges.json) and tunnel credentials
+sudo rm -rf /opt/claude-remote-mcp /etc/mcp-gateway /var/lib/mcp-gateway
 sudo rm -f /usr/local/bin/mcp-gateway /etc/cloudflared/claude-remote.json /etc/cloudflared/claude-remote.yml
 
 # 4. Remove the service user

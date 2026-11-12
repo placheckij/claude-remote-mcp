@@ -285,6 +285,7 @@ def build_server(settings: Settings, hosts: Hosts, oauth: GatewayOAuth) -> MCPSe
         # The start's time also covers these questions (bridge.START_TIMEOUT_S).
         asked = monotonic()
         everywhere = hosts.all()
+        unasked: list[str] = []
         if host is not None:
             target = hosts.named(host)
         elif len(everywhere) == 1:
@@ -297,7 +298,7 @@ def build_server(settings: Settings, hosts: Hosts, oauth: GatewayOAuth) -> MCPSe
             found = await host_with(everywhere, project)
             if isinstance(found, str):
                 return found
-            target = found
+            target, unasked = found
         api_version = (await call(hosts.info(target)))["api_version"]
         if problem := version_problem(target.name, api_version):
             raise ToolError(problem)
@@ -322,10 +323,13 @@ def build_server(settings: Settings, hosts: Hosts, oauth: GatewayOAuth) -> MCPSe
         except BridgeError as error:
             raise ToolError(str(error)) from error
         started = f"Started on the {agent['account']} account:" if agent.get("account") else "Started"
-        return f"{started} {shown(target, agent)}"
+        # Started on the one host found; one not asked may have the project too.
+        unchecked = f"\nCouldn't ask {_and(unasked)}, which may have {project} too." if unasked else ""
+        return f"{started} {shown(target, agent)}{unchecked}"
 
-    async def host_with(everywhere: list[Host], project: str) -> Host | str:
-        """The one host that has the project; otherwise what to tell the user."""
+    async def host_with(everywhere: list[Host], project: str) -> tuple[Host, list[str]] | str:
+        """The one host that has the project, and the hosts that couldn't be asked;
+        otherwise what to tell the user."""
 
         async def has(host: Host) -> bool:
             info = await hosts.info(host)
@@ -340,7 +344,7 @@ def build_server(settings: Settings, hosts: Hosts, oauth: GatewayOAuth) -> MCPSe
         matches = [host for host, answer in zip(everywhere, answers) if answer is True]
         unasked = [host.name for host, answer in zip(everywhere, answers) if isinstance(answer, BaseException)]
         if len(matches) == 1:
-            return matches[0]
+            return matches[0], unasked
         if matches:
             return (
                 f"{project} is on {_and([host.name for host in matches])}; which one? "

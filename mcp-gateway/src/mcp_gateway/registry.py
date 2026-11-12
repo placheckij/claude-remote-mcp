@@ -58,6 +58,13 @@ def check_token(value: str) -> str:
     return value
 
 
+def check_info(value: dict | None) -> dict | None:
+    # The gateway decides by api_version whether to call the host, as an int.
+    if value is not None and type(value.get("api_version")) is not int:
+        raise ValueError("must have a whole-number api_version")
+    return value
+
+
 class Bridge(BaseModel):
     model_config = ConfigDict(frozen=True)
 
@@ -69,7 +76,7 @@ class Bridge(BaseModel):
     token: Annotated[str, AfterValidator(check_token)]
     # The last /info: {"api_version": 1} for an agent-bridge from before /info, None until
     # it first answers.
-    info: dict | None
+    info: Annotated[dict | None, AfterValidator(check_info)]
     enrolled_at: int
     last_seen: int | None
 
