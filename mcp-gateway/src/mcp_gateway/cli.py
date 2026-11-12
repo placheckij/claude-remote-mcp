@@ -124,7 +124,11 @@ def _add(
     parts = urlsplit(url)
     if parts.scheme not in ("http", "https") or not parts.hostname or parts.path or parts.query:
         raise _Refused(f"Give the agent-bridge's address, like {EXAMPLE_URL}.")
-    token = ask_token("agent-bridge token (AGENT_BRIDGE_TOKEN on the agent host): ").strip()
+    try:
+        token = ask_token("agent-bridge token (AGENT_BRIDGE_TOKEN on the agent host): ").strip()
+    except (EOFError, KeyboardInterrupt):
+        # No terminal to ask on (stdin closed), Ctrl-D or Ctrl-C.
+        token = ""
     if not token:
         raise _Refused("The token is needed: AGENT_BRIDGE_TOKEN in the agent host's settings.")
     info = asyncio.run(_info(connect(url, token)))
