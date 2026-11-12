@@ -191,9 +191,9 @@ def version_problem(name: str, api_version: int | None) -> str | None:
     return f"{name} needs an update: its agent-bridge is newer than this gateway, so update the gateway."
 
 
-async def gather_hosts(hosts: list[Host], ask: Callable[[Host], Awaitable], timeout: float) -> list:
-    """`ask` for every host at once, each within `timeout`; a BridgeError in place of an
-    answer that failed or came too late."""
+async def gather_hosts(hosts: list[Host], ask: Callable[[Host], Awaitable], timeout: float | None) -> list:
+    """`ask` for every host at once, each within `timeout` (None: the requests' own
+    timeouts); a BridgeError in place of an answer that failed or came too late."""
 
     async def one(host: Host):
         try:

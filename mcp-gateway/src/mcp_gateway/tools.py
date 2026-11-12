@@ -136,7 +136,8 @@ def build_server(settings: Settings, hosts: Hosts, oauth: GatewayOAuth) -> MCPSe
         everywhere = hosts.all()
         if not everywhere:
             raise ToolError(NO_HOSTS)
-        answers = await gather_hosts(everywhere, agents_on, LIST_TIMEOUT_S)
+        # One host waits as long as before there were several: there is nothing else to list.
+        answers = await gather_hosts(everywhere, agents_on, LIST_TIMEOUT_S if len(everywhere) > 1 else None)
         if len(everywhere) == 1:
             (host,), (agents,) = everywhere, answers
             if isinstance(agents, BaseException):

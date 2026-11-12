@@ -11,7 +11,7 @@
 # `sudo mcp-gateway bridges add <url>`, which this script installs and offers to run.
 # Don't put tokens on the command line (shell history, process list): let the script ask,
 # or export them and pass them with sudo --preserve-env=NAME. Optional: AGENT_BRIDGE_URL
-# (an agent host to add now), PROJECTS_ROOT (only for an agent-bridge without /info: the
+# (an agent host to add now; its token is asked for, or AGENT_BRIDGE_TOKEN), PROJECTS_ROOT (only for an agent-bridge without /info: the
 # folder on the agent host that project names given to start_agent resolve against), TUNNEL_NAME
 # (claude-remote), PORT (8766), MCP_GATEWAY_OAUTH_PASSPHRASE (use this sign-in passphrase
 # instead of generating one), ROTATE_PASSPHRASE=1, MCP_GATEWAY_TOKEN (also accept this
@@ -181,10 +181,11 @@ chown root:"$SERVICE_USER" "$ENV_FILE"
 chmod 0640 "$ENV_FILE"
 
 # `sudo mcp-gateway bridges …` runs as the service user, so bridges.json stays its own.
+# AGENT_BRIDGE_TOKEN, if set, is passed on for `bridges add` without a terminal.
 cat >/usr/local/bin/mcp-gateway <<EOF
 #!/bin/sh
 # Installed by mcp-gateway/deploy/setup.sh: mcp-gateway's commands, on the service's state.
-exec sudo -u $SERVICE_USER $APP_DIR/.venv/bin/mcp-gateway --state-dir $STATE_DIR "\$@"
+exec sudo --preserve-env=AGENT_BRIDGE_TOKEN -u $SERVICE_USER $APP_DIR/.venv/bin/mcp-gateway --state-dir $STATE_DIR "\$@"
 EOF
 chmod 0755 /usr/local/bin/mcp-gateway
 
@@ -347,7 +348,9 @@ elif [[ -n $LEGACY_URL ]]; then
 fi
 if [[ ${#FAILED[@]} -eq 0 ]]; then
   if [[ -z ${AGENT_BRIDGE_URL:-} && -t 0 ]] && /usr/local/bin/mcp-gateway bridges list | grep '^No agent hosts' >/dev/null; then
-    read -rp "agent-bridge URL to add as an agent host (e.g. http://192.168.1.20:8765; empty to skip): " AGENT_BRIDGE_URL
+    # Ctrl-D skips too, rather than ending the script before its checks.
+    read -rp "agent-bridge URL to add as an agent host (e.g. http://192.168.1.20:8765; empty to skip): " AGENT_BRIDGE_URL \
+      || { AGENT_BRIDGE_URL=""; echo; }
   fi
   # On a re-run with the same AGENT_BRIDGE_URL, it is already there.
   if [[ -n ${AGENT_BRIDGE_URL:-} ]] \

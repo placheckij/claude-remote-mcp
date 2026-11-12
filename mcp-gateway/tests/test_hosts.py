@@ -178,6 +178,27 @@ def test_list_agents_names_a_host_out_of_range_and_doesnt_call_it(make, api_vers
     assert gateway.paths("old") == ["/info"]
 
 
+def test_list_agents_with_one_host_out_of_range_says_it_needs_an_update(make) -> None:
+    gateway = make(["mac"])
+    gateway.route("mac", "GET", "/info", httpx.Response(200, json=info("mac", 3)))
+    is_error, text = gateway.call("list_agents")
+    assert is_error and text.endswith("mac needs an update: its agent-bridge is newer than this gateway, so update the gateway.")
+    assert gateway.paths("mac") == ["/info"]
+
+
+def test_list_agents_with_one_host_waits_past_the_several_host_limit(make, monkeypatch: pytest.MonkeyPatch) -> None:
+    # Nothing else to list, so it waits as long as before there were several hosts.
+    monkeypatch.setattr(tools, "LIST_TIMEOUT_S", 0.1)
+
+    async def slow(request: httpx.Request) -> httpx.Response:
+        await asyncio.sleep(0.3)
+        return agents("w1:p1")
+
+    gateway = make(["mac"])
+    gateway.route("mac", "GET", "/agents", slow)
+    assert gateway.call("list_agents") == (False, "1 agent:\nw1:p1 · grafik · idle · grafik")
+
+
 def test_one_version_behind_is_still_called(make) -> None:
     # An agent-bridge from before /info is API 1, one behind this gateway's 2.
     gateway = make(["mac", "old"])
@@ -380,6 +401,9 @@ def test_the_instructions_name_the_hosts(make) -> None:
         return rpc(gateway.client, "initialize", initialize).json()["result"]["instructions"]
 
     assert instructions().endswith("Agent hosts: mac.\n")
+    Registry(gateway.state_dir / "bridges.json").remove("mac")
+    assert instructions().endswith("No agent hosts are set up yet.\n")
+    Registry(gateway.state_dir / "bridges.json").add("mac", url("mac"), TOKEN, info("mac"))
     Registry(gateway.state_dir / "bridges.json").add("linux", url("linux"), TOKEN, info("linux"))
     assert instructions().endswith("Agent hosts: mac, linux.\n")
 
@@ -434,6 +458,20 @@ def test_the_legacy_bridge_is_ignored_once_there_are_hosts(tmp_path: Path) -> No
     with legacy_gateway(tmp_path, fake):
         assert [bridge["name"] for bridge in saved(tmp_path)] == ["linux"]
     assert fake.requests == []
+
+
+def test_a_legacy_import_that_cant_be_saved_leaves_the_gateway_running(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    def full_disk(*args, **kwargs):
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(Registry, "add", full_disk)
+    fake = FakeAgentBridge({("GET", "/info"): httpx.Response(200, json=INFO)})
+    with caplog.at_level(logging.ERROR), legacy_gateway(tmp_path, fake) as client:
+        is_error, text = call_tool(client, "list_agents")
+    assert is_error and text.endswith("Add one on the gateway host with `sudo mcp-gateway bridges add <url>`.")
+    assert "Couldn't import MCP_GATEWAY_BRIDGE_URL" in caplog.text
 
 
 def test_the_legacy_bridge_stays_removed(tmp_path: Path) -> None:
