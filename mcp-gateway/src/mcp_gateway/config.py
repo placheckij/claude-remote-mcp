@@ -3,7 +3,8 @@ directory (the environment wins)."""
 
 from pathlib import Path
 
-from pydantic import Field, ValidationError, model_validator
+import httpx
+from pydantic import Field, ValidationError, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 ENV_FILE = ".env"
@@ -37,6 +38,25 @@ class Settings(BaseSettings):
     # given to start_agent resolve against this folder on the agent host, e.g.
     # /home/me/projects. Without it such a host takes absolute paths only.
     projects_root: str | None = None
+
+    @field_validator("bridge_url")
+    @classmethod
+    def _bridge_url_parses(cls, value: str | None) -> str | None:
+        # Checked here, so a typo stops startup with this line rather than at the import.
+        try:
+            url = httpx.URL(value) if value is not None else None
+        except httpx.InvalidURL:
+            url = None
+        if value is not None and (url is None or url.scheme not in ("http", "https") or not url.host):
+            raise ValueError("must be the agent-bridge's address, like http://192.168.1.20:8765")
+        return value
+
+    @field_validator("bridge_token")
+    @classmethod
+    def _bridge_token_fits_a_header(cls, value: str | None) -> str | None:
+        if value is not None and not (value.isascii() and value.isprintable()):
+            raise ValueError("must be printable ASCII, as it goes in an HTTP header")
+        return value
 
     @model_validator(mode="after")
     def _bridge_url_and_token_together(self) -> "Settings":
