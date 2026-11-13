@@ -19,7 +19,7 @@ dev = [
 # Root runs only: each member keeps its own config for `pytest <member>`. Both members have
 # a tests/test_config.py, which clash under the default import mode.
 [tool.pytest.ini_options]
-testpaths = ["agent-bridge/tests", "mcp-gateway/tests"]
+testpaths = ["agent-bridge/tests", "mcp-gateway/tests", "tests"]
 addopts = ["--import-mode=importlib"]
 
 [tool.uv]
