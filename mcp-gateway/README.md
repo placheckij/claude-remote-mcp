@@ -412,10 +412,12 @@ reverse proxy:
    added by hand):
    ```sh
    uv run --frozen --no-dev --package mcp-gateway \
-     uvicorn mcp_gateway.server:main --factory --host 0.0.0.0 --port 8766 --no-server-header
+     uvicorn mcp_gateway.server:main --factory --host 0.0.0.0 --port 8766 --no-server-header --no-proxy-headers
    ```
    Keep it running with your system's service manager (systemd, launchd, NSSM, …), as
    [one process](#one-process): no `--workers`. On Windows nothing stops a second one.
+   Keep `--no-proxy-headers`: without it uvicorn takes the caller from the proxy's
+   `X-Forwarded-For`, and the gateway answers 404 to whatever doesn't come from 127.0.0.1.
 3. Publish over HTTPS at `MCP_GATEWAY_PUBLIC_HOST` only `/mcp` and the OAuth paths:
    `/authorize`, `/login`, `/token`, `/register`, `/revoke`,
    `/.well-known/oauth-authorization-server` and

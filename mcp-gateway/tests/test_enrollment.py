@@ -269,6 +269,21 @@ def test_a_new_address_must_answer_as_the_bridge(gateway: Gateway) -> None:
     assert gateway.hosts()[0]["url"] == URL
 
 
+def test_a_bridge_now_at_another_records_address_takes_it(gateway: Gateway) -> None:
+    # E.g. two hosts that swapped addresses: the one still holding it is out of date.
+    secret = gateway.open()
+    other = "http://192.168.1.21:8765"
+    gateway.bridges[other] = httpx.Response(200, json={**INFO, "bridge_id": "2" * 32})
+    gateway.enroll(secret)
+    gateway.enroll(secret, bridge_id="2" * 32, url=other, name="linux")
+    gateway.bridges[other] = httpx.Response(200, json=INFO)
+
+    response = address(gateway, other)
+
+    assert response.status_code == 200, response.text
+    assert [(h["name"], h["url"]) for h in gateway.hosts()] == [("mac", other)]
+
+
 def test_address_updates_are_refused_without_the_token_or_off_the_lan(gateway: Gateway) -> None:
     gateway.enroll(gateway.open())
     gateway.bridges["http://192.168.1.20:9999"] = httpx.Response(200, json=INFO)

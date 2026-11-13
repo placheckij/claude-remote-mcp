@@ -215,7 +215,9 @@ WorkingDirectory=$APP_DIR
 # and wrong-passphrase counts in memory.
 # Every interface: agent-bridges on the LAN enroll here. The tunnel still connects to
 # 127.0.0.1; other callers reach only the enrollment routes, which refuse what it forwards.
-ExecStart=$APP_DIR/.venv/bin/uvicorn mcp_gateway.server:main --factory --host 0.0.0.0 --port $PORT --no-server-header
+# --no-proxy-headers: uvicorn would otherwise take the tunnel's caller from X-Forwarded-For,
+# and the gateway, seeing a caller other than 127.0.0.1, would answer 404 to everything.
+ExecStart=$APP_DIR/.venv/bin/uvicorn mcp_gateway.server:main --factory --host 0.0.0.0 --port $PORT --no-server-header --no-proxy-headers
 Restart=on-failure
 RestartSec=5
 # $STATE_DIR, the one place the service can write (ProtectSystem=strict).

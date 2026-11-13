@@ -9,6 +9,7 @@ what enrolling gives in the state file (state.py).
 import asyncio
 import contextlib
 from collections.abc import AsyncIterator
+from pathlib import Path
 
 from fastapi import Depends, FastAPI
 
@@ -22,13 +23,15 @@ from agent_bridge.routes import router
 from agent_bridge.state import State, load_or_create, state_file
 
 
-def create_app(settings: Settings, herdr: Herdr | None = None, state: State | None = None) -> FastAPI:
+def create_app(
+    settings: Settings, herdr: Herdr | None = None, state: State | None = None, state_path: Path | None = None
+) -> FastAPI:
     @contextlib.asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
         # In the background: serving never waits for the gateway, which may be down.
         report = None
         if state is not None and state.gateway is not None and settings.url is not None:
-            report = asyncio.create_task(keep_address(state, settings))
+            report = asyncio.create_task(keep_address(state, settings, state_path))
         yield
         if report is not None:
             report.cancel()
@@ -52,4 +55,5 @@ def create_app(settings: Settings, herdr: Herdr | None = None, state: State | No
 def main() -> FastAPI:
     """uvicorn factory, `uvicorn agent_bridge.app:main --factory`, as installs before
     `agent-bridge serve` run it."""
-    return create_app(Settings.from_env(), state=load_or_create(state_file()))
+    path = state_file()
+    return create_app(Settings.from_env(), state=load_or_create(path), state_path=path)
