@@ -21,6 +21,8 @@ from mcp_gateway.server import create_app
 # repeat test_server.py's.
 MCP_TOKEN = "g" * 32
 HOST = "mcp.example.com"
+# Requests come through the local cloudflared; only it reaches /mcp.
+CLOUDFLARED = ("127.0.0.1", 50000)
 SETTINGS = Settings(
     token=MCP_TOKEN, oauth_passphrase="p" * 24, state_dir=Path("/nonexistent"), public_host=HOST,
     projects_root="/home/me/projects",
@@ -90,7 +92,7 @@ class Gateway:
             self.registry.add(name, url(name), TOKEN, info(name))
         self.connected: list[str] = []
         settings = SETTINGS.model_copy(update={"state_dir": tmp_path, **settings})
-        self.client = TestClient(create_app(settings, self.connect), base_url=f"https://{HOST}")
+        self.client = TestClient(create_app(settings, self.connect), base_url=f"https://{HOST}", client=CLOUDFLARED)
 
     def connect(self, bridge_url: str, token: str) -> AgentBridge:
         self.connected.append(bridge_url)
@@ -427,7 +429,7 @@ def legacy_gateway(tmp_path: Path, fake: FakeAgentBridge) -> TestClient:
         return AgentBridge(httpx.AsyncClient(base_url=bridge_url, transport=httpx.MockTransport(fake),
                                              headers={"Authorization": f"Bearer {token}"}))
 
-    return TestClient(create_app(settings, connect), base_url=f"https://{HOST}")
+    return TestClient(create_app(settings, connect), base_url=f"https://{HOST}", client=CLOUDFLARED)
 
 
 def saved(tmp_path: Path) -> list[dict]:

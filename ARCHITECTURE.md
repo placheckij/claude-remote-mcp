@@ -102,9 +102,10 @@ agent-bridge holds no agents: after a restart it sees the same ones through herd
    sign-in produces.
 2. **Gateway to agent host:** a separate bearer token, over the LAN only. agent-bridge
    isn't reachable from the internet.
-3. **LAN to gateway:** the gateway listens on the LAN too. `/mcp` there needs the same
-   access token; enrolling needs the window's secret, and changing a host's record that
-   host's token. Enrollment refuses callers off the LAN and anything the tunnel forwards.
+3. **LAN to gateway:** the gateway listens on the LAN for enrollment only; everything
+   else answers loopback (cloudflared) only. Enrolling needs the window's secret, and
+   changing a host's record that host's token. Enrollment refuses callers off the LAN
+   and anything the tunnel forwards.
 4. **agent-bridge to agents:** allowed roots, the agent limit and the trust root bound
    what a request can start or change.
 

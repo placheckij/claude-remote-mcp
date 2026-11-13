@@ -16,6 +16,7 @@ from urllib.parse import parse_qs, urlsplit
 import httpx
 import pytest
 from mcp.shared.auth import OAuthClientInformationFull
+from starlette.requests import Request
 from starlette.testclient import TestClient
 
 from mcp_gateway.config import Settings, StartupError
@@ -27,6 +28,7 @@ from mcp_gateway.oauth import (
     MAX_TRIES_PER_SIGN_IN,
     GatewayOAuth,
     TokenStore,
+    _source,
 )
 from mcp_gateway.server import create_app
 
@@ -375,17 +377,26 @@ def test_ipv6_addresses_count_by_64(client: TestClient) -> None:
     assert code_from(sign_in(client, request_id, source="2001:db8:1:3::1"))
 
 
-def test_the_address_header_counts_only_from_the_tunnel(tmp_path: Path, clock: Clock) -> None:
+def test_the_address_header_counts_only_from_the_tunnel() -> None:
     # Without cloudflared in front, anyone could set CF-Connecting-IP to a fresh value.
+    def source(peer: str) -> str:
+        headers = [(b"cf-connecting-ip", b"203.0.113.7")]
+        return _source(Request({"type": "http", "headers": headers, "client": (peer, 50000)}))
+
+    assert source("127.0.0.1") == "203.0.113.7"
+    assert source("192.168.1.50") == "192.168.1.50"
+
+
+def test_only_the_tunnel_reaches_the_sign_in(tmp_path: Path, clock: Clock) -> None:
+    # The gateway listens on the LAN for enrollment; the rest is for cloudflared only.
     oauth = GatewayOAuth(settings(tmp_path), clock=clock)
     with TestClient(
         create_app(settings(tmp_path), oauth=oauth), base_url=f"https://{HOST}",
-        follow_redirects=False, client=("192.0.2.50", 50000),
+        follow_redirects=False, client=("192.168.1.50", 50000),
     ) as direct:
-        client_id = register(direct)["client_id"]
-        guess(direct, client_id, [f"203.0.113.{n}" for n in range(1, 11)], MAX_FAILURES)
-        request_id = login_request_id(start_sign_in(direct, client_id))
-        assert sign_in(direct, request_id, source="198.51.100.200").status_code == 429
+        assert direct.post("/register", json={}).status_code == 404
+        assert direct.get("/login").status_code == 404
+        assert direct.get("/.well-known/oauth-authorization-server").status_code == 404
 
 
 def test_a_sign_in_link_works_once_and_expires(client: TestClient, clock: Clock) -> None:

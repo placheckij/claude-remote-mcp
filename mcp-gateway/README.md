@@ -164,10 +164,10 @@ stream, so clients use POST only, as the MCP spec allows.
 6. **Optional: Cloudflare Access** with a service token in front of the hostname (see
    below).
 
-mcp-gateway listens on every interface, so agent hosts can [enroll](#enrollment). From
-the LAN, `/mcp` needs the same access token, the sign-in page counts wrong passphrases
-per LAN address, and the enrollment routes need the window's secret or a bridge's own
-token.
+mcp-gateway listens on every interface, so agent hosts can [enroll](#enrollment), but
+only the enrollment routes answer callers other than this host: `/mcp`, the sign-in and
+everything else answer `404` to all but loopback, where cloudflared (or a reverse proxy
+installed by hand) calls from.
 
 ## OAuth sign-in
 
@@ -420,8 +420,8 @@ reverse proxy:
    `/authorize`, `/login`, `/token`, `/register`, `/revoke`,
    `/.well-known/oauth-authorization-server` and
    `/.well-known/oauth-protected-resource/mcp`. Use a
-   [Cloudflare Tunnel](#cloudflare-tunnel) set up by hand, or any reverse proxy that
-   terminates TLS, with a request timeout of at least 30 s (`wait_seconds` goes up to
+   [Cloudflare Tunnel](#cloudflare-tunnel) set up by hand, or any reverse proxy on the
+   same host (mcp-gateway serves those paths to loopback only) that terminates TLS, with a request timeout of at least 30 s (`wait_seconds` goes up to
    20 s, plus up to 5 s for agent-bridge's answer).
    Don't publish `/healthz` or anything else. mcp-gateway needs a writable
    `MCP_GATEWAY_STATE_DIR`.
