@@ -1,4 +1,5 @@
-"""`mcp-gateway bridges …`: adds, lists, renames and removes agent hosts in bridges.json.
+"""`mcp-gateway bridges …` adds, lists, renames and removes agent hosts in bridges.json;
+`mcp-gateway enroll` opens a window for agent-bridges to add themselves (enrollment.py).
 
 The running gateway takes changes in before its next request. On the gateway host the
 installed wrapper runs this as the service user with the state folder set (setup.sh).
@@ -9,6 +10,7 @@ import asyncio
 import getpass
 import os
 import re
+import socket
 import sys
 from collections.abc import Callable
 from datetime import datetime
@@ -20,10 +22,13 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from mcp_gateway.bridge import AgentBridge, BridgeError
 from mcp_gateway.config import ENV_FILE
+from mcp_gateway.enrollment import PREFIX, WINDOW_S, Enrollment, is_lan
 from mcp_gateway.hosts import version_problem
 from mcp_gateway.registry import NAME_PATTERN, Registry, RegistryError
 
 EXAMPLE_URL = "http://192.168.1.20:8765"
+# Where the gateway listens (setup.sh's PORT).
+DEFAULT_PORT = 8766
 
 
 class _StateDir(BaseSettings):
@@ -43,11 +48,15 @@ def main(
     *,
     ask_token: Callable[[str], str] = getpass.getpass,
     connect: Callable[[str, str], AgentBridge] = AgentBridge.connect,
+    lan_address: Callable[[], str | None] = lambda: _lan_address(),
 ) -> int:
     args = _parser().parse_args(argv)
     try:
         state_dir = _state_dir(args.state_dir)
         _become_owner_of(state_dir)
+        if args.group == "enroll":
+            _enroll(Enrollment(state_dir / "enrollment.json"), args.address or lan_address(), args.port)
+            return 0
         registry = Registry(state_dir / "bridges.json")
         if args.command == "add":
             _add(registry, args.url, args.name, ask_token, connect)
@@ -72,6 +81,11 @@ def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="mcp-gateway", description="Manage the gateway's agent hosts.")
     parser.add_argument("--state-dir", type=Path, help="default: MCP_GATEWAY_STATE_DIR, also from .env")
     groups = parser.add_subparsers(dest="group", required=True)
+    enroll = groups.add_parser(
+        "enroll", help=f"let agent-bridges add themselves for {WINDOW_S // 60} minutes; prints the string they need"
+    )
+    enroll.add_argument("--address", help="this host's address on the LAN; default: the one the default route uses")
+    enroll.add_argument("--port", type=int, default=DEFAULT_PORT, help=f"the gateway's port (default {DEFAULT_PORT})")
     bridges = groups.add_parser("bridges", help="the agent-bridges this gateway calls").add_subparsers(
         dest="command", required=True
     )
@@ -111,6 +125,29 @@ def _become_owner_of(state_dir: Path) -> None:
     os.setgroups([])
     os.setgid(owner.st_gid)
     os.setuid(owner.st_uid)
+
+
+def _enroll(enrollment: Enrollment, address: str | None, port: int) -> None:
+    if address is None:
+        raise _Refused("Couldn't tell this host's LAN address; give it with --address.")
+    if not is_lan(address):
+        raise _Refused(f"{address} isn't a private, loopback or link-local IP address; give one with --address.")
+    secret, expires_at = enrollment.open()
+    host = f"[{address}]" if ":" in address else address
+    until = datetime.fromtimestamp(expires_at).strftime("%H:%M")
+    print(f"Agent hosts can enroll until {until}, as many as you like. On each one, run:")
+    print(f"  agent-bridge enroll '{PREFIX}@{host}:{port}#{secret}'")
+
+
+def _lan_address() -> str | None:
+    """The address of the interface the default route goes through."""
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as probe:
+        try:
+            # Picks the route only: a UDP socket sends nothing until written to.
+            probe.connect(("192.0.2.1", 9))
+        except OSError:
+            return None
+        return probe.getsockname()[0]
 
 
 def _add(
