@@ -3,13 +3,11 @@ agent-bridge, each with its own token.
 
 `mcp-gateway bridges` (cli.py) changes the file while the gateway runs. So every change
 takes bridges.lock and starts from the file as it is on disk, and the gateway reloads the
-file when it sees it changed (reload()).
+file when it sees it changed (reload()). Enrolled bridges (enrollment.py) change their own
+records by their bridge_id.
 """
 
-import contextlib
-import json
 import logging
-import os
 import re
 import time
 import uuid
@@ -20,15 +18,9 @@ from typing import Annotated
 import httpx
 from pydantic import AfterValidator, BaseModel, ConfigDict, ValidationError, model_validator
 
-try:
-    import fcntl
-except ImportError:  # Windows: no lock, as for oauth.lock.
-    fcntl = None
+from mcp_gateway.files import locked, read_bytes, write_json
 
 log = logging.getLogger(__name__)
-
-# Nothing here follows a link put in place of the lock or the file.
-_NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
 
 # The host part of an agent id ("mac/w1:p1"): short, speakable and without "/" or ":".
 NAME_PATTERN = r"[a-z][a-z0-9-]{0,31}"
@@ -39,6 +31,14 @@ SEEN_WRITE_S = 3600
 
 class RegistryError(Exception):
     """A change the registry refuses, or a file it can't read; the message says why."""
+
+
+class NameTaken(RegistryError):
+    pass
+
+
+class UnknownBridge(RegistryError):
+    pass
 
 
 def check_url(value: str) -> str:
@@ -138,28 +138,79 @@ class Registry:
         return True
 
     def add(self, name: str, url: str, token: str, info: dict | None) -> Bridge:
+        bridge = self._new(uuid.uuid4().hex, name, url, token, info)
+
+        def add(bridges: list[Bridge]) -> list[Bridge]:
+            _check_free(bridges, name)
+            for other in bridges:
+                if other.url == bridge.url:
+                    raise RegistryError(f"{bridge.url} is already added as {other.name}.")
+            return [*bridges, bridge]
+
+        self._change(add)
+        return bridge
+
+    def enroll(self, bridge_id: str, name: str, url: str, token: str, info: dict) -> Bridge:
+        """Adds a bridge that enrolled itself, or replaces its record if it enrolled before.
+        Its /info has just answered at `url` as this bridge, so another record there is
+        one left from before, e.g. a reinstall or a `bridges add`, and is dropped."""
+        bridge = self._new(bridge_id, name, url, token, info)
+
+        def enroll(bridges: list[Bridge]) -> list[Bridge]:
+            stale = [b for b in bridges if b.bridge_id != bridge_id and b.url == bridge.url]
+            others = [b for b in bridges if b.bridge_id != bridge_id and b not in stale]
+            if any(other.name == name for other in others):
+                raise NameTaken(f"There is already a host named {name}.")
+            for record in stale:
+                log.warning("Dropping %s: %s now answers as the agent host enrolling.", record.name, record.url)
+            # In its old place if it had one, so `bridges list` keeps its order.
+            kept = [bridge if b.bridge_id == bridge_id else b for b in bridges if b not in stale]
+            return kept if bridge in kept else [*kept, bridge]
+
+        self._change(enroll)
+        return bridge
+
+    def move(self, bridge_id: str, url: str) -> Bridge:
+        """Gives an enrolled bridge a new address."""
         url = url.rstrip("/")
+
+        def move(bridges: list[Bridge]) -> list[Bridge]:
+            current = _find_id(bridges, bridge_id)
+            for other in bridges:
+                if other.bridge_id != bridge_id and other.url == url:
+                    raise RegistryError(f"{url} is already the address of {other.name}.")
+            moved = current.model_copy(update={"url": url})
+            return [moved if b.bridge_id == bridge_id else b for b in bridges]
+
+        self._change(move)
+        return _find_id(self.bridges, bridge_id)
+
+    def forget(self, bridge_id: str) -> Bridge:
+        """Removes a bridge by its id, as it does itself when uninstalled."""
+        found: list[Bridge] = []
+
+        def forget(bridges: list[Bridge]) -> list[Bridge]:
+            found.append(_find_id(bridges, bridge_id))
+            return [b for b in bridges if b.bridge_id != bridge_id]
+
+        self._change(forget)
+        return found[0]
+
+    def find_id(self, bridge_id: str) -> Bridge | None:
+        return next((b for b in self.bridges if b.bridge_id == bridge_id), None)
+
+    def _new(self, bridge_id: str, name: str, url: str, token: str, info: dict | None) -> Bridge:
         _check_name(name)
         now = int(self.clock())
         try:
-            bridge = Bridge(
-                bridge_id=uuid.uuid4().hex, name=name, url=url, token=token, info=info,
+            return Bridge(
+                bridge_id=bridge_id, name=name, url=url.rstrip("/"), token=token, info=info,
                 enrolled_at=now, last_seen=now if info is not None else None,
             )
         except ValidationError as error:
             # Without the input: it may be the token.
             field, problem = error.errors()[0]["loc"][0], error.errors()[0]["msg"].removeprefix("Value error, ")
             raise RegistryError(f"The {field} {problem}.") from None
-
-        def add(bridges: list[Bridge]) -> list[Bridge]:
-            _check_free(bridges, name)
-            for other in bridges:
-                if other.url == url:
-                    raise RegistryError(f"{url} is already added as {other.name}.")
-            return [*bridges, bridge]
-
-        self._change(add)
-        return bridge
 
     def rename(self, name: str, new_name: str) -> None:
         _check_name(new_name)
@@ -203,26 +254,19 @@ class Registry:
 
     def _change(self, change: Callable[[list[Bridge]], list[Bridge]]) -> None:
         """Applies `change` to the file as it is now, under the lock, then to memory."""
-        self.path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-        lock = os.open(self._lock_path, os.O_RDWR | os.O_CREAT | _NOFOLLOW, 0o600)
-        try:
-            if fcntl is not None:
-                fcntl.flock(lock, fcntl.LOCK_EX)
+        with locked(self._lock_path):
             bridges, _ = self._read()
             bridges = change(bridges)
-            self._write(bridges)
+            write_json(self.path, _File(bridges=bridges).model_dump(mode="json"))
             self.bridges, self._stamp = bridges, self._file_stamp()
             self.generation += 1
-        finally:
-            os.close(lock)
 
     def _read(self) -> tuple[list[Bridge], tuple | None]:
         stamp = self._file_stamp()
         if stamp is None:
             return [], None
         try:
-            with os.fdopen(os.open(self.path, os.O_RDONLY | _NOFOLLOW), "rb") as file:
-                text = file.read()
+            text = read_bytes(self.path)
         except OSError as error:
             raise RegistryError(f"Can't read {self.path} ({error.strerror}).") from None
         try:
@@ -235,23 +279,6 @@ class Registry:
             )
             raise RegistryError(f"Can't read the agent hosts in {self.path} ({problem}).") from None
         return state.bridges, stamp
-
-    def _write(self, bridges: list[Bridge]) -> None:
-        data = _File(bridges=bridges).model_dump(mode="json")
-        # As oauth.json: written beside it and renamed over it, so a crash never leaves half
-        # a file, and a leftover temporary file is removed first so its old mode can't stay.
-        temporary = self.path.with_name(f"{self.path.name}.tmp")
-        temporary.unlink(missing_ok=True)
-        try:
-            with os.fdopen(os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "w") as file:
-                json.dump(data, file, indent=2)
-                file.flush()
-                os.fsync(file.fileno())
-            os.replace(temporary, self.path)
-        except BaseException:
-            with contextlib.suppress(OSError):
-                temporary.unlink()
-            raise
 
     def _file_stamp(self) -> tuple | None:
         try:
@@ -274,6 +301,13 @@ def _check_name(name: str) -> None:
 def _check_free(bridges: list[Bridge], name: str) -> None:
     if any(bridge.name == name for bridge in bridges):
         raise RegistryError(f"There is already a host named {name}.")
+
+
+def _find_id(bridges: list[Bridge], bridge_id: str) -> Bridge:
+    for bridge in bridges:
+        if bridge.bridge_id == bridge_id:
+            return bridge
+    raise UnknownBridge("This agent host isn't enrolled.")
 
 
 def _find(bridges: list[Bridge], name: str) -> Bridge:
