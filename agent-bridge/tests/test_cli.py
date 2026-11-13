@@ -225,6 +225,18 @@ def test_unenroll_forgets_a_gateway_that_forgot_this_host(capsys, settings: Path
     assert load(state_path()).gateway is None
 
 
+def test_unenroll_keeps_the_gateway_on_any_other_404(capsys, settings: Path, fake: FakeGateway) -> None:
+    # The gateway refusing a caller off the LAN, or another server now at its address.
+    state = enrolled()
+    fake.answers[("DELETE", "bridges")] = httpx.Response(404, json={"error": "not found"})
+
+    code, _, err = run(capsys, "unenroll")
+
+    assert code == 0
+    assert "sudo mcp-gateway bridges remove mac" in err
+    assert load(state_path()) == state
+
+
 def test_unenroll_without_a_gateway(capsys) -> None:
     code, out, _ = run(capsys, "unenroll")
 

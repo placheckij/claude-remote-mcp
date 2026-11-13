@@ -2,6 +2,7 @@
 
 import json
 import logging
+import socket
 from pathlib import Path
 
 import httpx
@@ -372,8 +373,11 @@ def test_an_unreadable_file_starts_over_once(tmp_path: Path) -> None:
     assert json.loads((tmp_path / "enrollment.json").read_text())["secret_sha256"] is None
 
 
-def run_cli(tmp_path: Path, capsys: pytest.CaptureFixture, *args: str, lan: str | None = "192.168.1.10"):
-    code = cli.main(["--state-dir", str(tmp_path), "enroll", *args], lan_address=lambda: lan)
+def run_cli(
+    tmp_path: Path, capsys: pytest.CaptureFixture, *args: str, lan: str | None = "192.168.1.10", listening: bool = True
+):
+    code = cli.main(["--state-dir", str(tmp_path), "enroll", *args], lan_address=lambda: lan,
+                    reachable=lambda address, port: listening)
     out, err = capsys.readouterr()
     return code, out, err
 
@@ -403,3 +407,20 @@ def test_cli_refuses_without_a_lan_address(tmp_path: Path, capsys: pytest.Captur
     code, _, err = run_cli(tmp_path, capsys, "--address", "8.8.8.8")
     assert code == 1
     assert "8.8.8.8 isn't a private" in err
+
+
+def test_cli_refuses_an_address_the_gateway_doesnt_answer_on(tmp_path: Path, capsys: pytest.CaptureFixture) -> None:
+    # E.g. IPv6 while it listens on 0.0.0.0.
+    code, out, err = run_cli(tmp_path, capsys, "--address", "fd00::5", listening=False)
+
+    assert (code, out) == (1, "")
+    assert "Nothing answers at [fd00::5]:8766" in err
+
+
+def test_reachable_tries_a_connection() -> None:
+    with socket.socket() as server:
+        server.bind(("127.0.0.1", 0))
+        server.listen()
+        port = server.getsockname()[1]
+        assert cli._reachable("127.0.0.1", port)
+    assert not cli._reachable("127.0.0.1", port)

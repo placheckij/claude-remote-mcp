@@ -127,8 +127,9 @@ def _unenroll() -> int:
         print(f"Couldn't leave the gateway: {error}.\n{by_hand}", file=sys.stderr)
         return OK
     except GatewayError as error:
-        # Already removed there (404), or it has another token for this host (401).
-        if error.status != 404:
+        # Already removed there, or it has another token for this host (401). Only the
+        # gateway's own code says removed: its other 404s, or another server's, don't.
+        if error.code != "not_enrolled":
             print(f"The gateway refused: {error}\n{by_hand}", file=sys.stderr)
             return OK
     save(path, state.model_copy(update={"gateway": None}))

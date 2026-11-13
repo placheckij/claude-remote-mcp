@@ -590,13 +590,15 @@ def _source(request: Request) -> str:
 
     Behind the tunnel the peer is the local cloudflared, and the address is the one
     Cloudflare saw, from CF-Connecting-IP (Cloudflare sets it; a client can't forge it
-    through the tunnel). From any other peer the header is ignored. IPv6 addresses count
-    by /64, the block one host usually has to itself.
+    through the tunnel). Behind another reverse proxy on this host it is the last
+    X-Forwarded-For entry, the one the proxy added. From any other peer the headers are
+    ignored. IPv6 addresses count by /64, the block one host usually has to itself.
     """
     peer = request.client.host if request.client else "?"
     address = peer
     if _is_loopback(peer):
-        address = request.headers.get("cf-connecting-ip", peer)
+        forwarded = request.headers.get("x-forwarded-for", "").rsplit(",", 1)[-1].strip()
+        address = request.headers.get("cf-connecting-ip") or forwarded or peer
     try:
         ip = ipaddress.ip_address(address)
     except ValueError:
