@@ -18,6 +18,9 @@ steps to reproduce, and what they gain. You'll get a reply within a week. Fixes 
 - mcp-gateway: the OAuth sign-in (registration, the passphrase page, codes, tokens and
   their storage), the token check, the Host and Origin checks, and anything that lets a
   tool call do more than its description says
+- enrollment: the window's secret and its limits, the checks on who may call the
+  enrollment routes (LAN only, nothing the tunnel forwarded), and on which addresses the
+  gateway will call (LAN IP addresses that answer as the bridge enrolling)
 - agent-bridge: its token check, the allowed-roots and agent-count limits, and folder
   trust (it must never write the default Claude config, or trust a folder outside the
   trust root)
@@ -31,3 +34,6 @@ steps to reproduce, and what they gain. You'll get a reply within a week. Fixes 
   to their maintainers
 - Attacks that need the sign-in passphrase, a valid OAuth or static token, agent-bridge's
   token, or a shell on either host
+- Attacks from the LAN that need an open enrollment window's secret, or that read the
+  gateway's plain-HTTP traffic to agent-bridge (it carries the bridge's token; TLS on the
+  LAN is not provided)
