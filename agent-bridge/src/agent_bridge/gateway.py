@@ -109,7 +109,10 @@ async def _request(method: str, base: str, path: str, *, token: str | None = Non
     except httpx.TransportError as error:
         raise GatewayUnreachable(f"no answer from the gateway at {base} ({type(error).__name__})") from None
     if response.is_success:
-        return response.json() if response.content else None
+        try:
+            return response.json() if response.content else None
+        except ValueError:
+            raise GatewayError(f"{base} answered, but not as an mcp-gateway", response.status_code) from None
     try:
         problem = response.json()["error"]
         message, code = str(problem["message"]), str(problem["code"])

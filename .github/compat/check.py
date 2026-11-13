@@ -121,6 +121,9 @@ class Run:
             "AGENT_BRIDGE_HERDR_BIN": str(herdr),
             "FAKE_HERDR_STATE": str(self.tmp / "herdr.json"),
             "FAKE_HERDR_LOG": str(self.herdr_log),
+            # Not the user's own files at the platform's default paths (older bridges ignore these).
+            "AGENT_BRIDGE_ENV_FILE": str(self.tmp / "bridge-env"),
+            "AGENT_BRIDGE_STATE_FILE": str(self.tmp / "bridge-state.json"),
         }
         process = self.serve("bridge", self.bridge_dir, "agent_bridge.app:main", self.bridge_url, env)
         self.wait_until_up("bridge", process, f"{self.bridge_url}/info", BRIDGE_TOKEN)
