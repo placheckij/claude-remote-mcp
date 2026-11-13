@@ -3,9 +3,9 @@
 `mcp-gateway enroll` (cli.py) opens a window: a secret, kept as a hash in enrollment.json,
 good for 30 minutes and any number of bridges. A bridge sends it to POST /enroll with its
 id, address, token and name; the gateway asks that address's /info whether it is that
-bridge, and adds it. The bridge reports a new address on every start (PUT
-/bridges/{id}/address) and removes itself on uninstall (DELETE /bridges/{id}), both with
-its own token.
+bridge, and adds it. The bridge reports its address on every start (PUT
+/bridges/{id}/address; a new one is checked the same way) and removes itself on uninstall
+(DELETE /bridges/{id}), both with its own token.
 
 The routes share the listener with /mcp but serve the LAN only: the tunnel doesn't
 publish them, and they answer 404 to anything it forwarded or that comes from elsewhere.
@@ -154,18 +154,7 @@ def enrollment_routes(
         url = lan_url(body.url)
         _check(check_name_format, body.name, "name")
         _check(check_token, body.token, "token")
-        bridge = connect(url, body.token)
-        try:
-            info = await bridge.info()
-        except BridgeError as error:
-            raise Refused(502, "bridge_unreachable", f"The gateway couldn't ask {url} about itself: {error}") from None
-        finally:
-            await bridge.aclose()
-        if info is None or info.get("bridge_id") != body.bridge_id:
-            raise Refused(
-                422, "bridge_mismatch",
-                f"{url} isn't this agent-bridge: is it running, with these settings, at that address?",
-            )
+        info = await _info_of(body.bridge_id, url, body.token)
         try:
             record = registry.enroll(body.bridge_id, body.name, url, body.token, info)
         except NameTaken as error:
@@ -180,10 +169,31 @@ def enrollment_routes(
         bridge_id = _authorized(request)
         url = lan_url((await _body(request, _AddressRequest)).url)
         before = registry.find_id(bridge_id)
+        if before is not None and before.url != url:
+            # Saved only once it answers as this bridge, so no other address is ever called.
+            await _info_of(bridge_id, url, before.token)
         record = registry.move(bridge_id, url)
         if before is not None and before.url != record.url:
             log.info("%s moved from %s to %s.", record.name, before.url, record.url)
         return _joined(record.name)
+
+    async def _info_of(bridge_id: str, url: str, token: str) -> dict:
+        """The bridge's /info at `url`, refused unless it answers as `bridge_id`. Refusals
+        don't say what it answered: `url` may be something other than a bridge."""
+        bridge = connect(url, token)
+        try:
+            info = await bridge.info()
+        except BridgeError as error:
+            reason = "no answer from an agent-bridge" if error.status is None else f"HTTP {error.status}"
+            raise Refused(502, "bridge_unreachable", f"The gateway couldn't ask {url} about itself ({reason}).") from None
+        finally:
+            await bridge.aclose()
+        if info is None or info.get("bridge_id") != bridge_id:
+            raise Refused(
+                422, "bridge_mismatch",
+                f"{url} isn't this agent-bridge: is it running, with these settings, at that address?",
+            )
+        return info
 
     async def unenroll(request: Request) -> Response:
         record = registry.forget(_authorized(request))

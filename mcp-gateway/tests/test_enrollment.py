@@ -234,16 +234,36 @@ def address(gateway: Gateway, url: str, token: str = TOKEN, bridge_id: str = BRI
 
 def test_a_bridge_updates_its_address_with_its_token(gateway: Gateway) -> None:
     gateway.enroll(gateway.open())
+    gateway.bridges["http://192.168.1.20:9999"] = httpx.Response(200, json=INFO)
 
     response = address(gateway, "http://192.168.1.20:9999")
 
     assert response.status_code == 200, response.text
     assert response.json()["name"] == "mac"
     assert gateway.hosts()[0]["url"] == "http://192.168.1.20:9999"
+    # The same address again needs no check.
+    del gateway.bridges["http://192.168.1.20:9999"]
+    assert address(gateway, "http://192.168.1.20:9999").status_code == 200
+
+
+def test_a_new_address_must_answer_as_the_bridge(gateway: Gateway) -> None:
+    gateway.enroll(gateway.open())
+    gateway.bridges["http://127.0.0.1:2000"] = httpx.Response(500, json={"detail": "private metrics"})
+    gateway.bridges["http://127.0.0.1:2001"] = httpx.Response(200, json={**INFO, "bridge_id": "9" * 32})
+
+    refused = address(gateway, "http://127.0.0.1:2000")
+    other = address(gateway, "http://127.0.0.1:2001")
+    down = address(gateway, "http://127.0.0.1:2002")
+
+    assert (refused.status_code, other.status_code, down.status_code) == (502, 422, 502)
+    # Nothing of what the address answered comes back.
+    assert "private metrics" not in refused.text
+    assert gateway.hosts()[0]["url"] == URL
 
 
 def test_address_updates_are_refused_without_the_token_or_off_the_lan(gateway: Gateway) -> None:
     gateway.enroll(gateway.open())
+    gateway.bridges["http://192.168.1.20:9999"] = httpx.Response(200, json=INFO)
 
     assert address(gateway, "http://192.168.1.20:9999", token="x" * 32).status_code == 401
     assert address(gateway, "http://192.168.1.20:9999", bridge_id="9" * 32).status_code == 404
