@@ -221,10 +221,18 @@ def test_refuses_a_name_another_bridge_has(gateway: Gateway) -> None:
     assert [host["url"] for host in gateway.hosts()] == ["http://192.168.1.50:8765"]
 
 
-def test_refuses_a_name_that_cant_name_a_host(gateway: Gateway) -> None:
-    response = gateway.enroll(gateway.open(), name="Jakubs MacBook")
+@pytest.mark.parametrize(("field", "value"), [("name", "Studio Mac"), ("bridge_id", "../../x"), ("token", "short")])
+def test_refuses_fields_that_wont_do(gateway: Gateway, field: str, value: str) -> None:
+    response = gateway.enroll(gateway.open(), **{field: value})
 
     assert (response.status_code, response.json()["error"]["code"]) == (422, "invalid_request")
+    assert gateway.asked == []
+
+
+def test_refuses_an_oversized_request(gateway: Gateway) -> None:
+    response = gateway.enroll(gateway.open(), name="x" * 20_000)
+
+    assert response.status_code == 413
 
 
 def address(gateway: Gateway, url: str, token: str = TOKEN, bridge_id: str = BRIDGE_ID, peer=LAN) -> httpx.Response:
@@ -283,10 +291,15 @@ def test_a_bridge_removes_itself_with_its_token(gateway: Gateway) -> None:
     assert gateway.hosts() == []
 
 
-def test_other_paths_still_reach_the_gateway(gateway: Gateway) -> None:
-    client = gateway.client()
-    assert client.get("/healthz").text == "ok"
-    assert client.post("/mcp").status_code == 401
+def test_other_paths_are_for_cloudflared_on_this_host_only(gateway: Gateway) -> None:
+    local = gateway.client(("127.0.0.1", 50000))
+    assert local.get("/healthz").text == "ok"
+    assert local.post("/mcp").status_code == 401
+
+    lan = gateway.client()
+    assert lan.get("/healthz").status_code == 404
+    assert lan.post("/mcp").status_code == 404
+    assert lan.get("/.well-known/oauth-protected-resource/mcp").status_code == 404
 
 
 @pytest.mark.parametrize(
@@ -307,6 +320,16 @@ def test_the_window_keeps_the_gateway_id(tmp_path: Path) -> None:
 
     assert Enrollment(tmp_path / "enrollment.json").gateway_id() == gateway_id
     assert oct((tmp_path / "enrollment.json").stat().st_mode & 0o777) == "0o600"
+
+
+def test_an_unreadable_file_starts_over_once(tmp_path: Path) -> None:
+    (tmp_path / "enrollment.json").write_text("{broken")
+    enrollment = Enrollment(tmp_path / "enrollment.json")
+
+    gateway_id = enrollment.gateway_id()
+
+    assert enrollment.gateway_id() == gateway_id
+    assert json.loads((tmp_path / "enrollment.json").read_text())["secret_sha256"] is None
 
 
 def run_cli(tmp_path: Path, capsys: pytest.CaptureFixture, *args: str, lan: str | None = "192.168.1.10"):

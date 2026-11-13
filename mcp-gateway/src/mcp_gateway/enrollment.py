@@ -9,6 +9,7 @@ bridge, and adds it. The bridge reports its address on every start (PUT
 
 The routes share the listener with /mcp but serve the LAN only: the tunnel doesn't
 publish them, and they answer 404 to anything it forwarded or that comes from elsewhere.
+Everything else answers 404 to all but loopback, where cloudflared calls from.
 """
 
 import hashlib
@@ -22,7 +23,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 import httpx
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel, Field, ValidationError
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
 from starlette.routing import Route, Router
@@ -43,6 +44,8 @@ SECRET_BYTES = 12  # 96 bits
 # Wrong secrets in one window: from one address, then from all, which closes it.
 MAX_FAILURES_PER_ADDRESS = 3
 MAX_FAILURES = 10
+# An enrollment is a few hundred bytes.
+MAX_BODY_BYTES = 16 * 1024
 # Cloudflare adds both to every request the tunnel forwards.
 TUNNEL_HEADERS = (b"cf-connecting-ip", b"cf-ray")
 _PRIVATE = tuple(ipaddress.ip_network(n) for n in ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "fc00::/7"))
@@ -76,8 +79,8 @@ class Enrollment:
 
     def gateway_id(self) -> str:
         with locked(self._lock_path):
-            window = self._read()
-            if not self.path.exists():
+            window, saved = self._read()
+            if not saved:
                 write_json(self.path, window.model_dump())
             return window.gateway_id
 
@@ -85,7 +88,7 @@ class Enrollment:
         """A new window, closing any open one; its secret and when it ends."""
         secret = secrets.token_hex(SECRET_BYTES)
         with locked(self._lock_path):
-            window = self._read()
+            window, _ = self._read()
             window.secret_sha256 = _hash(secret)
             window.expires_at = int(self.clock()) + WINDOW_S
             window.failures = 0
@@ -95,7 +98,7 @@ class Enrollment:
     def check(self, secret: str, address: str) -> None:
         """Refuses a secret that isn't the open window's, counting it against `address`."""
         with locked(self._lock_path):
-            window = self._read()
+            window, _ = self._read()
             if window.secret_sha256 is None or self.clock() >= window.expires_at:
                 raise Refused(
                     401, "enrollment_closed",
@@ -115,23 +118,26 @@ class Enrollment:
         log.warning("Enrollment refused for %s: wrong string.", address)
         raise Refused(401, "wrong_secret", "That isn't the gateway's current enrollment string.")
 
-    def _read(self) -> _Window:
+    def _read(self) -> tuple[_Window, bool]:
+        """The file, and whether it was there to read."""
         try:
-            return _Window.model_validate_json(read_bytes(self.path))
+            return _Window.model_validate_json(read_bytes(self.path)), True
         except FileNotFoundError:
-            return _Window(gateway_id=uuid.uuid4().hex)
+            return _Window(gateway_id=uuid.uuid4().hex), False
         except ValidationError:
             # Unreadable: start over with no window open, as if it had expired. The gateway
             # gets a new id, which bridges only show.
             log.error("Can't read %s; starting it over.", self.path)
-            return _Window(gateway_id=uuid.uuid4().hex)
+            return _Window(gateway_id=uuid.uuid4().hex), False
 
 
 class _EnrollRequest(BaseModel):
     secret: str
-    bridge_id: str
+    # As agent-bridge makes them; it also goes in the paths below.
+    bridge_id: str = Field(pattern=r"^[0-9a-f]{32}$")
     url: str
-    token: str
+    # agent-bridge takes no shorter one.
+    token: str = Field(min_length=32)
     name: str
 
 
@@ -245,6 +251,10 @@ def enrollment_routes(
         # Only these paths: a Router would also take the lifespan events, which `app` needs.
         if scope["type"] == "http" and (scope["path"] == "/enroll" or scope["path"].startswith("/bridges/")):
             await router(scope, receive, send)
+        elif scope["type"] != "lifespan" and not _is_loopback(scope):
+            # The rest is for the tunnel, whose cloudflared calls from this host: from the
+            # LAN it would get past the tunnel's path rules.
+            await JSONResponse({"error": "not found"}, status_code=404)(scope, receive, send)
         else:
             await app(scope, receive, send)
 
@@ -288,13 +298,29 @@ def _outside(request: Request) -> str | None:
     return None
 
 
+def _is_loopback(scope: Scope) -> bool:
+    client = scope.get("client")
+    try:
+        ip = ipaddress.ip_address(client[0]) if client else None
+    except ValueError:
+        return False
+    if ip is not None and ip.version == 6 and ip.ipv4_mapped:
+        ip = ip.ipv4_mapped
+    return ip is not None and ip.is_loopback
+
+
 def _peer(request: Request) -> str:
     return request.client.host if request.client else "?"
 
 
 async def _body(request: Request, model: type[BaseModel]):
+    body = b""
+    async for chunk in request.stream():
+        body += chunk
+        if len(body) > MAX_BODY_BYTES:
+            raise Refused(413, "too_large", "The request is too large.")
     try:
-        return model.model_validate_json(await request.body())
+        return model.model_validate_json(body)
     except ValidationError as error:
         # Without the input: it may hold the secret or the token.
         problems = error.errors(include_input=False, include_url=False)

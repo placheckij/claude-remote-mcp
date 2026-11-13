@@ -214,7 +214,7 @@ WorkingDirectory=$APP_DIR
 # One process (no --workers): it reads oauth.json only at startup and keeps sign-ins in progress
 # and wrong-passphrase counts in memory.
 # Every interface: agent-bridges on the LAN enroll here. The tunnel still connects to
-# 127.0.0.1, and the enrollment routes refuse anything it forwards.
+# 127.0.0.1; other callers reach only the enrollment routes, which refuse what it forwards.
 ExecStart=$APP_DIR/.venv/bin/uvicorn mcp_gateway.server:main --factory --host 0.0.0.0 --port $PORT --no-server-header
 Restart=on-failure
 RestartSec=5
@@ -321,10 +321,11 @@ EOF
 # --- Start and check -----------------------------------------------------------------
 
 port_holder() { # the PID listening on TCP $PORT, or nothing
+  # || true: lsof exits 1 when nothing listens, which pipefail would make fatal.
   if command -v ss >/dev/null; then
-    ss -Hltnp "sport = :$PORT" | sed -n 's/.*pid=\([0-9]*\).*/\1/p' | head -n 1
+    ss -Hltnp "sport = :$PORT" | sed -n 's/.*pid=\([0-9]*\).*/\1/p' | head -n 1 || true
   elif command -v lsof >/dev/null; then
-    lsof -nP -iTCP:"$PORT" -sTCP:LISTEN -t | head -n 1
+    lsof -nP -iTCP:"$PORT" -sTCP:LISTEN -t | head -n 1 || true
   fi
 }
 # Taken only by the gateway being updated, which the restart below replaces.
