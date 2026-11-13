@@ -209,6 +209,8 @@ def enrollment_routes(
     def _authorized(request: Request) -> str:
         """The bridge_id in the path, if the request has that bridge's token."""
         bridge_id = request.path_params["bridge_id"]
+        # A host `bridges remove`d, or added again with another token, is out at once.
+        registry.reload()
         record = registry.find_id(bridge_id)
         if record is None:
             raise Refused(404, "not_enrolled", "This agent host isn't enrolled with the gateway.")
@@ -247,13 +249,22 @@ def enrollment_routes(
         ]
     )
 
+    told = False
+
     async def routes(scope: Scope, receive: Receive, send: Send) -> None:
+        nonlocal told
         # Only these paths: a Router would also take the lifespan events, which `app` needs.
         if scope["type"] == "http" and (scope["path"] == "/enroll" or scope["path"].startswith("/bridges/")):
             await router(scope, receive, send)
         elif scope["type"] != "lifespan" and not _is_loopback(scope):
             # The rest is for the tunnel, whose cloudflared calls from this host: from the
             # LAN it would get past the tunnel's path rules.
+            if not told and _forwarded_from_outside(scope):
+                told = True
+                log.error(
+                    "Refusing what the tunnel forwards: uvicorn gave its caller as %s, from X-Forwarded-For, "
+                    "instead of 127.0.0.1. Start it with --no-proxy-headers.", scope["client"][0],
+                )
             await JSONResponse({"error": "not found"}, status_code=404)(scope, receive, send)
         else:
             await app(scope, receive, send)
@@ -296,6 +307,13 @@ def _outside(request: Request) -> str | None:
     if not is_lan(_peer(request)):
         return f"{_peer(request)} isn't on the LAN"
     return None
+
+
+def _forwarded_from_outside(scope: Scope) -> bool:
+    """A tunnel request whose caller isn't on the LAN: only uvicorn's proxy headers make
+    one, by taking the caller from X-Forwarded-For."""
+    client = scope.get("client")
+    return bool(client) and not is_lan(client[0]) and any(name in TUNNEL_HEADERS for name, _ in scope["headers"])
 
 
 def _is_loopback(scope: Scope) -> bool:

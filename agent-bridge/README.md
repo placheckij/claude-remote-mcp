@@ -283,7 +283,9 @@ Then it:
 4. checks that it answers `401` without the token and `200` with it. A `200` also means
    it reached herdr.
 
-At the end it prints the URL and token to give mcp-gateway's `setup.sh`.
+At the end it prints the URL and token. Add the host on the gateway host with
+`sudo mcp-gateway bridges add <url>`, which asks for the token: the script keeps its
+settings in the plist, which `agent-bridge enroll` doesn't read.
 
 To skip the questions, pass the answers as variables, e.g.
 `HOST=192.168.1.20 ALLOWED_ROOTS=/Users/me/projects agent-bridge/deploy/setup-macos.sh`.
