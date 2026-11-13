@@ -18,7 +18,6 @@ import pytest
 from mcp.shared.auth import OAuthClientInformationFull
 from starlette.testclient import TestClient
 
-from mcp_gateway.bridge import AgentBridge
 from mcp_gateway.config import Settings, StartupError
 from mcp_gateway.oauth import (
     ACCESS_TOKEN_TTL_S,
@@ -54,17 +53,8 @@ def settings(state_dir: Path, token: str | None = None) -> Settings:
         token=token,
         oauth_passphrase=PASSPHRASE,
         state_dir=state_dir,
-        bridge_url="http://agents.lan:8765",
-        bridge_token="b" * 32,
         public_host=HOST,
         projects_root="/home/me/projects",
-    )
-
-
-def bridge() -> AgentBridge:
-    agents = httpx.Response(200, json=[])
-    return AgentBridge(
-        httpx.AsyncClient(base_url="http://agents.lan:8765", transport=httpx.MockTransport(lambda _: agents))
     )
 
 
@@ -83,7 +73,7 @@ def make_client(tmp_path: Path, clock: Clock):
     def make(token: str | None = None) -> TestClient:
         oauth = GatewayOAuth(settings(tmp_path, token), clock=clock)
         client = TestClient(
-            create_app(settings(tmp_path, token), bridge(), oauth),
+            create_app(settings(tmp_path, token), oauth=oauth),
             base_url=f"https://{HOST}",
             follow_redirects=False,
             # Requests come through the local cloudflared.
@@ -389,7 +379,7 @@ def test_the_address_header_counts_only_from_the_tunnel(tmp_path: Path, clock: C
     # Without cloudflared in front, anyone could set CF-Connecting-IP to a fresh value.
     oauth = GatewayOAuth(settings(tmp_path), clock=clock)
     with TestClient(
-        create_app(settings(tmp_path), bridge(), oauth), base_url=f"https://{HOST}",
+        create_app(settings(tmp_path), oauth=oauth), base_url=f"https://{HOST}",
         follow_redirects=False, client=("192.0.2.50", 50000),
     ) as direct:
         client_id = register(direct)["client_id"]
@@ -847,8 +837,8 @@ import sys
 from pathlib import Path
 from mcp_gateway.config import Settings
 from mcp_gateway.oauth import GatewayOAuth
-GatewayOAuth(Settings(oauth_passphrase="p" * 16, state_dir=Path(sys.argv[1]), bridge_url="http://bridge",
-                      bridge_token="b", public_host="host", projects_root="/projects"))
+GatewayOAuth(Settings(oauth_passphrase="p" * 16, state_dir=Path(sys.argv[1]),
+                      public_host="host", projects_root="/projects"))
 print("started", flush=True)
 sys.stdin.read()
 """
@@ -902,7 +892,7 @@ def assert_state_is_free(state_dir: Path) -> None:
 
 @pytest.mark.skipif(os.name != "posix", reason="no lock without fcntl")
 def test_the_state_is_unlocked_at_shutdown(tmp_path: Path, clock: Clock) -> None:
-    with TestClient(create_app(settings(tmp_path), bridge(), GatewayOAuth(settings(tmp_path), clock=clock))):
+    with TestClient(create_app(settings(tmp_path), oauth=GatewayOAuth(settings(tmp_path), clock=clock))):
         pass
     assert_state_is_free(tmp_path)
 

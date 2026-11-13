@@ -9,17 +9,17 @@ from starlette.testclient import TestClient
 
 from mcp_gateway.bridge import AgentBridge
 from mcp_gateway.config import Settings
+from mcp_gateway.registry import Registry
 from mcp_gateway.server import LevelFormatter, create_app, main
 
 TOKEN = "g" * 32
 HOST = "mcp.example.com"
+BRIDGE_URL = "http://agents.lan:8765"
 SETTINGS = Settings(
     token=TOKEN,
     oauth_passphrase="p" * 24,
     # Replaced with a test's own folder by app(): the gateway locks it at startup.
     state_dir=Path("/nonexistent/mcp-gateway-state"),
-    bridge_url="http://agents.lan:8765",
-    bridge_token="b" * 32,
     public_host=HOST,
     projects_root="/home/me/projects",
 )
@@ -74,8 +74,10 @@ class FakeAgentBridge:
         return response(request) if callable(response) else response
 
 
-def app(bridge: AgentBridge, state_dir: Path):
-    return create_app(SETTINGS.model_copy(update={"state_dir": state_dir}), bridge)
+def app(bridge: AgentBridge, state_dir: Path, **settings):
+    """The gateway with one host, "mac", whose client is `bridge`."""
+    Registry(state_dir / "bridges.json").add("mac", BRIDGE_URL, "b" * 32, INFO)
+    return create_app(SETTINGS.model_copy(update={"state_dir": state_dir, **settings}), lambda url, token: bridge)
 
 
 @pytest.fixture
@@ -85,7 +87,7 @@ def fake() -> FakeAgentBridge:
 
 def bridge_for(fake: FakeAgentBridge) -> AgentBridge:
     return AgentBridge(
-        httpx.AsyncClient(base_url=SETTINGS.bridge_url, transport=httpx.MockTransport(fake),
+        httpx.AsyncClient(base_url=BRIDGE_URL, transport=httpx.MockTransport(fake),
                           headers={"Authorization": f"Bearer {'b' * 32}"})
     )
 
@@ -770,7 +772,7 @@ def test_under_systemd_every_line_carries_the_journal_priority() -> None:
 
 
 def test_closes_the_agent_bridge_client_on_shutdown(tmp_path: Path) -> None:
-    http = httpx.AsyncClient(base_url=SETTINGS.bridge_url, transport=httpx.MockTransport(FakeAgentBridge({})))
+    http = httpx.AsyncClient(base_url=BRIDGE_URL, transport=httpx.MockTransport(FakeAgentBridge({})))
     with TestClient(app(AgentBridge(http), tmp_path), base_url=f"https://{HOST}"):
         assert not http.is_closed
     assert http.is_closed
@@ -828,8 +830,8 @@ def test_start_agent_passes_absolute_paths_and_plain_names(
 def test_without_a_projects_root_only_absolute_paths_start(fake: FakeAgentBridge, tmp_path: Path) -> None:
     fake.routes[("GET", "/info")] = NO_INFO
     fake.routes[("POST", "/agents")] = httpx.Response(201, json={**AGENT, "id": "w9:p1"})
-    settings = SETTINGS.model_copy(update={"state_dir": tmp_path, "projects_root": None})
-    with TestClient(create_app(settings, bridge_for(fake)), base_url=f"https://{HOST}") as c:
+    gateway = app(bridge_for(fake), tmp_path, projects_root=None)
+    with TestClient(gateway, base_url=f"https://{HOST}") as c:
         is_error, text = call_tool(c, "start_agent", project="grafik")
         assert is_error and text.endswith(
             "This agent host can't look up project names; give the project as an absolute path."
@@ -860,8 +862,8 @@ def test_folders_are_named_relative_to_the_projects_root(client: TestClient, fak
 
 def test_without_a_projects_root_old_agents_show_their_folder(fake: FakeAgentBridge, tmp_path: Path) -> None:
     fake.routes[("GET", "/agents")] = httpx.Response(200, json=[OLD_AGENT])
-    settings = SETTINGS.model_copy(update={"state_dir": tmp_path, "projects_root": None})
-    with TestClient(create_app(settings, bridge_for(fake)), base_url=f"https://{HOST}") as c:
+    gateway = app(bridge_for(fake), tmp_path, projects_root=None)
+    with TestClient(gateway, base_url=f"https://{HOST}") as c:
         assert call_tool(c, "list_agents")[1].endswith("· /home/me/projects/grafik")
 
 
@@ -887,17 +889,18 @@ def test_a_sleeping_agent_host_is_reported_within_seconds(client: TestClient, fa
     fake.routes[("GET", "/agents")] = httpx.Response(200, json=[])
     call_tool(client, "send_prompt", agent_id="w1:p1", text="hi", wait_seconds=20)
     call_tool(client, "list_agents")
-    prompt_timeout, list_timeout = (request.extensions["timeout"] for request in fake.requests)
+    timeouts = {request.url.path: request.extensions["timeout"] for request in fake.requests}
+    prompt_timeout, list_timeout = timeouts["/agents/w1:p1/prompt"], timeouts["/agents"]
     assert prompt_timeout["connect"] <= 5 and prompt_timeout["read"] == 25
     assert list_timeout["connect"] <= 5 and list_timeout["read"] == 30
-    assert AgentBridge.connect(SETTINGS.bridge_url, "b" * 32).client.timeout.connect <= 5
+    assert AgentBridge.connect(BRIDGE_URL, "b" * 32).client.timeout.connect <= 5
 
 
 def test_a_connect_timeout_says_the_host_may_be_asleep(tmp_path: Path) -> None:
     def asleep(request: httpx.Request) -> httpx.Response:
         raise httpx.ConnectTimeout("timed out", request=request)
 
-    bridge = AgentBridge(httpx.AsyncClient(base_url=SETTINGS.bridge_url, transport=httpx.MockTransport(asleep)))
+    bridge = AgentBridge(httpx.AsyncClient(base_url=BRIDGE_URL, transport=httpx.MockTransport(asleep)))
     with TestClient(app(bridge, tmp_path), base_url=f"https://{HOST}") as test_client:
         is_error, text = call_tool(test_client, "list_agents")
     assert is_error

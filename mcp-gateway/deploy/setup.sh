@@ -5,15 +5,14 @@
 # and reuses the existing tunnel.
 #
 # Run from a checkout of this repo on the gateway host:
-#   sudo PUBLIC_HOST=mcp.example.com \
-#        AGENT_BRIDGE_URL=http://192.168.1.20:8765 \
-#        mcp-gateway/deploy/setup.sh
+#   sudo PUBLIC_HOST=mcp.example.com mcp-gateway/deploy/setup.sh
 # On a re-run, values not given are taken from /etc/mcp-gateway/env; pass one to change
-# it. Missing values are asked for interactively; tokens without echoing. Don't put tokens
-# on the command line (shell history, process list): let the script ask, or export
-# them and pass them with sudo --preserve-env=NAME. Optional: PROJECTS_ROOT (only for an
-# agent-bridge without /info: the folder on the agent host that project names given to
-# start_agent resolve against), TUNNEL_NAME
+# it. Missing values are asked for interactively. Agent hosts are added with
+# `sudo mcp-gateway bridges add <url>`, which this script installs and offers to run.
+# Don't put tokens on the command line (shell history, process list): let the script ask,
+# or export them and pass them with sudo --preserve-env=NAME. Optional: AGENT_BRIDGE_URL
+# (an agent host to add now; its token is asked for, or AGENT_BRIDGE_TOKEN), PROJECTS_ROOT (only for an agent-bridge without /info: the
+# folder on the agent host that project names given to start_agent resolve against), TUNNEL_NAME
 # (claude-remote), PORT (8766), MCP_GATEWAY_OAUTH_PASSPHRASE (use this sign-in passphrase
 # instead of generating one), ROTATE_PASSPHRASE=1, MCP_GATEWAY_TOKEN (also accept this
 # static token, from before OAuth), REMOVE_TOKEN=1 (stop accepting the static token).
@@ -62,15 +61,33 @@ fi
 [[ -f "$REPO_DIR/mcp-gateway/pyproject.toml" ]] || die "run from a checkout of claude-remote-mcp"
 
 # A re-run keeps the last run's values for anything not given: updating the code needs no
-# retyping, and a typo can't move the hostname or break the link to agent-bridge.
+# retyping, and a typo can't move the hostname.
 kept=()
-for name in PUBLIC_HOST AGENT_BRIDGE_URL AGENT_BRIDGE_TOKEN PROJECTS_ROOT; do
+for name in PUBLIC_HOST PROJECTS_ROOT; do
   [[ -z ${!name:-} ]] || continue
-  value="$(env_value "MCP_GATEWAY_${name#AGENT_}")" # e.g. AGENT_BRIDGE_URL -> MCP_GATEWAY_BRIDGE_URL
+  value="$(env_value "MCP_GATEWAY_$name")"
   [[ -n $value ]] || continue
   printf -v "$name" '%s' "$value"
-  if [[ $name == *TOKEN ]]; then kept+=("$name (not shown)"); else kept+=("$name=$value"); fi
+  kept+=("$name=$value")
 done
+# The one agent-bridge from before bridges.json: kept in the env file until the gateway
+# has imported it into the registry at its first start, then dropped (see the end).
+LEGACY_URL=""
+LEGACY_TOKEN=""
+if [[ ! -e $STATE_DIR/bridges.json ]]; then
+  LEGACY_URL="$(env_value MCP_GATEWAY_BRIDGE_URL)"
+  LEGACY_TOKEN="$(env_value MCP_GATEWAY_BRIDGE_TOKEN)"
+  # The legacy bridge is imported with a new AGENT_BRIDGE_TOKEN if given, with or without
+  # its URL given again. Another URL is refused before anything changes: replacing the
+  # legacy bridge here would lose it, and its token, if adding the new one then failed.
+  if [[ -n $LEGACY_URL ]]; then
+    [[ -z ${AGENT_BRIDGE_URL:-} || ${AGENT_BRIDGE_URL%/} == "${LEGACY_URL%/}" ]] \
+      || die "$ENV_FILE still has the agent-bridge at $LEGACY_URL. Re-run without AGENT_BRIDGE_URL to import it, then change it with: sudo mcp-gateway bridges remove <name>, sudo mcp-gateway bridges add $AGENT_BRIDGE_URL"
+    LEGACY_TOKEN="${AGENT_BRIDGE_TOKEN:-$LEGACY_TOKEN}"
+    unset AGENT_BRIDGE_URL AGENT_BRIDGE_TOKEN
+  fi
+  [[ -z $LEGACY_URL ]] || kept+=("MCP_GATEWAY_BRIDGE_URL=$LEGACY_URL, to import as an agent host")
+fi
 if [[ ${#kept[@]} -gt 0 ]]; then
   log "Keeping from $ENV_FILE (pass a variable to change it):"
   printf '    %s\n' "${kept[@]}"
@@ -82,8 +99,6 @@ if [[ -n ${PROJECTS_ROOT:-} ]]; then
 fi
 
 ask PUBLIC_HOST "Public hostname for the MCP server (e.g. mcp.example.com)"
-ask AGENT_BRIDGE_URL "agent-bridge URL on the LAN (e.g. http://192.168.1.20:8765)"
-ask AGENT_BRIDGE_TOKEN "agent-bridge token (AGENT_BRIDGE_TOKEN on the agent host)" secret
 # Hostnames are case-insensitive, but the SDK's Host check compares them exactly.
 PUBLIC_HOST="${PUBLIC_HOST,,}"
 
@@ -166,13 +181,22 @@ MCP_GATEWAY_OAUTH_PASSPHRASE=$PASSPHRASE
 MCP_GATEWAY_STATE_DIR=$STATE_DIR
 ${TOKEN:+MCP_GATEWAY_TOKEN=$TOKEN}
 MCP_GATEWAY_PUBLIC_HOST=$PUBLIC_HOST
-MCP_GATEWAY_BRIDGE_URL=$AGENT_BRIDGE_URL
-MCP_GATEWAY_BRIDGE_TOKEN=$AGENT_BRIDGE_TOKEN
+${LEGACY_URL:+MCP_GATEWAY_BRIDGE_URL=$LEGACY_URL}
+${LEGACY_URL:+MCP_GATEWAY_BRIDGE_TOKEN=$LEGACY_TOKEN}
 ${PROJECTS_ROOT:+MCP_GATEWAY_PROJECTS_ROOT=$PROJECTS_ROOT}
 EOF
 umask 022
 chown root:"$SERVICE_USER" "$ENV_FILE"
 chmod 0640 "$ENV_FILE"
+
+# `sudo mcp-gateway bridges …` runs as the service user, so bridges.json stays its own.
+# AGENT_BRIDGE_TOKEN, if set, is passed on for `bridges add` without a terminal.
+cat >/usr/local/bin/mcp-gateway <<EOF
+#!/bin/sh
+# Installed by mcp-gateway/deploy/setup.sh: mcp-gateway's commands, on the service's state.
+exec sudo --preserve-env=AGENT_BRIDGE_TOKEN -u $SERVICE_USER $APP_DIR/.venv/bin/mcp-gateway --state-dir $STATE_DIR "\$@"
+EOF
+chmod 0755 /usr/local/bin/mcp-gateway
 
 cat >/etc/systemd/system/mcp-gateway.service <<EOF
 [Unit]
@@ -322,10 +346,40 @@ check -w 30 "mcp-gateway is up" 200 "http://127.0.0.1:$PORT/healthz"
 # Without mcp-gateway the tunnel can only answer 502: then don't wait for it below.
 tunnel_wait=30
 [[ ${#FAILED[@]} -eq 0 ]] || tunnel_wait=0
-# The header goes through stdin (printf is a builtin), so the token never shows in curl's argv.
-# Not a pipe into check: that would run it in a subshell and lose a failure.
-check "agent host reachable with its token" 200 -H @- "$AGENT_BRIDGE_URL/agents" \
-  < <(printf 'Authorization: Bearer %s\n' "$AGENT_BRIDGE_TOKEN")
+# The gateway imports the legacy agent-bridge before it answers: once it is in
+# bridges.json, the env file no longer needs it.
+if [[ -n $LEGACY_URL && -e $STATE_DIR/bridges.json ]]; then
+  sed -i '/^MCP_GATEWAY_BRIDGE_URL=/d; /^MCP_GATEWAY_BRIDGE_TOKEN=/d' "$ENV_FILE"
+  echo "ok    imported $LEGACY_URL as an agent host; dropped it from $ENV_FILE"
+elif [[ -n $LEGACY_URL ]]; then
+  echo "FAIL  importing $LEGACY_URL as an agent host (see the logs; it is kept in $ENV_FILE)"
+  FAILED+=("import of the agent host")
+fi
+if [[ ${#FAILED[@]} -eq 0 ]]; then
+  if [[ -z ${AGENT_BRIDGE_URL:-} && -t 0 ]] && /usr/local/bin/mcp-gateway bridges list | grep '^No agent hosts' >/dev/null; then
+    # Ctrl-D skips too, rather than ending the script before its checks.
+    read -rp "agent-bridge URL to add as an agent host (e.g. http://192.168.1.20:8765; empty to skip): " AGENT_BRIDGE_URL \
+      || { AGENT_BRIDGE_URL=""; echo; }
+  fi
+  if [[ -z ${AGENT_BRIDGE_URL:-} && -n ${AGENT_BRIDGE_TOKEN:-} ]]; then
+    echo "FAIL  AGENT_BRIDGE_TOKEN is only used with AGENT_BRIDGE_URL, to add that host"
+    FAILED+=("AGENT_BRIDGE_TOKEN without AGENT_BRIDGE_URL")
+  elif [[ -n ${AGENT_BRIDGE_URL:-} ]] \
+    && /usr/local/bin/mcp-gateway bridges list | awk '{print $2}' | grep -xF "${AGENT_BRIDGE_URL%/}" >/dev/null; then
+    # A re-run with the same URL: nothing to add. A new token for it isn't taken silently.
+    if [[ -n ${AGENT_BRIDGE_TOKEN:-} ]]; then
+      echo "FAIL  $AGENT_BRIDGE_URL is already an agent host; to give it a new token:"
+      echo "      sudo mcp-gateway bridges remove <name>, then sudo mcp-gateway bridges add $AGENT_BRIDGE_URL"
+      FAILED+=("new token for $AGENT_BRIDGE_URL")
+    else
+      echo "ok    $AGENT_BRIDGE_URL is already an agent host"
+    fi
+  elif [[ -n ${AGENT_BRIDGE_URL:-} ]]; then
+    /usr/local/bin/mcp-gateway bridges add "$AGENT_BRIDGE_URL" || FAILED+=("adding $AGENT_BRIDGE_URL")
+  fi
+  echo "Agent hosts:"
+  /usr/local/bin/mcp-gateway bridges list | sed 's/^/  /' || true
+fi
 # The tunnel takes a few seconds to register at Cloudflare's edge; until then it answers 530.
 # Once it has answered, it is registered, so the second check needn't wait.
 check -w "$tunnel_wait" "tunnel refuses requests without a token" 401 -X POST "https://$PUBLIC_HOST/mcp"
@@ -364,5 +418,6 @@ if [[ -n $TOKEN ]]; then
   echo "The static MCP_GATEWAY_TOKEN is still accepted. Once the connector is signed in with"
   echo "OAuth, re-run with REMOVE_TOKEN=1 to stop accepting it."
 fi
+echo "Agent hosts: sudo mcp-gateway bridges add <url> | list | rename <name> <new name> | remove <name>"
 echo "Logs: journalctl -u mcp-gateway -u $TUNNEL_SERVICE -f"
 [[ ${#FAILED[@]} -eq 0 ]] || exit 1

@@ -36,8 +36,12 @@ Cloudflare Tunnel. See [mcp-gateway/README.md](mcp-gateway/README.md).
 - **Authentication.** Every `/mcp` request needs a valid access token. The tunnel only
   publishes `/mcp` and the OAuth paths, and the server only accepts its own hostname and
   requests from claude.ai or claude.com (or with no origin).
-- **Tool routing.** Each MCP tool becomes one agent-bridge call; `start_agent` first asks
-  the host about itself (`GET /info`). Arguments (agent ids, prompt length, waits) are
+- **Tool routing.** The gateway keeps its agent hosts in `bridges.json`, each with its own
+  token. An agent id names its host (`mac/w1:p1`, bare while there is one host), and
+  each tool becomes a call to that host's agent-bridge. `list_agents` asks every host at
+  once, and `start_agent` without a host asks each one for the project
+  (`GET /projects/{name}`). Hosts first say about themselves (`GET /info`), and only
+  those at the gateway's API version or one behind are called. Arguments (agent ids, prompt length, waits) are
   checked before anything is sent. Project names and paths go to agent-bridge as given:
   it resolves and checks them, and reports each agent's project.
 - **Agent operations.** `list_agents`, `agent_details`, `read_output`, `send_prompt`,
@@ -72,6 +76,7 @@ The machine where Claude Code runs. See [agent-bridge/README.md](agent-bridge/RE
 | The connector's access and refresh tokens | claude.ai |
 | Signed-in clients and hashes of their tokens | `oauth.json` on the gateway host |
 | Sign-ins in progress, authorization codes, wrong-passphrase counts | mcp-gateway's memory |
+| Agent hosts: URL, token and what each last said about itself | `bridges.json` on the gateway host |
 | Agents, their workspaces and output | herdr on the agent host |
 | Claude logins and trusted folders | each account's Claude config on the agent host |
 
