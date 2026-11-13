@@ -317,6 +317,31 @@ def test_other_paths_are_for_cloudflared_on_this_host_only(gateway: Gateway) -> 
     assert lan.get("/.well-known/oauth-protected-resource/mcp").status_code == 404
 
 
+def test_says_once_when_uvicorn_gave_the_tunnels_caller(
+    gateway: Gateway, caplog: pytest.LogCaptureFixture
+) -> None:
+    # Started without --no-proxy-headers: uvicorn put X-Forwarded-For in the client.
+    forwarded = gateway.client(("203.0.113.9", 0))
+    for _ in range(2):
+        assert forwarded.post("/mcp", headers={"CF-Connecting-IP": "203.0.113.9"}).status_code == 404
+    # Not for callers on the LAN, who can send any header.
+    gateway.client().post("/mcp", headers={"CF-Connecting-IP": "203.0.113.9"})
+
+    errors = [r.message for r in caplog.records if r.levelno == logging.ERROR]
+    assert len(errors) == 1 and "--no-proxy-headers" in errors[0]
+
+
+def test_a_host_removed_by_hand_is_refused_at_once(gateway: Gateway) -> None:
+    gateway.enroll(gateway.open())
+    # In another process, as `sudo mcp-gateway bridges remove mac` runs.
+    Registry(gateway.state_dir / "bridges.json").remove("mac")
+    gateway.bridges["http://192.168.1.20:9999"] = httpx.Response(200, json=INFO)
+    asked = len(gateway.asked)
+
+    assert address(gateway, "http://192.168.1.20:9999").status_code == 404
+    assert len(gateway.asked) == asked
+
+
 @pytest.mark.parametrize(
     ("address", "lan"),
     [("10.1.2.3", True), ("172.16.0.1", True), ("192.168.0.1", True), ("127.0.0.1", True), ("169.254.1.1", True),
