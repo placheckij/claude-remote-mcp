@@ -1,5 +1,6 @@
 import json
 import os
+import re
 from collections.abc import Callable
 from pathlib import Path
 
@@ -183,4 +184,77 @@ def test_refuses_bad_accounts(env: pytest.MonkeyPatch, tmp_path: Path, accounts:
     drive = Path(tmp_path.anchor).as_posix()
     env.setenv("AGENT_BRIDGE_ACCOUNTS", accounts.replace("{root}", tmp_path.as_posix()).replace("{drive}", drive))
     with pytest.raises(RuntimeError, match=problem):
+        Settings.from_env()
+
+
+def test_reads_the_env_file_over_a_legacy_dotenv(env: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture) -> None:
+    env.delenv("AGENT_BRIDGE_TOKEN")
+    Path(os.environ["AGENT_BRIDGE_ENV_FILE"]).write_text(
+        f"AGENT_BRIDGE_TOKEN={TOKEN}\nAGENT_BRIDGE_HOST=192.168.1.20\nAGENT_BRIDGE_NAME=studio\n"
+    )
+    Path(".env").write_text("AGENT_BRIDGE_NAME=old\nAGENT_BRIDGE_PORT=9000\n")
+
+    settings = Settings.from_env()
+
+    assert (settings.token, settings.host, settings.name, settings.port) == (TOKEN, "192.168.1.20", "studio", 9000)
+    assert settings.url == "http://192.168.1.20:9000"
+    assert "move them to" in caplog.text
+
+
+def test_reads_only_the_env_file_without_a_legacy_dotenv(
+    env: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    # A checkout's .env may be mcp-gateway's: no warning for that.
+    Path(".env").write_text("MCP_GATEWAY_PUBLIC_HOST=mcp.example.com\n")
+    Path(os.environ["AGENT_BRIDGE_ENV_FILE"]).write_text("AGENT_BRIDGE_NAME=studio\n")
+
+    assert Settings.from_env().name == "studio"
+    assert "move them to" not in caplog.text
+
+
+def test_names_the_env_file_in_errors(env: pytest.MonkeyPatch) -> None:
+    env.delenv("AGENT_BRIDGE_TOKEN")
+    with pytest.raises(RuntimeError, match=f"env file: {re.escape(os.environ['AGENT_BRIDGE_ENV_FILE'])}"):
+        Settings.from_env()
+
+
+def test_the_service_needs_host_name_and_herdr(env: pytest.MonkeyPatch) -> None:
+    assert Settings.from_env().missing_for_service() == [
+        "AGENT_BRIDGE_HOST", "AGENT_BRIDGE_NAME", "AGENT_BRIDGE_HERDR_BIN",
+    ]
+    env.setenv("AGENT_BRIDGE_HOST", "fd00::5")
+    env.setenv("AGENT_BRIDGE_NAME", "mac")
+    env.setenv("AGENT_BRIDGE_HERDR_BIN", "/opt/herdr")
+    settings = Settings.from_env()
+    assert settings.missing_for_service() == []
+    assert settings.url == "http://[fd00::5]:8765"
+
+
+@pytest.mark.parametrize(
+    ("name", "value", "message"),
+    [
+        ("AGENT_BRIDGE_HOST", "mac.local", "IP address"),
+        ("AGENT_BRIDGE_HOST", "0.0.0.0", "every interface"),
+        ("AGENT_BRIDGE_NAME", "Studio Mac", "lowercase letter"),
+        ("AGENT_BRIDGE_NAME", "a" * 33, "lowercase letter"),
+        ("AGENT_BRIDGE_PORT", "70000", "less than or equal"),
+        ("AGENT_BRIDGE_TOKEN", "t" * 31 + " ", "may only have"),
+    ],
+)
+def test_refuses_a_bad_host_name_port_or_token(env: pytest.MonkeyPatch, name: str, value: str, message: str) -> None:
+    env.setenv(name, value)
+    with pytest.raises(RuntimeError, match=f"{name}: .*{message}"):
+        Settings.from_env()
+
+
+@pytest.mark.skipif(os.name != "nt", reason="only Windows has \\\\ paths")
+@pytest.mark.parametrize("prefix", ["\\\\?\\", "\\\\localhost\\C$\\"])
+def test_refuses_roots_spelled_as_unc_or_long_paths(
+    env: pytest.MonkeyPatch, tmp_path: Path, set_home: Callable[[Path], None], prefix: str
+) -> None:
+    # resolve() keeps these spellings, so they would get past the home check.
+    set_home(tmp_path)
+    home = str(tmp_path)
+    env.setenv("AGENT_BRIDGE_ALLOWED_ROOTS", prefix + (home if prefix == "\\\\?\\" else home[3:]))
+    with pytest.raises(RuntimeError, match="must be on a drive"):
         Settings.from_env()

@@ -7,11 +7,15 @@ import pytest
 
 
 @pytest.fixture(autouse=True)
-def no_settings_from_the_shell(monkeypatch: pytest.MonkeyPatch) -> None:
-    # Settings reads AGENT_BRIDGE_* even when built directly; keep the caller's own out.
+def no_settings_from_the_shell(monkeypatch: pytest.MonkeyPatch, tmp_path_factory: pytest.TempPathFactory) -> None:
+    # Settings reads AGENT_BRIDGE_* even when built directly; keep the caller's own out,
+    # and their env and state files too.
     for name in list(os.environ):
         if name.startswith("AGENT_BRIDGE_"):
             monkeypatch.delenv(name)
+    files = tmp_path_factory.mktemp("agent-bridge-files")
+    monkeypatch.setenv("AGENT_BRIDGE_ENV_FILE", str(files / "env"))
+    monkeypatch.setenv("AGENT_BRIDGE_STATE_FILE", str(files / "state.json"))
 
 
 @pytest.fixture
