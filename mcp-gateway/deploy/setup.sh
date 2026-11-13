@@ -192,11 +192,12 @@ chown root:"$SERVICE_USER" "$ENV_FILE"
 chmod 0640 "$ENV_FILE"
 
 # `sudo mcp-gateway bridges …` runs as the service user, so bridges.json stays its own.
-# AGENT_BRIDGE_TOKEN, if set, is passed on for `bridges add` without a terminal.
+# AGENT_BRIDGE_TOKEN, if set, is passed on for `bridges add` without a terminal;
+# MCP_GATEWAY_PORT is the port `enroll` puts in the string.
 cat >/usr/local/bin/mcp-gateway <<EOF
 #!/bin/sh
 # Installed by mcp-gateway/deploy/setup.sh: mcp-gateway's commands, on the service's state.
-exec sudo --preserve-env=AGENT_BRIDGE_TOKEN -u $SERVICE_USER $APP_DIR/.venv/bin/mcp-gateway --state-dir $STATE_DIR "\$@"
+exec sudo --preserve-env=AGENT_BRIDGE_TOKEN -u $SERVICE_USER /usr/bin/env MCP_GATEWAY_PORT=$PORT $APP_DIR/.venv/bin/mcp-gateway --state-dir $STATE_DIR "\$@"
 EOF
 chmod 0755 /usr/local/bin/mcp-gateway
 

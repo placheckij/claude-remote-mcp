@@ -86,7 +86,9 @@ def _parser() -> argparse.ArgumentParser:
         "enroll", help=f"let agent-bridges add themselves for {WINDOW_S // 60} minutes; prints the string they need"
     )
     enroll.add_argument("--address", help="this host's address on the LAN; default: the one the default route uses")
-    enroll.add_argument("--port", type=int, default=DEFAULT_PORT, help=f"the gateway's port (default {DEFAULT_PORT})")
+    # setup.sh's wrapper sets MCP_GATEWAY_PORT to the port it serves on.
+    port = int(os.environ.get("MCP_GATEWAY_PORT") or DEFAULT_PORT)
+    enroll.add_argument("--port", type=int, default=port, help=f"the gateway's port (default {port})")
     bridges = groups.add_parser("bridges", help="the agent-bridges this gateway calls").add_subparsers(
         dest="command", required=True
     )

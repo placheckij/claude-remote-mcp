@@ -175,14 +175,24 @@ def test_enroll_exits_1_on_other_refusals(capsys, settings: Path, fake: FakeGate
     assert "Couldn't enroll" in err
 
 
-def test_enroll_exits_1_when_another_server_answers(capsys, settings: Path, fake: FakeGateway) -> None:
-    fake.answers[("POST", "enroll")] = httpx.Response(200, json={"ok": True})
+@pytest.mark.parametrize("answer", [httpx.Response(200, json={"ok": True}), httpx.Response(200, text="<html>")])
+def test_enroll_exits_1_when_another_server_answers(capsys, settings: Path, fake: FakeGateway, answer) -> None:
+    fake.answers[("POST", "enroll")] = answer
 
     code, _, err = run(capsys, "enroll", STRING)
 
     assert code == 1
     assert "not as an mcp-gateway" in err
     assert load(state_path()).gateway is None
+
+
+def test_enroll_warns_when_the_gateway_is_older(capsys, settings: Path, fake: FakeGateway) -> None:
+    fake.answers[("POST", "enroll")] = httpx.Response(200, json={"name": "mac", "gateway_id": "g" * 32, "api_version": 1})
+
+    code, _, err = run(capsys, "enroll", STRING)
+
+    assert code == 0
+    assert "The gateway is older" in err
 
 
 def test_enroll_says_how_to_retry_when_the_state_cant_be_saved(
@@ -388,4 +398,19 @@ def test_a_failed_address_report_says_how_to_enroll_again(fake: FakeGateway, mon
     asyncio.run(gateway.keep_address(state, settings))
 
     assert len(fake.requests) == 2
+    assert "agent-bridge enroll <string>" in caplog.text
+
+
+@pytest.mark.parametrize(("status", "code"), [(404, "not_enrolled"), (401, "unauthorized")])
+def test_the_address_report_stops_when_retrying_cant_help(
+    fake: FakeGateway, monkeypatch, caplog, status: int, code: str
+) -> None:
+    monkeypatch.setattr(gateway, "REPORT_DELAYS", (0, 0, 0))
+    state = State(bridge_id="1" * 32, gateway=Gateway(url=GATEWAY, gateway_id="g", name="mac"))
+    settings = Settings(token=TOKEN, allowed_roots=(Path.cwd().resolve(),), host="192.168.1.20")
+    fake.answers[("PUT", "bridges")] = httpx.Response(status, json={"error": {"code": code, "message": "x"}})
+
+    asyncio.run(gateway.keep_address(state, settings))
+
+    assert len(fake.requests) == 1
     assert "agent-bridge enroll <string>" in caplog.text

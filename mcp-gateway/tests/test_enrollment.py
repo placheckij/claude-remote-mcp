@@ -402,6 +402,14 @@ def test_cli_takes_an_address_and_port(tmp_path: Path, capsys: pytest.CaptureFix
     assert "'crm1@[fd00::5]:9000#" in out
 
 
+def test_cli_takes_the_port_setup_sh_serves_on(
+    tmp_path: Path, capsys: pytest.CaptureFixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("MCP_GATEWAY_PORT", "8800")
+
+    assert "'crm1@192.168.1.10:8800#" in run_cli(tmp_path, capsys)[1]
+
+
 def test_cli_refuses_without_a_lan_address(tmp_path: Path, capsys: pytest.CaptureFixture) -> None:
     assert run_cli(tmp_path, capsys, lan=None)[0] == 1
     code, _, err = run_cli(tmp_path, capsys, "--address", "8.8.8.8")
