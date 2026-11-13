@@ -407,6 +407,10 @@ def test_cli_refuses_without_a_lan_address(tmp_path: Path, capsys: pytest.Captur
     code, _, err = run_cli(tmp_path, capsys, "--address", "8.8.8.8")
     assert code == 1
     assert "8.8.8.8 isn't a private" in err
+    # agent-bridge's string can't carry a zone.
+    code, out, err = run_cli(tmp_path, capsys, "--address", "fe80::1%eth0")
+    assert (code, out) == (1, "")
+    assert "has a zone" in err
 
 
 def test_cli_refuses_an_address_the_gateway_doesnt_answer_on(tmp_path: Path, capsys: pytest.CaptureFixture) -> None:

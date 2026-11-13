@@ -112,11 +112,10 @@ running gateway picks up each change before its next request.
 sudo mcp-gateway enroll        # --address and --port if the defaults are wrong
 ```
 
-opens a 30-minute window for any number of agent hosts and prints the string their
-setup asks for, `crm1@<LAN address>:8766#<secret>`, once the gateway answers at that
+opens a 30-minute window for any number of agent hosts and prints the string they
+enroll with, `crm1@<LAN address>:8766#<secret>`, once the gateway answers at that
 address (the setup script's listens on IPv4 only). On each agent host,
-`agent-bridge enroll '<string>'` (which its setup runs) sends its id, address, token and
-name; the gateway calls that address's `/info`, checks it answers with the same id, and
+`agent-bridge enroll '<string>'` sends its id, address, token and name; the gateway calls that address's `/info`, checks it answers with the same id, and
 adds the host (or replaces its record, if it enrolled before). Each enrollment is logged
 as a warning.
 
@@ -124,7 +123,8 @@ as a warning.
   `enrollment.json` (mode 600). A new `enroll` replaces it. Three wrong strings from one
   address lock that address out of the window; ten in all close it.
 - **Names** are the agent host's `AGENT_BRIDGE_NAME`. One that another host has is
-  refused (`409`), and the agent host's setup asks again.
+  refused (`409`), and `agent-bridge enroll` exits with 3: set another
+  `AGENT_BRIDGE_NAME` and run it again.
 - **Afterwards** each agent-bridge sends its address on every start
   (`PUT /bridges/{id}/address`) and removes itself on uninstall (`DELETE /bridges/{id}`),
   both with its own token. A new address is kept only once its `/info` answers with the
