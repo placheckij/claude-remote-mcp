@@ -13,6 +13,7 @@ from agent_bridge.config import Settings
 from agent_bridge.errors import BridgeError
 from agent_bridge.herdr import Herdr, subprocess_runner
 from agent_bridge.host import host_name, platform_name
+from agent_bridge.state import State
 
 TOKEN = "t" * 32
 AUTH = {"Authorization": f"Bearer {TOKEN}"}
@@ -1163,12 +1164,23 @@ def test_info_describes_the_host(tmp_path: Path) -> None:
     assert info.pop("bridge_version")
     assert info == {
         "api_version": 2,
+        "bridge_id": None,
         "herdr_version": "0.9.5",
         "roots": [str(roots[0]), str(roots[1])],
         "projects_root": str(roots[0]),
         "accounts": ["personal", "work"],
         "max_agents": 4,
     }
+
+
+def test_info_gives_the_bridge_id_and_the_name_set(tmp_path: Path) -> None:
+    runner = FakeRunner({("--version",): (0, "herdr 0.9.5\n", "")})
+    settings = Settings(token=TOKEN, allowed_roots=(tmp_path.resolve(),), name="studio")
+    app = create_app(settings, Herdr(runner=runner), State(bridge_id="1" * 32))
+
+    info = TestClient(app).get("/info", headers=AUTH).json()
+
+    assert (info["bridge_id"], info["name"]) == ("1" * 32, "studio")
 
 
 def test_info_needs_the_token(tmp_path: Path) -> None:

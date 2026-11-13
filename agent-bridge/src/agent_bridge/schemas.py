@@ -103,6 +103,8 @@ class RenameRequest(BaseModel):
 class HostInfo(BaseModel):
     # 1 is the API before /info; a gateway tells them apart by /info answering 404.
     api_version: int
+    # From the state file; a gateway checks it when the bridge enrolls.
+    bridge_id: str | None = None
     name: str
     platform: str
     bridge_version: str
