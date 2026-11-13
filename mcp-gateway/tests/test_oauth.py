@@ -396,6 +396,8 @@ def test_behind_another_proxy_the_address_is_the_one_it_added() -> None:
 
     assert source("127.0.0.1", "10.9.9.9, 203.0.113.8") == "203.0.113.8"
     assert source("192.168.1.50", "203.0.113.8") == "192.168.1.50"
+    # A value that isn't an address can't be a fresh key per guess.
+    assert source("127.0.0.1", "guess-1") == "127.0.0.1"
 
 
 def test_only_the_tunnel_reaches_the_sign_in(tmp_path: Path, clock: Clock) -> None:

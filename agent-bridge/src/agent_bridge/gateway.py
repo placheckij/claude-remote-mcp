@@ -50,12 +50,21 @@ def parse_enrollment(text: str) -> tuple[str, str]:
 async def enroll(gateway_url: str, secret: str, state: State, settings: Settings) -> dict:
     body = {"secret": secret, "bridge_id": state.bridge_id, "url": settings.url, "token": settings.token,
             "name": settings.name}
-    return await _request("POST", gateway_url, "/enroll", json=body)
+    return _joined(gateway_url, await _request("POST", gateway_url, "/enroll", json=body))
 
 
 async def report_address(gateway_url: str, state: State, settings: Settings) -> dict:
-    return await _request("PUT", gateway_url, f"/bridges/{state.bridge_id}/address", token=settings.token,
-                          json={"url": settings.url})
+    reply = await _request("PUT", gateway_url, f"/bridges/{state.bridge_id}/address", token=settings.token,
+                           json={"url": settings.url})
+    return _joined(gateway_url, reply)
+
+
+def _joined(base: str, reply) -> dict:
+    """The gateway's {name, gateway_id, api_version}; anything else isn't a gateway's answer."""
+    if not (isinstance(reply, dict) and isinstance(reply.get("name"), str)
+            and isinstance(reply.get("gateway_id"), str) and isinstance(reply.get("api_version", 0), int)):
+        raise GatewayError(f"{base} answered, but not as an mcp-gateway")
+    return reply
 
 
 async def unenroll(gateway_url: str, state: State, token: str) -> None:

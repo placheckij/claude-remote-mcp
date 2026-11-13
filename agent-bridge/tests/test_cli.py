@@ -175,6 +175,35 @@ def test_enroll_exits_1_on_other_refusals(capsys, settings: Path, fake: FakeGate
     assert "Couldn't enroll" in err
 
 
+def test_enroll_exits_1_when_another_server_answers(capsys, settings: Path, fake: FakeGateway) -> None:
+    fake.answers[("POST", "enroll")] = httpx.Response(200, json={"ok": True})
+
+    code, _, err = run(capsys, "enroll", STRING)
+
+    assert code == 1
+    assert "not as an mcp-gateway" in err
+    assert load(state_path()).gateway is None
+
+
+def test_enroll_says_how_to_retry_when_the_state_cant_be_saved(
+    capsys, settings: Path, fake: FakeGateway, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fake.answers[("POST", "enroll")] = httpx.Response(200, json={"name": "mac", "gateway_id": "g" * 32, "api_version": 2})
+
+    def full(path: Path, state: State) -> None:
+        if state.gateway is not None:
+            raise cli.StateError(f"Can't write {path} (No space left on device).")
+        save(path, state)
+
+    monkeypatch.setattr(cli, "save", full)
+
+    code, _, err = run(capsys, "enroll", STRING)
+
+    assert code == 1
+    assert "enrolled this host as mac, but Can't write" in err
+    assert f"agent-bridge enroll '{STRING}'" in err
+
+
 @pytest.mark.parametrize("string", ["crm1@192.168.1.10:8766", "http://192.168.1.10:8766", "crm1@host:8766#xyz"])
 def test_enroll_refuses_a_bad_string(capsys, settings: Path, string: str) -> None:
     code, _, err = run(capsys, "enroll", string)

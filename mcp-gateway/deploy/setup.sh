@@ -8,7 +8,7 @@
 #   sudo PUBLIC_HOST=mcp.example.com mcp-gateway/deploy/setup.sh
 # On a re-run, values not given are taken from /etc/mcp-gateway/env; pass one to change
 # it. Only PUBLIC_HOST is asked for, if missing. At the end the script opens a 30-minute
-# enrollment window and prints the string each agent host's setup asks for; open another
+# enrollment window and prints the string for `agent-bridge enroll` on each agent host; open another
 # later with `sudo mcp-gateway enroll`, which this script installs. The gateway listens on
 # every interface for that; the tunnel publishes only /mcp and the OAuth paths.
 # Don't put tokens on the command line (shell history, process list): let the script ask,

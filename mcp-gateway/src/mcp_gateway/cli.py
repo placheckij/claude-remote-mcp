@@ -133,7 +133,9 @@ def _enroll(enrollment: Enrollment, address: str | None, port: int, reachable: C
         raise _Refused("Couldn't tell this host's LAN address; give it with --address.")
     if not is_lan(address):
         raise _Refused(f"{address} isn't a private, loopback or link-local IP address; give one with --address.")
-    host = f"[{address}]" if ":" in address else address
+    if "%" in address:
+        raise _Refused(f"{address} has a zone, which the enrollment string can't carry; give another with --address.")
+    host =f"[{address}]" if ":" in address else address
     # E.g. an IPv6 address while the gateway listens on 0.0.0.0, or one listening on 127.0.0.1.
     if not reachable(address, port):
         raise _Refused(

@@ -102,7 +102,14 @@ def _enroll(string: str) -> int:
         print(f"Couldn't enroll: {error}", file=sys.stderr)
         return NAME_TAKEN if error.code == "name_taken" else FAILED
     gateway = Gateway(url=gateway_url, gateway_id=reply["gateway_id"], name=reply["name"])
-    save(path, state.model_copy(update={"gateway": gateway}))
+    try:
+        save(path, state.model_copy(update={"gateway": gateway}))
+    except StateError as error:
+        # The gateway has it already; enrolling again replaces that record.
+        print(f"The gateway enrolled this host as {reply['name']}, but {error} Fix that, then run again "
+              "(with a new string from `sudo mcp-gateway enroll` once this one expires):", file=sys.stderr)
+        print(f"  agent-bridge enroll '{string.strip()}'", file=sys.stderr)
+        return FAILED
     print(f"Enrolled as {reply['name']} with the gateway at {gateway_url}.")
     if reply.get("api_version", API_VERSION) < API_VERSION:
         print("The gateway is older than this agent-bridge and may not call it: update the gateway.", file=sys.stderr)

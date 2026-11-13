@@ -599,6 +599,9 @@ def _source(request: Request) -> str:
     if _is_loopback(peer):
         forwarded = request.headers.get("x-forwarded-for", "").rsplit(",", 1)[-1].strip()
         address = request.headers.get("cf-connecting-ip") or forwarded or peer
+        # Not a free-form key: a value that isn't an address counts as the peer.
+        if not _is_address(address):
+            address = peer
     try:
         ip = ipaddress.ip_address(address)
     except ValueError:
@@ -606,6 +609,14 @@ def _source(request: Request) -> str:
     if ip.version == 6:
         return str(ipaddress.ip_network(f"{ip}/64", strict=False))
     return str(ip)
+
+
+def _is_address(value: str) -> bool:
+    try:
+        ipaddress.ip_address(value)
+    except ValueError:
+        return False
+    return True
 
 
 def _is_loopback(address: str) -> bool:
