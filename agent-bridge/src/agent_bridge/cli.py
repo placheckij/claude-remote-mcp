@@ -22,7 +22,7 @@ from agent_bridge.config import Settings, check_name_format, check_token_format
 from agent_bridge.gateway import GatewayError, GatewayUnreachable, enroll, parse_enrollment, report_address, unenroll
 from agent_bridge.herdr import Herdr, HerdrError
 from agent_bridge.host import API_VERSION
-from agent_bridge.state import Gateway, StateError, env_file, load, load_or_create, save, state_file
+from agent_bridge.state import Gateway, StateError, env_file, load, load_or_create, rename, save, state_file
 
 OK, FAILED, INVALID, NAME_TAKEN, UNREACHABLE = 0, 1, 2, 3, 4
 
@@ -78,7 +78,8 @@ def _settings(for_service: bool = True) -> Settings:
 def _serve(run: Callable[..., None]) -> int:
     logging.basicConfig(level=logging.INFO, format="%(levelname)-9s %(message)s")
     settings = _settings()
-    app = create_app(settings, state=load_or_create(state_file()))
+    path = state_file()
+    app = create_app(settings, state=load_or_create(path), state_path=path)
     run(app, host=settings.host, port=settings.port, server_header=False)
     return OK
 
@@ -179,8 +180,9 @@ def _check() -> int:
         print("--    not enrolled with a gateway")
     else:
         try:
-            asyncio.run(report_address(state.gateway.url, state, settings))
-            report(True, f"the gateway at {state.gateway.url} has this host as {state.gateway.name}")
+            name = asyncio.run(report_address(state.gateway.url, state, settings))["name"]
+            report(True, f"the gateway at {state.gateway.url} has this host as {name}")
+            rename(state_file(), state.gateway, name)
         except GatewayError as error:
             report(False, f"the gateway at {state.gateway.url} has this host", str(error))
     return FAILED if failed else OK

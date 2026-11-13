@@ -257,6 +257,23 @@ def test_check_passes_with_the_service_up_and_enrolled(
     assert fake.body() == {"url": "http://192.168.1.20:8765"}
 
 
+def test_check_keeps_the_name_the_gateway_has_now(
+    capsys, settings: Path, fake: FakeGateway, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Renamed there with `sudo mcp-gateway bridges rename mac studio`.
+    state = enrolled()
+    monkeypatch.setattr(cli, "Herdr", FakeHerdr)
+    monkeypatch.setattr(cli.httpx, "get", lambda url, **kwargs: httpx.Response(
+        200, json={"bridge_id": state.bridge_id}, request=httpx.Request("GET", url)))
+    fake.answers[("PUT", "bridges")] = httpx.Response(200, json={"name": "studio", "gateway_id": "g", "api_version": 2})
+
+    code, out, _ = run(capsys, "check")
+
+    assert code == 0, out
+    assert "has this host as studio" in out
+    assert load(state_path()).gateway.name == "studio"
+
+
 def test_check_fails_with_one_line_per_check(
     capsys, settings: Path, fake: FakeGateway, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -305,6 +322,21 @@ def test_the_address_is_reported_on_start(fake: FakeGateway, monkeypatch: pytest
     assert len(fake.requests) == 2
     assert json.loads(fake.requests[-1].content) == {"url": "http://192.168.1.20:9000"}
     assert "has this host as mac" in caplog.text
+
+
+def test_the_address_report_keeps_the_name_the_gateway_has_now(fake: FakeGateway, monkeypatch) -> None:
+    monkeypatch.setattr(gateway, "REPORT_DELAYS", (0,))
+    state = enrolled()
+    settings = Settings(token=TOKEN, allowed_roots=(Path.cwd().resolve(),), host="192.168.1.20")
+    fake.answers[("PUT", "bridges")] = httpx.Response(200, json={"name": "studio", "gateway_id": "g", "api_version": 2})
+
+    asyncio.run(gateway.keep_address(state, settings, state_path()))
+
+    assert load(state_path()).gateway.name == "studio"
+    # Not over a state file enrolled with another gateway since.
+    save(state_path(), State(bridge_id=state.bridge_id))
+    asyncio.run(gateway.keep_address(state, settings, state_path()))
+    assert load(state_path()).gateway is None
 
 
 def test_a_failed_address_report_says_how_to_enroll_again(fake: FakeGateway, monkeypatch, caplog) -> None:
