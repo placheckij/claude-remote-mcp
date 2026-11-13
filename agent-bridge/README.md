@@ -186,7 +186,7 @@ the variable.
 
 | Variable | Default | |
 |---|---|---|
-| `AGENT_BRIDGE_TOKEN` | — | required, at least 32 characters; mcp-gateway's `MCP_GATEWAY_BRIDGE_TOKEN` |
+| `AGENT_BRIDGE_TOKEN` | — | required, at least 32 characters; given to `mcp-gateway bridges add` on the gateway host |
 | `AGENT_BRIDGE_ALLOWED_ROOTS` | — | required, `:`-separated absolute folders agents may start in; `/`, the home folder or anything above it is refused |
 | `AGENT_BRIDGE_CLAUDE_CONFIG_DIR` | unset | `CLAUDE_CONFIG_DIR` for new agents; unset uses Claude Code's default config |
 | `AGENT_BRIDGE_ACCOUNTS` | none | named Claude logins and the folders they're for, as JSON (see [Claude accounts](#claude-accounts)); names are lower-case, e.g. `work` |
@@ -204,9 +204,9 @@ address, not `0.0.0.0` (or to `127.0.0.1` when mcp-gateway runs on the same mach
 
 To try it in the foreground, generate a token and start it by hand. To keep it running, set
 it up as a service instead (below); on macOS the setup script generates the token for you.
-Either way the same token goes into mcp-gateway's `MCP_GATEWAY_BRIDGE_TOKEN`. Generate it
+Either way the gateway host adds this bridge with `sudo mcp-gateway bridges add <url>`, which asks for the token. Generate it
 once and keep a copy, e.g. in a password manager: it goes into the service's config and
-into mcp-gateway's setup on the gateway host, and is stored nowhere else.
+into the gateway's list of agent hosts, and is stored nowhere else.
 
 ```sh
 uv sync --all-packages

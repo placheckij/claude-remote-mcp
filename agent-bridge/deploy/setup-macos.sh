@@ -249,11 +249,10 @@ ${LOGIN_HINT:+
 $LOGIN_HINT
 }
 
-For mcp-gateway's setup.sh on the gateway host:
-  AGENT_BRIDGE_URL=$URL
+To add it on the gateway host: sudo mcp-gateway bridges add $URL
 EOF
 case $TOKEN_SOURCE in
-  new) echo "  AGENT_BRIDGE_TOKEN=$TOKEN   (new: re-run mcp-gateway's setup.sh with it)" ;;
+  new) echo "  AGENT_BRIDGE_TOKEN=$TOKEN   (new: give it to bridges add; if this host was added before, bridges remove it first)" ;;
   given) echo "  AGENT_BRIDGE_TOKEN is the one you passed in" ;;
   kept) echo "  AGENT_BRIDGE_TOKEN is unchanged; read it with:"
         echo "    /usr/libexec/PlistBuddy -c 'Print :EnvironmentVariables:AGENT_BRIDGE_TOKEN' $PLIST" ;;
