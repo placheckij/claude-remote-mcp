@@ -21,7 +21,7 @@ requirements, configuration, deployment and tests.
 | Directory | Runs on | Role |
 |---|---|---|
 | [`mcp-gateway/`](mcp-gateway/) | an always-on host: a small home server, a VPS, or the agent host itself (Linux, macOS; the setup script needs Debian-based Linux with systemd) | MCP server exposed to claude.ai through a Cloudflare Tunnel; signs the connector in with OAuth (a passphrase) and forwards tool calls to `agent-bridge`. Includes a setup script. |
-| [`agent-bridge/`](agent-bridge/) | the machine where herdr and Claude Code run (macOS or Linux) | Narrow LAN-only HTTP API translating requests into `herdr` CLI calls; keeps no state. Runs as a launchd or systemd user service. |
+| [`agent-bridge/`](agent-bridge/) | the machine where herdr and Claude Code run (macOS, Linux or Windows) | Narrow LAN-only HTTP API translating requests into `herdr` CLI calls; keeps only its id and its gateway. Enrolls itself with the gateway. Runs as a launchd or systemd user service. |
 
 You need:
 
@@ -39,17 +39,16 @@ The gateway and the agent host can be one machine.
 
 1. **Cloudflare:** add your domain to Cloudflare if it isn't there yet (its DNS must be
    managed by Cloudflare), and pick a subdomain for the connector, e.g.
-   `mcp.example.com`. Nothing else to create by hand: the setup script in step 3 makes
+   `mcp.example.com`. Nothing else to create by hand: the setup script in step 2 makes
    the tunnel and the DNS record.
-2. **Agent host:** start [agent-bridge](agent-bridge/README.md#run) on its LAN address
-   and note its token.
-3. **Gateway host:** run [`mcp-gateway/deploy/setup.sh`](mcp-gateway/README.md#deploy-with-the-setup-script)
-   with that subdomain and agent-bridge's URL; it asks for the token. More agent hosts
-   are added later with `sudo mcp-gateway bridges add <url>`. On the
-   first run it prints a Cloudflare login URL: open it in any browser and pick your
-   domain. It then sets up the service and the
-   [Cloudflare Tunnel](mcp-gateway/README.md#cloudflare-tunnel) and prints the
-   sign-in passphrase.
+2. **Gateway host:** run [`mcp-gateway/deploy/setup.sh`](mcp-gateway/README.md#deploy-with-the-setup-script)
+   with that subdomain. On the first run it prints a Cloudflare login URL: open it in
+   any browser and pick your domain. It then sets up the service and the
+   [Cloudflare Tunnel](mcp-gateway/README.md#cloudflare-tunnel), prints the sign-in
+   passphrase, and prints an enrollment string for the agent hosts, good for 30 minutes
+   (`sudo mcp-gateway enroll` prints a new one).
+3. **Agent hosts:** start [agent-bridge](agent-bridge/README.md#run) on each, then
+   [enroll](agent-bridge/README.md#enroll-with-the-gateway) it with that string.
 4. **claude.ai:** [add the custom connector](mcp-gateway/README.md#add-the-connector-in-claudeai)
    by its URL and sign in with that passphrase.
 

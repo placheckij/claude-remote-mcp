@@ -7,8 +7,10 @@
 # Run from a checkout of this repo on the gateway host:
 #   sudo PUBLIC_HOST=mcp.example.com mcp-gateway/deploy/setup.sh
 # On a re-run, values not given are taken from /etc/mcp-gateway/env; pass one to change
-# it. Missing values are asked for interactively. Agent hosts are added with
-# `sudo mcp-gateway bridges add <url>`, which this script installs and offers to run.
+# it. Only PUBLIC_HOST is asked for, if missing. At the end the script opens a 30-minute
+# enrollment window and prints the string each agent host's setup asks for; open another
+# later with `sudo mcp-gateway enroll`, which this script installs. The gateway listens on
+# every interface for that; the tunnel publishes only /mcp and the OAuth paths.
 # Don't put tokens on the command line (shell history, process list): let the script ask,
 # or export them and pass them with sudo --preserve-env=NAME. Optional: AGENT_BRIDGE_URL
 # (an agent host to add now; its token is asked for, or AGENT_BRIDGE_TOKEN), PROJECTS_ROOT (only for an agent-bridge without /info: the
@@ -211,7 +213,9 @@ EnvironmentFile=$ENV_FILE
 WorkingDirectory=$APP_DIR
 # One process (no --workers): it reads oauth.json only at startup and keeps sign-ins in progress
 # and wrong-passphrase counts in memory.
-ExecStart=$APP_DIR/.venv/bin/uvicorn mcp_gateway.server:main --factory --host 127.0.0.1 --port $PORT --no-server-header
+# Every interface: agent-bridges on the LAN enroll here. The tunnel still connects to
+# 127.0.0.1, and the enrollment routes refuse anything it forwards.
+ExecStart=$APP_DIR/.venv/bin/uvicorn mcp_gateway.server:main --factory --host 0.0.0.0 --port $PORT --no-server-header
 Restart=on-failure
 RestartSec=5
 # $STATE_DIR, the one place the service can write (ProtectSystem=strict).
@@ -316,6 +320,19 @@ EOF
 
 # --- Start and check -----------------------------------------------------------------
 
+port_holder() { # the PID listening on TCP $PORT, or nothing
+  if command -v ss >/dev/null; then
+    ss -Hltnp "sport = :$PORT" | sed -n 's/.*pid=\([0-9]*\).*/\1/p' | head -n 1
+  elif command -v lsof >/dev/null; then
+    lsof -nP -iTCP:"$PORT" -sTCP:LISTEN -t | head -n 1
+  fi
+}
+# Taken only by the gateway being updated, which the restart below replaces.
+HOLDER="$(port_holder)"
+if [[ -n $HOLDER && $HOLDER != "$(systemctl show -p MainPID --value mcp-gateway.service 2>/dev/null)" ]]; then
+  die "port $PORT is in use by $(ps -o comm= -p "$HOLDER" || echo "PID $HOLDER"); stop it, or re-run with PORT=<another port>"
+fi
+
 log "Starting services"
 systemctl daemon-reload
 systemctl enable --now mcp-gateway.service "$TUNNEL_SERVICE".service
@@ -356,11 +373,6 @@ elif [[ -n $LEGACY_URL ]]; then
   FAILED+=("import of the agent host")
 fi
 if [[ ${#FAILED[@]} -eq 0 ]]; then
-  if [[ -z ${AGENT_BRIDGE_URL:-} && -t 0 ]] && /usr/local/bin/mcp-gateway bridges list | grep '^No agent hosts' >/dev/null; then
-    # Ctrl-D skips too, rather than ending the script before its checks.
-    read -rp "agent-bridge URL to add as an agent host (e.g. http://192.168.1.20:8765; empty to skip): " AGENT_BRIDGE_URL \
-      || { AGENT_BRIDGE_URL=""; echo; }
-  fi
   if [[ -z ${AGENT_BRIDGE_URL:-} && -n ${AGENT_BRIDGE_TOKEN:-} ]]; then
     echo "FAIL  AGENT_BRIDGE_TOKEN is only used with AGENT_BRIDGE_URL, to add that host"
     FAILED+=("AGENT_BRIDGE_TOKEN without AGENT_BRIDGE_URL")
@@ -385,6 +397,7 @@ fi
 check -w "$tunnel_wait" "tunnel refuses requests without a token" 401 -X POST "https://$PUBLIC_HOST/mcp"
 check "tunnel serves the OAuth metadata" 200 "https://$PUBLIC_HOST/.well-known/oauth-protected-resource/mcp"
 check "tunnel hides the rest" 404 "https://$PUBLIC_HOST/healthz"
+check "tunnel hides enrollment" 404 -X POST "https://$PUBLIC_HOST/enroll"
 
 if [[ ${#FAILED[@]} -eq 0 ]]; then
   cat <<EOF
@@ -418,6 +431,8 @@ if [[ -n $TOKEN ]]; then
   echo "The static MCP_GATEWAY_TOKEN is still accepted. Once the connector is signed in with"
   echo "OAuth, re-run with REMOVE_TOKEN=1 to stop accepting it."
 fi
-echo "Agent hosts: sudo mcp-gateway bridges add <url> | list | rename <name> <new name> | remove <name>"
+echo "Agent hosts: sudo mcp-gateway enroll (lets them add themselves), or bridges add <url> | list | rename <name> <new name> | remove <name>"
 echo "Logs: journalctl -u mcp-gateway -u $TUNNEL_SERVICE -f"
 [[ ${#FAILED[@]} -eq 0 ]] || exit 1
+echo
+/usr/local/bin/mcp-gateway enroll --port "$PORT" || echo "Couldn't open an enrollment window; run: sudo mcp-gateway enroll"
