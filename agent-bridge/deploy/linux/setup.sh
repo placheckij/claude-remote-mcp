@@ -328,17 +328,15 @@ fi
 # Never asked for (it's JSON); passed in, or kept from the installed settings.
 ACCOUNTS="${AGENT_BRIDGE_ACCOUNTS-$(installed ACCOUNTS)}"
 # Onto one line, with ' and $ as JSON escapes, so it fits an env file line however it was
-# written by hand (the README's example spans lines). Not JSON: kept, for check_env to name.
+# written by hand (the README's example spans lines).
 if [[ -n $ACCOUNTS ]]; then
   ACCOUNTS="$("$REPO_DIR/.venv/bin/python" -c '
 import json, sys
 try:
     text = json.dumps(json.loads(sys.argv[1]), ensure_ascii=False)
-except ValueError:
-    text = sys.argv[1]
-else:
-    text = text.replace("\x27", "\\u0027").replace("$", "\\u0024")
-print(text, end="")' "$ACCOUNTS")"
+except ValueError as error:
+    sys.exit(f"error: AGENT_BRIDGE_ACCOUNTS isn\x27t valid JSON: {error}")
+print(text.replace("\x27", "\\u0027").replace("$", "\\u0024"), end="")' "$ACCOUNTS")"
 fi
 
 # Kept, unless rotating. Nobody copies it: enrolling hands it to the gateway.

@@ -792,6 +792,20 @@ def test_accounts_written_by_hand_over_several_lines_are_kept(host: Host) -> Non
     assert json.loads(value) == accounts
 
 
+def test_accounts_that_arent_json_stop_the_setup_and_say_so(host: Host) -> None:
+    host.install()
+    with host.env_file.open("a") as env:
+        env.write("AGENT_BRIDGE_ACCOUNTS='{\n  \"work\": {\"config_dir\": null},\n}'\n")
+    before = host.env_file.read_text()
+
+    result = host.setup(check=False)
+
+    assert result.returncode != 0
+    assert "AGENT_BRIDGE_ACCOUNTS isn't valid JSON" in result.stderr
+    assert "line break" not in result.stderr
+    assert host.env_file.read_text() == before
+
+
 def test_accounts_with_an_apostrophe_or_a_dollar_are_kept(host: Host) -> None:
     from dotenv import dotenv_values
 
