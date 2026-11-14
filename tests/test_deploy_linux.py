@@ -172,6 +172,9 @@ def host(tmp_path: Path) -> Host:
     bin_dir.mkdir(parents=True)
     (bin_dir / "agent-bridge").write_text(AGENT_BRIDGE)
     (bin_dir / "agent-bridge").chmod(0o755)
+    # The real one, with agent_bridge: setup.sh checks the settings with its loader.
+    (bin_dir / "python").write_text(f'#!/bin/sh\nexec "{sys.executable}" "$@"\n')
+    (bin_dir / "python").chmod(0o755)
     stubs = tmp_path / "stubs"
     stubs.mkdir()
     for name, body in STUBS.items():
@@ -232,8 +235,27 @@ def test_your_own_claude_config_is_refused_for_the_agents(host: Host, config: st
     result = host.install(AGENT_BRIDGE_CLAUDE_CONFIG_DIR=str(host.home / config), check=False)
 
     assert result.returncode != 0
-    assert "your own Claude config" in result.stderr
+    assert "is the default Claude config" in result.stderr
     assert not host.env_file.exists()
+
+
+@pytest.mark.parametrize(("setting", "value", "refusal"), [
+    ("ALLOWED_ROOTS", "~", "AGENT_BRIDGE_ALLOWED_ROOTS"),
+    ("HOST", "myhost.local", "AGENT_BRIDGE_HOST"),
+    ("PORT", "70000", "AGENT_BRIDGE_PORT"),
+])
+def test_settings_agent_bridge_would_refuse_leave_the_installed_ones(
+        host: Host, setting: str, value: str, refusal: str) -> None:
+    host.install()
+    before = host.env_file.read_text()
+
+    result = host.setup(check=False, **{setting: value})
+
+    assert result.returncode != 0
+    assert refusal in result.stderr
+    assert "nothing was changed" in result.stderr
+    assert host.env_file.read_text() == before
+    assert f"--user restart {UNIT}" not in host.log("systemctl.log")
 
 
 def test_without_a_default_route_it_asks_for_the_address(host: Host) -> None:
@@ -546,7 +568,7 @@ def test_a_unit_path_systemd_cant_run_is_refused_before_anything_is_written(host
 def test_backslashes_in_a_setting_reach_the_bridge_unchanged_and_are_kept(host: Host) -> None:
     from dotenv import dotenv_values
 
-    accounts = '{"work": "/home/me/a\\\\b"}'
+    accounts = '{"work": {"config_dir": "/home/me/a\\\\b"}}'
 
     host.install(AGENT_BRIDGE_ACCOUNTS=accounts)
     assert dotenv_values(host.env_file)["AGENT_BRIDGE_ACCOUNTS"] == accounts
@@ -556,7 +578,7 @@ def test_backslashes_in_a_setting_reach_the_bridge_unchanged_and_are_kept(host: 
 
 
 def test_accounts_are_kept_on_a_rerun_and_removed_when_passed_empty(host: Host) -> None:
-    accounts = '{"work": "/home/me/.claude-work"}'
+    accounts = '{"work": {"config_dir": "/home/me/.claude-work"}}'
     host.install(AGENT_BRIDGE_ACCOUNTS=accounts)
 
     host.setup()
