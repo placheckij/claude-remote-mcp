@@ -42,9 +42,10 @@ QUESTION_LINES = 60
 
 
 class AgentService:
-    def __init__(self, settings: Settings, herdr: Herdr):
+    def __init__(self, settings: Settings, herdr: Herdr, bridge_id: str | None = None):
         self.settings = settings
         self.herdr = herdr
+        self.bridge_id = bridge_id
         # Serializes count-then-start and picking a free name, so concurrent requests can
         # neither exceed the limit nor give two agents the same name.
         self._start_lock = asyncio.Lock()
@@ -59,7 +60,8 @@ class AgentService:
         roots = [str(root) for root in self.settings.allowed_roots]
         return HostInfo(
             api_version=API_VERSION,
-            name=host_name(),
+            bridge_id=self.bridge_id,
+            name=self.settings.name or host_name(),
             platform=platform_name(),
             bridge_version=bridge_version(),
             herdr_version=herdr_version,

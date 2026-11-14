@@ -1,20 +1,59 @@
-"""Settings read from AGENT_BRIDGE_* environment variables, or a `.env` file in the working
-directory (the environment wins)."""
+"""Settings read from AGENT_BRIDGE_* environment variables, or the env file (state.env_file;
+the environment wins)."""
 
+import ipaddress
+import logging
 import os
 import re
 import shlex
 from pathlib import Path
 from typing import Annotated, Any
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
+from pydantic import AfterValidator, BaseModel, ConfigDict, Field, ValidationError, field_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
+from agent_bridge.state import env_file
 from agent_bridge.trust import is_default_config
 
-ENV_FILE = ".env"
+log = logging.getLogger(__name__)
+
+# Read before the env file, which wins, until the platform setups write the env file.
+LEGACY_ENV_FILE = ".env"
+# What the service needs on top of what has a default; the env file always sets them.
+SERVICE_SETTINGS = ("host", "name", "herdr_bin")
 
 ACCOUNT_NAME = re.compile(r"^[a-z][a-z0-9_-]{0,31}$")
+# The host part of the gateway's agent ids ("mac/w1:p1"), as the gateway checks it.
+NAME_PATTERN = re.compile(r"[a-z][a-z0-9-]{0,31}")
+# The characters a bearer token may have (RFC 6750); they also keep an env file plain.
+TOKEN_PATTERN = re.compile(r"[A-Za-z0-9._~+/-]+=*")
+
+
+def check_name_format(value: str) -> str:
+    if not NAME_PATTERN.fullmatch(value):
+        raise ValueError(
+            "must be a lowercase letter, then up to 31 lowercase letters, digits or -, like mac or linux-box"
+        )
+    return value
+
+
+def check_token_format(value: str) -> str:
+    if len(value) < 32:
+        raise ValueError("must be at least 32 characters")
+    if not TOKEN_PATTERN.fullmatch(value):
+        raise ValueError("may only have letters, digits, . _ ~ + / - and trailing =")
+    return value
+
+
+def check_host(value: str) -> str:
+    # The gateway is given http://HOST:PORT and calls only IP addresses.
+    try:
+        address = ipaddress.ip_address(value)
+    except ValueError:
+        raise ValueError("must be this host's IP address on the LAN, like 192.168.1.20") from None
+    if address.is_unspecified:
+        raise ValueError("must be this host's LAN address, not one that listens on every interface")
+    return value
 
 
 class Account(BaseModel):
@@ -46,9 +85,14 @@ class Settings(BaseSettings):
     # (as tests do) never picks up a stray file.
     model_config = SettingsConfigDict(env_prefix="AGENT_BRIDGE_", frozen=True, extra="ignore")
 
-    token: str = Field(min_length=32)
-    # `:`-separated (os.pathsep) in the environment.
+    token: Annotated[str, AfterValidator(check_token_format)]
+    # os.pathsep-separated in the environment: ":", or ";" on Windows.
     allowed_roots: Annotated[tuple[Path, ...], NoDecode]
+    # The LAN address to listen on, which the gateway is given too.
+    host: Annotated[str, AfterValidator(check_host)] | None = None
+    port: int = Field(default=8765, ge=1, le=65535)
+    # This host's name in the gateway's agent ids, e.g. "mac".
+    name: Annotated[str, AfterValidator(check_name_format)] | None = None
     # Passed to agents as CLAUDE_CONFIG_DIR; None leaves Claude Code on its default config.
     # Agents that no account below applies to use it.
     claude_config_dir: Path | None = None
@@ -68,10 +112,19 @@ class Settings(BaseSettings):
 
     @classmethod
     def from_env(cls) -> "Settings":
+        path = env_file()
+        files: tuple[Path, ...] = (path,)
+        if _has_settings(Path(LEGACY_ENV_FILE)):
+            log.warning(
+                "Reading settings from %s in the working folder too; move them to %s, which wins. "
+                "The next release reads only that.",
+                Path(LEGACY_ENV_FILE).absolute(), path,
+            )
+            files = (Path(LEGACY_ENV_FILE), path)
         try:
-            settings = cls(_env_file=ENV_FILE)
+            settings = cls(_env_file=files)
         except ValidationError as error:
-            raise RuntimeError(describe(error, cls.model_config["env_prefix"])) from None
+            raise RuntimeError(describe(error, cls.model_config["env_prefix"], path)) from None
         # Checked here rather than in a model validator so tests can still build this
         # combination and show trust.py refusing the default config on its own.
         if settings.trust_root and not settings.claude_config_dir:
@@ -140,6 +193,19 @@ class Settings(BaseSettings):
                 owners[folder] = name
         return accounts
 
+    def missing_for_service(self) -> list[str]:
+        """The environment variables the service needs that weren't set."""
+        prefix = self.model_config["env_prefix"]
+        return [f"{prefix}{name.upper()}" for name in SERVICE_SETTINGS if name not in self.model_fields_set]
+
+    @property
+    def url(self) -> str | None:
+        """The address the gateway reaches this bridge at."""
+        if self.host is None:
+            return None
+        host = f"[{self.host}]" if ":" in self.host else self.host
+        return f"http://{host}:{self.port}"
+
     def account_for(self, folder: Path) -> str | None:
         """The account whose folders hold `folder` most closely, if any."""
         matches = [
@@ -159,6 +225,13 @@ def claude_env(config_dir: Path | None) -> dict[str, str]:
     return {} if config_dir is None else {"CLAUDE_CONFIG_DIR": str(config_dir)}
 
 
+def _has_settings(path: Path) -> bool:
+    """Whether a file has AGENT_BRIDGE_* lines; a checkout's .env may be mcp-gateway's."""
+    try:
+        return any(line.lstrip().startswith("AGENT_BRIDGE_") for line in path.read_text().splitlines())
+    except (OSError, UnicodeDecodeError):
+        return False
+
 
 def narrow_folder(folder: Path) -> Path:
     """`folder` resolved, if it is absolute and narrower than the home folder.
@@ -169,6 +242,10 @@ def narrow_folder(folder: Path) -> Path:
     """
     if not folder.expanduser().is_absolute():
         raise ValueError(f"{folder} must be an absolute path")
+    # resolve() leaves \\?\C:\Users\me and \\localhost\C$\Users\me as they are, so the home
+    # check below wouldn't see them as home.
+    if os.name == "nt" and str(folder).startswith("\\\\"):
+        raise ValueError(f"{folder} must be on a drive, like C:\\projects, not a \\\\ path")
     resolved = folder.expanduser().resolve()
     home = Path.home().resolve()
     if home.is_relative_to(resolved):
@@ -178,7 +255,7 @@ def narrow_folder(folder: Path) -> Path:
     return resolved
 
 
-def describe(error: ValidationError, prefix: str) -> str:
+def describe(error: ValidationError, prefix: str, path: Path | None = None) -> str:
     """One line per problem, naming the environment variable rather than the field."""
     lines = []
     for problem in error.errors():
@@ -190,4 +267,5 @@ def describe(error: ValidationError, prefix: str) -> str:
             where = f" ({'.'.join(inside)})" if inside else ""
             message = f"{prefix}{variable.upper()}{where}: {message}"
         lines.append(message)
-    return "Invalid settings:\n" + "\n".join(f"  {line}" for line in lines)
+    source = f" (env file: {path})" if path else ""
+    return f"Invalid settings{source}:\n" + "\n".join(f"  {line}" for line in lines)

@@ -14,6 +14,8 @@ from mcp_gateway.server import LevelFormatter, create_app, main
 
 TOKEN = "g" * 32
 HOST = "mcp.example.com"
+# Requests come through the local cloudflared; only it reaches /mcp.
+CLOUDFLARED = ("127.0.0.1", 50000)
 BRIDGE_URL = "http://agents.lan:8765"
 SETTINGS = Settings(
     token=TOKEN,
@@ -94,7 +96,7 @@ def bridge_for(fake: FakeAgentBridge) -> AgentBridge:
 
 @pytest.fixture
 def client(fake: FakeAgentBridge, tmp_path: Path):
-    with TestClient(app(bridge_for(fake), tmp_path), base_url=f"https://{HOST}") as test_client:
+    with TestClient(app(bridge_for(fake), tmp_path), base_url=f"https://{HOST}", client=CLOUDFLARED) as test_client:
         yield test_client
 
 
@@ -688,7 +690,7 @@ def response_start(client: TestClient, method: str, headers: dict[str, str]) -> 
             "type": "http", "asgi": {"version": "3.0"}, "http_version": "1.1", "method": method,
             "scheme": "https", "path": "/mcp", "raw_path": b"/mcp", "query_string": b"", "root_path": "",
             "headers": [(name.lower().encode(), value.encode()) for name, value in headers.items()],
-            "client": ("testclient", 50000), "server": (HOST, 443), "state": {},
+            "client": CLOUDFLARED, "server": (HOST, 443), "state": {},
         }
         with anyio.fail_after(5):
             await client.app(scope, receive, send)
@@ -773,7 +775,7 @@ def test_under_systemd_every_line_carries_the_journal_priority() -> None:
 
 def test_closes_the_agent_bridge_client_on_shutdown(tmp_path: Path) -> None:
     http = httpx.AsyncClient(base_url=BRIDGE_URL, transport=httpx.MockTransport(FakeAgentBridge({})))
-    with TestClient(app(AgentBridge(http), tmp_path), base_url=f"https://{HOST}"):
+    with TestClient(app(AgentBridge(http), tmp_path), base_url=f"https://{HOST}", client=CLOUDFLARED):
         assert not http.is_closed
     assert http.is_closed
 
@@ -831,7 +833,7 @@ def test_without_a_projects_root_only_absolute_paths_start(fake: FakeAgentBridge
     fake.routes[("GET", "/info")] = NO_INFO
     fake.routes[("POST", "/agents")] = httpx.Response(201, json={**AGENT, "id": "w9:p1"})
     gateway = app(bridge_for(fake), tmp_path, projects_root=None)
-    with TestClient(gateway, base_url=f"https://{HOST}") as c:
+    with TestClient(gateway, base_url=f"https://{HOST}", client=CLOUDFLARED) as c:
         is_error, text = call_tool(c, "start_agent", project="grafik")
         assert is_error and text.endswith(
             "This agent host can't look up project names; give the project as an absolute path."
@@ -863,7 +865,7 @@ def test_folders_are_named_relative_to_the_projects_root(client: TestClient, fak
 def test_without_a_projects_root_old_agents_show_their_folder(fake: FakeAgentBridge, tmp_path: Path) -> None:
     fake.routes[("GET", "/agents")] = httpx.Response(200, json=[OLD_AGENT])
     gateway = app(bridge_for(fake), tmp_path, projects_root=None)
-    with TestClient(gateway, base_url=f"https://{HOST}") as c:
+    with TestClient(gateway, base_url=f"https://{HOST}", client=CLOUDFLARED) as c:
         assert call_tool(c, "list_agents")[1].endswith("· /home/me/projects/grafik")
 
 
@@ -901,7 +903,7 @@ def test_a_connect_timeout_says_the_host_may_be_asleep(tmp_path: Path) -> None:
         raise httpx.ConnectTimeout("timed out", request=request)
 
     bridge = AgentBridge(httpx.AsyncClient(base_url=BRIDGE_URL, transport=httpx.MockTransport(asleep)))
-    with TestClient(app(bridge, tmp_path), base_url=f"https://{HOST}") as test_client:
+    with TestClient(app(bridge, tmp_path), base_url=f"https://{HOST}", client=CLOUDFLARED) as test_client:
         is_error, text = call_tool(test_client, "list_agents")
     assert is_error
     assert text.endswith("The agent host is not reachable (ConnectTimeout). It may be asleep or offline.")

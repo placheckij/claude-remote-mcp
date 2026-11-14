@@ -6,9 +6,13 @@ requires-python = ">=3.11"
 license = "MIT"
 dependencies = [
     "fastapi>=0.143.0",
+    "httpx>=0.28.1",
     "pydantic-settings>=2.16.1",
     "uvicorn[standard]>=0.54.0",
 ]
+
+[project.scripts]
+agent-bridge = "agent_bridge.cli:main"
 
 [build-system]
 requires = ["hatchling"]
