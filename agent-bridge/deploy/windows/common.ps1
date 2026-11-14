@@ -130,6 +130,8 @@ function Invoke-Native {
     # console's code page.
     $savedEncoding = $null
     try { $savedEncoding = [Console]::OutputEncoding; [Console]::OutputEncoding = New-Object Text.UTF8Encoding $false } catch { $savedEncoding = $null }
+    # A program that can't be started leaves $LASTEXITCODE as the last one's: -1 says so.
+    $global:LASTEXITCODE = -1
     try {
         $script:NativeOutput = @(& $FilePath @ArgumentList 2>&1 | ForEach-Object {
                 $text = if ($_ -is [Management.Automation.ErrorRecord]) { $_.Exception.Message } else { [string]$_ }
@@ -147,7 +149,7 @@ function Invoke-Native {
 function Get-InstalledPort {
     <# The port the env file sets, else agent-bridge's default. #>
     $port = (Read-EnvFile $script:EnvFile).Values['AGENT_BRIDGE_PORT']
-    if ($port -match '^\d{1,5}$') { return [int]$port }
+    if ($port -match '^\d{1,5}$' -and [int]$port -ge 1 -and [int]$port -le 65535) { return [int]$port }
     return 8765
 }
 

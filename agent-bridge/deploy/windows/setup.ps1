@@ -225,8 +225,9 @@ function Test-FirewallRule([int]$Port) {
 }
 
 function Wait-Bridge([int]$Port) {
-    <# Whether agent-bridge listens on $Port within 15 s. #>
-    for ($i = 0; $i -lt 30; $i++) {
+    <# Whether agent-bridge listens on $Port within 30 s (a first start after uv sync, with
+       Python compiling and Defender scanning new files, can take a while). #>
+    for ($i = 0; $i -lt 60; $i++) {
         $holder = Get-PortHolder $Port
         if ($holder -and (Test-IsBridge $holder.CommandLine)) { return $true }
         Start-Sleep -Milliseconds 500
@@ -234,11 +235,12 @@ function Wait-Bridge([int]$Port) {
     return $false
 }
 
-function Start-Bridge([int]$Port) {
-    <# Starts the task; whether agent-bridge then listens on $Port. #>
-    # Stop-Bridge leaves it disabled; this also brings back the every-minute repeat.
-    Resume-Task
-    Start-ScheduledTask -TaskName $TaskName -TaskPath '\'
+function Start-Bridge([int]$Port, [switch]$Registered) {
+    <# Starts the task; whether agent-bridge then listens on $Port. Registering the task fires
+       its registration trigger, which starts it with the every-minute repeat: -Registered
+       when that just happened, else the task (left disabled by Stop-Bridge) is registered
+       again here. #>
+    if (-not $Registered) { Resume-Task }
     if (Wait-Bridge $Port) { return $true }
     Write-Warn "agent-bridge isn't listening on port $Port. The end of $LogFile`:"
     if (Test-Path -LiteralPath $LogFile) { Get-Content -LiteralPath $LogFile -Tail 15 -Encoding UTF8 | ForEach-Object { Write-Host "  $_" } }
@@ -280,6 +282,12 @@ try {
     $found = Find-Bridge $Bridge
     $Exe = $found.Exe
     $Checkout = $found.Checkout
+    # Setup moves the task to the agent-bridge it is run from (a newer checkout or package);
+    # say so, since one installed with -Bridge is otherwise dropped without a word.
+    $installedExe = Get-InstalledExe
+    if ($installedExe -and -not [string]::Equals($installedExe, $Exe, [StringComparison]::OrdinalIgnoreCase)) {
+        Write-Host "The task ran $installedExe; it will run $Exe. To keep the other one, pass -Bridge $(Format-Quoted $installedExe)."
+    }
     $Synced = $false
     if ($Checkout) {
         if (-not (Get-Command uv -ErrorAction SilentlyContinue)) {
@@ -378,10 +386,16 @@ try {
     }
     if ($Bound.ContainsKey('TrustRoot')) {
         $Optional['AGENT_BRIDGE_TRUST_ROOT'] = if ($TrustRoot) { ConvertTo-FullPath $TrustRoot '-TrustRoot' } else { '' }
-        if ($TrustRoot) { Assert-Narrow $Optional['AGENT_BRIDGE_TRUST_ROOT'] '-TrustRoot' }
     }
     $ConfigDir = if ($Optional.Contains('AGENT_BRIDGE_CLAUDE_CONFIG_DIR')) { $Optional['AGENT_BRIDGE_CLAUDE_CONFIG_DIR'] } else { Get-Installed 'CLAUDE_CONFIG_DIR' }
     $Trust = if ($Optional.Contains('AGENT_BRIDGE_TRUST_ROOT')) { $Optional['AGENT_BRIDGE_TRUST_ROOT'] } else { Get-Installed 'TRUST_ROOT' }
+    # As agent-bridge refuses them at startup, passed in or installed: caught here, they don't
+    # replace a working bridge with one that won't start.
+    if ($Trust) { Assert-Narrow ([IO.Path]::GetFullPath($Trust)) 'The trust root' }
+    $defaultConfig = Join-Path ([IO.Path]::GetFullPath($env:USERPROFILE)) '.claude'
+    if ($ConfigDir -and [string]::Equals([IO.Path]::GetFullPath($ConfigDir).TrimEnd('\'), $defaultConfig, [StringComparison]::OrdinalIgnoreCase)) {
+        Stop-Setup "the agents' Claude config can't be your own ($defaultConfig): use a separate folder, e.g. ~\.claude-agents"
+    }
     if ($Trust -and -not $ConfigDir) {
         Stop-Setup 'a trust root needs -ClaudeConfigDir: folders are only ever trusted in a separate Claude config'
     }
@@ -393,8 +407,10 @@ try {
     # logs process starts. agent-bridge check (below) checks the settings it is in.
     if ($NewToken) { $Token = New-Token }
 
-    # cmd.exe would expand %...% in these, inside quotes too.
-    foreach ($path in @($Exe, $LogFile)) { if ($path.Contains('%')) { Stop-Setup "agent-bridge can't run from a path with % in it: $path" } }
+    # cmd.exe would expand %...% in these, inside quotes too, and `call` doubles a ^.
+    foreach ($path in @($Exe, $LogFile, $RunFile)) {
+        if ($path -match '[%^]') { Stop-Setup "agent-bridge can't run from a path with % or ^ in it: $path" }
+    }
 
     # --- Port ------------------------------------------------------------------------------
 
@@ -499,7 +515,7 @@ try {
     Register-ScheduledTask -TaskName $TaskName -TaskPath '\' -Xml $xml -Force | Out-Null
     # Registered enabled.
     $script:TaskDisabled = $false
-    $Started = Start-Bridge $Port
+    $Started = Start-Bridge $Port -Registered
 
     # --- Enroll ----------------------------------------------------------------------------
 
