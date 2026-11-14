@@ -54,7 +54,10 @@ function Get-ScheduledTask { param($TaskName, $TaskPath, $ErrorAction)
 function Register-ScheduledTask { param($TaskName, $TaskPath, $Xml, [switch]$Force)
     Add-Call "Register-ScheduledTask $TaskPath$TaskName"
     Set-Content -LiteralPath $env:FAKE_TASK_XML -Value $Xml -Encoding Unicode
-    $f = Get-Fake; $f.task = $true; $f.enabled = $true; Set-Fake $f; [pscustomobject]@{} }
+    $f = Get-Fake; $f.task = $true; $f.enabled = $true; Set-Fake $f
+    # Its registration trigger starts it, as Task Scheduler does.
+    Start-ScheduledTask -TaskName $TaskName -TaskPath $TaskPath
+    [pscustomobject]@{} }
 function Export-ScheduledTask { param($TaskName, $TaskPath)
     Get-Content -LiteralPath $env:FAKE_TASK_XML -Raw -Encoding Unicode }
 function Wait-Process { param($Id, $Timeout, $ErrorAction) }
@@ -72,6 +75,8 @@ function Start-ScheduledTask { param($TaskName, $TaskPath)
     Add-Call "Start-ScheduledTask $TaskPath$TaskName"
     # As Task Scheduler does, which won't start a disabled task.
     if (-not (Get-Fake).enabled) { throw 'The task is disabled.' }
+    # MultipleInstancesPolicy IgnoreNew.
+    if (@((Get-Fake).listen | Where-Object { $_.pid -eq 4242 }).Count -gt 0) { return }
     $port = 8765
     foreach ($line in Get-Content -LiteralPath (Join-Path $env:APPDATA 'agent-bridge\env')) {
         if ($line -match '^AGENT_BRIDGE_PORT=(\d+)') { $port = [int]$Matches[1] } }
@@ -471,7 +476,8 @@ def test_setup_disables_the_task_while_it_replaces_the_bridge(machine: Machine) 
     # Otherwise the task's one-minute repeat could start the old bridge in between.
     calls = machine.calls()
     assert calls.index(r"Disable-ScheduledTask \agent-bridge") < calls.index(r"Stop-ScheduledTask \agent-bridge")
-    assert calls.index(r"Enable-ScheduledTask \agent-bridge") < calls.index(r"Start-ScheduledTask \agent-bridge")
+    # Registering it again enables it, and its registration trigger starts it.
+    assert calls.index(r"Disable-ScheduledTask \agent-bridge") < calls.index(r"Register-ScheduledTask \agent-bridge")
 
 
 def test_enter_at_the_public_network_question_leaves_it_public(machine: Machine) -> None:
@@ -559,7 +565,7 @@ def test_an_error_after_stopping_the_bridge_enables_the_task_again(machine: Mach
     assert machine.fake()["enabled"] is True
     # And registered again, which starts it with its every-minute repeat: Stop-Bridge ended
     # the bridge, and enabling fires no trigger.
-    assert calls[-1] == r"Register-ScheduledTask \agent-bridge"
+    assert calls.index(r"Register-ScheduledTask \agent-bridge") > calls.index(r"Enable-ScheduledTask \agent-bridge")
 
 
 def test_a_declined_uac_prompt_prints_every_command_to_run(machine: Machine) -> None:
@@ -706,3 +712,30 @@ def test_a_rename_on_the_gateway_restarts_the_task_with_its_repeat(machine: Mach
     calls = machine.calls()
     renamed = calls.index(r"Disable-ScheduledTask \agent-bridge")
     assert r"Register-ScheduledTask \agent-bridge" in calls[renamed:]
+
+
+def test_the_agents_config_cant_be_the_default_one(machine: Machine) -> None:
+    output = machine.setup(f"-ClaudeConfigDir '{machine.profile}\\.claude'", "-Enrollment ''", input="\n\n", expect=1)
+
+    assert "can't be your own" in output
+
+
+def test_switching_from_an_agent_bridge_installed_elsewhere_is_said(machine: Machine) -> None:
+    machine.setup("-Enrollment ''", input="\n\n")
+    other = machine.root / "other" / "agent-bridge.cmd"
+    other.parent.mkdir()
+    other.write_text(machine.bridge.read_text())
+
+    output = machine.run("setup.ps1", f"-Bridge '{other}'")
+
+    assert f"The task ran {machine.bridge}; it will run {other}." in output
+
+
+def test_uninstall_goes_on_with_a_port_out_of_range(machine: Machine) -> None:
+    machine.setup("-Enrollment ''", input="\n\n")
+    with machine.env_file.open("a", encoding="utf-8") as file:
+        file.write("AGENT_BRIDGE_PORT=70000\n")
+
+    machine.run("uninstall.ps1")
+
+    assert not (machine.appdata / "agent-bridge").exists()

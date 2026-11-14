@@ -503,9 +503,10 @@ Get-CimInstance Win32_Process | Where-Object {
   ($_.Name -eq 'cmd.exe' -and $_.CommandLine -like "*$run*") -or $_.CommandLine -match 'agent-bridge(\.exe)?"? serve'
 } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }
 
-# Start again (re-running setup does this too)
+# Start again (re-running setup does this too). Registering it again, rather than only
+# starting it, also brings back the every-minute retry, which disabling ended.
 Enable-ScheduledTask -TaskName agent-bridge
-Start-ScheduledTask -TaskName agent-bridge
+Register-ScheduledTask -TaskName agent-bridge -Xml (Export-ScheduledTask -TaskName agent-bridge) -Force
 
 # Uninstall: leaves the gateway, then removes the task, the firewall rule, the env file,
 # the state file and the log. The checkout stays.
