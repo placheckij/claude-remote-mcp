@@ -713,6 +713,48 @@ def test_settings_written_with_export_are_taken_over(host: Host) -> None:
     assert host.env()["AGENT_BRIDGE_NAME"] == "linux-box"
 
 
+def test_settings_are_read_as_the_loader_reads_them(host: Host) -> None:
+    host.install()
+    other = host.home / "other"
+    other.mkdir()
+    lines = host.env_file.read_text().splitlines()
+    host.env_file.write_text("".join(
+        f"AGENT_BRIDGE_ALLOWED_ROOTS={other}  # main\n" if line.startswith("AGENT_BRIDGE_ALLOWED_ROOTS=")
+        else "AGENT_BRIDGE_PORT=\"8770\"  # moved\n" if line.startswith("AGENT_BRIDGE_PORT=")
+        else f"{line}\n" for line in lines))
+
+    host.setup()
+
+    assert host.env()["AGENT_BRIDGE_ALLOWED_ROOTS"] == str(other)
+    assert host.env()["AGENT_BRIDGE_PORT"] == "8770"
+
+
+def test_a_double_quoted_escape_is_read_as_the_loader_reads_it(host: Host) -> None:
+    from dotenv import dotenv_values
+
+    host.install()
+    accounts = '{"work": {"config_dir": "/home/me/a\\\\b"}}'
+    with host.env_file.open("a") as env:
+        env.write('AGENT_BRIDGE_ACCOUNTS="{\\"work\\": {\\"config_dir\\": \\"/home/me/a\\\\\\\\b\\"}}"\n')
+    assert dotenv_values(host.env_file)["AGENT_BRIDGE_ACCOUNTS"] == accounts
+
+    host.setup()
+
+    assert dotenv_values(host.env_file)["AGENT_BRIDGE_ACCOUNTS"] == accounts
+
+
+def test_settings_that_cant_be_read_stop_the_setup_and_keep_the_token(host: Host) -> None:
+    host.install()
+    before = host.env_file.read_text()
+    (host.repo / ".venv" / "bin" / "python").write_text("#!/bin/sh\nexit 1\n")
+
+    result = host.setup(check=False)
+
+    assert result.returncode != 0
+    assert "couldn't read" in result.stderr
+    assert host.env_file.read_text() == before
+
+
 def test_rotate_token_0_is_off(host: Host) -> None:
     host.install()
     first = host.env()["AGENT_BRIDGE_TOKEN"]
