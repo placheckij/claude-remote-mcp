@@ -969,3 +969,30 @@ def test_a_skipped_check_isnt_called_failed(machine: Machine) -> None:
 
     assert "A check failed" not in output
     assert "Not enrolling now" not in output
+
+
+def test_a_reference_to_a_variable_only_this_window_has_is_not_counted(machine: Machine) -> None:
+    machine.setup("-Enrollment ''", input="\n\n")
+    text = machine.env_file.read_text(encoding="utf-8")
+    text = text.replace(f"AGENT_BRIDGE_HERDR_BIN={machine.herdr}", r"AGENT_BRIDGE_HERDR_BIN=${HERDR_HOME}\herdr.exe")
+    machine.env_file.write_text(text, encoding="utf-8")
+
+    # HERDR_HOME is set here but not in the logon environment the task gets: setup finds
+    # herdr again instead of keeping a reference the service couldn't resolve.
+    machine.setup(HERDR_HOME=str(machine.herdr.parent))
+
+    assert machine.env()["AGENT_BRIDGE_HERDR_BIN"] == str(machine.herdr)
+
+
+def test_uninstall_falls_back_to_the_installed_agent_bridge(machine: Machine) -> None:
+    machine.setup(f"-Enrollment '{STRING}'", input="\n\n")
+
+    machine.run("uninstall.ps1", f"-Bridge '{machine.root / 'gone' / 'agent-bridge.exe'}'")
+
+    assert machine.calls()[0] == "agent-bridge unenroll"
+
+
+def test_an_unreadable_desktop_owner_is_refused(machine: Machine) -> None:
+    output = machine.setup("-Enrollment ''", expect=1, FAKE_DESKTOP_USER="\\")
+
+    assert "run setup.ps1 as the user logged on here" in output
