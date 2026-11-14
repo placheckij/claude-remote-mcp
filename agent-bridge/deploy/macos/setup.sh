@@ -166,7 +166,8 @@ ours() { # ours PID: whether PID is this service, by launchd's PID or else its c
   local pattern='agent-bridge serve|agent_bridge'
   [[ $1 != "?" ]] || return 1
   [[ $1 != "$(launchctl print "$DOMAIN/$LABEL" 2>/dev/null | awk '$1 == "pid" {print $3; exit}' || true)" ]] || return 0
-  [[ $(command_of "$1") =~ $pattern ]]
+  # Started by launchd (PID 1): a bridge started by hand runs under a shell, and keeps the port.
+  [[ $(ps -o ppid= -p "$1" 2>/dev/null | tr -d ' ' || true) == 1 && $(command_of "$1") =~ $pattern ]]
 }
 
 enrolled() { # enrolled KEY: the gateway's KEY (name, url) from the state file, or nothing
@@ -201,6 +202,8 @@ done
 NAME_GIVEN=${NAME+x}
 DEFAULT_NAME="$(hostname -s | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9]+/-/g; s/^-+//; s/-+$//')"
 pick NAME NAME || ask NAME "This host's name in agent ids, like $DEFAULT_NAME/w1:p1" "${DEFAULT_NAME:-agent-host}"
+# Unless one is passed in, the name the gateway has now, e.g. after `bridges rename` there.
+[[ -n $NAME_GIVEN || -z $(enrolled name) ]] || NAME="$(enrolled name)"
 until bridge check --name-format "$NAME"; do
   ask NAME "This host's name" "" "required"
   [[ -n $NAME ]] || die "NAME is required"
@@ -388,11 +391,15 @@ start_service
 # --- Enroll --------------------------------------------------------------------------
 
 ENROLLED_NOW=""
+GATEWAY_TOOK=""
 NAME_TAKEN=""
 while [[ -n $ENROLLMENT ]]; do
   log "Enrolling with the gateway"
   status=0
-  bridge enroll "$ENROLLMENT" || status=$?
+  output="$(bridge enroll "$ENROLLMENT" 2>&1)" || status=$?
+  printf '%s\n' "$output"
+  # It exits 1 too when the gateway took it but the state file couldn't be written.
+  [[ $output != *"The gateway enrolled this host as"* ]] || GATEWAY_TOOK=1
   case $status in
     0) ENROLLED_NOW=1; break ;;
     3) # The gateway has another host by that name.
@@ -414,8 +421,8 @@ done
 
 # Unless the gateway took the new token, it still has the installed one, and the new one
 # would lock it out. `enroll` can fail after the gateway took it (a state file it can't
-# write), so the gateway is asked.
-if [[ -n ${ROTATE_TOKEN:-} && -z $ENROLLED_NOW && -n $INSTALLED_TOKEN ]] \
+# write, or a lost answer), so its output and the gateway itself are asked.
+if [[ -n ${ROTATE_TOKEN:-} && -z $ENROLLED_NOW && -z $GATEWAY_TOOK && -n $INSTALLED_TOKEN ]] \
   && [[ $(bridge check 2>&1 || true) != *"ok    the gateway at"* ]]; then
   TOKEN=$INSTALLED_TOKEN
   write_env
