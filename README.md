@@ -49,7 +49,9 @@ The gateway and the agent host can be one machine.
    (`sudo mcp-gateway enroll` prints a new one).
 3. **Agent hosts:** on a Mac, run
    [`agent-bridge/deploy/macos/setup.sh`](agent-bridge/README.md#with-the-setup-script)
-   and paste that string when asked; it installs the service and enrolls it. Elsewhere,
+   and paste that string when asked; it installs the service and enrolls it. On Linux,
+   [`agent-bridge/deploy/linux/setup.sh`](agent-bridge/README.md#as-a-service-on-linux-systemd-user-unit)
+   does the same with a systemd user service. Elsewhere,
    start [agent-bridge](agent-bridge/README.md#run), then
    [enroll](agent-bridge/README.md#enroll-with-the-gateway) it with that string.
 4. **claude.ai:** [add the custom connector](mcp-gateway/README.md#add-the-connector-in-claudeai)

@@ -71,3 +71,14 @@ jobs:
           persist-credentials: false
       - name: Check the setup scripts
         run: shellcheck mcp-gateway/deploy/setup.sh agent-bridge/deploy/setup-macos.sh agent-bridge/deploy/macos/*.sh
+
+  # The Linux bridge deploy (#60). Its tests run in the ubuntu tests job above.
+  linux-deploy:
+    name: shellcheck (agent-bridge/deploy/linux)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Check the Linux setup scripts
+        run: shellcheck agent-bridge/deploy/linux/*.sh
