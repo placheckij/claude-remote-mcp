@@ -173,24 +173,11 @@ listener() { # listener PORT: the PID listening on PORT, "?" when only netstat s
 
 command_of() { ps -o command= -p "$1" 2>/dev/null || true; }
 
-plist_command() { # the installed plist's ProgramArguments, space-separated as ps shows them
-  local i=0 arg command=""
-  while arg="$(plist_value "ProgramArguments:$i")" && [[ -n $arg ]]; do
-    command="${command:+$command }$arg"
-    i=$((i + 1))
-  done
-  printf '%s' "$command"
-}
-
-ours() { # ours PID: whether PID is this service, by launchd's PID or else its command line
-  local command
+ours() { # ours PID: whether PID is this service, the one launchd runs under its label
+  # (the version being replaced has the same label). Not by command line: a bridge started
+  # by hand can run the same command, and keeps the port.
   [[ $1 != "?" ]] || return 1
-  [[ $1 != "$(launchctl print "$DOMAIN/$LABEL" 2>/dev/null | awk '$1 == "pid" {print $3; exit}' || true)" ]] || return 0
-  # Run by launchd (PID 1) with the installed plist's command, after the interpreter ps
-  # shows in front of a script. A bridge started by hand keeps the port.
-  command="$(plist_command)"
-  [[ -n $command && $(ps -o ppid= -p "$1" 2>/dev/null | tr -d ' ' || true) == 1 ]] || return 1
-  [[ $(command_of "$1") == "$command" || $(command_of "$1") == *" $command" ]]
+  [[ $1 == "$(launchctl print "$DOMAIN/$LABEL" 2>/dev/null | awk '$1 == "pid" {print $3; exit}' || true)" ]]
 }
 
 enrolled() { # enrolled KEY: the gateway's KEY (name, url) from the state file, or nothing
@@ -232,10 +219,13 @@ if [[ $SOURCE == env_file && -n $(enrolled name) ]] \
 fi
 
 NAME_GIVEN=${NAME+x}
-DEFAULT_NAME="$(hostname -s | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9]+/-/g; s/^-+//; s/-+$//')"
-pick NAME NAME || ask NAME "This host's name in agent ids, like $DEFAULT_NAME/w1:p1" "${DEFAULT_NAME:-agent-host}"
 # Unless one is passed in, the name the gateway has now, e.g. after `bridges rename` there.
 [[ -n $NAME_GIVEN || -z $(enrolled name) ]] || NAME="$(enrolled name)"
+# The hostname as a valid name: a letter first, at most 32 characters.
+DEFAULT_NAME="$(hostname -s | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9]+/-/g; s/^-+//; s/-+$//')"
+[[ $DEFAULT_NAME =~ ^[a-z] ]] || DEFAULT_NAME="mac${DEFAULT_NAME:+-$DEFAULT_NAME}"
+DEFAULT_NAME="$(printf '%s' "${DEFAULT_NAME:0:32}" | sed -E 's/-+$//')"
+pick NAME NAME || ask NAME "This host's name in agent ids, like $DEFAULT_NAME/w1:p1" "$DEFAULT_NAME"
 until bridge check --name-format "$NAME"; do
   ask NAME "This host's name" "" "required"
   [[ -n $NAME ]] || die "NAME is required"
