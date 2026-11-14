@@ -73,15 +73,29 @@ bridge() { # the venv's agent-bridge, reading only the files this script writes
   )
 }
 
-env_value() { # env_value KEY: the installed AGENT_BRIDGE_KEY as serve's loader reads it
-  # (quotes, escapes, `export`, comments); exits 3 when the file doesn't set it.
+env_file() { # env_file get KEY | others: the env file as serve's loader reads it: python-dotenv
+  # (quotes, escapes, comments, `export`, spaces) with names in any case, the last one winning.
+  # get prints AGENT_BRIDGE_KEY's value, or exits 3 when no line sets it; others prints every
+  # line but the ones setting a setting this script writes.
   "$REPO_DIR/.venv/bin/python" -c '
-import sys
-from dotenv import dotenv_values
-value = dotenv_values(sys.argv[1]).get(sys.argv[2])
-if value is None:
-    sys.exit(3)
-print(value, end="")' "$ENV_FILE" "AGENT_BRIDGE_$1"
+import re, sys
+from dotenv.parser import parse_stream
+path, mode, managed = sys.argv[1:4]
+with open(path) as file:
+    bindings = list(parse_stream(file))
+if mode == "get":
+    values = [b.value for b in bindings if b.key and b.key.upper() == managed]
+    if not values or values[-1] is None:
+        sys.exit(3)
+    print(values[-1], end="")
+else:
+    for b in bindings:
+        if not (b.key and re.fullmatch(managed, b.key, re.IGNORECASE)):
+            sys.stdout.write(b.original.string)' "$ENV_FILE" "$@"
+}
+
+env_value() { # env_value KEY: the installed AGENT_BRIDGE_KEY; exits 3 when the file doesn't set it
+  env_file get "AGENT_BRIDGE_$1"
 }
 
 installed() { # installed KEY: the installed AGENT_BRIDGE_KEY, or nothing
@@ -359,7 +373,7 @@ write_env() {
     line CLAUDE_CONFIG_DIR "$AGENT_BRIDGE_CLAUDE_CONFIG_DIR"
     line TRUST_ROOT "$TRUST_ROOT"
     [[ -z $ACCOUNTS ]] || line ACCOUNTS "$ACCOUNTS"
-    [[ ! -f $ENV_FILE ]] || grep -Ev "^(export[[:space:]]+)?AGENT_BRIDGE_($MANAGED)=" "$ENV_FILE" || true
+    [[ ! -f $ENV_FILE ]] || env_file others "AGENT_BRIDGE_($MANAGED)" || die "couldn't read $ENV_FILE"
   } >"$TMP_ENV"
   # Before it replaces the working settings, or the service would fail at every start.
   check_env "$TMP_ENV" || die "agent-bridge won't start with these settings (above); nothing was changed"
