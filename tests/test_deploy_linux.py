@@ -83,7 +83,12 @@ case $1 in
   check)
     case $2 in
       --name-format) case $3 in ''|*[!a-z0-9-]*) echo "The name must be lowercase." >&2; exit 2 ;; esac ;;
-      *) echo "ok    agent-bridge answers" ;;
+      *)
+        echo "ok    agent-bridge answers"
+        # As check saves the name the gateway answers with: $HOME/gateway-name, if any.
+        if [ -f "$HOME/gateway-name" ] && [ -f "$state" ]; then
+          sed -i "s/\\"name\\": \\"[^\\"]*\\"/\\"name\\": \\"$(cat "$HOME/gateway-name")\\"/" "$state"
+        fi ;;
     esac ;;
   enroll)
     code=$(head -n 1 "$HOME/enroll-codes" 2>/dev/null)
@@ -604,6 +609,18 @@ def test_a_rename_done_on_the_gateway_is_followed(host: Host) -> None:
     assert not [line for line in host.log("agent-bridge.log") if line.startswith("enroll")]
     assert "as studio" in result.stdout
     assert "bridges rename" not in result.stdout
+
+
+def test_a_rename_on_the_gateway_the_bridge_hasnt_seen_isnt_undone_by_enrolling(host: Host) -> None:
+    host.install()
+    # Renamed on the gateway while the bridge ran: its state file has the old name until it
+    # next asks the gateway, at the restart.
+    (host.home / "gateway-name").write_text("studio")
+
+    result = host.setup(ROTATE_TOKEN="1", ENROLLMENT=ENROLLMENT)
+
+    assert host.env()["AGENT_BRIDGE_NAME"] == "studio"
+    assert "as studio" in result.stdout
 
 
 def test_settings_written_with_export_are_taken_over(host: Host) -> None:
