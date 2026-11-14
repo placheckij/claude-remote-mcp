@@ -736,6 +736,8 @@ def test_a_taken_name_is_asked_again(mac: Mac) -> None:
     assert mac.env()["AGENT_BRIDGE_NAME"] == "studio"
     assert mac.log("agent-bridge.log").count(f"enroll {ENROLLMENT}") == 2
     assert "as studio" in result.stdout
+    # The way out when it's this Mac's own record from an older address.
+    assert "sudo mcp-gateway bridges remove mac" in result.stdout
 
 
 def test_a_taken_name_with_no_input_left_stops(mac: Mac) -> None:
