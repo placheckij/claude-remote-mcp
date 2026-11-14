@@ -444,6 +444,77 @@ services, the env file and the state file. herdr's server keeps running with its
 until you stop it (`herdr server stop`) or reboot. Lingering stays on;
 `loginctl disable-linger` turns it off.
 
+### As a service on Windows (Task Scheduler)
+
+A scheduled task starts agent-bridge when you log on. It runs as you, in your session
+(where the herdr server runs), with no window. Run the setup script from the checkout in
+an ordinary PowerShell window:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File agent-bridge\deploy\windows\setup.ps1
+```
+
+It asks for:
+
+- the folders agents may start in (default `%USERPROFILE%\Projects`);
+- this host's name, as Claude will say it (default: the computer name, e.g. `win-pc`);
+- the enrollment string that `sudo mcp-gateway enroll` prints on the gateway host (Enter
+  skips enrolling).
+
+It finds the LAN address and `herdr.exe` itself, including herdr's
+`%LOCALAPPDATA%\Programs\Herdr\bin\herdr.exe`, which isn't on `PATH`. Then it:
+
+1. checks the port (8765). If another program holds it, or Windows keeps it for Hyper-V or
+   WSL, the script names that and offers a free port. A port held by agent-bridge itself is
+   fine; it is restarted;
+2. checks the new settings with `agent-bridge check` on a copy, so settings agent-bridge
+   would refuse never replace a working install. Then it stops the running bridge, runs
+   `uv sync --all-packages --frozen` (checking the settings again with the new code), and
+   writes the env file;
+3. adds an inbound firewall rule for the port on **Private** networks only. This is the
+   only step that asks for admin rights. If Windows treats your network as Public, the
+   script asks whether to make it Private (answer `y`): the gateway can't reach
+   agent-bridge otherwise;
+4. registers the `agent-bridge` task, which starts it. The task runs
+   `%LOCALAPPDATA%\agent-bridge\run.cmd`, which runs `agent-bridge serve` and writes its
+   log. It is tried every minute while you're logged on, which does nothing while it runs.
+   That way it starts once Wi-Fi brings up the LAN address, and starts again if it stops;
+5. enrolls with the gateway (asking for another name if the gateway already has a host by
+   that name), and runs `agent-bridge check`.
+
+Its log is `%LOCALAPPDATA%\agent-bridge\agent-bridge.log`, with a line for each start. A log
+over 1 MB is moved to `agent-bridge.log.1` when agent-bridge starts; while it runs, the log
+grows by a line per request. Re-run setup after pulling new code: it keeps the token and settings,
+and asks only for what's missing. Parameters skip the questions or change a setting:
+`-Roots`, `-Name`, `-Enrollment` (`''` skips), `-Address`, `-Port`, `-HerdrBin`,
+`-ClaudeConfigDir` and `-TrustRoot` (for [folder trust](#folder-trust); `''` removes
+them), `-RotateToken`, and `-Bridge` (an `agent-bridge.exe` installed elsewhere). Settings
+it doesn't manage, such as `AGENT_BRIDGE_ACCOUNTS`, can be added to the env file by hand;
+re-runs keep them.
+
+```powershell
+# Stop it. Ending the task stops only its conhost.exe, so stop the cmd.exe running run.cmd
+# and the bridge too; the task starts it again within a minute unless you disable it first.
+Disable-ScheduledTask -TaskName agent-bridge
+Stop-ScheduledTask -TaskName agent-bridge
+$run = "$env:LOCALAPPDATA\agent-bridge\run.cmd"
+# The agent-bridge.exe run.cmd runs, whatever it is named (-Bridge).
+$exe = (Select-String -LiteralPath $run -Pattern '^"(.+)" serve').Matches[0].Groups[1].Value
+Get-CimInstance Win32_Process | Where-Object {
+  ($_.Name -eq 'cmd.exe' -and $_.CommandLine -like "*$run*") -or
+    ($_.CommandLine -match ([regex]::Escape($exe) + '"?\s+serve'))
+} | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }
+
+# Start again (re-running setup does this too). Registering it again, rather than only
+# starting it, also brings back the every-minute retry, which disabling ended.
+Enable-ScheduledTask -TaskName agent-bridge
+Register-ScheduledTask -TaskName agent-bridge -Xml (Export-ScheduledTask -TaskName agent-bridge) -Force
+
+# Uninstall: leaves the gateway, then removes the task, the firewall rule, the env file,
+# the state file and the log. The checkout stays.
+powershell -ExecutionPolicy Bypass -File agent-bridge\deploy\windows\uninstall.ps1
+```
+
 ### When it's stopped or removed
 
 While agent-bridge is stopped, mcp-gateway answers every tool call with "The agent host
