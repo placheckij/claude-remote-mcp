@@ -506,7 +506,7 @@ $run = "$env:LOCALAPPDATA\agent-bridge\run.cmd"
 $exe = (Select-String -LiteralPath $run -Pattern '^"(.+)" serve').Matches[0].Groups[1].Value
 Get-CimInstance Win32_Process | Where-Object {
   ($_.Name -eq 'cmd.exe' -and $_.CommandLine -like "*$run*") -or
-    ($_.CommandLine -match ([regex]::Escape($exe) + '"? serve'))
+    ($_.CommandLine -match ([regex]::Escape($exe) + '"?\s+serve'))
 } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }
 
 # Start again (re-running setup does this too). Registering it again, rather than only
