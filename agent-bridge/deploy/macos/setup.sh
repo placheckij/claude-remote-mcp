@@ -231,7 +231,8 @@ if [[ $SOURCE == env_file && -n $(enrolled name) ]]; then
     # Anything else (no answer, or a new address it couldn't reach before the service
     # restarts) leaves the record as it is; the next start reports the address by itself.
     "FAIL  the gateway at"*)
-      echo "warning: couldn't check with the gateway at $(enrolled url) right now (${GATEWAY_CHECK#*has this host }); keeping the enrollment as $(enrolled name)" ;;
+      REASON=${GATEWAY_CHECK#*has this host (}
+      echo "warning: couldn't check with the gateway at $(enrolled url) right now (${REASON%)}); keeping the enrollment as $(enrolled name)" ;;
   esac
 fi
 
@@ -365,8 +366,9 @@ ENROLLMENT=${ENROLLMENT:-}
 
 BS="\\"
 Q="'"
-env_line() { # env_line NAME VALUE: one env file line, single-quoted so nothing in it is
-  # expanded; \ and ' escaped as python-dotenv reads them
+env_line() { # env_line NAME VALUE: one env file line, single-quoted, with \ and ' escaped
+  # as python-dotenv reads them. It still expands ${...} there, with no way to escape it.
+  [[ $2 != *"\${"* ]] || die "$1 can't contain \${: the bridge would read it as a variable"
   local value=${2//"$BS"/"$BS$BS"}
   value=${value//"$Q"/"$BS$Q"}
   printf "%s='%s'\n" "$1" "$value"
@@ -408,6 +410,22 @@ write_env() {
     fi
     [[ $SOURCE != plist ]] || plist_extras
   } >"$TMP_ENV"
+  # Read by the bridge's own settings, before it goes in: a value it refuses (a root that
+  # is / or the home folder, the default Claude config...) would keep the service down.
+  local problem
+  problem="$(
+    cd / # away from a .env in the working folder, which the settings read too
+    for var in $(compgen -v AGENT_BRIDGE_); do unset "$var"; done
+    AGENT_BRIDGE_ENV_FILE="$TMP_ENV" "$REPO_DIR/.venv/bin/python" -I -c '
+import sys
+from agent_bridge.config import Settings
+try:
+    missing = Settings.from_env().missing_for_service()
+except RuntimeError as error:
+    sys.exit(str(error))
+if missing:
+    sys.exit("Missing " + ", ".join(missing))' 2>&1
+  )" || die "the bridge would refuse these settings: $problem"
   mv "$TMP_ENV" "$ENV_FILE"
   SOURCE=env_file
 }
