@@ -193,13 +193,11 @@ function Test-IsBridge([string]$CommandLine) {
         ($CommandLine -match '(?i)\bagent_bridge\.app:main\b')
 }
 
-function Get-PortHolder([int]$Port) {
-    <# A process listening on TCP $Port on any address, as @{ Id; Name; CommandLine; Path }, or
-       $null. With several, one that isn't agent-bridge comes first, so a port that agent-bridge
-       shares with another program doesn't count as agent-bridge's. #>
+function Get-PortHolders([int]$Port) {
+    <# Every process listening on TCP $Port on any address, as @{ Id; Name; CommandLine; Path }. #>
     $ids = @(Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue |
         Select-Object -ExpandProperty OwningProcess -Unique)
-    $holders = foreach ($id in $ids) {
+    foreach ($id in $ids) {
         $process = Get-CimInstance Win32_Process -Filter "ProcessId=$id" -ErrorAction SilentlyContinue
         # The command line is empty for another user's process, or an elevated one: then it
         # isn't ours either.
@@ -209,11 +207,23 @@ function Get-PortHolder([int]$Port) {
             @{ Id = $id; Name = '?'; CommandLine = ''; Path = '' }
         }
     }
-    $holders = @($holders)
+}
+
+function Get-PortHolder([int]$Port) {
+    <# A process listening on TCP $Port, or $null. With several, one that isn't agent-bridge
+       comes first, so a port that agent-bridge shares with another program doesn't count as
+       agent-bridge's. #>
+    $holders = @(Get-PortHolders $Port)
     if ($holders.Count -eq 0) { return $null }
     $other = @($holders | Where-Object { -not (Test-IsBridge $_.CommandLine) })
     if ($other.Count -gt 0) { return $other[0] }
     return $holders[0]
+}
+
+function Get-BridgeListener([int]$Port) {
+    <# The agent-bridge listening on $Port, even beside another program on another address, or
+       $null. #>
+    return @(Get-PortHolders $Port | Where-Object { Test-IsBridge $_.CommandLine }) | Select-Object -First 1
 }
 
 function Get-ExcludedPortRange {

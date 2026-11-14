@@ -83,6 +83,10 @@ function ConvertTo-EnvValue([string]$Value) {
 }
 
 function Write-EnvFile([string]$Path, [string[]]$Lines, $Settings) {
+    # python-dotenv expands ${NAME} in any value, quoted or not, and has no escape for it.
+    foreach ($key in $Settings.Keys) {
+        if ([string]$Settings[$key] -match '\$\{') { Stop-Setup "$key can't hold `${ (agent-bridge would read it as a variable): $($Settings[$key])" }
+    }
     <# Sets $Settings' keys (an empty value removes the line) and keeps every other line,
        e.g. AGENT_BRIDGE_ACCOUNTS added by hand. Written beside the file and moved over it. #>
     $out = New-Object Collections.Generic.List[string]
@@ -199,11 +203,13 @@ function New-Token {
 }
 
 function Find-FreePort([int]$From) {
-    <# The first port from $From on that nothing listens on and Windows doesn't keep, or 0. #>
+    <# The first port from $From on (then from 1024, past 65535) that nothing listens on and
+       Windows doesn't keep, or 0. #>
     $listening = @{}
     foreach ($connection in @(Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue)) { $listening[[int]$connection.LocalPort] = $true }
     $excluded = @(Get-ExcludedPortRange)
-    for ($candidate = $From; $candidate -le 65535; $candidate++) {
+    $candidates = @(([Math]::Min($From, 65536))..65535) + @(1024..([Math]::Min($From, 65536) - 1)) | Where-Object { $_ -le 65535 }
+    foreach ($candidate in $candidates) {
         if (-not $listening.ContainsKey($candidate) -and -not (Test-PortExcluded $candidate $excluded)) { return $candidate }
     }
     return 0
@@ -232,8 +238,7 @@ function Wait-Bridge([int]$Port) {
     <# Whether agent-bridge listens on $Port within 30 s (a first start after uv sync, with
        Python compiling and Defender scanning new files, can take a while). #>
     for ($i = 0; $i -lt 60; $i++) {
-        $holder = Get-PortHolder $Port
-        if ($holder -and (Test-IsBridge $holder.CommandLine)) { return $true }
+        if (Get-BridgeListener $Port) { return $true }
         Start-Sleep -Milliseconds 500
     }
     return $false
@@ -588,6 +593,11 @@ try {
             Write-EnvFile $EnvFile (Read-EnvFile $EnvFile).Lines $Settings
             # So its /info has the new name too.
             Stop-Bridge $Exe $Port
+            # Else the old bridge, with the old name in its /info, would count as started.
+            if (Get-BridgeListener $Port) {
+                Write-Warn "the old agent-bridge still holds port $Port; run setup again in a moment"
+                break
+            }
             $Started = Start-Bridge $Port
             if (-not $Started) { break }
         }
@@ -599,8 +609,8 @@ try {
     $CheckFailed = if ($Started) { (Invoke-Native $Exe @('check')) -ne 0 } else { $true }
     if (-not $Started) { Write-Host 'skipped: agent-bridge isn''t running' }
     # Read once: the bridge may stop between two looks.
-    $listener = Get-PortHolder $Port
-    $Blocked = if ($listener -and $listener.Path -and (Test-IsBridge $listener.CommandLine)) { $listener.Path } else { '' }
+    $listener = Get-BridgeListener $Port
+    $Blocked = if ($listener -and $listener.Path) { $listener.Path } else { '' }
     $Blocking = @(if ($Blocked) { Get-BlockRule $Blocked })
 
     # --- Done ------------------------------------------------------------------------------
@@ -629,7 +639,7 @@ try {
     if ($null -ne $EnrollCode -and $EnrollCode -ne 0) {
         Write-Host 'Not enrolled: see "Enrolling with the gateway" above. Once that is fixed, run here'
         Write-Host '(with a new string from `sudo mcp-gateway enroll` if this one has expired):'
-        Write-Host "  & $(Format-Quoted $Exe) enroll '<the string it printed>'"
+        Write-Host "  `$env:PYTHONUTF8 = '1'; & $(Format-Quoted $Exe) enroll '<the string it printed>'"
         if ($Gateway) { Write-Warn "the gateway at $($Gateway.url) still has this host's old settings until then" }
     } elseif ($Gateway) {
         Write-Host "Enrolled as $($Gateway.name) with the gateway at $($Gateway.url). Ask Claude to list agents."
@@ -638,7 +648,7 @@ try {
         }
     } else {
         Write-Host 'Not enrolled with a gateway yet. Run `sudo mcp-gateway enroll` on the gateway host, then here:'
-        Write-Host "  & $(Format-Quoted $Exe) enroll '<the string it printed>'"
+        Write-Host "  `$env:PYTHONUTF8 = '1'; & $(Format-Quoted $Exe) enroll '<the string it printed>'"
     }
     # A failed check, start or enrollment is setup's exit code; otherwise the last program's would be.
     if ($CheckFailed -or -not $Started -or ($null -ne $EnrollCode -and $EnrollCode -ne 0)) { exit 1 }
