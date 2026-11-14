@@ -27,6 +27,12 @@ $script:CheckDir = Join-Path $script:StateDir 'setup-check'
 $script:DisabledMarker = Join-Path $script:StateDir 'task-disabled-by-setup'
 # Set while Stop-Bridge has the task disabled, so leaving early enables it again.
 $script:TaskDisabled = $false
+# Where your lasting environment variables and the machine's are kept: what the scheduled
+# task gets, unlike a variable set only in the window setup runs in.
+$script:LastingEnvironment = [ordered]@{
+    User    = 'HKCU:\Environment'
+    Machine = 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Environment'
+}
 
 function Resume-Task {
     <# Enables the task and registers it again as it is, which fires its registration
@@ -73,8 +79,18 @@ function Assert-RunAsYou([string]$Script) {
     $explorer = @(Get-CimInstance Win32_Process -Filter "Name='explorer.exe' AND SessionId=$session" -ErrorAction SilentlyContinue)
     if ($explorer.Count -eq 0) { return }
     $owner = Invoke-CimMethod -InputObject $explorer[0] -MethodName GetOwner -ErrorAction SilentlyContinue
-    # Anyone can read the owner of their own desktop: an account that can't is another one.
-    $desktop = if ($owner -and $owner.User) { "$($owner.Domain)\$($owner.User)" } else { 'the user logged on here' }
+    if ($owner -and $owner.User) {
+        $desktop = "$($owner.Domain)\$($owner.User)"
+    } else {
+        # Unreadable: another account can't read it, but WMI also fails now and then. The
+        # console's user, when there is one, tells them apart.
+        $console = [string](Get-CimInstance Win32_ComputerSystem -ErrorAction SilentlyContinue).UserName
+        if (-not $console) {
+            Write-Warn "couldn't tell who owns this desktop; make sure you run $Script as yourself, not another account"
+            return
+        }
+        $desktop = $console
+    }
     if ($desktop -ne $me) {
         Stop-Setup ("run $Script as $desktop, whose desktop this is, not as ${me}: agent-bridge must run " +
             "next to your herdr server. Open PowerShell normally; it asks for admin rights only for the firewall rule.")
@@ -100,7 +116,6 @@ function Find-Bridge([string]$Given, [switch]$Optional, [switch]$PreferInstalled
         if (Test-Path -LiteralPath $Given -PathType Leaf) { return @{ Exe = (Resolve-Path -LiteralPath $Given).Path; Checkout = $null } }
         # Uninstall looks on for the one installed now; setup stops.
         if (-not $Optional) { Stop-Setup "-Bridge: $Given doesn't exist" }
-        if (-not $PreferInstalled) { return $null }
     }
     $installed = Get-InstalledExe
     $installedFound = if ($installed -and (Test-Path -LiteralPath $installed -PathType Leaf)) { @{ Exe = $installed; Checkout = $null } } else { $null }
@@ -133,20 +148,22 @@ function Invoke-Native {
         [hashtable]$Environment = @{})
     $saved = $ErrorActionPreference
     $ErrorActionPreference = 'Continue'
+    # Saved before anything changes; everything is put back in finally, however this ends.
     $savedVariables = @(Get-ChildItem Env: | Where-Object { $_.Name -like 'AGENT_BRIDGE_*' })
-    foreach ($variable in $savedVariables) { Remove-Item -LiteralPath "Env:$($variable.Name)" }
-    foreach ($name in $Environment.Keys) { Set-Item -LiteralPath "Env:$name" -Value $Environment[$name] }
-    Push-Location -LiteralPath ([IO.Path]::GetTempPath())
-    # In UTF-8 mode, as run.cmd runs the service: agent-bridge reads the env file, which setup
-    # writes as UTF-8, in the locale's code page otherwise. Only for this call, not for the
-    # session setup may have been started from.
     $savedUtf8 = $env:PYTHONUTF8
-    $env:PYTHONUTF8 = '1'
-    # It then writes UTF-8, and Windows PowerShell decodes what a program prints with the
-    # console's code page.
     $savedEncoding = $null
-    try { $savedEncoding = [Console]::OutputEncoding; [Console]::OutputEncoding = New-Object Text.UTF8Encoding $false } catch { $savedEncoding = $null }
+    $moved = $false
     try {
+        foreach ($variable in $savedVariables) { Remove-Item -LiteralPath "Env:$($variable.Name)" }
+        foreach ($name in $Environment.Keys) { Set-Item -LiteralPath "Env:$name" -Value $Environment[$name] }
+        Push-Location -LiteralPath ([IO.Path]::GetTempPath())
+        $moved = $true
+        # In UTF-8 mode, as run.cmd runs the service: agent-bridge reads the env file, which
+        # setup writes as UTF-8, in the locale's code page otherwise.
+        $env:PYTHONUTF8 = '1'
+        # It then writes UTF-8, and Windows PowerShell decodes what a program prints with the
+        # console's code page.
+        try { $savedEncoding = [Console]::OutputEncoding; [Console]::OutputEncoding = New-Object Text.UTF8Encoding $false } catch { $savedEncoding = $null }
         $script:NativeOutput = @(& $FilePath @ArgumentList 2>&1 | ForEach-Object {
                 $text = if ($_ -is [Management.Automation.ErrorRecord]) { $_.Exception.Message } else { [string]$_ }
                 if (-not $Quiet) { Write-Host $text }
@@ -161,7 +178,7 @@ function Invoke-Native {
     } finally {
         $ErrorActionPreference = $saved
         $env:PYTHONUTF8 = $savedUtf8
-        Pop-Location
+        if ($moved) { Pop-Location }
         foreach ($name in $Environment.Keys) { Remove-Item -LiteralPath "Env:$name" -ErrorAction SilentlyContinue }
         foreach ($variable in $savedVariables) { Set-Item -LiteralPath "Env:$($variable.Name)" -Value $variable.Value }
         if ($savedEncoding) { try { [Console]::OutputEncoding = $savedEncoding } catch { $savedEncoding = $null } }
@@ -276,7 +293,7 @@ function Stop-Bridge([string]$Exe, [int[]]$Port) {
     # agent-bridge.exe launcher and python.exe behind it keep running, so they are ended here
     # by their command lines: run.cmd's, and the ones that serve with this $Exe or the
     # installed one.
-    $exes = @(@($Exe, (Get-InstalledExe)) | Where-Object { $_ })
+    $exes = @(@($Exe) + $script:BridgeExes | Where-Object { $_ } | Select-Object -Unique)
     # Narrowed by WMI first; the matching below decides.
     $candidates = "Name='cmd.exe' OR CommandLine LIKE '%serve%' OR CommandLine LIKE '%agent_bridge%'"
     $stopped = @(Get-CimInstance Win32_Process -Filter $candidates -ErrorAction SilentlyContinue | Where-Object {
@@ -310,6 +327,8 @@ function ConvertFrom-EnvValue([string]$Raw) {
        ` #` comment. #>
     $value = $Raw.Trim()
     if ($value -match "^'((?:\\'|[^'])*)'\s*(#.*)?$") { return $Matches[1] -replace "\\(['\\])", '$1' }
+    # A quote that isn't closed, or text after the closing one: python-dotenv skips the line.
+    if ($value -match '^[''"]' -and $value -notmatch '^"((?:\\"|[^"])*)"\s*(#.*)?$') { return $null }
     if ($value -match '^"((?:\\"|[^"])*)"\s*(#.*)?$') {
         return [regex]::Replace($Matches[1], '\\([\\''"abfnrtv])', {
                 param($escape)
@@ -325,33 +344,36 @@ function ConvertFrom-EnvValue([string]$Raw) {
     return ($Raw -replace '\s+#.*$', '').Trim()
 }
 
-function Get-LogonVariable([string]$Name) {
-    <# $Name as the scheduled task's environment has it, from a logon rather than this session:
-       the profile's folders and the like, then your lasting variables, then the machine's.
-       A variable set only in the window setup runs in isn't there. #>
-    $profileVariables = 'USERPROFILE', 'APPDATA', 'LOCALAPPDATA', 'HOMEDRIVE', 'HOMEPATH', 'USERNAME',
-    'USERDOMAIN', 'COMPUTERNAME', 'SYSTEMROOT', 'WINDIR', 'SYSTEMDRIVE', 'PROGRAMFILES', 'PROGRAMDATA',
-    'PUBLIC', 'ALLUSERSPROFILE', 'COMMONPROGRAMFILES'
-    if ($profileVariables -contains $Name.ToUpperInvariant()) { return [Environment]::GetEnvironmentVariable($Name) }
-    foreach ($path in 'HKCU:\Environment', 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Environment') {
+function Get-WindowOnlyName([string[]]$Names) {
+    <# Those of $Names this window has but a logon doesn't: not in your lasting variables, the
+       machine's or the session's (Volatile Environment), nor one Windows sets for every
+       process. The scheduled task, started at logon, won't have them. #>
+    $everyProcess = 'USERPROFILE', 'APPDATA', 'LOCALAPPDATA', 'HOMEDRIVE', 'HOMEPATH', 'HOMESHARE', 'USERNAME',
+    'USERDOMAIN', 'USERDNSDOMAIN', 'LOGONSERVER', 'COMPUTERNAME', 'SYSTEMROOT', 'WINDIR', 'SYSTEMDRIVE',
+    'PROGRAMFILES', 'PROGRAMFILES(X86)', 'PROGRAMW6432', 'COMMONPROGRAMFILES', 'COMMONPROGRAMFILES(X86)',
+    'COMMONPROGRAMW6432', 'PROGRAMDATA', 'PUBLIC', 'ALLUSERSPROFILE', 'TEMP', 'TMP', 'PATH', 'PATHEXT',
+    'COMSPEC', 'OS', 'NUMBER_OF_PROCESSORS', 'PROCESSOR_ARCHITECTURE', 'SESSIONNAME'
+    $lasting = @{}
+    foreach ($path in @($script:LastingEnvironment.Values) + 'HKCU:\Volatile Environment') {
         $variables = Get-ItemProperty -LiteralPath $path -ErrorAction SilentlyContinue
-        if ($variables) {
-            $match = $variables.PSObject.Properties | Where-Object { $_.Name -eq $Name } | Select-Object -First 1
-            if ($match) { return [Environment]::ExpandEnvironmentVariables([string]$match.Value) }
-        }
+        if ($variables) { foreach ($property in $variables.PSObject.Properties) { $lasting[$property.Name.ToUpperInvariant()] = $true } }
     }
-    return $null
+    return @($Names | Where-Object {
+            $null -ne [Environment]::GetEnvironmentVariable($_) -and
+            $everyProcess -notcontains $_.ToUpperInvariant() -and -not $lasting.ContainsKey($_.ToUpperInvariant())
+        } | Select-Object -Unique)
 }
 
 function Expand-EnvReference([string]$Value, $Earlier) {
     <# ${NAME} and ${NAME:-default} in $Value, as python-dotenv expands them: from the file's
-       earlier values first, by their exact names, then the environment, whose names Python
-       on Windows has upper-cased, so ${userprofile} isn't found there. #>
+       earlier values first, by their exact names, then this window's environment (as the
+       agent-bridge setup runs has it; Get-WindowOnlyName tells setup what the task lacks),
+       whose names Python on Windows has upper-cased, so ${userprofile} isn't found there. #>
     return [regex]::Replace($Value, '\$\{([^}:]*)(?::-([^}]*))?\}', {
             param($reference)
             $name = $reference.Groups[1].Value
             if ($Earlier.ContainsKey($name)) { return [string]$Earlier[$name] }
-            $fromEnvironment = Get-LogonVariable $name
+            $fromEnvironment = [Environment]::GetEnvironmentVariable($name)
             if ($null -ne $fromEnvironment -and $name -ceq $name.ToUpperInvariant()) { return $fromEnvironment }
             return $reference.Groups[2].Value
         })
@@ -359,10 +381,13 @@ function Expand-EnvReference([string]$Value, $Earlier) {
 
 function ConvertFrom-EnvLine([string]$Line, $Exact) {
     <# A line's @{ Name; Value } as python-dotenv reads it, ${NAME} expanded from $Exact (the
-       values so far, by exact name), or $null for a line without a setting. #>
+       values so far, by exact name); Value is $null for a line python-dotenv skips. $null for
+       a line without a setting. #>
     if ($Line -notmatch $script:KeyLine) { return $null }
     $name = $Matches[1]
-    return @{ Name = $name; Value = (Expand-EnvReference (ConvertFrom-EnvValue $Matches[2]) $Exact) }
+    $raw = ConvertFrom-EnvValue $Matches[2]
+    $value = if ($null -eq $raw) { $null } else { Expand-EnvReference $raw $Exact }
+    return @{ Name = $name; Value = $value }
 }
 
 function New-EnvValueTable {
@@ -378,7 +403,7 @@ function Read-EnvFile([string]$Path) {
     if (Test-Path -LiteralPath $Path) { $lines = @(Get-Content -LiteralPath $Path -Encoding UTF8) }
     foreach ($line in $lines) {
         $entry = ConvertFrom-EnvLine $line $exact
-        if ($entry) {
+        if ($entry -and $null -ne $entry.Value) {
             $exact[$entry.Name] = $entry.Value
             $values[$entry.Name.ToUpperInvariant()] = $entry.Value
         }

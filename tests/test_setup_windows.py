@@ -34,6 +34,7 @@ function Get-NetTCPConnection { param([int]$LocalPort, $State, $ErrorAction)
     $l = Get-Listener $LocalPort
     if ($l) { [pscustomobject]@{ LocalPort = $LocalPort; OwningProcess = $l.pid } } }
 function Get-CimInstance { param($ClassName, $Filter, $ErrorAction)
+    if ($ClassName -eq 'Win32_ComputerSystem') { return [pscustomobject]@{ UserName = $env:FAKE_CONSOLE_USER } }
     if ($Filter -match "Name='explorer.exe'") {
         if ($env:FAKE_DESKTOP_USER) { return [pscustomobject]@{ Name = 'explorer.exe' } }
         return }
@@ -273,6 +274,7 @@ class Machine:
             "FAKE_BAD_SETTINGS": "",
             "FAKE_USER_VARIABLE": "",
             "FAKE_UNKILLABLE": "",
+            "FAKE_CONSOLE_USER": "",
             "AGENT_BRIDGE_STATE_FILE": r"C:\leftover\state.json",
             "FAKE_ELEVATED_EXIT": "0",
             "FAKE_BLOCKED_PROGRAM": "",
@@ -977,11 +979,10 @@ def test_a_reference_to_a_variable_only_this_window_has_is_not_counted(machine: 
     text = text.replace(f"AGENT_BRIDGE_HERDR_BIN={machine.herdr}", r"AGENT_BRIDGE_HERDR_BIN=${HERDR_HOME}\herdr.exe")
     machine.env_file.write_text(text, encoding="utf-8")
 
-    # HERDR_HOME is set here but not in the logon environment the task gets: setup finds
-    # herdr again instead of keeping a reference the service couldn't resolve.
-    machine.setup(HERDR_HOME=str(machine.herdr.parent))
+    # HERDR_HOME is set in this window only, not in the logon environment the task gets.
+    output = machine.setup(HERDR_HOME=str(machine.herdr.parent))
 
-    assert machine.env()["AGENT_BRIDGE_HERDR_BIN"] == str(machine.herdr)
+    assert "${HERDR_HOME} in" in output and "set only in this window" in output
 
 
 def test_uninstall_falls_back_to_the_installed_agent_bridge(machine: Machine) -> None:
@@ -992,7 +993,27 @@ def test_uninstall_falls_back_to_the_installed_agent_bridge(machine: Machine) ->
     assert machine.calls()[0] == "agent-bridge unenroll"
 
 
-def test_an_unreadable_desktop_owner_is_refused(machine: Machine) -> None:
-    output = machine.setup("-Enrollment ''", expect=1, FAKE_DESKTOP_USER="\\")
+def test_an_unreadable_desktop_owner_is_told_apart_by_the_console_user(machine: Machine) -> None:
+    output = machine.setup("-Enrollment ''", expect=1, FAKE_DESKTOP_USER="\\", FAKE_CONSOLE_USER="SOMEPC\\other")
 
-    assert "run setup.ps1 as the user logged on here" in output
+    assert "run setup.ps1 as SOMEPC\\other" in output
+
+
+def test_an_unreadable_desktop_owner_without_a_console_user_only_warns(machine: Machine) -> None:
+    output = machine.setup("-Enrollment ''", input="\n\n", FAKE_DESKTOP_USER="\\")
+
+    assert "couldn't tell who owns this desktop" in output
+    assert "Done." in output
+
+
+def test_a_line_python_dotenv_skips_is_replaced(machine: Machine) -> None:
+    machine.setup("-Enrollment ''", input="\n\n")
+    text = machine.env_file.read_text(encoding="utf-8").replace("AGENT_BRIDGE_NAME=win-test", "AGENT_BRIDGE_NAME='win-test")
+    machine.env_file.write_text(text, encoding="utf-8")
+
+    # Not installed as far as agent-bridge goes: asked for again, and the line replaced.
+    machine.setup(input="win-new\n")
+
+    text = machine.env_file.read_text(encoding="utf-8")
+    assert "AGENT_BRIDGE_NAME='win-test" not in text
+    assert machine.env()["AGENT_BRIDGE_NAME"] == "win-new"
