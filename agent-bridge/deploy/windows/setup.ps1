@@ -240,13 +240,23 @@ function Wait-Bridge([int]$Port) {
 }
 
 function Start-Bridge([int]$Port) {
+    <# Starts the task; whether agent-bridge then listens on $Port. #>
     # Stop-Bridge leaves it disabled.
     Enable-ScheduledTask -TaskName $TaskName -TaskPath '\' | Out-Null
     $script:TaskDisabled = $false
     Start-ScheduledTask -TaskName $TaskName -TaskPath '\'
-    if (-not (Wait-Bridge $Port)) {
-        Write-Warn "agent-bridge isn't listening on port $Port yet. The end of $LogFile`:"
-        if (Test-Path -LiteralPath $LogFile) { Get-Content -LiteralPath $LogFile -Tail 15 | ForEach-Object { Write-Host "  $_" } }
+    if (Wait-Bridge $Port) { return $true }
+    Write-Warn "agent-bridge isn't listening on port $Port. The end of $LogFile`:"
+    if (Test-Path -LiteralPath $LogFile) { Get-Content -LiteralPath $LogFile -Tail 15 | ForEach-Object { Write-Host "  $_" } }
+    return $false
+}
+
+function Assert-Narrow([string]$Folder, [string]$What) {
+    <# Refuses the home folder or anything above it, as agent-bridge does; caught here, it
+       doesn't replace a working bridge with one that won't start. #>
+    $userHome = [IO.Path]::GetFullPath($env:USERPROFILE).TrimEnd('\') + '\'
+    if ($userHome.StartsWith($Folder.TrimEnd('\') + '\', [StringComparison]::OrdinalIgnoreCase)) {
+        Stop-Setup "$What $Folder is too broad: use a projects folder, not a drive or the home folder itself"
     }
 }
 
@@ -255,12 +265,10 @@ function Sync-Checkout {
     if ((Invoke-Native uv @('sync', '--all-packages', '--directory', $Checkout)) -ne 0) { Stop-Setup 'uv sync failed' }
 }
 
-function Get-BlockRule([int]$Port) {
-    <# Inbound rules that block the program listening on $Port, e.g. python.exe after a
-       Cancel at Windows' firewall prompt; they win over the rule setup adds. #>
-    $holder = Get-PortHolder $Port
-    if (-not $holder -or -not $holder.Path) { return @() }
-    return @(Get-NetFirewallApplicationFilter -Program $holder.Path -ErrorAction SilentlyContinue |
+function Get-BlockRule([string]$Program) {
+    <# Inbound rules that block $Program, e.g. python.exe after a Cancel at Windows' firewall
+       prompt; they win over the rule setup adds. #>
+    return @(Get-NetFirewallApplicationFilter -Program $Program -ErrorAction SilentlyContinue |
         Get-NetFirewallRule -ErrorAction SilentlyContinue | Where-Object {
             [string]$_.Direction -eq 'Inbound' -and [string]$_.Action -eq 'Block' -and [string]$_.Enabled -eq 'True'
         })
@@ -305,7 +313,10 @@ try {
     }
     $RootList = @($Roots -split ';' | Where-Object { $_.Trim() } | ForEach-Object { ConvertTo-FullPath $_ 'Each root' })
     if ($RootList.Count -eq 0) { Stop-Setup 'agents need at least one folder to start in' }
-    foreach ($root in $RootList) { if (-not (Test-Path -LiteralPath $root -PathType Container)) { Write-Warn "$root doesn't exist yet" } }
+    foreach ($root in $RootList) {
+        Assert-Narrow $root 'The root'
+        if (-not (Test-Path -LiteralPath $root -PathType Container)) { Write-Warn "$root doesn't exist yet" }
+    }
     $Roots = $RootList -join ';'
 
     # This host's name.
@@ -359,6 +370,7 @@ try {
     }
     if ($Bound.ContainsKey('TrustRoot')) {
         $Optional['AGENT_BRIDGE_TRUST_ROOT'] = if ($TrustRoot) { ConvertTo-FullPath $TrustRoot '-TrustRoot' } else { '' }
+        if ($TrustRoot) { Assert-Narrow $Optional['AGENT_BRIDGE_TRUST_ROOT'] '-TrustRoot' }
     }
     $ConfigDir = if ($Optional.Contains('AGENT_BRIDGE_CLAUDE_CONFIG_DIR')) { $Optional['AGENT_BRIDGE_CLAUDE_CONFIG_DIR'] } else { Get-Installed 'CLAUDE_CONFIG_DIR' }
     $Trust = if ($Optional.Contains('AGENT_BRIDGE_TRUST_ROOT')) { $Optional['AGENT_BRIDGE_TRUST_ROOT'] } else { Get-Installed 'TRUST_ROOT' }
@@ -476,7 +488,7 @@ try {
     Register-ScheduledTask -TaskName $TaskName -TaskPath '\' -Xml $xml -Force | Out-Null
     # Registered enabled.
     $script:TaskDisabled = $false
-    Start-Bridge $Port
+    $Started = Start-Bridge $Port
 
     # --- Enroll ----------------------------------------------------------------------------
 
@@ -506,26 +518,33 @@ try {
             Write-EnvFile $EnvFile (Read-EnvFile $EnvFile).Lines $Settings
             # So its /info has the new name too.
             Stop-Bridge $Exe $Port
-            Start-Bridge $Port
+            $Started = Start-Bridge $Port
         }
     }
 
     Write-Step 'Checks'
     $CheckFailed = (Invoke-Native $Exe @('check')) -ne 0
-    $Blocking = @(Get-BlockRule $Port)
+    # Read once: the bridge may stop between two looks.
+    $listener = Get-PortHolder $Port
+    $Blocked = if ($listener -and $listener.Path -and (Test-IsBridge $listener.CommandLine)) { $listener.Path } else { '' }
+    $Blocking = @(if ($Blocked) { Get-BlockRule $Blocked })
 
     # --- Done ------------------------------------------------------------------------------
 
     $UrlHost = if ($Address.Contains(':')) { "[$Address]" } else { $Address }
     $Gateway = Get-EnrolledGateway
     Write-Host ''
-    Write-Host "Done. agent-bridge listens on http://${UrlHost}:$Port and starts at every logon."
+    if ($Started) {
+        Write-Host "Done. agent-bridge listens on http://${UrlHost}:$Port and starts at every logon."
+    } else {
+        Write-Host "Installed, but agent-bridge didn't start: see the end of its log above. The task tries again"
+        Write-Host 'every minute; once it is fixed, run setup again.'
+    }
     Write-Host "Its log: $LogFile"
     if ($CheckFailed) { Write-Host 'A check failed: see the log (a 502 from herdr means its server isn''t running).' }
     if ($Blocking.Count -gt 0) {
-        $path = (Get-PortHolder $Port).Path
-        Write-Warn "a firewall rule blocks $path, so the gateway can't reach agent-bridge. In a PowerShell run as administrator:"
-        Write-Host "  Get-NetFirewallApplicationFilter -Program '$path' | Get-NetFirewallRule | Where-Object Action -eq Block | Remove-NetFirewallRule"
+        Write-Warn "a firewall rule blocks $Blocked, so the gateway can't reach agent-bridge. In a PowerShell run as administrator:"
+        Write-Host "  Get-NetFirewallApplicationFilter -Program '$Blocked' | Get-NetFirewallRule | Where-Object Action -eq Block | Remove-NetFirewallRule"
     }
     if ($ConfigDir -and -not (Test-Path -LiteralPath (Join-Path $ConfigDir '.claude.json'))) {
         Write-Host ''
@@ -547,8 +566,8 @@ try {
         Write-Host 'Not enrolled with a gateway yet. Run `sudo mcp-gateway enroll` on the gateway host, then here:'
         Write-Host "  & '$Exe' enroll '<the string it printed>'"
     }
-    # A failed check is setup's exit code; otherwise the last program's would be.
-    if ($CheckFailed) { exit 1 }
+    # A failed check or start is setup's exit code; otherwise the last program's would be.
+    if ($CheckFailed -or -not $Started) { exit 1 }
     exit 0
 } finally {
     Restore-Task
