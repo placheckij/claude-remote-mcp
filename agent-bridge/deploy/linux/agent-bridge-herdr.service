@@ -5,7 +5,7 @@
 Description=herdr server for agent-bridge (claude-remote)
 
 [Service]
-ExecStart=@HERDR_BIN@ server
+ExecStart="@HERDR_BIN@" server
 # Not after `herdr server stop`, which exits cleanly.
 Restart=on-failure
 RestartSec=10

@@ -77,7 +77,8 @@ installed() { # installed KEY: the installed AGENT_BRIDGE_KEY, or nothing
   [[ -f $ENV_FILE ]] || return 0
   value="$(sed -n "s/^AGENT_BRIDGE_$1=//p" "$ENV_FILE" | tail -n 1)"
   case $value in
-    \'*\') value=${value#\'}; value=${value%\'} ;;
+    # Single-quoted by line(), which doubles backslashes for the loader.
+    \'*\') value=${value#\'}; value=${value%\'}; value="$(printf '%s' "$value" | sed 's/\\\\/\\/g')" ;;
     \"*\") value=${value#\"}; value=${value%\"} ;;
   esac
   printf '%s' "$value"
@@ -123,6 +124,10 @@ listener() { # listener PORT: the PID listening on PORT, "?" when its PID can't 
 
 command_of() { ps -o args= -p "$1" 2>/dev/null || true; }
 
+unit_path() { # unit_path PATH: refuses what systemd can't run, even quoted
+  [[ $1 != *[\"\\]* ]] || die "systemd can't run a program whose path has \" or \\ in it: $1"
+}
+
 holder() { # holder PID: "service" (this unit), "by-hand" (agent-bridge outside it), "other"
   local pattern='agent-bridge serve|agent_bridge'
   if [[ $1 != "?" ]]; then
@@ -140,9 +145,10 @@ enrolled() { # enrolled KEY: the gateway's KEY (name, url) from the state file, 
   tr -d '\n' <"$STATE_FILE" | sed -n "s/.*\"gateway\": *{[^}]*\"$1\": *\"\([^\"]*\)\".*/\1/p"
 }
 
-[[ $(uname -s) == Linux ]] || die "this script is for Linux; on macOS run agent-bridge/deploy/macos/setup.sh"
+[[ $(uname -s) == Linux ]] || die "this script is for Linux; on macOS run agent-bridge/deploy/setup-macos.sh"
 [[ $EUID -ne 0 ]] || die "run as your own user, not with sudo: agent-bridge must run next to your herdr server"
 [[ -f "$REPO_DIR/agent-bridge/pyproject.toml" ]] || die "run from a checkout of claude-remote-mcp"
+unit_path "$AGENT_BRIDGE"
 command -v uv >/dev/null || die "uv not found; install it: https://docs.astral.sh/uv/getting-started/installation/"
 systemctl --user show-environment >/dev/null 2>&1 \
   || die "can't reach your systemd user manager; run this from your own login (SSH or a console), not through su or sudo -u"
@@ -216,6 +222,7 @@ if [[ -z ${HERDR_BIN+x} ]]; then
 fi
 absolute HERDR_BIN
 [[ -x $HERDR_BIN ]] || die "$HERDR_BIN is not an executable"
+[[ ${HERDR_SERVICE:-1} == 0 ]] || unit_path "$HERDR_BIN"
 
 # Folder trust is asked once; later runs keep the answer, even none.
 if [[ -z ${AGENT_BRIDGE_CLAUDE_CONFIG_DIR+x} ]] && answered CLAUDE_CONFIG_DIR; then
@@ -259,13 +266,18 @@ ACCOUNTS="${AGENT_BRIDGE_ACCOUNTS-$(installed ACCOUNTS)}"
 
 # Kept, unless rotating. Nobody copies it: enrolling hands it to the gateway.
 TOKEN="$(installed TOKEN)"
+OLD_TOKEN=$TOKEN
 if [[ -n ${ROTATE_TOKEN:-} || -z $TOKEN ]]; then
   TOKEN="$(openssl rand -hex 32)"
 fi
 bridge check --token-format "$TOKEN" || die "the installed token won't do; run again with ROTATE_TOKEN=1"
 
-# Asked for until this host is enrolled, and again with a new token.
-if [[ -z ${ENROLLMENT+x} ]] && [[ -z $(enrolled name) || -n ${ROTATE_TOKEN:-} ]]; then
+# Asked for until this host is enrolled, and again with a new token or name.
+ENROLLED_NAME="$(enrolled name)"
+RENAMED=""
+[[ -z $ENROLLED_NAME || $ENROLLED_NAME == "$NAME" ]] || RENAMED=1
+if [[ -z ${ENROLLMENT+x} ]] && [[ -z $ENROLLED_NAME || -n ${ROTATE_TOKEN:-} || -n $RENAMED ]]; then
+  [[ -z $RENAMED ]] || printf '\nThe gateway knows this host as %s; enroll again to rename it %s.\n' "$ENROLLED_NAME" "$NAME"
   printf '\nTo enroll with the gateway, run on the gateway host: sudo mcp-gateway enroll\n'
   ask ENROLLMENT "Enrollment string it printed, crm1@…" "" "Enter to enroll later"
 fi
@@ -277,7 +289,8 @@ ENROLLMENT=${ENROLLMENT:-}
 
 line() { # line KEY VALUE: one env file line, single-quoted so nothing in it is expanded
   [[ $2 != *"'"* && $2 != *$'\n'* ]] || die "AGENT_BRIDGE_$1 can't contain ' or a line break"
-  printf "AGENT_BRIDGE_%s='%s'\n" "$1" "$2"
+  # The loader reads \\ in single quotes as one backslash.
+  printf "AGENT_BRIDGE_%s='%s'\n" "$1" "$(printf '%s' "$2" | sed 's/\\/\\\\/g')"
 }
 
 write_env() {
@@ -305,7 +318,8 @@ write_env() {
 write_unit() { # write_unit NAME PLACEHOLDER VALUE: the template with VALUE filled in
   log "Writing $UNIT_DIR/$1"
   mkdir -p "$UNIT_DIR"
-  # systemd reads % as a specifier; the sed replacement is escaped for the | delimiter.
+  # The template double-quotes it (unit_path refused " and \): % is escaped as a systemd
+  # specifier, then the sed replacement for its | delimiter.
   local value
   value="$(printf '%s' "$3" | sed -e 's/%/%%/g' -e 's/[\\&|]/\\&/g')"
   TMP_UNIT="$(mktemp "$UNIT_DIR/$1.XXXXXX")"
@@ -369,12 +383,13 @@ start_service
 
 # --- Enroll --------------------------------------------------------------------------
 
+ENROLLED=""
 while [[ -n $ENROLLMENT ]]; do
   log "Enrolling with the gateway"
   status=0
   bridge enroll "$ENROLLMENT" || status=$?
   case $status in
-    0) break ;;
+    0) ENROLLED=1; break ;;
     3) # The gateway has another host by that name.
       NAME=""
       until [[ -n $NAME ]] && bridge check --name-format "$NAME"; do
@@ -389,6 +404,15 @@ while [[ -n $ENROLLMENT ]]; do
   esac
 done
 
+# The gateway still has the old token: put it back, or the gateway's calls are refused.
+if [[ -n ${ROTATE_TOKEN:-} && -z $ENROLLED && -n $OLD_TOKEN && -n $(enrolled name) ]]; then
+  log "Putting the old token back: the gateway didn't learn the new one"
+  TOKEN=$OLD_TOKEN
+  write_env
+  start_service
+  die "the token was not rotated; run again with ROTATE_TOKEN=1 and a new string from sudo mcp-gateway enroll"
+fi
+
 cat <<EOF
 
 Done. agent-bridge listens on http://$HOST:$PORT and starts at boot.
@@ -401,6 +425,8 @@ $LOGIN_HINT
 EOF
 if [[ -n $(enrolled name) ]]; then
   echo "It is enrolled with the gateway at $(enrolled url) as $(enrolled name): Claude reaches its agents as $(enrolled name)/…"
+  [[ $(enrolled name) == "$NAME" ]] \
+    || echo "NAME is $NAME, but the gateway still knows it as $(enrolled name): to rename it, run sudo mcp-gateway enroll on the gateway host, then run this again with ENROLLMENT='<what it printed>'"
 else
   echo "It is not enrolled with a gateway yet. Run sudo mcp-gateway enroll on the gateway host, then here:"
   echo "  $AGENT_BRIDGE enroll '<what it printed>'"
