@@ -377,6 +377,51 @@ def test_enrolled_but_with_no_state_file_written_doesnt_ask_again(mac: Mac) -> N
     assert mac.log("agent-bridge.log").count("enroll ") == 1
 
 
+def test_a_second_string_after_a_failed_enroll_enrolls(mac: Mac) -> None:
+    # The first string is refused (expired or mistyped); a fresh one is pasted at the prompt.
+    (mac.home / "enroll-codes").write_text("1\n0\n")
+
+    result = mac.setup(HOST="127.0.0.1", ALLOWED_ROOTS=str(mac.home / "projects"), NAME="mac",
+                       AGENT_BRIDGE_CLAUDE_CONFIG_DIR="", TRUST_ROOT="", ENROLLMENT=ENROLLMENT,
+                       input=f"{ENROLLMENT}\n")
+
+    assert mac.log("agent-bridge.log").count(f"enroll {ENROLLMENT}") == 2
+    assert "It is enrolled with the gateway at http://10.0.0.1:8766 as mac" in result.stdout
+
+
+def test_an_empty_accounts_variable_removes_the_installed_accounts(mac: Mac) -> None:
+    mac.install(AGENT_BRIDGE_ACCOUNTS='{"work": {"config_dir": null, "folders": ["/Users/me/work"]}}')
+    assert "AGENT_BRIDGE_ACCOUNTS" in mac.env()
+
+    mac.setup(AGENT_BRIDGE_ACCOUNTS="")
+
+    assert "AGENT_BRIDGE_ACCOUNTS" not in dotenv_values(mac.support / "env")
+
+
+def test_the_installed_herdr_wins_over_the_one_on_path(mac: Mac) -> None:
+    other = mac.home / "bin" / "herdr"
+    other.parent.mkdir()
+    other.write_text("#!/bin/sh\nexit 0\n")
+    other.chmod(0o755)
+    mac.install(HERDR_BIN=str(other))
+
+    mac.setup()
+
+    assert mac.env()["AGENT_BRIDGE_HERDR_BIN"] == str(other)
+
+
+def test_herdr_off_path_is_found_in_local_bin(mac: Mac) -> None:
+    (mac.stubs / "herdr").unlink()
+    local = mac.home / ".local" / "bin" / "herdr"
+    local.parent.mkdir(parents=True)
+    local.write_text("#!/bin/sh\nexit 0\n")
+    local.chmod(0o755)
+
+    mac.install()
+
+    assert mac.env()["AGENT_BRIDGE_HERDR_BIN"] == str(local)
+
+
 def test_a_variable_passed_in_changes_an_installed_setting(mac: Mac) -> None:
     mac.install()
     other = mac.home / "other"
@@ -742,6 +787,25 @@ def test_uninstall_of_a_host_never_enrolled_says_how_to_remove_one_added_by_hand
 
     assert "added with bridges add" in result.stdout
     assert not mac.support.exists()
+
+
+def test_uninstalling_twice_says_nothing_about_a_folder_that_is_gone(mac: Mac) -> None:
+    mac.install()
+    mac.run("macos/uninstall.sh")
+
+    result = mac.run("macos/uninstall.sh")
+
+    assert "holds other files" not in result.stdout
+
+
+def test_uninstall_keeps_a_folder_with_other_files_in_it(mac: Mac) -> None:
+    mac.install()
+    (mac.support / "notes.txt").write_text("mine")
+
+    result = mac.run("macos/uninstall.sh")
+
+    assert "holds other files" in result.stdout
+    assert (mac.support / "notes.txt").exists()
 
 
 def test_uninstall_still_removes_the_service_and_files_when_unenroll_fails(mac: Mac) -> None:
