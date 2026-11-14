@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- setup.sh fills in the @…@ paths. The settings are in the env file `agent-bridge serve`
+     reads, never here. -->
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>dev.claude-remote.agent-bridge</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>@AGENT_BRIDGE@</string>
+    <string>serve</string>
+  </array>
+  <key>RunAtLoad</key><true/>
+  <!-- Retries until the LAN address exists, e.g. right after login or wake. -->
+  <key>KeepAlive</key><true/>
+  <key>ThrottleInterval</key><integer>10</integer>
+  <!-- Errors (stderr) and one line per request (stdout), in one file. -->
+  <key>StandardOutPath</key><string>@LOG_FILE@</string>
+  <key>StandardErrorPath</key><string>@LOG_FILE@</string>
+</dict>
+</plist>

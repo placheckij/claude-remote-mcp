@@ -70,7 +70,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Check the setup scripts
-        run: shellcheck mcp-gateway/deploy/setup.sh agent-bridge/deploy/setup-macos.sh
+        run: shellcheck mcp-gateway/deploy/setup.sh agent-bridge/deploy/setup-macos.sh agent-bridge/deploy/macos/*.sh
 
   # The Linux bridge deploy (#60). Its tests run in the ubuntu tests job above.
   linux-deploy:
