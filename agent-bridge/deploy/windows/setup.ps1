@@ -208,11 +208,11 @@ function Find-FreePort([int]$From) {
     $listening = @{}
     foreach ($connection in @(Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue)) { $listening[[int]$connection.LocalPort] = $true }
     $excluded = @(Get-ExcludedPortRange)
-    for ($candidate = $From; $candidate -le 65535; $candidate++) {
-        if (-not $listening.ContainsKey($candidate) -and -not (Test-PortExcluded $candidate $excluded)) { return $candidate }
-    }
-    for ($candidate = 1024; $candidate -lt $From -and $candidate -le 65535; $candidate++) {
-        if (-not $listening.ContainsKey($candidate) -and -not (Test-PortExcluded $candidate $excluded)) { return $candidate }
+    # From $From up, then from 1024 up to $From.
+    foreach ($range in @(@($From, 65535), @(1024, [Math]::Min($From - 1, 65535)))) {
+        for ($candidate = $range[0]; $candidate -le $range[1]; $candidate++) {
+            if (-not $listening.ContainsKey($candidate) -and -not (Test-PortExcluded $candidate $excluded)) { return $candidate }
+        }
     }
     return 0
 }
@@ -598,6 +598,8 @@ try {
             # Else the old bridge, with the old name in its /info, would count as started.
             if (Get-BridgeListener $Port) {
                 Write-Warn "the old agent-bridge still holds port $Port; run setup again in a moment"
+                # Stopped above: not running as far as the rest of setup goes.
+                $Started = $false
                 break
             }
             $Started = Start-Bridge $Port
