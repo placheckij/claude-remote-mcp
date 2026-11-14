@@ -46,11 +46,17 @@ function Resume-Task {
 }
 
 function Restore-Task {
-    <# Brings the task back if Stop-Bridge disabled it: a setup that stops halfway must not
-       leave the bridge off. #>
-    if ($script:TaskDisabled) {
+    <# Brings the task back if Stop-Bridge disabled it, or a setup killed earlier left it
+       disabled (its marker is still there): a setup that stops halfway must not leave the
+       bridge off. #>
+    if ($script:TaskDisabled -or (Test-Path -LiteralPath $script:DisabledMarker)) {
         # Tried once: Stop-Setup and setup's finally both come here.
         $script:TaskDisabled = $false
+        if (-not (Get-ScheduledTask -TaskName $script:TaskName -TaskPath '\' -ErrorAction SilentlyContinue)) {
+            # Unregistered since (uninstall): nothing to bring back.
+            Remove-Item -LiteralPath $script:DisabledMarker -Force -ErrorAction SilentlyContinue
+            return
+        }
         try { Resume-Task } catch { Write-Warn "couldn't start the agent-bridge task again ($($_.Exception.Message)); run setup again" }
     }
 }
@@ -83,8 +89,11 @@ function Assert-RunAsYou([string]$Script) {
         $desktop = "$($owner.Domain)\$($owner.User)"
     } else {
         # Unreadable: another account can't read it, but WMI also fails now and then. The
-        # console's user, when there is one, tells them apart.
-        $console = [string](Get-CimInstance Win32_ComputerSystem -ErrorAction SilentlyContinue).UserName
+        # console's user, when there is one, tells them apart, unless this is a Remote
+        # Desktop session, whose desktop isn't the console's.
+        Add-Type -AssemblyName System.Windows.Forms
+        $console = if ([Windows.Forms.SystemInformation]::TerminalServerSession) { '' }
+        else { [string](Get-CimInstance Win32_ComputerSystem -ErrorAction SilentlyContinue).UserName }
         if (-not $console) {
             Write-Warn "couldn't tell who owns this desktop; make sure you run $Script as yourself, not another account"
             return
@@ -216,7 +225,8 @@ function Test-IsBridge([string]$CommandLine) {
        Other mentions of agent_bridge don't count. #>
     if (-not $CommandLine) { return $false }
     foreach ($known in $script:BridgeExes) {
-        if ($known -and $CommandLine.IndexOf($known, [StringComparison]::OrdinalIgnoreCase) -ge 0 -and $CommandLine -match '(?i)"?\s+serve\b') { return $true }
+        # serve right after the path, not anywhere on the line.
+        if ($known -and $CommandLine -match ('(?i)' + [regex]::Escape($known) + '"?\s+serve\b')) { return $true }
     }
     return ($CommandLine -match '(?i)agent-bridge(\.(exe|cmd|bat))?"?\s+serve\b') -or
         ($CommandLine -match '(?i)-m\s+agent_bridge(\.cli)?\s+serve\b') -or
@@ -326,10 +336,10 @@ function ConvertFrom-EnvValue([string]$Raw) {
        those, \" and \a \b \f \n \r \t \v, either maybe followed by a comment; or plain up to a
        ` #` comment. #>
     $value = $Raw.Trim()
-    if ($value -match "^'((?:\\'|[^'])*)'\s*(#.*)?$") { return $Matches[1] -replace "\\(['\\])", '$1' }
-    # A quote that isn't closed, or text after the closing one: python-dotenv skips the line.
-    if ($value -match '^[''"]' -and $value -notmatch '^"((?:\\"|[^"])*)"\s*(#.*)?$') { return $null }
-    if ($value -match '^"((?:\\"|[^"])*)"\s*(#.*)?$') {
+    # A backslash takes the character after it along, whatever it is, so "C:\x\" is a quote
+    # left open, as python-dotenv reads it, not C:\x\.
+    if ($value -match "^'((?:\\.|[^'\\])*)'\s*(#.*)?$") { return $Matches[1] -replace "\\(['\\])", '$1' }
+    if ($value -match '^"((?:\\.|[^"\\])*)"\s*(#.*)?$') {
         return [regex]::Replace($Matches[1], '\\([\\''"abfnrtv])', {
                 param($escape)
                 switch -CaseSensitive ($escape.Groups[1].Value) {
@@ -339,6 +349,8 @@ function ConvertFrom-EnvValue([string]$Raw) {
                 }
             })
     }
+    # A quote that isn't closed, or text after the closing one: python-dotenv skips the line.
+    if ($value -match '^[''"]') { return $null }
     # From the raw text: whitespace and # start a comment even right after the = (KEY= # x is
     # empty), while a # right after it doesn't (KEY=#x is #x).
     return ($Raw -replace '\s+#.*$', '').Trim()

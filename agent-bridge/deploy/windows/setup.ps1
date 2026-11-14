@@ -404,7 +404,17 @@ try {
     $Installed = Read-EnvFile $EnvFile
     # ${NAME} in the env file is expanded from this window's variables here, and from a
     # logon's for the service: say which this window has alone.
-    $referenced = @($Installed.Lines | ForEach-Object { [regex]::Matches($_, '\$\{([^}:]*)') | ForEach-Object { $_.Groups[1].Value } })
+    # In values only, and not names set above in the file, which python-dotenv looks up first.
+    $defined = New-Object 'Collections.Generic.HashSet[string]' ([StringComparer]::Ordinal)
+    $referenced = @(foreach ($line in $Installed.Lines) {
+            if ($line -notmatch $KeyLine) { continue }
+            # Not $name, which is $Name, this host's.
+            $lineKey = $Matches[1]
+            foreach ($match in [regex]::Matches($Matches[2], '\$\{([^}:]*)')) {
+                if (-not $defined.Contains($match.Groups[1].Value)) { $match.Groups[1].Value }
+            }
+            [void]$defined.Add($lineKey)
+        })
     foreach ($name in (Get-WindowOnlyName $referenced)) {
         Write-Warn "`${$name} in $EnvFile is set only in this window: agent-bridge, started at logon, won't have it. Set it with setx, or write the value there instead."
     }
@@ -612,15 +622,17 @@ try {
     $Gateway = Get-EnrolledGateway
     # The gateway knows this host by the name it enrolled with; a new -Name needs enrolling again.
     $NameChanged = $Gateway -and -not $NameInstalled -and $Name -ne $Gateway.name
+    # Asked for the enrollment string unless -Enrollment is passed.
+    $WantsEnroll = -not $Gateway -or $NewToken -or $NameChanged
     $String = ''
     if (-not $Started) {
-        if (($Bound.ContainsKey('Enrollment') -and $Enrollment) -or (-not $Bound.ContainsKey('Enrollment') -and (-not $Gateway -or $NewToken -or $NameChanged))) {
+        if (($Bound.ContainsKey('Enrollment') -and $Enrollment) -or (-not $Bound.ContainsKey('Enrollment') -and $WantsEnroll)) {
             Write-Host ''
             Write-Host 'Not enrolling now: the gateway asks agent-bridge for its /info first, and it isn''t running.'
         }
     } elseif ($Bound.ContainsKey('Enrollment')) {
         $String = $Enrollment
-    } elseif (-not $Gateway -or $NewToken -or $NameChanged) {
+    } elseif ($WantsEnroll) {
         Write-Host ''
         if ($Gateway -and $NewToken) { Write-Host "The gateway at $($Gateway.url) still has the old token: enroll again." }
         if ($NameChanged) { Write-Host "The gateway at $($Gateway.url) knows this host as $($Gateway.name): enroll again to rename it." }
