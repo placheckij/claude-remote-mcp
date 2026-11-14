@@ -73,21 +73,31 @@ bridge() { # the venv's agent-bridge, reading only the files this script writes
   )
 }
 
+env_value() { # env_value KEY: the installed AGENT_BRIDGE_KEY as serve's loader reads it
+  # (quotes, escapes, `export`, comments); exits 3 when the file doesn't set it.
+  "$REPO_DIR/.venv/bin/python" -c '
+import sys
+from dotenv import dotenv_values
+value = dotenv_values(sys.argv[1]).get(sys.argv[2])
+if value is None:
+    sys.exit(3)
+print(value, end="")' "$ENV_FILE" "AGENT_BRIDGE_$1"
+}
+
 installed() { # installed KEY: the installed AGENT_BRIDGE_KEY, or nothing
-  local value=""
+  local status=0
   [[ -f $ENV_FILE ]] || return 0
-  # With or without `export ` in front, as the loader reads it.
-  value="$(sed -nE "s/^(export[[:space:]]+)?AGENT_BRIDGE_$1=//p" "$ENV_FILE" | tail -n 1)"
-  case $value in
-    # Single-quoted by line(), which doubles backslashes for the loader.
-    \'*\') value=${value#\'}; value=${value%\'}; value="$(printf '%s' "$value" | sed 's/\\\\/\\/g')" ;;
-    \"*\") value=${value#\"}; value=${value%\"} ;;
-  esac
-  printf '%s' "$value"
+  env_value "$1" || status=$?
+  # Anything else is a failure to read it; going on would e.g. replace the token.
+  [[ $status == 0 || $status == 3 ]] || die "couldn't read $ENV_FILE"
 }
 
 answered() { # answered KEY: whether an earlier run set KEY, even to nothing
-  [[ -f $ENV_FILE ]] && grep -Eq "^(export[[:space:]]+)?AGENT_BRIDGE_$1=" "$ENV_FILE"
+  local status=0
+  [[ -f $ENV_FILE ]] || return 1
+  env_value "$1" >/dev/null || status=$?
+  [[ $status == 0 || $status == 3 ]] || die "couldn't read $ENV_FILE"
+  [[ $status == 0 ]]
 }
 
 pick() { # pick VAR KEY: VAR passed in, else the installed KEY; fails when that is empty
