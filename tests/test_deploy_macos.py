@@ -57,7 +57,10 @@ case $1 in
       --name-format) case $3 in ''|*[!a-z0-9-]*) echo "The name must be lowercase." >&2; exit 2 ;; esac ;;
       --token-format) ;;
       *) echo "ok    agent-bridge answers"
-         [ -f "$HOME/gateway-took-token" ] && echo "ok    the gateway at http://10.0.0.1:8766 has this host as mac" ;;
+         [ -f "$HOME/gateway-took-token" ] && echo "ok    the gateway at http://10.0.0.1:8766 has this host as mac"
+         [ -f "$HOME/gateway-dropped" ] && echo "FAIL  the gateway at http://10.0.0.1:8766 has this host (not enrolled)"
+         # As cli.py saves a name the gateway answers with, e.g. after `bridges rename`.
+         [ -f "$HOME/gateway-name" ] && sed -i '' "s/\\"name\\": \\"[^\\"]*\\"/\\"name\\": \\"$(cat "$HOME/gateway-name")\\"/" "$dir/state.json" ;;
     esac ;;
   enroll)
     code=$(head -n 1 "$HOME/enroll-codes" 2>/dev/null)
@@ -453,6 +456,47 @@ def test_a_rename_on_the_gateway_is_kept(mac: Mac) -> None:
     assert "as studio" in result.stdout
 
 
+def test_a_rename_on_the_gateway_reaches_the_state_file_before_setup_reads_it(mac: Mac) -> None:
+    mac.install()
+    # Renamed on the gateway while the service ran: only `check` brings the name over.
+    (mac.home / "gateway-name").write_text("studio")
+
+    mac.setup(ROTATE_TOKEN="1", ENROLLMENT=ENROLLMENT)
+
+    assert mac.env()["AGENT_BRIDGE_NAME"] == "studio"
+
+
+def test_a_host_the_gateway_dropped_is_asked_to_enroll_again(mac: Mac) -> None:
+    mac.install()
+    (mac.home / "gateway-dropped").touch()
+
+    result = mac.setup()
+
+    assert "Enrollment string" in result.stderr
+    assert "didn't confirm it has it as mac" in result.stdout
+    assert "It is enrolled" not in result.stdout
+
+
+def test_a_host_the_gateway_dropped_enrolls_again_with_a_string(mac: Mac) -> None:
+    mac.install()
+    (mac.home / "gateway-dropped").touch()
+
+    result = mac.setup(ENROLLMENT=ENROLLMENT)
+
+    assert f"enroll {ENROLLMENT}" in mac.log("agent-bridge.log")
+    assert "It is enrolled with the gateway at http://10.0.0.1:8766 as mac" in result.stdout
+
+
+def test_a_failed_state_write_on_an_enrolled_host_shows_the_fix(mac: Mac) -> None:
+    mac.install()
+    (mac.home / "enroll-codes").write_text("state\n")
+
+    result = mac.setup(NAME="studio", ENROLLMENT=ENROLLMENT)
+
+    assert "state file couldn't be written" in result.stdout
+    assert "It is enrolled" not in result.stdout
+
+
 def test_a_new_name_on_an_enrolled_host_enrolls_again(mac: Mac) -> None:
     mac.install()
 
@@ -513,6 +557,18 @@ def test_an_installed_address_the_mac_no_longer_has_is_replaced(mac: Mac) -> Non
 
     assert mac.env()["AGENT_BRIDGE_HOST"] == "192.0.2.7"
     assert "The LAN address is now 192.0.2.7 (was 192.0.2.99)" in result.stdout
+
+
+def test_an_offline_rerun_keeps_the_installed_address(mac: Mac) -> None:
+    mac.install(HOST="192.0.2.99")
+    # No default route, so no current LAN address either.
+    (mac.stubs / "route").write_text("#!/bin/sh\nexit 1\n")
+    (mac.stubs / "route").chmod(0o755)
+
+    result = mac.setup()
+
+    assert mac.env()["AGENT_BRIDGE_HOST"] == "192.0.2.99"
+    assert "no interface has 192.0.2.99" in result.stdout
 
 
 @pytest.mark.parametrize("holder", ["launchd job", "command line"])

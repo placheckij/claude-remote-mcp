@@ -222,6 +222,15 @@ for ROOT in "${ROOT_LIST[@]}"; do
 done
 [[ -n $ROOTS ]] || die "ALLOWED_ROOTS needs at least one folder"
 
+# Ask the gateway before trusting the state file: `check` saves a name the gateway has
+# given the host since (`bridges rename`), and says whether it still has the host at all.
+GATEWAY_GONE=""
+if [[ $SOURCE == env_file && -n $(enrolled name) ]] \
+  && [[ $(bridge check 2>&1 || true) == *"FAIL  the gateway at"* ]]; then
+  GATEWAY_GONE=1
+  echo "warning: the gateway at $(enrolled url) didn't confirm it has this host as $(enrolled name); enrolling again fixes that"
+fi
+
 NAME_GIVEN=${NAME+x}
 DEFAULT_NAME="$(hostname -s | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9]+/-/g; s/^-+//; s/-+$//')"
 pick NAME NAME || ask NAME "This host's name in agent ids, like $DEFAULT_NAME/w1:p1" "${DEFAULT_NAME:-agent-host}"
@@ -239,7 +248,11 @@ if [[ -z ${HOST+x} ]]; then
     HOST=$INSTALLED_HOST
   else
     HOST="$(lan_address)"
-    [[ -z $INSTALLED_HOST || -z $HOST ]] || echo "The LAN address is now $HOST (was $INSTALLED_HOST)."
+    if [[ -z $HOST ]]; then
+      HOST=$INSTALLED_HOST # offline: kept, with the warning below
+    elif [[ -n $INSTALLED_HOST ]]; then
+      echo "The LAN address is now $HOST (was $INSTALLED_HOST)."
+    fi
   fi
 fi
 HOST="$(canonical "$HOST")"
@@ -325,6 +338,7 @@ fi
 
 # Asked for until this host is enrolled, and again with a new token or a new name.
 ENROLLED_AS="$(enrolled name)"
+[[ -z $GATEWAY_GONE ]] || ENROLLED_AS=""
 RENAMING=""
 [[ -z $NAME_GIVEN || -z $ENROLLED_AS || $NAME == "$ENROLLED_AS" ]] || RENAMING=1
 if [[ -z ${ENROLLMENT+x} ]] && [[ -z $ENROLLED_AS || -n $NEW_TOKEN || -n $RENAMING ]]; then
@@ -462,12 +476,15 @@ done
 # Unless the gateway took the new token, it still has the installed one, and the new one
 # would lock it out. `enroll` can fail after the gateway took it (a state file it can't
 # write, or a lost answer), so its output and the gateway itself are asked.
-if [[ -n ${ROTATE_TOKEN:-} && -z $ENROLLED_NOW && -z $GATEWAY_TOOK && -n $INSTALLED_TOKEN ]] \
-  && [[ $(bridge check 2>&1 || true) != *"ok    the gateway at"* ]]; then
-  TOKEN=$INSTALLED_TOKEN
-  write_env
-  start_service
-  die "the gateway didn't take the new token, so the installed one is back; run again with ROTATE_TOKEN=1 and a new enrollment string"
+if [[ -n ${ROTATE_TOKEN:-} && -z $ENROLLED_NOW && -z $GATEWAY_TOOK && -n $INSTALLED_TOKEN ]]; then
+  if [[ $(bridge check 2>&1 || true) == *"ok    the gateway at"* ]]; then
+    ENROLLED_NOW=1 # the gateway answers to the new token
+  else
+    TOKEN=$INSTALLED_TOKEN
+    write_env
+    start_service
+    die "the gateway didn't take the new token, so the installed one is back; run again with ROTATE_TOKEN=1 and a new enrollment string"
+  fi
 fi
 [[ -z $NAME_TAKEN ]] || die "the gateway has another host named $NAME_TAKEN; run again with another NAME"
 
@@ -483,16 +500,19 @@ $LOGIN_HINT
 }
 EOF
 GATEWAY_NAME="$(enrolled name)"
-if [[ -n $GATEWAY_NAME && ( -z $NEW_TOKEN || -n $ENROLLED_NOW || -n $GATEWAY_TOOK ) ]]; then
+if [[ -n $GATEWAY_TOOK ]]; then
+  echo "The gateway enrolled it, but its state file couldn't be written (see above). Fix that, then enroll again with a new string from sudo mcp-gateway enroll:"
+  echo "  $AGENT_BRIDGE enroll '<what it printed>'"
+elif [[ -n $GATEWAY_NAME && -z $ENROLLED_NOW && -n $NEW_TOKEN ]]; then
+  echo "The gateway has it as $GATEWAY_NAME, but with an older token, so it can't reach it. Run sudo mcp-gateway enroll on the gateway host, then here:"
+  echo "  $AGENT_BRIDGE enroll '<what it printed>'"
+elif [[ -n $GATEWAY_NAME && -z $ENROLLED_NOW && -n $GATEWAY_GONE ]]; then
+  echo "The gateway at $(enrolled url) didn't confirm it has it as $GATEWAY_NAME (see the warning above). Run sudo mcp-gateway enroll on the gateway host, then here:"
+  echo "  $AGENT_BRIDGE enroll '<what it printed>'"
+elif [[ -n $GATEWAY_NAME ]]; then
   echo "It is enrolled with the gateway at $(enrolled url) as $GATEWAY_NAME: Claude reaches its agents as $GATEWAY_NAME/…"
   [[ -z $RENAMING || -n $ENROLLED_NOW ]] \
     || echo "The gateway still has it as $GATEWAY_NAME, not $NAME: run again with NAME=$NAME and an enrollment string to rename it."
-elif [[ -n $GATEWAY_TOOK ]]; then
-  echo "The gateway enrolled it, but its state file couldn't be written (see above). Fix that, then enroll again with a new string from sudo mcp-gateway enroll:"
-  echo "  $AGENT_BRIDGE enroll '<what it printed>'"
-elif [[ -n $GATEWAY_NAME ]]; then
-  echo "The gateway has it as $GATEWAY_NAME, but with an older token, so it can't reach it. Run sudo mcp-gateway enroll on the gateway host, then here:"
-  echo "  $AGENT_BRIDGE enroll '<what it printed>'"
 else
   echo "It is not enrolled with a gateway yet. Run sudo mcp-gateway enroll on the gateway host, then here:"
   echo "  $AGENT_BRIDGE enroll '<what it printed>'"
