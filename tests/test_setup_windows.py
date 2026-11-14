@@ -135,6 +135,13 @@ state = Path(os.environ["LOCALAPPDATA"]) / "agent-bridge" / "state.json"
 args = sys.argv[1:]
 if args[0] == "check":
     if len(args) == 1:
+        # As the real one: the settings first, from AGENT_BRIDGE_ENV_FILE when it is set.
+        env_file = os.environ.get("AGENT_BRIDGE_ENV_FILE") or str(Path(os.environ["APPDATA"]) / "agent-bridge" / "env")
+        bad = os.environ.get("FAKE_BAD_SETTINGS")
+        if bad and bad in Path(env_file).read_text(encoding="utf-8"):
+            print(f"FAIL  settings (Invalid settings: {bad} won't do)")
+            sys.exit(1)
+        print(f"ok    settings in {env_file}")
         print("ok    fake checks")
         sys.exit(0)
     if os.environ.get("FAKE_OLD_CHECK"):
@@ -251,6 +258,8 @@ class Machine:
             "FAKE_OLD_CHECK": "",
             "FAKE_BROKEN_UNENROLL": "",
             "FAKE_NO_START": "",
+            "FAKE_BAD_SETTINGS": "",
+            "AGENT_BRIDGE_STATE_FILE": r"C:\leftover\state.json",
             "FAKE_ELEVATED_EXIT": "0",
             "FAKE_BLOCKED_PROGRAM": "",
             **fakes,
@@ -547,7 +556,8 @@ def test_a_port_windows_keeps_for_itself_is_not_offered(machine: Machine) -> Non
 
 
 def test_agent_bridge_failing_to_run_is_not_called_a_bad_value(machine: Machine) -> None:
-    output = machine.setup("-Name 'win-pc'", "-Enrollment ''", expect=1, FAKE_BROKEN_CHECK="1")
+    # The name answered at the prompt is checked on its own.
+    output = machine.setup("-Enrollment ''", input="\nwin-pc\n", expect=1, FAKE_BROKEN_CHECK="1")
 
     assert "didn't run (exit 1; see above)" in output
     assert "won't do" not in output
@@ -604,7 +614,7 @@ def test_a_program_that_only_mentions_agent_bridge_is_another_program(machine: M
 
 
 def test_an_agent_bridge_without_the_format_checks_is_called_too_old(machine: Machine) -> None:
-    output = machine.setup("-Name 'win-pc'", "-Enrollment ''", expect=1, FAKE_OLD_CHECK="1")
+    output = machine.setup("-Enrollment ''", input="\nwin-pc\n", expect=1, FAKE_OLD_CHECK="1")
 
     assert "it is older than this setup.ps1" in output
     assert "won't do" not in output
@@ -628,29 +638,11 @@ def test_uninstall_uses_the_installed_agent_bridge(machine: Machine) -> None:
     assert machine.calls()[0] == "agent-bridge unenroll"
 
 
-def test_a_root_as_broad_as_the_home_folder_stops_setup_before_the_bridge(machine: Machine) -> None:
-    machine.setup("-Enrollment ''", input="\n\n")
-
-    output = machine.setup(f"-Roots '{machine.profile}'", expect=1)
-
-    assert "is too broad" in output
-    assert r"Disable-ScheduledTask \agent-bridge" not in machine.calls()
-
-
 def test_a_bridge_that_does_not_start_is_not_called_done(machine: Machine) -> None:
     output = machine.setup("-Enrollment ''", input="\n\n", expect=1, FAKE_NO_START="1")
 
     assert "agent-bridge didn't start" in output
     assert "Done. agent-bridge listens" not in output
-
-
-def test_an_address_that_isnt_an_ip_stops_setup_before_the_bridge(machine: Machine) -> None:
-    machine.setup("-Enrollment ''", input="\n\n")
-
-    output = machine.setup("-Address 'mypc.local'", expect=1)
-
-    assert "must be an IP address" in output
-    assert r"Disable-ScheduledTask \agent-bridge" not in machine.calls()
 
 
 def test_a_name_answered_while_enrolled_under_another_asks_to_enroll_again(machine: Machine) -> None:
@@ -678,23 +670,11 @@ def test_another_os_is_told_so_before_anything_reads_appdata(machine: Machine) -
     assert "these scripts are for Windows" in output
 
 
-def test_a_short_ipv4_address_is_refused_as_agent_bridge_would(machine: Machine) -> None:
-    output = machine.setup("-Address '192.168.1'", "-Enrollment ''", input="\n\n", expect=1)
-
-    assert "must be an IP address" in output
-
-
 def test_a_reserved_port_passed_in_says_to_pass_another(machine: Machine) -> None:
     output = machine.setup("-Port 8765", "-Enrollment ''", input="\n\n", expect=1, FAKE_EXCLUDED_PORTS="8765-8765")
 
     assert "error: pass another -Port" in output
     assert "stop that program" not in output
-
-
-def test_a_bracketed_ipv6_address_is_refused(machine: Machine) -> None:
-    output = machine.setup("-Address '[::1]'", "-Enrollment ''", input="\n\n", expect=1)
-
-    assert "must be an IP address" in output
 
 
 def test_a_failed_enrollment_is_setups_exit_code(machine: Machine) -> None:
@@ -712,12 +692,6 @@ def test_a_rename_on_the_gateway_restarts_the_task_with_its_repeat(machine: Mach
     calls = machine.calls()
     renamed = calls.index(r"Disable-ScheduledTask \agent-bridge")
     assert r"Register-ScheduledTask \agent-bridge" in calls[renamed:]
-
-
-def test_the_agents_config_cant_be_the_default_one(machine: Machine) -> None:
-    output = machine.setup(f"-ClaudeConfigDir '{machine.profile}\\.claude'", "-Enrollment ''", input="\n\n", expect=1)
-
-    assert "can't be your own" in output
 
 
 def test_switching_from_an_agent_bridge_installed_elsewhere_is_said(machine: Machine) -> None:
@@ -739,3 +713,25 @@ def test_uninstall_goes_on_with_a_port_out_of_range(machine: Machine) -> None:
     machine.run("uninstall.ps1")
 
     assert not (machine.appdata / "agent-bridge").exists()
+
+
+def test_settings_agent_bridge_refuses_stop_setup_before_the_bridge(machine: Machine) -> None:
+    machine.setup("-Enrollment ''", input="\n\n")
+    env = machine.env_file.read_bytes()
+
+    output = machine.setup("-Address '192.168.1'", expect=1, FAKE_BAD_SETTINGS="AGENT_BRIDGE_HOST=192.168.1")
+
+    # Its reason, naming the real env file, not the copy it checked.
+    assert f"FAIL  settings (Invalid settings: AGENT_BRIDGE_HOST=192.168.1 won't do)" in output
+    assert "wouldn't start with these settings" in output
+    assert r"Disable-ScheduledTask \agent-bridge" not in machine.calls()
+    assert machine.env_file.read_bytes() == env
+
+
+def test_the_settings_are_checked_in_a_copy_without_a_gateway(machine: Machine) -> None:
+    machine.setup("-Enrollment ''", input="\n\n")
+
+    # The first check, before anything changes, reads a copy; a leftover AGENT_BRIDGE_STATE_FILE
+    # in the session (set for every run here) never reaches agent-bridge.
+    calls = machine.calls()
+    assert calls.index("agent-bridge check") < calls.index(r"Register-ScheduledTask \agent-bridge")

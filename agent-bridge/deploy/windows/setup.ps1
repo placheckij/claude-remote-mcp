@@ -247,12 +247,38 @@ function Start-Bridge([int]$Port, [switch]$Registered) {
     return $false
 }
 
-function Assert-Narrow([string]$Folder, [string]$What) {
-    <# Refuses the home folder or anything above it, as agent-bridge does; caught here, it
-       doesn't replace a working bridge with one that won't start. #>
-    $userHome = [IO.Path]::GetFullPath($env:USERPROFILE).TrimEnd('\') + '\'
-    if ($userHome.StartsWith($Folder.TrimEnd('\') + '\', [StringComparison]::OrdinalIgnoreCase)) {
-        Stop-Setup "$What $Folder is too broad: use a projects folder, not a drive or the home folder itself"
+function Test-Settings($Settings) {
+    <# Whether agent-bridge accepts the env file setup is about to write, by its own rules
+       (roots, address, name, Claude config, trust root, accounts): `agent-bridge check` on a
+       copy in the temp folder, with a state file that doesn't exist, so it asks no gateway.
+       Run before the working bridge is stopped, so settings it refuses never replace it. #>
+    $temporary = Join-Path ([IO.Path]::GetTempPath()) "agent-bridge-setup-$PID"
+    New-Item -ItemType Directory -Force -Path $temporary | Out-Null
+    try {
+        $copy = Join-Path $temporary 'env'
+        Write-EnvFile $copy $Installed.Lines $Settings
+        $environment = @{ AGENT_BRIDGE_ENV_FILE = $copy; AGENT_BRIDGE_STATE_FILE = (Join-Path $temporary 'state.json') }
+        while ($true) {
+            $code = Invoke-Native $Exe @('check') -Quiet -Environment $environment
+            # Its first line is about the settings, in these words on every platform.
+            $verdict = @($script:NativeOutput | Where-Object { $_ -match '^(ok|FAIL)\s+settings\b' }) | Select-Object -First 1
+            if ($verdict -match '^ok') { return $true }
+            if ($verdict) {
+                Write-Host ($verdict -replace [regex]::Escape($copy), $EnvFile)
+                return $false
+            }
+            $script:NativeOutput | ForEach-Object { Write-Host $_ }
+            if ($Checkout -and -not $script:Synced) {
+                Write-Host 'agent-bridge didn''t run as it is; installing its dependencies first.'
+                Stop-Bridge $Exe (Get-InstalledPort)
+                Sync-Checkout
+                $script:Synced = $true
+                continue
+            }
+            Stop-Setup "$Exe didn't run (exit $code; see above)"
+        }
+    } finally {
+        Remove-Item -LiteralPath $temporary -Recurse -Force -ErrorAction SilentlyContinue
     }
 }
 
@@ -315,7 +341,6 @@ try {
     $RootList = @($Roots -split ';' | Where-Object { $_.Trim() } | ForEach-Object { ConvertTo-FullPath $_ 'Each root' })
     if ($RootList.Count -eq 0) { Stop-Setup 'agents need at least one folder to start in' }
     foreach ($root in $RootList) {
-        Assert-Narrow $root 'The root'
         if (-not (Test-Path -LiteralPath $root -PathType Container)) { Write-Warn "$root doesn't exist yet" }
     }
     $Roots = $RootList -join ';'
@@ -323,13 +348,11 @@ try {
     # This host's name.
     # Whether it came from the env file: a name given now, passed or answered, has to reach
     # the gateway, while the env file's may differ from it after `bridges rename` there.
+    # (A name passed in or installed is checked with the other settings, below.)
     $NameInstalled = $false
-    if ($Bound.ContainsKey('Name')) {
-        if (-not (Test-Format '--name-format' $Name)) { Stop-Setup "-Name: $Name won't do" }
-    } else {
+    if (-not $Bound.ContainsKey('Name')) {
         $Name = Get-Installed 'NAME'
         $NameInstalled = [bool]$Name
-        if ($Name -and -not (Test-Format '--name-format' $Name)) { Stop-Setup "AGENT_BRIDGE_NAME in $EnvFile won't do; pass -Name" }
         if (-not $Name) { $Name = Read-Name "This host's name, as Claude will say it" (Get-DefaultName) }
         if (-not $Name) { Stop-Setup 'this host needs a name' }
     }
@@ -345,18 +368,6 @@ try {
         if (-not $Address) { $Address = Read-Value 'LAN address to listen on, like 192.168.1.20' '' }
     }
     if (-not $Address) { Stop-Setup 'no LAN address: connect to the network, or pass -Address' }
-    # As agent-bridge checks it, before a bad one replaces a working bridge.
-    $parsed = $null
-    # .NET also reads 192.168.1 and 010.0.0.5 as IPv4 addresses, which Python doesn't: an
-    # IPv4 address must be written as .NET writes it back.
-    $ipv4 = [Net.Sockets.AddressFamily]::InterNetwork
-    if ($Address -match '[\[\]]' -or -not [Net.IPAddress]::TryParse($Address, [ref]$parsed) -or
-        ($parsed.AddressFamily -eq $ipv4 -and $parsed.ToString() -ne $Address)) {
-        Stop-Setup "the LAN address must be an IP address, like 192.168.1.20; got $Address"
-    }
-    if ($parsed.Equals([Net.IPAddress]::Any) -or $parsed.Equals([Net.IPAddress]::IPv6Any)) {
-        Stop-Setup 'listen on the LAN address, not on every interface'
-    }
     if ($Address -ne '127.0.0.1' -and -not (Test-LocalAddress $Address)) {
         Write-Warn "no interface has $Address right now; the task tries again every minute until one does"
     }
@@ -388,17 +399,6 @@ try {
         $Optional['AGENT_BRIDGE_TRUST_ROOT'] = if ($TrustRoot) { ConvertTo-FullPath $TrustRoot '-TrustRoot' } else { '' }
     }
     $ConfigDir = if ($Optional.Contains('AGENT_BRIDGE_CLAUDE_CONFIG_DIR')) { $Optional['AGENT_BRIDGE_CLAUDE_CONFIG_DIR'] } else { Get-Installed 'CLAUDE_CONFIG_DIR' }
-    $Trust = if ($Optional.Contains('AGENT_BRIDGE_TRUST_ROOT')) { $Optional['AGENT_BRIDGE_TRUST_ROOT'] } else { Get-Installed 'TRUST_ROOT' }
-    # As agent-bridge refuses them at startup, passed in or installed: caught here, they don't
-    # replace a working bridge with one that won't start.
-    if ($Trust) { Assert-Narrow ([IO.Path]::GetFullPath($Trust)) 'The trust root' }
-    $defaultConfig = Join-Path ([IO.Path]::GetFullPath($env:USERPROFILE)) '.claude'
-    if ($ConfigDir -and [string]::Equals([IO.Path]::GetFullPath($ConfigDir).TrimEnd('\'), $defaultConfig, [StringComparison]::OrdinalIgnoreCase)) {
-        Stop-Setup "the agents' Claude config can't be your own ($defaultConfig): use a separate folder, e.g. ~\.claude-agents"
-    }
-    if ($Trust -and -not $ConfigDir) {
-        Stop-Setup 'a trust root needs -ClaudeConfigDir: folders are only ever trusted in a separate Claude config'
-    }
 
     # The token: kept, unless there is none yet or it is being replaced.
     $Token = Get-Installed 'TOKEN'
@@ -434,6 +434,17 @@ try {
         if ($answer -notmatch '^\d{1,5}$' -or [int]$answer -lt 1 -or [int]$answer -gt 65535) { Stop-Setup "not a port: $answer" }
         $Port = [int]$answer
     }
+
+    $Settings = [ordered]@{
+        AGENT_BRIDGE_TOKEN         = $Token
+        AGENT_BRIDGE_ALLOWED_ROOTS = $Roots
+        AGENT_BRIDGE_HOST          = $Address
+        AGENT_BRIDGE_PORT          = [string]$Port
+        AGENT_BRIDGE_NAME          = $Name
+        AGENT_BRIDGE_HERDR_BIN     = $HerdrBin
+    }
+    foreach ($key in $Optional.Keys) { $Settings[$key] = $Optional[$key] }
+    if (-not (Test-Settings $Settings)) { Stop-Setup "agent-bridge wouldn't start with these settings (above); nothing was changed" }
 
     # --- Install ---------------------------------------------------------------------------
 
@@ -483,15 +494,6 @@ try {
     if ($Checkout -and -not $Synced) { Sync-Checkout }
 
     Write-Step "Writing $EnvFile"
-    $Settings = [ordered]@{
-        AGENT_BRIDGE_TOKEN         = $Token
-        AGENT_BRIDGE_ALLOWED_ROOTS = $Roots
-        AGENT_BRIDGE_HOST          = $Address
-        AGENT_BRIDGE_PORT          = [string]$Port
-        AGENT_BRIDGE_NAME          = $Name
-        AGENT_BRIDGE_HERDR_BIN     = $HerdrBin
-    }
-    foreach ($key in $Optional.Keys) { $Settings[$key] = $Optional[$key] }
     Write-EnvFile $EnvFile $Installed.Lines $Settings
 
     Write-Step "Registering the scheduled task $TaskName, which starts agent-bridge"
