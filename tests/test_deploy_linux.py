@@ -541,15 +541,15 @@ def test_uninstall_goes_on_when_leaving_the_gateway_fails(host: Host) -> None:
     assert not host.state_file.exists()
 
 
-def test_on_macos_it_points_to_the_macos_setup(host: Host) -> None:
+def test_on_another_os_it_stops_before_changing_anything(host: Host) -> None:
     (host.stubs / "uname").write_text("#!/bin/sh\necho Darwin\n")
     (host.stubs / "uname").chmod(0o755)
 
     result = host.install(check=False)
 
     assert result.returncode != 0
-    script = re.search(r"run (agent-bridge/deploy/\S+)", result.stderr)
-    assert script and (DEPLOY.parent.parent / script[1]).is_file(), result.stderr
+    assert "this script is for Linux" in result.stderr
+    assert not host.env_file.exists()
 
 
 def test_unit_paths_with_spaces_dollars_and_percents_are_quoted_for_systemd(host: Host) -> None:
