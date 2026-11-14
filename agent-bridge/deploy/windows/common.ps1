@@ -187,11 +187,19 @@ function Format-Quoted([string]$Text) {
     return "'" + $Text.Replace("'", "''") + "'"
 }
 
+# The agent-bridge.exe paths this run knows (given with -Bridge, or installed), whatever
+# they are named; setup.ps1 and uninstall.ps1 set them.
+$script:BridgeExes = @()
+
 function Test-IsBridge([string]$CommandLine) {
     <# Whether a command line is agent-bridge's service, wherever it is installed: a checkout's
-       .venv, a package's folder or shim, `python -m agent_bridge.cli serve`, or uvicorn with
-       agent_bridge.app:main as installed before. Other mentions of agent_bridge don't count. #>
+       .venv, a package's folder or shim, one of $script:BridgeExes, `python -m
+       agent_bridge.cli serve`, or uvicorn with agent_bridge.app:main as installed before.
+       Other mentions of agent_bridge don't count. #>
     if (-not $CommandLine) { return $false }
+    foreach ($known in $script:BridgeExes) {
+        if ($known -and $CommandLine.IndexOf($known, [StringComparison]::OrdinalIgnoreCase) -ge 0 -and $CommandLine -match '(?i)"?\s+serve\b') { return $true }
+    }
     return ($CommandLine -match '(?i)agent-bridge(\.(exe|cmd|bat))?"?\s+serve\b') -or
         ($CommandLine -match '(?i)-m\s+agent_bridge(\.cli)?\s+serve\b') -or
         ($CommandLine -match '(?i)\bagent_bridge\.app:main\b')
@@ -253,8 +261,9 @@ function Stop-Bridge([string]$Exe, [int]$Port) {
     $task = Get-ScheduledTask -TaskName $script:TaskName -TaskPath '\' -ErrorAction SilentlyContinue
     if ($task) {
         Disable-ScheduledTask -TaskName $script:TaskName -TaskPath '\' | Out-Null
-        # Brought back on the way out only if it was on, or setup had turned it off before:
-        # one you disabled stays off.
+        # Brought back by a setup that stops early only if it was on, or setup had turned it
+        # off before: one you disabled stays off then. (A setup that finishes starts it, as
+        # running setup is for.)
         if ([string]$task.State -ne 'Disabled' -or (Test-Path -LiteralPath $script:DisabledMarker)) {
             $script:TaskDisabled = $true
             if (Test-Path -LiteralPath $script:StateDir) { Set-Content -LiteralPath $script:DisabledMarker -Value 'setup' }
@@ -325,19 +334,30 @@ function Expand-EnvReference([string]$Value, $Earlier) {
         })
 }
 
+function ConvertFrom-EnvLine([string]$Line, $Exact) {
+    <# A line's @{ Name; Value } as python-dotenv reads it, ${NAME} expanded from $Exact (the
+       values so far, by exact name), or $null for a line without a setting. #>
+    if ($Line -notmatch $script:KeyLine) { return $null }
+    $name = $Matches[1]
+    return @{ Name = $name; Value = (Expand-EnvReference (ConvertFrom-EnvValue $Matches[2]) $Exact) }
+}
+
+function New-EnvValueTable {
+    <# Values by exact name, as python-dotenv keeps them, for ${NAME}. #>
+    return , (New-Object 'Collections.Generic.Dictionary[string,string]' ([StringComparer]::Ordinal))
+}
+
 function Read-EnvFile([string]$Path) {
     <# The env file's lines, and its values by key, as python-dotenv reads them. #>
     $values = [ordered]@{}
-    # By exact name, as python-dotenv keeps them, for ${NAME}.
-    $exact = New-Object 'Collections.Generic.Dictionary[string,string]' ([StringComparer]::Ordinal)
+    $exact = New-EnvValueTable
     $lines = @()
     if (Test-Path -LiteralPath $Path) { $lines = @(Get-Content -LiteralPath $Path -Encoding UTF8) }
     foreach ($line in $lines) {
-        if ($line -match $script:KeyLine) {
-            $name = $Matches[1]
-            $value = Expand-EnvReference (ConvertFrom-EnvValue $Matches[2]) $exact
-            $exact[$name] = $value
-            $values[$name.ToUpperInvariant()] = $value
+        $entry = ConvertFrom-EnvLine $line $exact
+        if ($entry) {
+            $exact[$entry.Name] = $entry.Value
+            $values[$entry.Name.ToUpperInvariant()] = $entry.Value
         }
     }
     return @{ Lines = $lines; Values = $values }

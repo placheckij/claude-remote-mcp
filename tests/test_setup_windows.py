@@ -936,3 +936,36 @@ def test_a_port_change_stops_an_agent_bridge_on_the_old_port(machine: Machine) -
     machine.setup("-Port 8766")
 
     assert "Stop-Process 93" in machine.calls()
+
+
+def test_a_kept_reference_follows_what_is_written_above_it(machine: Machine) -> None:
+    config = machine.root / "agents"
+    machine.setup("-Enrollment ''", f"-ClaudeConfigDir '{config}'", input="\n\n")
+    old_roots = str(machine.profile / "Projects")
+    with machine.env_file.open("a", encoding="utf-8") as file:
+        file.write("AGENT_BRIDGE_TRUST_ROOT=${AGENT_BRIDGE_ALLOWED_ROOTS}\n")
+    new_roots = machine.profile / "New"
+    new_roots.mkdir()
+
+    # The trust root asked for is the old roots, which the reference no longer gives.
+    machine.setup(f"-Roots '{new_roots}'", f"-TrustRoot '{old_roots}'")
+
+    assert machine.env()["AGENT_BRIDGE_TRUST_ROOT"] == old_roots
+
+
+def test_an_agent_bridge_under_another_name_is_recognised(machine: Machine) -> None:
+    other = machine.root / "tools" / "ab-1.4.cmd"
+    other.parent.mkdir()
+    other.write_text(machine.bridge.read_text())
+
+    output = machine.run("setup.ps1", f"-Bridge '{other}'", "-Enrollment ''", input="\n\n",
+                         FAKE_BRIDGE=str(other))
+
+    assert "Done. agent-bridge listens" in output
+
+
+def test_a_skipped_check_isnt_called_failed(machine: Machine) -> None:
+    output = machine.setup("-Enrollment ''", input="\n\n", expect=1, FAKE_NO_START="1")
+
+    assert "A check failed" not in output
+    assert "Not enrolling now" not in output
