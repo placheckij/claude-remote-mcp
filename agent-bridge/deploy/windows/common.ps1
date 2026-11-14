@@ -22,11 +22,12 @@ $script:LogFile = Join-Path $script:StateDir 'agent-bridge.log'
 $script:RunFile = Join-Path $script:StateDir 'run.cmd'
 # Where setup checks a copy of the settings; uninstall removes what a killed setup left.
 $script:CheckDir = Join-Path $script:StateDir 'setup-check'
-# There while setup has the task disabled: a setup killed meanwhile leaves it, and the next
-# one then knows the task was setup's to bring back, not one you turned off.
+# There while setup has the task disabled, the one record of it: a setup that stops early,
+# or the next one after a setup was killed, then knows the task is setup's to bring back,
+# not one you turned off.
 $script:DisabledMarker = Join-Path $script:StateDir 'task-disabled-by-setup'
-# Set while Stop-Bridge has the task disabled, so leaving early enables it again.
-$script:TaskDisabled = $false
+# Restore-Task tries once: Stop-Setup and setup's finally both come there.
+$script:RestoreTried = $false
 # Where your lasting environment variables and the machine's are kept: what the scheduled
 # task gets, unlike a variable set only in the window setup runs in.
 $script:LastingEnvironment = [ordered]@{
@@ -41,24 +42,20 @@ function Resume-Task {
     Enable-ScheduledTask -TaskName $script:TaskName -TaskPath '\' | Out-Null
     $xml = Export-ScheduledTask -TaskName $script:TaskName -TaskPath '\'
     Register-ScheduledTask -TaskName $script:TaskName -TaskPath '\' -Xml $xml -Force | Out-Null
-    $script:TaskDisabled = $false
     Remove-Item -LiteralPath $script:DisabledMarker -Force -ErrorAction SilentlyContinue
 }
 
 function Restore-Task {
-    <# Brings the task back if Stop-Bridge disabled it, or a setup killed earlier left it
-       disabled (its marker is still there): a setup that stops halfway must not leave the
-       bridge off. #>
-    if ($script:TaskDisabled -or (Test-Path -LiteralPath $script:DisabledMarker)) {
-        # Tried once: Stop-Setup and setup's finally both come here.
-        $script:TaskDisabled = $false
-        if (-not (Get-ScheduledTask -TaskName $script:TaskName -TaskPath '\' -ErrorAction SilentlyContinue)) {
-            # Unregistered since (uninstall): nothing to bring back.
-            Remove-Item -LiteralPath $script:DisabledMarker -Force -ErrorAction SilentlyContinue
-            return
-        }
-        try { Resume-Task } catch { Write-Warn "couldn't start the agent-bridge task again ($($_.Exception.Message)); run setup again" }
+    <# Brings the task back if setup disabled it, this one's Stop-Bridge or one killed earlier
+       (the marker is there): a setup that stops halfway must not leave the bridge off. #>
+    if ($script:RestoreTried -or -not (Test-Path -LiteralPath $script:DisabledMarker)) { return }
+    $script:RestoreTried = $true
+    if (-not (Get-ScheduledTask -TaskName $script:TaskName -TaskPath '\' -ErrorAction SilentlyContinue)) {
+        # Unregistered since (uninstall): nothing to bring back.
+        Remove-Item -LiteralPath $script:DisabledMarker -Force -ErrorAction SilentlyContinue
+        return
     }
+    try { Resume-Task } catch { Write-Warn "couldn't start the agent-bridge task again ($($_.Exception.Message)); run setup again" }
 }
 
 function Stop-Setup([string]$Message) {
@@ -289,14 +286,15 @@ function Stop-Bridge([string]$Exe, [int[]]$Port) {
        registering it again, Start-Bridge or Stop-Setup enable it again. #>
     $task = Get-ScheduledTask -TaskName $script:TaskName -TaskPath '\' -ErrorAction SilentlyContinue
     if ($task) {
-        Disable-ScheduledTask -TaskName $script:TaskName -TaskPath '\' | Out-Null
         # Brought back by a setup that stops early only if it was on, or setup had turned it
-        # off before: one you disabled stays off then. (A setup that finishes starts it, as
-        # running setup is for.)
-        if ([string]$task.State -ne 'Disabled' -or (Test-Path -LiteralPath $script:DisabledMarker)) {
-            $script:TaskDisabled = $true
-            if (Test-Path -LiteralPath $script:StateDir) { Set-Content -LiteralPath $script:DisabledMarker -Value 'setup' }
+        # off before (the marker is there already): one you disabled stays off then. (A setup
+        # that finishes starts it, as running setup is for.) Marked first, so a setup killed
+        # in between leaves the mark too.
+        if ([string]$task.State -ne 'Disabled') {
+            New-Item -ItemType Directory -Force -Path $script:StateDir | Out-Null
+            Set-Content -LiteralPath $script:DisabledMarker -Value 'setup'
         }
+        Disable-ScheduledTask -TaskName $script:TaskName -TaskPath '\' | Out-Null
         Stop-ScheduledTask -TaskName $script:TaskName -TaskPath '\'
     }
     # Ending the task ends only the conhost.exe it started; the cmd.exe running run.cmd, the
@@ -356,23 +354,40 @@ function ConvertFrom-EnvValue([string]$Raw) {
     return ($Raw -replace '\s+#.*$', '').Trim()
 }
 
+function Get-LastingVariable([string]$Path) {
+    <# The environment variables kept under the registry key $Path, by name. #>
+    $found = [ordered]@{}
+    $variables = Get-ItemProperty -LiteralPath $Path -ErrorAction SilentlyContinue
+    if ($variables) {
+        foreach ($property in $variables.PSObject.Properties) {
+            # Not the ones PowerShell adds.
+            if ($property.Name -notmatch '^PS(Path|ParentPath|ChildName|Drive|Provider)$') { $found[$property.Name] = [string]$property.Value }
+        }
+    }
+    return $found
+}
+
 function Get-WindowOnlyName([string[]]$Names) {
-    <# Those of $Names this window has but a logon doesn't: not in your lasting variables, the
-       machine's or the session's (Volatile Environment), nor one Windows sets for every
-       process. The scheduled task, started at logon, won't have them. #>
+    <# Those of $Names whose value in this window a logon doesn't give: set here only, or
+       otherwise in your lasting variables, the machine's or the session's (Volatile
+       Environment). The scheduled task, started at logon, has another value or none. Only
+       upper-case names, the only ones python-dotenv finds in the environment, and not those
+       Windows sets for every process. #>
     $everyProcess = 'USERPROFILE', 'APPDATA', 'LOCALAPPDATA', 'HOMEDRIVE', 'HOMEPATH', 'HOMESHARE', 'USERNAME',
     'USERDOMAIN', 'USERDNSDOMAIN', 'LOGONSERVER', 'COMPUTERNAME', 'SYSTEMROOT', 'WINDIR', 'SYSTEMDRIVE',
     'PROGRAMFILES', 'PROGRAMFILES(X86)', 'PROGRAMW6432', 'COMMONPROGRAMFILES', 'COMMONPROGRAMFILES(X86)',
     'COMMONPROGRAMW6432', 'PROGRAMDATA', 'PUBLIC', 'ALLUSERSPROFILE', 'TEMP', 'TMP', 'PATH', 'PATHEXT',
     'COMSPEC', 'OS', 'NUMBER_OF_PROCESSORS', 'PROCESSOR_ARCHITECTURE', 'SESSIONNAME'
-    $lasting = @{}
-    foreach ($path in @($script:LastingEnvironment.Values) + 'HKCU:\Volatile Environment') {
-        $variables = Get-ItemProperty -LiteralPath $path -ErrorAction SilentlyContinue
-        if ($variables) { foreach ($property in $variables.PSObject.Properties) { $lasting[$property.Name.ToUpperInvariant()] = $true } }
+    # As a logon sets them: the user's win over the machine's, the session's over both.
+    $logon = @{}
+    foreach ($path in $script:LastingEnvironment.Machine, $script:LastingEnvironment.User, 'HKCU:\Volatile Environment') {
+        $variables = Get-LastingVariable $path
+        foreach ($variable in $variables.Keys) { $logon[$variable.ToUpperInvariant()] = $variables[$variable] }
     }
     return @($Names | Where-Object {
-            $null -ne [Environment]::GetEnvironmentVariable($_) -and
-            $everyProcess -notcontains $_.ToUpperInvariant() -and -not $lasting.ContainsKey($_.ToUpperInvariant())
+            $value = [Environment]::GetEnvironmentVariable($_)
+            $null -ne $value -and $_ -ceq $_.ToUpperInvariant() -and $everyProcess -notcontains $_ -and
+            -not ($logon.ContainsKey($_) -and $logon[$_] -ceq $value)
         } | Select-Object -Unique)
 }
 

@@ -48,7 +48,8 @@ function netsh { if ($args[1] -eq 'ipv6') { return }
     foreach ($range in ($env:FAKE_EXCLUDED_PORTS -split ',')) { if ($range) { "  $($range -replace '-', '  ')" } } }
 function Stop-Process { param([int]$Id, [switch]$Force, $ErrorAction)
     Add-Call "Stop-Process $Id"
-    if ($env:FAKE_UNKILLABLE -and [string]$Id -eq $env:FAKE_UNKILLABLE -and (Get-Content -LiteralPath $env:FAKE_CALLS | Where-Object { $_ -like 'agent-bridge enroll*' })) { return }
+    # From the first enroll on, or from the start with FAKE_UNKILLABLE_NOW.
+    if ($env:FAKE_UNKILLABLE -and [string]$Id -eq $env:FAKE_UNKILLABLE -and ($env:FAKE_UNKILLABLE_NOW -or (Get-Content -LiteralPath $env:FAKE_CALLS | Where-Object { $_ -like 'agent-bridge enroll*' }))) { return }
     $f = Get-Fake; $f.listen = @($f.listen | Where-Object { $_.pid -ne $Id }); Set-Fake $f }
 function Start-Sleep { param([int]$Seconds, [int]$Milliseconds) }
 # WinForms' SystemInformation, faked before the real one loads, so whether this is a Remote
@@ -84,9 +85,12 @@ function Unregister-ScheduledTask { param($TaskName, $TaskPath, $Confirm)
 function Stop-ScheduledTask { param($TaskName, $TaskPath) Add-Call "Stop-ScheduledTask $TaskPath$TaskName" }
 function Disable-ScheduledTask { param($TaskName, $TaskPath)
     Add-Call "Disable-ScheduledTask $TaskPath$TaskName"
-    $f = Get-Fake; $f.enabled = $false; Set-Fake $f }
+    $f = Get-Fake; $f.enabled = $false; Set-Fake $f
+    # Setup killed right after it disabled the task.
+    if ($env:FAKE_KILLED_AT_DISABLE) { [Environment]::Exit(9) } }
 function Enable-ScheduledTask { param($TaskName, $TaskPath)
     Add-Call "Enable-ScheduledTask $TaskPath$TaskName"
+    if ($env:FAKE_ENABLE_FAILS) { throw 'Access is denied.' }
     $f = Get-Fake; $f.enabled = $true; Set-Fake $f }
 function Start-ScheduledTask { param($TaskName, $TaskPath)
     Add-Call "Start-ScheduledTask $TaskPath$TaskName"
@@ -280,9 +284,12 @@ class Machine:
             "FAKE_BAD_SETTINGS": "",
             "FAKE_USER_VARIABLE": "",
             "FAKE_UNKILLABLE": "",
+            "FAKE_UNKILLABLE_NOW": "",
             "FAKE_CONSOLE_USER": "",
             "FAKE_REMOTE_SESSION": "",
             "FAKE_UNREGISTER_FAILS": "",
+            "FAKE_KILLED_AT_DISABLE": "",
+            "FAKE_ENABLE_FAILS": "",
             "AGENT_BRIDGE_STATE_FILE": r"C:\leftover\state.json",
             "FAKE_ELEVATED_EXIT": "0",
             "FAKE_BLOCKED_PROGRAM": "",
@@ -1100,3 +1107,53 @@ def test_references_to_names_set_above_or_in_comments_are_not_called_window_only
 
     assert "set only in this window" not in output
     assert "Done." in output
+
+
+def test_a_name_passed_in_survives_a_window_only_reference(machine: Machine) -> None:
+    machine.setup("-Enrollment ''", input="\n\n")
+    text = machine.env_file.read_text(encoding="utf-8")
+    text = text.replace(f"AGENT_BRIDGE_HERDR_BIN={machine.herdr}", r"AGENT_BRIDGE_HERDR_BIN=${HERDR_HOME}\herdr.exe")
+    machine.env_file.write_text(text, encoding="utf-8")
+
+    output = machine.setup("-Name win-pc", HERDR_HOME=str(machine.herdr.parent))
+
+    assert "set only in this window" in output
+    assert machine.env()["AGENT_BRIDGE_NAME"] == "win-pc"
+
+
+def test_a_setup_killed_right_after_disabling_the_task_leaves_it_to_be_brought_back(machine: Machine) -> None:
+    machine.setup("-Enrollment ''", input="\n\n")
+    machine.setup(expect=9, FAKE_KILLED_AT_DISABLE="1")
+    assert machine.fake()["enabled"] is False
+
+    # Stops before it would stop the bridge.
+    machine.setup(expect=1, FAKE_USER_VARIABLE="AGENT_BRIDGE_PORT")
+
+    assert machine.fake()["enabled"] is True
+
+
+def test_a_task_that_cant_be_brought_back_is_tried_once(machine: Machine) -> None:
+    machine.setup("-Enrollment ''", input="\n\n")
+
+    # The old bridge outlives Stop-Bridge, so Stop-Setup (port still in use), then finally.
+    output = machine.setup(expect=1, FAKE_ENABLE_FAILS="1", FAKE_UNKILLABLE="4242", FAKE_UNKILLABLE_NOW="1")
+
+    assert "is still in use" in output
+
+    assert output.count("couldn't start the agent-bridge task again") == 1
+
+
+def test_window_only_references_are_upper_case_ones_whose_logon_value_differs(machine: Machine) -> None:
+    machine.setup("-Enrollment ''", input="\n\n")
+    text = machine.env_file.read_text(encoding="utf-8")
+    text = text.replace(
+        f"AGENT_BRIDGE_HERDR_BIN={machine.herdr}",
+        f"AGENT_BRIDGE_HERDR_BIN={machine.herdr}\nAGENT_BRIDGE_X1=${{herdr_low}}\nAGENT_BRIDGE_X2=${{HERDR_SET}}",
+    )
+    machine.env_file.write_text(text, encoding="utf-8")
+
+    # herdr_low is never taken from the environment; HERDR_SET is x at logon, y here.
+    output = machine.setup(herdr_low="a", HERDR_SET="y", FAKE_USER_VARIABLE="HERDR_SET")
+
+    assert "${herdr_low}" not in output
+    assert "${HERDR_SET} in" in output
