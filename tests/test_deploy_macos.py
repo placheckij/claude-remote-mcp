@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
+from dotenv import dotenv_values
 
 pytestmark = pytest.mark.skipif(sys.platform != "darwin", reason="the macOS deploy is for macOS")
 
@@ -54,7 +55,8 @@ case $1 in
     case $2 in
       --name-format) case $3 in ''|*[!a-z0-9-]*) echo "The name must be lowercase." >&2; exit 2 ;; esac ;;
       --token-format) ;;
-      *) echo "ok    agent-bridge answers" ;;
+      *) echo "ok    agent-bridge answers"
+         [ -f "$HOME/gateway-took-token" ] && echo "ok    the gateway at http://10.0.0.1:8766 has this host as mac" ;;
     esac ;;
   enroll)
     code=$(head -n 1 "$HOME/enroll-codes" 2>/dev/null)
@@ -222,6 +224,28 @@ def test_an_upgrade_carries_the_plists_other_settings_into_the_env_file(mac: Mac
     assert "PATH" not in env
 
 
+def test_quotes_and_backslashes_in_settings_survive_the_upgrade_and_reruns(mac: Mac) -> None:
+    roots = mac.home / "Jakub's projects"
+    roots.mkdir()
+    args = "--append-system-prompt 'be brief' --x C:\\y"
+    mac.plist.parent.mkdir(parents=True)
+    mac.plist.write_bytes(plistlib.dumps({
+        "Label": LABEL,
+        "ProgramArguments": [str(mac.repo / ".venv" / "bin" / "uvicorn"), "agent_bridge.app:main", "--factory",
+                             "--host", "127.0.0.1", "--port", "8765"],
+        "EnvironmentVariables": {"AGENT_BRIDGE_TOKEN": "t" * 40, "AGENT_BRIDGE_ALLOWED_ROOTS": str(roots),
+                                 "AGENT_BRIDGE_CLAUDE_ARGS": args},
+    }))
+
+    mac.setup(NAME="mac", ENROLLMENT=ENROLLMENT)
+    mac.setup()
+
+    # As the bridge reads them.
+    env = dotenv_values(mac.support / "env")
+    assert env["AGENT_BRIDGE_ALLOWED_ROOTS"] == str(roots)
+    assert env["AGENT_BRIDGE_CLAUDE_ARGS"] == args
+
+
 def test_an_upgrade_without_folder_trust_doesnt_ask_for_it(mac: Mac) -> None:
     mac.plist.parent.mkdir(parents=True)
     mac.plist.write_bytes(plistlib.dumps({
@@ -291,6 +315,30 @@ def test_rotate_token_puts_the_installed_token_back_when_enrolling_fails(mac: Ma
     assert result.returncode != 0
     assert "installed one is back" in result.stderr
     assert mac.env()["AGENT_BRIDGE_TOKEN"] == first
+
+
+def test_rotate_token_puts_the_installed_token_back_when_the_name_is_taken(mac: Mac) -> None:
+    mac.install()
+    first = mac.env()["AGENT_BRIDGE_TOKEN"]
+    (mac.home / "enroll-codes").write_text("3\n")
+
+    result = mac.setup(ROTATE_TOKEN="1", ENROLLMENT=ENROLLMENT, check=False)
+
+    assert result.returncode != 0
+    assert mac.env()["AGENT_BRIDGE_TOKEN"] == first
+    assert mac.env()["AGENT_BRIDGE_NAME"] == "mac"
+
+
+def test_rotate_token_keeps_the_new_token_when_the_gateway_took_it(mac: Mac) -> None:
+    mac.install()
+    first = mac.env()["AGENT_BRIDGE_TOKEN"]
+    # enroll failed after the gateway enrolled it, e.g. on a state file it couldn't write.
+    (mac.home / "enroll-codes").write_text("1\n")
+    (mac.home / "gateway-took-token").touch()
+
+    mac.setup(ROTATE_TOKEN="1", ENROLLMENT=ENROLLMENT)
+
+    assert mac.env()["AGENT_BRIDGE_TOKEN"] != first
 
 
 def test_a_new_name_on_an_enrolled_host_enrolls_again(mac: Mac) -> None:

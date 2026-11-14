@@ -86,13 +86,28 @@ else
   SOURCE=none
 fi
 
+BS="\\"
+Q="'"
+unescape() { # \\ and \' back to \ and ', as python-dotenv reads a single-quoted value
+  local rest=$1 out="" c
+  while [[ -n $rest ]]; do
+    c=${rest:0:1}
+    if [[ $c == "$BS" && ( ${rest:1:1} == "$BS" || ${rest:1:1} == "$Q" ) ]]; then
+      out+=${rest:1:1}; rest=${rest:2}
+    else
+      out+=$c; rest=${rest:1}
+    fi
+  done
+  printf '%s' "$out"
+}
+
 installed() { # installed KEY: the installed AGENT_BRIDGE_KEY, or nothing
   local value=""
   case $SOURCE in
     env_file)
       value="$(sed -n "s/^AGENT_BRIDGE_$1=//p" "$ENV_FILE" | tail -n 1)"
       case $value in
-        \'*\') value=${value#\'}; value=${value%\'} ;;
+        \'*\') value=${value#\'}; value="$(unescape "${value%\'}")" ;;
         \"*\") value=${value#\"}; value=${value%\"} ;;
       esac ;;
     plist)
@@ -293,8 +308,10 @@ ENROLLMENT=${ENROLLMENT:-}
 # --- Install -------------------------------------------------------------------------
 
 line() { # line KEY VALUE: one env file line, single-quoted so nothing in it is expanded
-  [[ $2 != *"'"* && $2 != *$'\n'* ]] || die "AGENT_BRIDGE_$1 can't contain ' or a line break"
-  printf "AGENT_BRIDGE_%s='%s'\n" "$1" "$2"
+  [[ $2 != *$'\n'* ]] || die "AGENT_BRIDGE_$1 can't contain a line break"
+  local value=${2//"$BS"/"$BS$BS"}
+  value=${value//"$Q"/"$BS$Q"}
+  printf "AGENT_BRIDGE_%s='%s'\n" "$1" "$value"
 }
 
 plist_extras() { # the plist's other AGENT_BRIDGE_* settings, as env file lines
@@ -371,6 +388,7 @@ start_service
 # --- Enroll --------------------------------------------------------------------------
 
 ENROLLED_NOW=""
+NAME_TAKEN=""
 while [[ -n $ENROLLMENT ]]; do
   log "Enrolling with the gateway"
   status=0
@@ -378,11 +396,14 @@ while [[ -n $ENROLLMENT ]]; do
   case $status in
     0) ENROLLED_NOW=1; break ;;
     3) # The gateway has another host by that name.
+      NAME_TAKEN=$NAME
       NAME=""
       until [[ -n $NAME ]] && bridge check --name-format "$NAME"; do
         ask NAME "Another name for this host" "" "required"
-        [[ -n $NAME ]] || die "the gateway has another host by that name; run again with another NAME"
+        # Out of the enroll loop, past the token check below; the env file keeps the name.
+        if [[ -z $NAME ]]; then NAME=$NAME_TAKEN; break 2; fi
       done
+      NAME_TAKEN=""
       write_env
       start_service ;;
     4) break ;; # agent-bridge printed the command to run once the gateway is up
@@ -391,13 +412,17 @@ while [[ -n $ENROLLMENT ]]; do
   esac
 done
 
-# The gateway still has the installed token: a new one would leave it locked out.
-if [[ -n ${ROTATE_TOKEN:-} && -z $ENROLLED_NOW && -n $INSTALLED_TOKEN ]]; then
+# Unless the gateway took the new token, it still has the installed one, and the new one
+# would lock it out. `enroll` can fail after the gateway took it (a state file it can't
+# write), so the gateway is asked.
+if [[ -n ${ROTATE_TOKEN:-} && -z $ENROLLED_NOW && -n $INSTALLED_TOKEN ]] \
+  && [[ $(bridge check 2>&1 || true) != *"ok    the gateway at"* ]]; then
   TOKEN=$INSTALLED_TOKEN
   write_env
   start_service
   die "the gateway didn't take the new token, so the installed one is back; run again with ROTATE_TOKEN=1 and a new enrollment string"
 fi
+[[ -z $NAME_TAKEN ]] || die "the gateway has another host named $NAME_TAKEN; run again with another NAME"
 
 cat <<EOF
 
