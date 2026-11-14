@@ -24,6 +24,7 @@ Assert-RunAsYou 'uninstall.ps1'
 # Everything below goes ahead without agent-bridge.exe, e.g. after its folder was deleted.
 $found = Find-Bridge $Bridge -Optional -PreferInstalled
 $Exe = if ($found) { $found.Exe } else { '' }
+$script:BridgeExes = @(@($Exe, (Get-InstalledExe)) | Where-Object { $_ })
 
 Write-Step 'Leaving the gateway'
 # Read first: the state file, which says where to remove this host by hand, goes below.

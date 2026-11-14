@@ -94,28 +94,39 @@ function Write-EnvFile([string]$Path, [string[]]$Lines, $Settings) {
        stays as it is, so a ${NAME} written there by hand isn't replaced by what it expands to.
        Written beside the file and moved over it. #>
     $out = New-Object Collections.Generic.List[string]
-    $exact = New-Object 'Collections.Generic.Dictionary[string,string]' ([StringComparer]::Ordinal)
+    # The values as agent-bridge will read the file being written, so far: a ${NAME} in a
+    # kept line refers to what is written above it, not to what was there.
+    $exact = New-EnvValueTable
     if ($Lines.Count -eq 0) {
         $out.Add('# agent-bridge settings, written by agent-bridge\deploy\windows\setup.ps1. Lines it')
         $out.Add('# doesn''t set are kept; see agent-bridge\README.md for the others.')
     }
     $done = @{}
     foreach ($line in $Lines) {
-        $current = $null
-        if ($line -match $KeyLine) {
-            $name = $Matches[1]
-            $current = Expand-EnvReference (ConvertFrom-EnvValue $Matches[2]) $exact
-            $exact[$name] = $current
-        }
-        if ($null -ne $current -and $Settings.Contains($name.ToUpperInvariant())) {
-            $key = $name.ToUpperInvariant()
-            if (-not $done.ContainsKey($key) -and $Settings[$key]) {
-                if ($current -ceq [string]$Settings[$key]) { $out.Add($line) } else { $out.Add((Format-EnvLine $key $Settings[$key])) }
-            }
-            $done[$key] = $true
-        } else {
+        $entry = ConvertFrom-EnvLine $line $exact
+        if (-not $entry) {
             $out.Add($line)
+            continue
         }
+        $key = $entry.Name.ToUpperInvariant()
+        if (-not $Settings.Contains($key)) {
+            $out.Add($line)
+            $exact[$entry.Name] = $entry.Value
+            continue
+        }
+        if (-not $done.ContainsKey($key) -and $Settings[$key]) {
+            if ($entry.Value -ceq [string]$Settings[$key]) {
+                $out.Add($line)
+                $exact[$entry.Name] = $entry.Value
+            } else {
+                $out.Add((Format-EnvLine $key $Settings[$key]))
+                $exact[$key] = [string]$Settings[$key]
+            }
+        } elseif (-not $done.ContainsKey($key)) {
+            # Removed: no longer there for a ${NAME} below.
+            [void]$exact.Remove($entry.Name)
+        }
+        $done[$key] = $true
     }
     foreach ($key in $Settings.Keys) {
         if (-not $done.ContainsKey($key) -and $Settings[$key]) { $out.Add((Format-EnvLine $key $Settings[$key])) }
@@ -359,6 +370,7 @@ try {
     # Setup moves the task to the agent-bridge it is run from (a newer checkout or package);
     # say so, since one installed with -Bridge is otherwise dropped without a word.
     $installedExe = Get-InstalledExe
+    $script:BridgeExes = @(@($Exe, $installedExe) | Where-Object { $_ })
     if ($installedExe -and -not [string]::Equals($installedExe, $Exe, [StringComparison]::OrdinalIgnoreCase)) {
         Write-Host "The task ran $installedExe; it will run $Exe. To keep the other one, pass -Bridge $(Format-Quoted $installedExe)."
     }
@@ -593,7 +605,7 @@ try {
     $NameChanged = $Gateway -and -not $NameInstalled -and $Name -ne $Gateway.name
     $String = ''
     if (-not $Started) {
-        if ($Bound.ContainsKey('Enrollment') -or -not $Gateway -or $NewToken -or $NameChanged) {
+        if (($Bound.ContainsKey('Enrollment') -and $Enrollment) -or (-not $Bound.ContainsKey('Enrollment') -and (-not $Gateway -or $NewToken -or $NameChanged))) {
             Write-Host ''
             Write-Host 'Not enrolling now: the gateway asks agent-bridge for its /info first, and it isn''t running.'
         }
@@ -634,7 +646,7 @@ try {
     Write-Step 'Checks'
     # Not when it didn't start: check would send the token to the address, which this host
     # may not have.
-    $CheckFailed = if ($Started) { (Invoke-Native $Exe @('check')) -ne 0 } else { $true }
+    $CheckFailed = $Started -and (Invoke-Native $Exe @('check')) -ne 0
     if (-not $Started) { Write-Host 'skipped: agent-bridge isn''t running' }
     # Read once: the bridge may stop between two looks.
     $listener = Get-BridgeListener $Port
