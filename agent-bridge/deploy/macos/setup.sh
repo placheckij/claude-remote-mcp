@@ -143,6 +143,13 @@ except ValueError:
     print(sys.argv[1])' "$1"
 }
 
+check_port() { # PORT as config.py takes it, a number from 1 to 65535, without leading zeros
+  if ! [[ $PORT =~ ^[0-9]+$ ]] || (( 10#$PORT < 1 || 10#$PORT > 65535 )); then
+    die "PORT must be a number from 1 to 65535, not $PORT"
+  fi
+  PORT=$((10#$PORT))
+}
+
 has_address() { # has_address ADDRESS: whether an interface has it, IPv4 or IPv6
   [[ $1 == 127.0.0.1 ]] && return 0
   ifconfig | awk -v address="$1" '($1 == "inet" || $1 == "inet6") && ($2 == address || index($2, address "%") == 1) {found = 1} END {exit !found}'
@@ -213,10 +220,16 @@ done
 # Ask the gateway before trusting the state file: `check` saves a name the gateway has
 # given the host since (`bridges rename`), and says whether it still has the host at all.
 GATEWAY_GONE=""
-if [[ $SOURCE == env_file && -n $(enrolled name) ]] \
-  && [[ $(bridge check 2>&1 || true) == *"FAIL  the gateway at"* ]]; then
-  GATEWAY_GONE=1
-  echo "warning: the gateway at $(enrolled url) didn't confirm it has this host as $(enrolled name); enrolling again fixes that"
+if [[ $SOURCE == env_file && -n $(enrolled name) ]]; then
+  GATEWAY_CHECK="$(bridge check 2>&1 | grep "the gateway at" || true)"
+  if [[ $GATEWAY_CHECK == *"no answer from the gateway"* ]]; then
+    # Down, or this Mac is off the LAN: the gateway keeps the host, and the next start
+    # reports the address by itself.
+    echo "warning: no answer from the gateway at $(enrolled url) right now; keeping the enrollment as $(enrolled name)"
+  elif [[ $GATEWAY_CHECK == "FAIL  the gateway at"* ]]; then
+    GATEWAY_GONE=1
+    echo "warning: the gateway at $(enrolled url) didn't confirm it has this host as $(enrolled name); enrolling again fixes that"
+  fi
 fi
 
 NAME_GIVEN=${NAME+x}
@@ -248,11 +261,15 @@ if [[ -z ${HOST+x} ]]; then
 fi
 HOST="$(canonical "$HOST")"
 [[ -n $HOST ]] || die "couldn't find this Mac's LAN address; pass it, e.g. HOST=192.168.1.20"
-[[ $HOST != 0.0.0.0 ]] || die "listen on the LAN address, not 0.0.0.0"
+# As config.py's check_host: an IP address, and not one that listens on every interface.
+"$REPO_DIR/.venv/bin/python" -I -c '
+import ipaddress, sys
+sys.exit(ipaddress.ip_address(sys.argv[1]).is_unspecified)' "$HOST" 2>/dev/null \
+  || die "HOST must be this Mac's IP address on the LAN, like 192.168.1.20, not $HOST"
 has_address "$HOST" || echo "warning: no interface has $HOST right now; agent-bridge retries every 10 s until one does"
 
 pick PORT PORT || PORT=8765
-[[ $PORT =~ ^[0-9]+$ ]] || die "PORT must be a number"
+check_port
 # A port in use is fine only when this service holds it, e.g. the version being replaced.
 while PID="$(listener "$PORT")"; [[ -n $PID ]] && ! ours "$PID"; do
   if [[ $PID == "?" ]]; then
@@ -263,7 +280,7 @@ while PID="$(listener "$PORT")"; [[ -n $PID ]] && ! ours "$PID"; do
   FREE=$((PORT + 1))
   while [[ -n $(listener "$FREE") ]]; do FREE=$((FREE + 1)); done
   ask PORT "Port" "$FREE"
-  [[ $PORT =~ ^[0-9]+$ ]] || die "PORT must be a number"
+  check_port
 done
 
 if [[ -z ${HERDR_BIN+x} ]]; then
