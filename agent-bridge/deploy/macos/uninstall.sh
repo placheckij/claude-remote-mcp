@@ -22,13 +22,16 @@ die() { printf 'error: %s\n' "$*" >&2; exit 1; }
 # First, while the token is still in the env file. It prints the gateway's command when
 # the gateway can't be reached.
 log "Leaving the gateway"
+# Read before the state file goes, for the command to run by hand.
+NAME="$(plutil -extract gateway.name raw -o - "$SUPPORT_DIR/state.json" 2>/dev/null || true)"
+BY_HAND="if this host was enrolled, remove it on the gateway host with: sudo mcp-gateway bridges remove ${NAME:-<name>}"
 if [[ -x $AGENT_BRIDGE ]]; then
   (
     for var in $(compgen -v AGENT_BRIDGE_); do unset "$var"; done
     exec "$AGENT_BRIDGE" unenroll
-  ) || echo "warning: agent-bridge unenroll failed (above); if this host was enrolled, remove it on the gateway host with: sudo mcp-gateway bridges remove <name>"
+  ) || echo "warning: agent-bridge unenroll failed (above); $BY_HAND"
 else
-  echo "warning: $AGENT_BRIDGE is missing; if this host was enrolled, remove it on the gateway host with: sudo mcp-gateway bridges remove <name>"
+  echo "warning: $AGENT_BRIDGE is missing; $BY_HAND"
 fi
 
 log "Removing $LABEL"

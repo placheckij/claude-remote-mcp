@@ -281,7 +281,8 @@ Then it:
 1. runs `uv sync --all-packages` to install the dependencies;
 2. checks the port (8765). If another program holds it, it names the program and offers
    a free port;
-3. writes the env file, readable only by you. Other settings in it are kept;
+3. writes the env file, readable only by you. Other settings in it are kept, but not its
+   comments;
 4. writes the plist and (re)starts the service;
 5. runs `agent-bridge check`;
 6. enrolls with the gateway. If the gateway has another host by that name, it asks for
