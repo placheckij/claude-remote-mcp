@@ -571,25 +571,61 @@ def test_an_offline_rerun_keeps_the_installed_address(mac: Mac) -> None:
     assert "no interface has 192.0.2.99" in result.stdout
 
 
-@pytest.mark.parametrize("holder", ["launchd job", "command line"])
-def test_the_port_the_installed_service_holds_is_kept(mac: Mac, holder: str) -> None:
+def test_the_port_the_installed_service_holds_is_kept(mac: Mac) -> None:
+    # The version being replaced: launchd runs it under the same label.
     (mac.home / "port-8765").write_text("4242\n")
-    if holder == "launchd job":
-        (mac.home / "launchd-pid").write_text("4242")
-        (mac.home / "ps-4242").write_text("/usr/bin/python3 something\n")
-    else:
-        # The version being replaced, run by launchd from its plist, behind its interpreter.
-        mac.plist.parent.mkdir(parents=True)
-        arguments = [str(mac.repo / ".venv" / "bin" / "uvicorn"), "agent_bridge.app:main", "--factory",
-                     "--host", "127.0.0.1", "--port", "8765"]
-        mac.plist.write_bytes(plistlib.dumps({"Label": LABEL, "ProgramArguments": arguments}))
-        (mac.home / "ps-4242").write_text(f"/usr/bin/python3 {' '.join(arguments)}\n")
-        (mac.home / "ppid-4242").write_text("    1\n")
+    (mac.home / "launchd-pid").write_text("4242")
+    (mac.home / "ps-4242").write_text(f"/usr/bin/python3 {mac.repo}/.venv/bin/uvicorn agent_bridge.app:main\n")
 
     result = mac.install()
 
     assert mac.env()["AGENT_BRIDGE_PORT"] == "8765"
     assert not PROMPT.search(result.stderr), result.stderr
+
+
+def test_a_bridge_started_by_hand_with_the_services_own_command_doesnt_count(mac: Mac) -> None:
+    # This checkout's `agent-bridge serve &` in a closed terminal: same command, launchd its
+    # parent, but not launchd's job.
+    command = f"/usr/bin/python3 {mac.repo}/.venv/bin/agent-bridge serve"
+    mac.plist.parent.mkdir(parents=True)
+    mac.plist.write_bytes(plistlib.dumps(
+        {"Label": LABEL, "ProgramArguments": [str(mac.repo / ".venv" / "bin" / "agent-bridge"), "serve"]}))
+    (mac.home / "port-8765").write_text("555\n")
+    (mac.home / "ps-555").write_text(f"{command}\n")
+    (mac.home / "ppid-555").write_text("1\n")
+
+    result = mac.install()
+
+    assert "PID 555" in result.stdout
+    assert mac.env()["AGENT_BRIDGE_PORT"] == "8766"
+
+
+@pytest.mark.parametrize(("hostname", "expected"), [
+    ("Jakubs-MacBook-Pro.local", "jakubs-macbook-pro"),
+    ("2019-MBP", "mac-2019-mbp"),
+    ("a" * 40, "a" * 32),
+])
+def test_the_default_name_is_the_hostname_made_valid(mac: Mac, hostname: str, expected: str) -> None:
+    (mac.stubs / "hostname").write_text(f"#!/bin/sh\necho {hostname.split('.')[0]}\n")
+    (mac.stubs / "hostname").chmod(0o755)
+
+    result = mac.setup(HOST="127.0.0.1", ALLOWED_ROOTS=str(mac.home / "projects"),
+                       AGENT_BRIDGE_CLAUDE_CONFIG_DIR="", TRUST_ROOT="", ENROLLMENT="")
+
+    assert f"[{expected}]: " in result.stderr
+    assert mac.env()["AGENT_BRIDGE_NAME"] == expected
+
+
+def test_an_enrolled_host_with_no_name_installed_takes_the_gateways_without_asking(mac: Mac) -> None:
+    mac.support.mkdir(parents=True)
+    (mac.support / "state.json").write_text(json.dumps(
+        {"version": 1, "bridge_id": "b1", "gateway": {"url": "http://10.0.0.1:8766", "gateway_id": "g1", "name": "mac"}}))
+
+    result = mac.setup(HOST="127.0.0.1", ALLOWED_ROOTS=str(mac.home / "projects"),
+                       AGENT_BRIDGE_CLAUDE_CONFIG_DIR="", TRUST_ROOT="", ENROLLMENT="")
+
+    assert "This host's name" not in result.stderr
+    assert mac.env()["AGENT_BRIDGE_NAME"] == "mac"
 
 
 def test_a_bridge_started_by_hand_and_left_to_launchd_doesnt_count_as_the_service(mac: Mac) -> None:
