@@ -366,7 +366,7 @@ ENROLLMENT=${ENROLLMENT:-}
 
 line() { # line KEY VALUE: one env file line, single-quoted
   # The loader expands ${VAR} even in single quotes, so a value can't hold one literally.
-  [[ $2 != *"'"* && $2 != *$'\n'* && $2 != *'${'* ]] || die "AGENT_BRIDGE_$1 can't contain ', \${ or a line break"
+  [[ $2 != *"'"* && $2 != *$'\n'* && $2 != *"\${"* ]] || die "AGENT_BRIDGE_$1 can't contain ', \${ or a line break"
   # The loader reads \\ in single quotes as one backslash.
   printf "AGENT_BRIDGE_%s='%s'\n" "$1" "$(printf '%s' "$2" | sed 's/\\/\\\\/g')"
 }
