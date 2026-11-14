@@ -5,7 +5,8 @@ rem (conhost.exe re-quotes the task's arguments, so nothing with quotes inside c
 
 rem The paths below are UTF-8, as this file is.
 chcp 65001 >nul
-setlocal
+rem Off whatever the registry says, so a ! in a path stays as it is.
+setlocal DisableDelayedExpansion
 rem Each line in the log as it happens; and the env file, and the output, read as UTF-8.
 set "PYTHONUNBUFFERED=1"
 set "PYTHONUTF8=1"

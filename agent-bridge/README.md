@@ -494,12 +494,14 @@ it doesn't manage, such as `AGENT_BRIDGE_ACCOUNTS`, can be added to the env file
 re-runs keep them.
 
 ```powershell
-# Stop it. Ending the task stops only its conhost.exe, so stop the bridge too; the task
-# starts it again within a minute unless you disable it first.
+# Stop it. Ending the task stops only its conhost.exe, so stop the cmd.exe running run.cmd
+# and the bridge too; the task starts it again within a minute unless you disable it first.
 Disable-ScheduledTask -TaskName agent-bridge
 Stop-ScheduledTask -TaskName agent-bridge
-Get-CimInstance Win32_Process | Where-Object CommandLine -match 'agent-bridge(\.exe)?"? serve|run\.cmd' |
-  ForEach-Object { Stop-Process -Id $_.ProcessId -Force }
+$run = "$env:LOCALAPPDATA\agent-bridge\run.cmd"
+Get-CimInstance Win32_Process | Where-Object {
+  ($_.Name -eq 'cmd.exe' -and $_.CommandLine -like "*$run*") -or $_.CommandLine -match 'agent-bridge(\.exe)?"? serve'
+} | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }
 
 # Start again (re-running setup does this too)
 Enable-ScheduledTask -TaskName agent-bridge
