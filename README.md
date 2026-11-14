@@ -47,10 +47,11 @@ The gateway and the agent host can be one machine.
    [Cloudflare Tunnel](mcp-gateway/README.md#cloudflare-tunnel), prints the sign-in
    passphrase, and prints an enrollment string for the agent hosts, good for 30 minutes
    (`sudo mcp-gateway enroll` prints a new one).
-3. **Agent hosts:** start [agent-bridge](agent-bridge/README.md#run) on each, then
-   [enroll](agent-bridge/README.md#enroll-with-the-gateway) it with that string. A Mac
-   set up with [`setup-macos.sh`](agent-bridge/README.md#with-the-setup-script) is added
-   on the gateway host with `sudo mcp-gateway bridges add <url>` instead.
+3. **Agent hosts:** on a Mac, run
+   [`agent-bridge/deploy/macos/setup.sh`](agent-bridge/README.md#with-the-setup-script)
+   and paste that string when asked; it installs the service and enrolls it. Elsewhere,
+   start [agent-bridge](agent-bridge/README.md#run), then
+   [enroll](agent-bridge/README.md#enroll-with-the-gateway) it with that string.
 4. **claude.ai:** [add the custom connector](mcp-gateway/README.md#add-the-connector-in-claudeai)
    by its URL and sign in with that passphrase.
 
