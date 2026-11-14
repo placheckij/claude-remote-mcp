@@ -54,8 +54,6 @@ param(
 
 . (Join-Path $PSScriptRoot 'common.ps1')
 $Bound = $PSBoundParameters
-# Any error that stops setup enables the task again, as Stop-Setup does.
-trap { Restore-Task; break }
 
 # --- Helpers ---------------------------------------------------------------------------
 
@@ -123,11 +121,33 @@ function ConvertTo-FullPath([string]$Path, [string]$What) {
 
 function Test-Format([string]$Option, [string]$Value) {
     <# Whether agent-bridge accepts $Value as a token or name; it says why not. Only exit 2
-       means a bad value: anything else is agent-bridge failing to run. #>
-    $code = Invoke-Native $Exe @('check', "$Option=$Value")
-    if ($code -eq 0) { return $true }
-    if ($code -eq 2) { return $false }
-    Stop-Setup "$Exe didn't run (exit $code; see above)"
+       with agent-bridge's own message means a bad value. In a checkout, agent-bridge failing
+       to run is first taken as a .venv that needs `uv sync` after a pull. #>
+    while ($true) {
+        $saved = $ErrorActionPreference
+        $ErrorActionPreference = 'Continue'
+        try {
+            $output = @(& $Exe check "$Option=$Value" 2>&1 | ForEach-Object { "$_" })
+            $code = $LASTEXITCODE
+        } finally {
+            $ErrorActionPreference = $saved
+        }
+        if ($code -eq 0) { return $true }
+        # argparse exits 2 too, after "usage:", for an option it doesn't know.
+        $usage = @($output | Where-Object { $_ -match '^usage:' }).Count -gt 0
+        $output | ForEach-Object { Write-Host $_ }
+        if ($code -eq 2 -and -not $usage) { return $false }
+        if ($Checkout -and -not $script:Synced) {
+            Write-Host 'agent-bridge didn''t run as it is; installing its dependencies first.'
+            # The running bridge holds the .venv's files.
+            Stop-Bridge $Exe 0
+            Sync-Checkout
+            $script:Synced = $true
+            continue
+        }
+        if ($usage) { Stop-Setup "$Exe has no ``check $Option``: it is older than this setup.ps1" }
+        Stop-Setup "$Exe didn't run (exit $code; see above)"
+    }
 }
 
 function Get-DefaultName {
@@ -180,8 +200,12 @@ function New-Token {
 }
 
 function Find-FreePort([int]$From) {
+    <# The first port from $From on that nothing listens on and Windows doesn't keep, or 0. #>
+    $listening = @{}
+    foreach ($connection in @(Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue)) { $listening[[int]$connection.LocalPort] = $true }
+    $excluded = @(Get-ExcludedPortRange)
     for ($candidate = $From; $candidate -le 65535; $candidate++) {
-        if (-not (Get-PortHolder $candidate) -and -not (Test-PortExcluded $candidate)) { return $candidate }
+        if (-not $listening.ContainsKey($candidate) -and -not (Test-PortExcluded $candidate $excluded)) { return $candidate }
     }
     return 0
 }
@@ -242,280 +266,290 @@ function Get-BlockRule([int]$Port) {
         })
 }
 
-# --- Checks and questions --------------------------------------------------------------
+# The body runs in try, so that however setup ends (an error, Stop-Setup or Ctrl+C) a task
+# that Stop-Bridge disabled is enabled again.
+try {
+    # --- Checks and questions --------------------------------------------------------------
 
-if ($env:OS -ne 'Windows_NT') { Stop-Setup 'this script is for Windows; see agent-bridge/deploy for the others' }
-Assert-RunAsYou 'setup.ps1'
-# conhost.exe --headless, which hides the task's window, came with Windows 10 1809.
-if ([Environment]::OSVersion.Version.Build -lt 17763) { Stop-Setup 'agent-bridge needs Windows 10 version 1809 or later' }
+    if ($env:OS -ne 'Windows_NT') { Stop-Setup 'this script is for Windows; see agent-bridge/deploy for the others' }
+    Assert-RunAsYou 'setup.ps1'
+    # conhost.exe --headless, which hides the task's window, came with Windows 10 1809.
+    if ([Environment]::OSVersion.Version.Build -lt 17763) { Stop-Setup 'agent-bridge needs Windows 10 version 1809 or later' }
 
-$found = Find-Bridge $Bridge
-$Exe = $found.Exe
-$Checkout = $found.Checkout
-$Synced = $false
-if ($Checkout) {
-    if (-not (Get-Command uv -ErrorAction SilentlyContinue)) {
-        Stop-Setup 'uv not found; install it: https://docs.astral.sh/uv/getting-started/installation/'
+    $found = Find-Bridge $Bridge
+    $Exe = $found.Exe
+    $Checkout = $found.Checkout
+    $Synced = $false
+    if ($Checkout) {
+        if (-not (Get-Command uv -ErrorAction SilentlyContinue)) {
+            Stop-Setup 'uv not found; install it: https://docs.astral.sh/uv/getting-started/installation/'
+        }
+        # A first install has nothing running yet that holds the .venv's files.
+        if (-not (Test-Path -LiteralPath $Exe)) {
+            Sync-Checkout
+            $Synced = $true
+        }
     }
-    # A first install has nothing running yet that holds the .venv's files.
-    if (-not (Test-Path -LiteralPath $Exe)) {
-        Sync-Checkout
-        $Synced = $true
+    if (-not (Test-Path -LiteralPath $Exe)) { Stop-Setup "$Exe doesn't exist" }
+
+    $Installed = Read-EnvFile $EnvFile
+    function Get-Installed([string]$Key) {
+        if ($Installed.Values.Contains("AGENT_BRIDGE_$Key")) { return $Installed.Values["AGENT_BRIDGE_$Key"] }
+        return ''
     }
-}
-if (-not (Test-Path -LiteralPath $Exe)) { Stop-Setup "$Exe doesn't exist" }
 
-$Installed = Read-EnvFile $EnvFile
-function Get-Installed([string]$Key) {
-    if ($Installed.Values.Contains("AGENT_BRIDGE_$Key")) { return $Installed.Values["AGENT_BRIDGE_$Key"] }
-    return ''
-}
-
-# Folders agents may start in.
-if (-not $Bound.ContainsKey('Roots')) {
-    $Roots = Get-Installed 'ALLOWED_ROOTS'
-    if (-not $Roots) { $Roots = Read-Value 'Folders agents may start in, separated by ;' (Join-Path $env:USERPROFILE 'Projects') }
-}
-$RootList = @($Roots -split ';' | Where-Object { $_.Trim() } | ForEach-Object { ConvertTo-FullPath $_ 'Each root' })
-if ($RootList.Count -eq 0) { Stop-Setup 'agents need at least one folder to start in' }
-foreach ($root in $RootList) { if (-not (Test-Path -LiteralPath $root -PathType Container)) { Write-Warn "$root doesn't exist yet" } }
-$Roots = $RootList -join ';'
-
-# This host's name.
-if ($Bound.ContainsKey('Name')) {
-    if (-not (Test-Format '--name-format' $Name)) { Stop-Setup "-Name: $Name won't do" }
-} else {
-    $Name = Get-Installed 'NAME'
-    if ($Name -and -not (Test-Format '--name-format' $Name)) { Stop-Setup "AGENT_BRIDGE_NAME in $EnvFile won't do; pass -Name" }
-    if (-not $Name) { $Name = Read-Name "This host's name, as Claude will say it" (Get-DefaultName) }
-    if (-not $Name) { Stop-Setup 'this host needs a name' }
-}
-
-# The LAN address: the installed one while this host still has it, else found again.
-if (-not $Bound.ContainsKey('Address')) {
-    $Address = Get-Installed 'HOST'
-    if ($Address -and -not (Test-LocalAddress $Address)) {
-        Write-Warn "this host no longer has $Address; looking for its LAN address again"
-        $Address = ''
+    # Folders agents may start in.
+    if (-not $Bound.ContainsKey('Roots')) {
+        $Roots = Get-Installed 'ALLOWED_ROOTS'
+        if (-not $Roots) { $Roots = Read-Value 'Folders agents may start in, separated by ;' (Join-Path $env:USERPROFILE 'Projects') }
     }
-    if (-not $Address) { $Address = Get-LanAddress }
-    if (-not $Address) { $Address = Read-Value 'LAN address to listen on, like 192.168.1.20' '' }
-}
-if (-not $Address) { Stop-Setup 'no LAN address: connect to the network, or pass -Address' }
-if ($Address -eq '0.0.0.0' -or $Address -eq '::') { Stop-Setup 'listen on the LAN address, not on every interface' }
-if ($Address -ne '127.0.0.1' -and -not (Test-LocalAddress $Address)) {
-    Write-Warn "no interface has $Address right now; the task tries again every minute until one does"
-}
+    $RootList = @($Roots -split ';' | Where-Object { $_.Trim() } | ForEach-Object { ConvertTo-FullPath $_ 'Each root' })
+    if ($RootList.Count -eq 0) { Stop-Setup 'agents need at least one folder to start in' }
+    foreach ($root in $RootList) { if (-not (Test-Path -LiteralPath $root -PathType Container)) { Write-Warn "$root doesn't exist yet" } }
+    $Roots = $RootList -join ';'
 
-if (-not $Bound.ContainsKey('Port')) {
-    $installedPort = Get-Installed 'PORT'
-    if ($installedPort -and $installedPort -notmatch '^\d{1,5}$') { Stop-Setup "AGENT_BRIDGE_PORT in $EnvFile isn't a port: $installedPort" }
-    $Port = if ($installedPort) { [int]$installedPort } else { 8765 }
-}
-if ($Port -lt 1 -or $Port -gt 65535) { Stop-Setup "the port must be between 1 and 65535, got $Port" }
-
-# herdr.exe: the installed path while it still exists, else found again.
-if (-not $Bound.ContainsKey('HerdrBin')) {
-    $HerdrBin = Get-Installed 'HERDR_BIN'
-    if ($HerdrBin -and -not (Test-Path -LiteralPath $HerdrBin -PathType Leaf)) { $HerdrBin = '' }
-    if (-not $HerdrBin) { $HerdrBin = Find-Herdr }
-    if (-not $HerdrBin) { $HerdrBin = Read-Value 'Full path to herdr.exe' '' }
-}
-if (-not $HerdrBin) { Stop-Setup 'herdr.exe not found: install herdr, or pass -HerdrBin' }
-$HerdrBin = ConvertTo-FullPath $HerdrBin 'herdr.exe'
-if (-not (Test-Path -LiteralPath $HerdrBin -PathType Leaf)) { Stop-Setup "$HerdrBin doesn't exist" }
-
-# Folder trust: changed only when passed in; the installed lines are kept otherwise.
-$Optional = [ordered]@{}
-if ($Bound.ContainsKey('ClaudeConfigDir')) {
-    $Optional['AGENT_BRIDGE_CLAUDE_CONFIG_DIR'] = if ($ClaudeConfigDir) { ConvertTo-FullPath $ClaudeConfigDir '-ClaudeConfigDir' } else { '' }
-}
-if ($Bound.ContainsKey('TrustRoot')) {
-    $Optional['AGENT_BRIDGE_TRUST_ROOT'] = if ($TrustRoot) { ConvertTo-FullPath $TrustRoot '-TrustRoot' } else { '' }
-}
-$ConfigDir = if ($Optional.Contains('AGENT_BRIDGE_CLAUDE_CONFIG_DIR')) { $Optional['AGENT_BRIDGE_CLAUDE_CONFIG_DIR'] } else { Get-Installed 'CLAUDE_CONFIG_DIR' }
-$Trust = if ($Optional.Contains('AGENT_BRIDGE_TRUST_ROOT')) { $Optional['AGENT_BRIDGE_TRUST_ROOT'] } else { Get-Installed 'TRUST_ROOT' }
-if ($Trust -and -not $ConfigDir) {
-    Stop-Setup 'a trust root needs -ClaudeConfigDir: folders are only ever trusted in a separate Claude config'
-}
-
-# The token: kept, unless there is none yet or it is being replaced.
-$Token = Get-Installed 'TOKEN'
-$NewToken = $RotateToken -or -not $Token
-if ($NewToken) { $Token = New-Token }
-elseif (-not (Test-Format '--token-format' $Token)) { Stop-Setup "AGENT_BRIDGE_TOKEN in $EnvFile won't do; pass -RotateToken for a new one" }
-
-# cmd.exe would expand %...% in these, inside quotes too.
-foreach ($path in @($Exe, $LogFile)) { if ($path.Contains('%')) { Stop-Setup "agent-bridge can't run from a path with % in it: $path" } }
-
-# --- Port ------------------------------------------------------------------------------
-
-# Before stopping the running bridge, so the process holding the port can still be told apart.
-while ($true) {
-    $holder = Get-PortHolder $Port
-    if ($holder -and -not (Test-IsBridge $holder.CommandLine)) {
-        Write-Host "Port $Port is in use by another program: PID $($holder.Id), $($holder.Name)"
-        if ($holder.CommandLine) { Write-Host "  $($holder.CommandLine)" }
-    } elseif (-not $holder -and (Test-PortExcluded $Port)) {
-        Write-Host "Windows keeps port $Port for itself (see: netsh int ipv4 show excludedportrange protocol=tcp)."
+    # This host's name.
+    if ($Bound.ContainsKey('Name')) {
+        if (-not (Test-Format '--name-format' $Name)) { Stop-Setup "-Name: $Name won't do" }
     } else {
-        break
+        $Name = Get-Installed 'NAME'
+        if ($Name -and -not (Test-Format '--name-format' $Name)) { Stop-Setup "AGENT_BRIDGE_NAME in $EnvFile won't do; pass -Name" }
+        if (-not $Name) { $Name = Read-Name "This host's name, as Claude will say it" (Get-DefaultName) }
+        if (-not $Name) { Stop-Setup 'this host needs a name' }
     }
-    if ($Bound.ContainsKey('Port')) { Stop-Setup "stop that program, or pass another -Port" }
-    $free = Find-FreePort ($Port + 1)
-    if ($free -eq 0) { Stop-Setup 'no free port found' }
-    $answer = Read-Value 'Port to use instead' ([string]$free)
-    if ($answer -notmatch '^\d{1,5}$' -or [int]$answer -lt 1 -or [int]$answer -gt 65535) { Stop-Setup "not a port: $answer" }
-    $Port = [int]$answer
-}
 
-# --- Install ---------------------------------------------------------------------------
-
-Write-Step 'Stopping the running agent-bridge, if any'
-Stop-Bridge $Exe $Port
-if (Get-PortHolder $Port) { Stop-Setup "port $Port is still in use; stop what holds it and run setup again" }
-
-if ($Checkout -and -not $Synced) { Sync-Checkout }
-
-Write-Step "Writing $EnvFile"
-$Settings = [ordered]@{
-    AGENT_BRIDGE_TOKEN         = $Token
-    AGENT_BRIDGE_ALLOWED_ROOTS = $Roots
-    AGENT_BRIDGE_HOST          = $Address
-    AGENT_BRIDGE_PORT          = [string]$Port
-    AGENT_BRIDGE_NAME          = $Name
-    AGENT_BRIDGE_HERDR_BIN     = $HerdrBin
-}
-foreach ($key in $Optional.Keys) { $Settings[$key] = $Optional[$key] }
-Write-EnvFile $EnvFile $Installed.Lines $Settings
-
-Write-Step "Registering the scheduled task $TaskName"
-New-Item -ItemType Directory -Force -Path $StateDir | Out-Null
-$cmd = Join-Path $env:SystemRoot 'System32\cmd.exe'
-# Unbuffered and UTF-8, so the log has each line as it happens and any text intact.
-$run = "set `"PYTHONUNBUFFERED=1`" & set `"PYTHONIOENCODING=utf-8`" & " +
-    "(if exist `"$LogFile`" move /y `"$LogFile`" `"$LogFile.1`" >nul) & `"$Exe`" serve > `"$LogFile`" 2>&1"
-$fields = @{
-    '{{USER}}'              = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
-    '{{COMMAND}}'           = Join-Path $env:SystemRoot 'System32\conhost.exe'
-    '{{ARGUMENTS}}'         = "--headless `"$cmd`" /d /s /c `"$run`""
-    '{{WORKING_DIRECTORY}}' = $StateDir
-}
-$xml = Get-Content -LiteralPath (Join-Path $PSScriptRoot 'agent-bridge.task.xml') -Raw
-foreach ($field in $fields.Keys) { $xml = $xml.Replace($field, [Security.SecurityElement]::Escape($fields[$field])) }
-Register-ScheduledTask -TaskName $TaskName -TaskPath '\' -Xml $xml -Force | Out-Null
-# Registered enabled.
-$script:TaskDisabled = $false
-
-Write-Step "Firewall rule for TCP $Port, on Private networks only"
-$network = Get-Network $Address
-$elevated = @()
-$ruleWanted = -not (Test-FirewallRule $Port)
-if ($ruleWanted) {
-    $elevated += "Remove-NetFirewallRule -Name '$RuleName' -ErrorAction SilentlyContinue; " +
-        "New-NetFirewallRule -Name '$RuleName' -DisplayName 'agent-bridge' -Description 'Lets mcp-gateway on the LAN reach agent-bridge. Added by agent-bridge\deploy\windows\setup.ps1.' " +
-        "-Direction Inbound -Action Allow -Protocol TCP -LocalPort $Port -Profile Private | Out-Null"
-}
-if ($network -and $network.Category -eq 'Public') {
-    Write-Host "Windows treats the network $Address is on ($($network.Name)) as Public, where the rule doesn't"
-    Write-Host 'apply, so the gateway couldn''t reach agent-bridge. On your own network, make it Private.'
-    if (Read-YesNo "Make $($network.Name) a Private network?") {
-        $elevated += "Set-NetConnectionProfile -InterfaceIndex $($network.Index) -NetworkCategory Private"
-    } else {
-        Write-Warn 'the gateway can''t reach agent-bridge until this network is Private'
+    # The LAN address: the installed one while this host still has it, else found again.
+    if (-not $Bound.ContainsKey('Address')) {
+        $Address = Get-Installed 'HOST'
+        if ($Address -and -not (Test-LocalAddress $Address)) {
+            Write-Warn "this host no longer has $Address; looking for its LAN address again"
+            $Address = ''
+        }
+        if (-not $Address) { $Address = Get-LanAddress }
+        if (-not $Address) { $Address = Read-Value 'LAN address to listen on, like 192.168.1.20' '' }
     }
-} elseif ($network -and $network.Category -ne 'Private') {
-    Write-Warn "the network $Address is on is $($network.Category); the rule applies only on Private networks"
-}
-if ($elevated.Count -eq 0) {
-    Write-Host 'ok, already there'
-} else {
-    Write-Host 'Windows asks for admin rights for this.'
-    # Each step on its own, so the rule is added even where the network can't be changed.
-    $failed = Invoke-Elevated $elevated
-    $byHand = @(for ($i = 0; $i -lt $elevated.Count; $i++) {
-        if ($failed -eq -1 -or ($failed -band [int][Math]::Pow(2, $i))) { $elevated[$i] }
-    })
-    if ($byHand.Count -eq 0) {
-        Write-Host 'ok'
-    } else {
-        Write-Warn 'not done, so the gateway can''t reach agent-bridge. In a PowerShell run as administrator:'
-        foreach ($command in $byHand) { Write-Host "  $command" }
+    if (-not $Address) { Stop-Setup 'no LAN address: connect to the network, or pass -Address' }
+    if ($Address -eq '0.0.0.0' -or $Address -eq '::') { Stop-Setup 'listen on the LAN address, not on every interface' }
+    if ($Address -ne '127.0.0.1' -and -not (Test-LocalAddress $Address)) {
+        Write-Warn "no interface has $Address right now; the task tries again every minute until one does"
     }
-}
 
-Write-Step 'Starting agent-bridge'
-# Said before it starts: Windows may ask as soon as Python listens on the LAN address.
-Write-Host 'If Windows asks whether to let Python through the firewall, allow it on Private networks:'
-Write-Host 'Cancel adds a rule that blocks Python, which wins over the rule above.'
-Start-Bridge $Port
+    if (-not $Bound.ContainsKey('Port')) {
+        $installedPort = Get-Installed 'PORT'
+        if ($installedPort -and $installedPort -notmatch '^\d{1,5}$') { Stop-Setup "AGENT_BRIDGE_PORT in $EnvFile isn't a port: $installedPort" }
+        $Port = if ($installedPort) { [int]$installedPort } else { 8765 }
+    }
+    if ($Port -lt 1 -or $Port -gt 65535) { Stop-Setup "the port must be between 1 and 65535, got $Port" }
 
-# --- Enroll ----------------------------------------------------------------------------
+    # herdr.exe: the installed path while it still exists, else found again.
+    if (-not $Bound.ContainsKey('HerdrBin')) {
+        $HerdrBin = Get-Installed 'HERDR_BIN'
+        if ($HerdrBin -and -not (Test-Path -LiteralPath $HerdrBin -PathType Leaf)) { $HerdrBin = '' }
+        if (-not $HerdrBin) { $HerdrBin = Find-Herdr }
+        if (-not $HerdrBin) { $HerdrBin = Read-Value 'Full path to herdr.exe' '' }
+    }
+    if (-not $HerdrBin) { Stop-Setup 'herdr.exe not found: install herdr, or pass -HerdrBin' }
+    $HerdrBin = ConvertTo-FullPath $HerdrBin 'herdr.exe'
+    if (-not (Test-Path -LiteralPath $HerdrBin -PathType Leaf)) { Stop-Setup "$HerdrBin doesn't exist" }
 
-$Gateway = Get-EnrolledGateway
-# The gateway knows this host by the name it enrolled with; a new -Name needs enrolling again.
-$NameChanged = $Gateway -and $Bound.ContainsKey('Name') -and $Name -ne $Gateway.name
-$String = ''
-if ($Bound.ContainsKey('Enrollment')) {
-    $String = $Enrollment
-} elseif (-not $Gateway -or $NewToken -or $NameChanged) {
-    Write-Host ''
-    if ($Gateway -and $NewToken) { Write-Host "The gateway at $($Gateway.url) still has the old token: enroll again." }
-    if ($NameChanged) { Write-Host "The gateway at $($Gateway.url) knows this host as $($Gateway.name): enroll again to rename it." }
-    Write-Host 'To join a gateway, run `sudo mcp-gateway enroll` on the gateway host and paste the string it prints.'
-    $String = Read-Value 'Enrollment string (Enter to skip)' ''
-}
-$EnrollCode = $null
-if ($String) {
-    Write-Step 'Enrolling with the gateway'
+    # Folder trust: changed only when passed in; the installed lines are kept otherwise.
+    $Optional = [ordered]@{}
+    if ($Bound.ContainsKey('ClaudeConfigDir')) {
+        $Optional['AGENT_BRIDGE_CLAUDE_CONFIG_DIR'] = if ($ClaudeConfigDir) { ConvertTo-FullPath $ClaudeConfigDir '-ClaudeConfigDir' } else { '' }
+    }
+    if ($Bound.ContainsKey('TrustRoot')) {
+        $Optional['AGENT_BRIDGE_TRUST_ROOT'] = if ($TrustRoot) { ConvertTo-FullPath $TrustRoot '-TrustRoot' } else { '' }
+    }
+    $ConfigDir = if ($Optional.Contains('AGENT_BRIDGE_CLAUDE_CONFIG_DIR')) { $Optional['AGENT_BRIDGE_CLAUDE_CONFIG_DIR'] } else { Get-Installed 'CLAUDE_CONFIG_DIR' }
+    $Trust = if ($Optional.Contains('AGENT_BRIDGE_TRUST_ROOT')) { $Optional['AGENT_BRIDGE_TRUST_ROOT'] } else { Get-Installed 'TRUST_ROOT' }
+    if ($Trust -and -not $ConfigDir) {
+        Stop-Setup 'a trust root needs -ClaudeConfigDir: folders are only ever trusted in a separate Claude config'
+    }
+
+    # The token: kept, unless there is none yet or it is being replaced.
+    $Token = Get-Installed 'TOKEN'
+    $NewToken = $RotateToken -or -not $Token
+    if ($NewToken) { $Token = New-Token }
+    elseif (-not (Test-Format '--token-format' $Token)) { Stop-Setup "AGENT_BRIDGE_TOKEN in $EnvFile won't do; pass -RotateToken for a new one" }
+
+    # cmd.exe would expand %...% in these, inside quotes too.
+    foreach ($path in @($Exe, $LogFile)) { if ($path.Contains('%')) { Stop-Setup "agent-bridge can't run from a path with % in it: $path" } }
+
+    # --- Port ------------------------------------------------------------------------------
+
+    # Before stopping the running bridge, so the process holding the port can still be told apart.
     while ($true) {
-        $EnrollCode = Invoke-Native $Exe @('enroll', $String)
-        if ($EnrollCode -ne 3) { break }
-        # The name is taken by another host on that gateway.
-        $Name = Read-Name 'Another name for this host' ''
-        if (-not $Name) { break }
-        $Settings['AGENT_BRIDGE_NAME'] = $Name
-        Write-EnvFile $EnvFile (Read-EnvFile $EnvFile).Lines $Settings
-        # So its /info has the new name too.
-        Stop-Bridge $Exe $Port
-        Start-Bridge $Port
+        $holder = Get-PortHolder $Port
+        if ($holder -and -not (Test-IsBridge $holder.CommandLine)) {
+            Write-Host "Port $Port is in use by another program: PID $($holder.Id), $($holder.Name)"
+            if ($holder.CommandLine) { Write-Host "  $($holder.CommandLine)" }
+        } elseif (-not $holder -and (Test-PortExcluded $Port @(Get-ExcludedPortRange))) {
+            Write-Host "Windows keeps port $Port for itself (see: netsh int ipv4 show excludedportrange protocol=tcp)."
+        } else {
+            break
+        }
+        if ($Bound.ContainsKey('Port')) { Stop-Setup "stop that program, or pass another -Port" }
+        $free = Find-FreePort ($Port + 1)
+        if ($free -eq 0) { Stop-Setup 'no free port found' }
+        $answer = Read-Value 'Port to use instead' ([string]$free)
+        if ($answer -notmatch '^\d{1,5}$' -or [int]$answer -lt 1 -or [int]$answer -gt 65535) { Stop-Setup "not a port: $answer" }
+        $Port = [int]$answer
     }
-}
 
-Write-Step 'Checks'
-$CheckFailed = (Invoke-Native $Exe @('check')) -ne 0
-$Blocking = @(Get-BlockRule $Port)
+    # --- Install ---------------------------------------------------------------------------
 
-# --- Done ------------------------------------------------------------------------------
+    # The firewall first: registering the task starts agent-bridge at once, and Windows may ask
+    # about Python as soon as it listens on the LAN address.
+    Write-Step "Firewall rule for TCP $Port, on Private networks only"
+    $network = Get-Network $Address
+    $elevated = @()
+    $ruleWanted = -not (Test-FirewallRule $Port)
+    if ($ruleWanted) {
+        $elevated += "Remove-NetFirewallRule -Name '$RuleName' -ErrorAction SilentlyContinue; " +
+            "New-NetFirewallRule -Name '$RuleName' -DisplayName 'agent-bridge' -Description 'Lets mcp-gateway on the LAN reach agent-bridge. Added by agent-bridge\deploy\windows\setup.ps1.' " +
+            "-Direction Inbound -Action Allow -Protocol TCP -LocalPort $Port -Profile Private | Out-Null"
+    }
+    if ($network -and $network.Category -eq 'Public') {
+        Write-Host "Windows treats the network $Address is on ($($network.Name)) as Public, where the rule doesn't"
+        Write-Host 'apply, so the gateway couldn''t reach agent-bridge. On your own network, make it Private.'
+        if (Read-YesNo "Make $($network.Name) a Private network?") {
+            $elevated += "Set-NetConnectionProfile -InterfaceIndex $($network.Index) -NetworkCategory Private"
+        } else {
+            Write-Warn 'the gateway can''t reach agent-bridge until this network is Private'
+        }
+    } elseif ($network -and $network.Category -ne 'Private') {
+        Write-Warn "the network $Address is on is $($network.Category); the rule applies only on Private networks"
+    }
+    if ($elevated.Count -eq 0) {
+        Write-Host 'ok, already there'
+    } else {
+        Write-Host 'Windows asks for admin rights for this.'
+        # Each step on its own, so the rule is added even where the network can't be changed.
+        $failed = Invoke-Elevated $elevated
+        $byHand = @(for ($i = 0; $i -lt $elevated.Count; $i++) {
+            if ($failed -eq -1 -or ($failed -band [int][Math]::Pow(2, $i))) { $elevated[$i] }
+        })
+        if ($byHand.Count -eq 0) {
+            Write-Host 'ok'
+        } else {
+            Write-Warn 'not done, so the gateway can''t reach agent-bridge. In a PowerShell run as administrator:'
+            foreach ($command in $byHand) { Write-Host "  $command" }
+        }
+    }
 
-$UrlHost = if ($Address.Contains(':')) { "[$Address]" } else { $Address }
-$Gateway = Get-EnrolledGateway
-Write-Host ''
-Write-Host "Done. agent-bridge listens on http://${UrlHost}:$Port and starts at every logon."
-Write-Host "Its log: $LogFile"
-if ($CheckFailed) { Write-Host 'A check failed: see the log (a 502 from herdr means its server isn''t running).' }
-if ($Blocking.Count -gt 0) {
-    $path = (Get-PortHolder $Port).Path
-    Write-Warn "a firewall rule blocks $path, so the gateway can't reach agent-bridge. In a PowerShell run as administrator:"
-    Write-Host "  Get-NetFirewallApplicationFilter -Program '$path' | Get-NetFirewallRule | Where-Object Action -eq Block | Remove-NetFirewallRule"
-}
-if ($ConfigDir -and -not (Test-Path -LiteralPath (Join-Path $ConfigDir '.claude.json'))) {
+    Write-Step 'Stopping the running agent-bridge, if any'
+    Stop-Bridge $Exe $Port
+    if (Get-PortHolder $Port) { Stop-Setup "port $Port is still in use; stop what holds it and run setup again" }
+
+    if ($Checkout -and -not $Synced) { Sync-Checkout }
+
+    Write-Step "Writing $EnvFile"
+    $Settings = [ordered]@{
+        AGENT_BRIDGE_TOKEN         = $Token
+        AGENT_BRIDGE_ALLOWED_ROOTS = $Roots
+        AGENT_BRIDGE_HOST          = $Address
+        AGENT_BRIDGE_PORT          = [string]$Port
+        AGENT_BRIDGE_NAME          = $Name
+        AGENT_BRIDGE_HERDR_BIN     = $HerdrBin
+    }
+    foreach ($key in $Optional.Keys) { $Settings[$key] = $Optional[$key] }
+    Write-EnvFile $EnvFile $Installed.Lines $Settings
+
+    Write-Step "Registering the scheduled task $TaskName, which starts agent-bridge"
+    New-Item -ItemType Directory -Force -Path $StateDir | Out-Null
+    # conhost.exe splits the task's arguments and quotes each again, so everything that needs
+    # quotes inside goes in run.cmd: CRLF (cmd misreads LF after chcp) and UTF-8, as it says.
+    $wrapper = (Get-Content -LiteralPath (Join-Path $PSScriptRoot 'run.cmd') -Raw) -replace "`r?`n", "`r`n"
+    $wrapper = $wrapper.Replace('{{LOG}}', $LogFile).Replace('{{EXE}}', $Exe)
+    [IO.File]::WriteAllText($RunFile, $wrapper, (New-Object Text.UTF8Encoding $false))
+    $fields = @{
+        '{{USER}}'              = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+        '{{COMMAND}}'           = Join-Path $env:SystemRoot 'System32\conhost.exe'
+        # `call` first: cmd /c drops the quotes around a path with ( or & in it otherwise.
+        '{{ARGUMENTS}}'         = "--headless `"$(Join-Path $env:SystemRoot 'System32\cmd.exe')`" /d /c call `"$RunFile`""
+        '{{WORKING_DIRECTORY}}' = $StateDir
+    }
+    $xml = Get-Content -LiteralPath (Join-Path $PSScriptRoot 'agent-bridge.task.xml') -Raw
+    foreach ($field in $fields.Keys) { $xml = $xml.Replace($field, [Security.SecurityElement]::Escape($fields[$field])) }
+    Write-Host 'If Windows asks whether to let Python through the firewall, allow it on Private networks:'
+    Write-Host 'Cancel adds a rule that blocks Python, which wins over the rule above.'
+    Register-ScheduledTask -TaskName $TaskName -TaskPath '\' -Xml $xml -Force | Out-Null
+    # Registered enabled.
+    $script:TaskDisabled = $false
+    Start-Bridge $Port
+
+    # --- Enroll ----------------------------------------------------------------------------
+
+    $Gateway = Get-EnrolledGateway
+    # The gateway knows this host by the name it enrolled with; a new -Name needs enrolling again.
+    $NameChanged = $Gateway -and $Bound.ContainsKey('Name') -and $Name -ne $Gateway.name
+    $String = ''
+    if ($Bound.ContainsKey('Enrollment')) {
+        $String = $Enrollment
+    } elseif (-not $Gateway -or $NewToken -or $NameChanged) {
+        Write-Host ''
+        if ($Gateway -and $NewToken) { Write-Host "The gateway at $($Gateway.url) still has the old token: enroll again." }
+        if ($NameChanged) { Write-Host "The gateway at $($Gateway.url) knows this host as $($Gateway.name): enroll again to rename it." }
+        Write-Host 'To join a gateway, run `sudo mcp-gateway enroll` on the gateway host and paste the string it prints.'
+        $String = Read-Value 'Enrollment string (Enter to skip)' ''
+    }
+    $EnrollCode = $null
+    if ($String) {
+        Write-Step 'Enrolling with the gateway'
+        while ($true) {
+            $EnrollCode = Invoke-Native $Exe @('enroll', $String)
+            if ($EnrollCode -ne 3) { break }
+            # The name is taken by another host on that gateway.
+            $Name = Read-Name 'Another name for this host' ''
+            if (-not $Name) { break }
+            $Settings['AGENT_BRIDGE_NAME'] = $Name
+            Write-EnvFile $EnvFile (Read-EnvFile $EnvFile).Lines $Settings
+            # So its /info has the new name too.
+            Stop-Bridge $Exe $Port
+            Start-Bridge $Port
+        }
+    }
+
+    Write-Step 'Checks'
+    $CheckFailed = (Invoke-Native $Exe @('check')) -ne 0
+    $Blocking = @(Get-BlockRule $Port)
+
+    # --- Done ------------------------------------------------------------------------------
+
+    $UrlHost = if ($Address.Contains(':')) { "[$Address]" } else { $Address }
+    $Gateway = Get-EnrolledGateway
     Write-Host ''
-    Write-Host "Run Claude once in the agents' config and log in, or new agents can't start:"
-    Write-Host "  `$env:CLAUDE_CONFIG_DIR = '$ConfigDir'; claude"
-}
-Write-Host ''
-if ($null -ne $EnrollCode -and $EnrollCode -ne 0) {
-    Write-Host 'Not enrolled: see "Enrolling with the gateway" above. Once that is fixed, run here'
-    Write-Host '(with a new string from `sudo mcp-gateway enroll` if this one has expired):'
-    Write-Host "  & '$Exe' enroll '<the string it printed>'"
-    if ($Gateway) { Write-Warn "the gateway at $($Gateway.url) still has this host's old settings until then" }
-} elseif ($Gateway) {
-    Write-Host "Enrolled as $($Gateway.name) with the gateway at $($Gateway.url). Ask Claude to list agents."
-    if (($NewToken -or $NameChanged) -and $null -eq $EnrollCode) {
-        Write-Warn 'the gateway still has the old token or name: enroll again'
+    Write-Host "Done. agent-bridge listens on http://${UrlHost}:$Port and starts at every logon."
+    Write-Host "Its log: $LogFile"
+    if ($CheckFailed) { Write-Host 'A check failed: see the log (a 502 from herdr means its server isn''t running).' }
+    if ($Blocking.Count -gt 0) {
+        $path = (Get-PortHolder $Port).Path
+        Write-Warn "a firewall rule blocks $path, so the gateway can't reach agent-bridge. In a PowerShell run as administrator:"
+        Write-Host "  Get-NetFirewallApplicationFilter -Program '$path' | Get-NetFirewallRule | Where-Object Action -eq Block | Remove-NetFirewallRule"
     }
-} else {
-    Write-Host 'Not enrolled with a gateway yet. Run `sudo mcp-gateway enroll` on the gateway host, then here:'
-    Write-Host "  & '$Exe' enroll '<the string it printed>'"
+    if ($ConfigDir -and -not (Test-Path -LiteralPath (Join-Path $ConfigDir '.claude.json'))) {
+        Write-Host ''
+        Write-Host "Run Claude once in the agents' config and log in, or new agents can't start:"
+        Write-Host "  `$env:CLAUDE_CONFIG_DIR = '$ConfigDir'; claude"
+    }
+    Write-Host ''
+    if ($null -ne $EnrollCode -and $EnrollCode -ne 0) {
+        Write-Host 'Not enrolled: see "Enrolling with the gateway" above. Once that is fixed, run here'
+        Write-Host '(with a new string from `sudo mcp-gateway enroll` if this one has expired):'
+        Write-Host "  & '$Exe' enroll '<the string it printed>'"
+        if ($Gateway) { Write-Warn "the gateway at $($Gateway.url) still has this host's old settings until then" }
+    } elseif ($Gateway) {
+        Write-Host "Enrolled as $($Gateway.name) with the gateway at $($Gateway.url). Ask Claude to list agents."
+        if (($NewToken -or $NameChanged) -and $null -eq $EnrollCode) {
+            Write-Warn 'the gateway still has the old token or name: enroll again'
+        }
+    } else {
+        Write-Host 'Not enrolled with a gateway yet. Run `sudo mcp-gateway enroll` on the gateway host, then here:'
+        Write-Host "  & '$Exe' enroll '<the string it printed>'"
+    }
+    # A failed check is setup's exit code; otherwise the last program's would be.
+    if ($CheckFailed) { exit 1 }
+    exit 0
+} finally {
+    Restore-Task
 }

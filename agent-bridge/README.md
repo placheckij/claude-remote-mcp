@@ -468,20 +468,23 @@ It asks for:
 It finds the LAN address and `herdr.exe` itself, including herdr's
 `%LOCALAPPDATA%\Programs\Herdr\bin\herdr.exe`, which isn't on `PATH`. Then it:
 
-1. checks the port (8765). If another program holds it, the script names that program and
-   offers a free port. A port held by agent-bridge itself is fine; it is restarted;
-2. runs `uv sync --all-packages`, and writes the env file;
-3. registers the `agent-bridge` task: at logon, and again every minute while you're
-   logged on, which does nothing while it runs. That way it starts once Wi-Fi brings
-   up the LAN address, and starts again if it stops;
-4. adds an inbound firewall rule for the port on **Private** networks only. This is the
+1. checks the port (8765). If another program holds it, or Windows keeps it for Hyper-V or
+   WSL, the script names that and offers a free port. A port held by agent-bridge itself is
+   fine; it is restarted;
+2. adds an inbound firewall rule for the port on **Private** networks only. This is the
    only step that asks for admin rights. If Windows treats your network as Public, the
-   script offers to make it Private: the gateway can't reach agent-bridge otherwise;
-5. starts the task, enrolls with the gateway (asking for another name if the gateway
-   already has a host by that name), and runs `agent-bridge check`.
+   script asks whether to make it Private (answer `y`): the gateway can't reach
+   agent-bridge otherwise;
+3. runs `uv sync --all-packages`, and writes the env file;
+4. registers the `agent-bridge` task, which starts it. The task runs
+   `%LOCALAPPDATA%\agent-bridge\run.cmd`, which runs `agent-bridge serve` and writes its
+   log. It is tried every minute while you're logged on, which does nothing while it runs.
+   That way it starts once Wi-Fi brings up the LAN address, and starts again if it stops;
+5. enrolls with the gateway (asking for another name if the gateway already has a host by
+   that name), and runs `agent-bridge check`.
 
-Its log is `%LOCALAPPDATA%\agent-bridge\agent-bridge.log`, and `agent-bridge.log.1` holds
-the previous run's. Re-run setup after pulling new code: it keeps the token and settings,
+Its log is `%LOCALAPPDATA%\agent-bridge\agent-bridge.log`, with a line for each start; past
+1 MB it is moved to `agent-bridge.log.1`. Re-run setup after pulling new code: it keeps the token and settings,
 and asks only for what's missing. Parameters skip the questions or change a setting:
 `-Roots`, `-Name`, `-Enrollment` (`''` skips), `-Address`, `-Port`, `-HerdrBin`,
 `-ClaudeConfigDir` and `-TrustRoot` (for [folder trust](#folder-trust); `''` removes
@@ -494,7 +497,7 @@ re-runs keep them.
 # starts it again within a minute unless you disable it first.
 Disable-ScheduledTask -TaskName agent-bridge
 Stop-ScheduledTask -TaskName agent-bridge
-Get-CimInstance Win32_Process | Where-Object CommandLine -match 'agent-bridge(\.exe)?"? serve' |
+Get-CimInstance Win32_Process | Where-Object CommandLine -match 'agent-bridge(\.exe)?"? serve|run\.cmd' |
   ForEach-Object { Stop-Process -Id $_.ProcessId -Force }
 
 # Start again (re-running setup does this too)
