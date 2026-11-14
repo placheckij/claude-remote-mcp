@@ -74,9 +74,9 @@ jobs:
       - name: Check the Windows deploy scripts
         shell: pwsh
         run: |
-          if (-not (Get-Module -ListAvailable PSScriptAnalyzer)) {
-            Install-Module PSScriptAnalyzer -Scope CurrentUser -Force
-          }
+          # Pinned, so a new release's rules can't fail an unrelated change.
+          Install-Module PSScriptAnalyzer -RequiredVersion 1.24.0 -Scope CurrentUser -Force
+          Import-Module PSScriptAnalyzer -RequiredVersion 1.24.0
           $results = Invoke-ScriptAnalyzer -Path agent-bridge/deploy/windows -Recurse `
             -Settings agent-bridge/deploy/windows/PSScriptAnalyzerSettings.psd1
           $results | Format-List RuleName, Severity, ScriptName, Line, Message
