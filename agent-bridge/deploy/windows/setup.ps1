@@ -120,18 +120,13 @@ function ConvertTo-FullPath([string]$Path, [string]$What) {
 }
 
 function Test-Format([string]$Option, [string]$Value) {
-    <# Whether agent-bridge accepts $Value as a token or name; it says why not. Only exit 2
-       with agent-bridge's own message means a bad value. In a checkout, agent-bridge failing
-       to run is first taken as a .venv that needs `uv sync` after a pull. #>
+    <# Whether agent-bridge accepts $Value as a name (--name-format); it says why not. Only
+       exit 2 with agent-bridge's own message means a bad value. In a checkout, agent-bridge
+       failing to run is first taken as a .venv that needs `uv sync` after a pull. (Never
+       used for the token, which would show on a command line.) #>
     while ($true) {
-        $saved = $ErrorActionPreference
-        $ErrorActionPreference = 'Continue'
-        try {
-            $output = @(& $Exe check "$Option=$Value" 2>&1 | ForEach-Object { "$_" })
-            $code = $LASTEXITCODE
-        } finally {
-            $ErrorActionPreference = $saved
-        }
+        $code = Invoke-Native $Exe @('check', "$Option=$Value") -Quiet
+        $output = $script:NativeOutput
         if ($code -eq 0) { return $true }
         # argparse exits 2 too, after "usage:", for an option it doesn't know.
         $usage = @($output | Where-Object { $_ -match '^usage:' }).Count -gt 0
@@ -279,7 +274,6 @@ function Get-BlockRule([string]$Program) {
 try {
     # --- Checks and questions --------------------------------------------------------------
 
-    if ($env:OS -ne 'Windows_NT') { Stop-Setup 'this script is for Windows; see agent-bridge/deploy for the others' }
     Assert-RunAsYou 'setup.ps1'
     # conhost.exe --headless, which hides the task's window, came with Windows 10 1809.
     if ([Environment]::OSVersion.Version.Build -lt 17763) { Stop-Setup 'agent-bridge needs Windows 10 version 1809 or later' }
@@ -320,10 +314,14 @@ try {
     $Roots = $RootList -join ';'
 
     # This host's name.
+    # Whether it came from the env file: a name given now, passed or answered, has to reach
+    # the gateway, while the env file's may differ from it after `bridges rename` there.
+    $NameInstalled = $false
     if ($Bound.ContainsKey('Name')) {
         if (-not (Test-Format '--name-format' $Name)) { Stop-Setup "-Name: $Name won't do" }
     } else {
         $Name = Get-Installed 'NAME'
+        $NameInstalled = [bool]$Name
         if ($Name -and -not (Test-Format '--name-format' $Name)) { Stop-Setup "AGENT_BRIDGE_NAME in $EnvFile won't do; pass -Name" }
         if (-not $Name) { $Name = Read-Name "This host's name, as Claude will say it" (Get-DefaultName) }
         if (-not $Name) { Stop-Setup 'this host needs a name' }
@@ -340,7 +338,14 @@ try {
         if (-not $Address) { $Address = Read-Value 'LAN address to listen on, like 192.168.1.20' '' }
     }
     if (-not $Address) { Stop-Setup 'no LAN address: connect to the network, or pass -Address' }
-    if ($Address -eq '0.0.0.0' -or $Address -eq '::') { Stop-Setup 'listen on the LAN address, not on every interface' }
+    # As agent-bridge checks it, before a bad one replaces a working bridge.
+    $parsed = $null
+    if (-not [Net.IPAddress]::TryParse($Address, [ref]$parsed) -or $Address -match '^\d+$') {
+        Stop-Setup "the LAN address must be an IP address, like 192.168.1.20; got $Address"
+    }
+    if ($parsed.Equals([Net.IPAddress]::Any) -or $parsed.Equals([Net.IPAddress]::IPv6Any)) {
+        Stop-Setup 'listen on the LAN address, not on every interface'
+    }
     if ($Address -ne '127.0.0.1' -and -not (Test-LocalAddress $Address)) {
         Write-Warn "no interface has $Address right now; the task tries again every minute until one does"
     }
@@ -381,8 +386,9 @@ try {
     # The token: kept, unless there is none yet or it is being replaced.
     $Token = Get-Installed 'TOKEN'
     $NewToken = $RotateToken -or -not $Token
+    # An installed token isn't checked here: on a command line it would show to anything that
+    # logs process starts. agent-bridge check (below) checks the settings it is in.
     if ($NewToken) { $Token = New-Token }
-    elseif (-not (Test-Format '--token-format' $Token)) { Stop-Setup "AGENT_BRIDGE_TOKEN in $EnvFile won't do; pass -RotateToken for a new one" }
 
     # cmd.exe would expand %...% in these, inside quotes too.
     foreach ($path in @($Exe, $LogFile)) { if ($path.Contains('%')) { Stop-Setup "agent-bridge can't run from a path with % in it: $path" } }
@@ -494,7 +500,7 @@ try {
 
     $Gateway = Get-EnrolledGateway
     # The gateway knows this host by the name it enrolled with; a new -Name needs enrolling again.
-    $NameChanged = $Gateway -and $Bound.ContainsKey('Name') -and $Name -ne $Gateway.name
+    $NameChanged = $Gateway -and -not $NameInstalled -and $Name -ne $Gateway.name
     $String = ''
     if ($Bound.ContainsKey('Enrollment')) {
         $String = $Enrollment
@@ -544,18 +550,18 @@ try {
     if ($CheckFailed) { Write-Host 'A check failed: see the log (a 502 from herdr means its server isn''t running).' }
     if ($Blocking.Count -gt 0) {
         Write-Warn "a firewall rule blocks $Blocked, so the gateway can't reach agent-bridge. In a PowerShell run as administrator:"
-        Write-Host "  Get-NetFirewallApplicationFilter -Program '$Blocked' | Get-NetFirewallRule | Where-Object Action -eq Block | Remove-NetFirewallRule"
+        Write-Host "  Get-NetFirewallApplicationFilter -Program $(Format-Quoted $Blocked) | Get-NetFirewallRule | Where-Object Action -eq Block | Remove-NetFirewallRule"
     }
     if ($ConfigDir -and -not (Test-Path -LiteralPath (Join-Path $ConfigDir '.claude.json'))) {
         Write-Host ''
         Write-Host "Run Claude once in the agents' config and log in, or new agents can't start:"
-        Write-Host "  `$env:CLAUDE_CONFIG_DIR = '$ConfigDir'; claude"
+        Write-Host "  `$env:CLAUDE_CONFIG_DIR = $(Format-Quoted $ConfigDir); claude"
     }
     Write-Host ''
     if ($null -ne $EnrollCode -and $EnrollCode -ne 0) {
         Write-Host 'Not enrolled: see "Enrolling with the gateway" above. Once that is fixed, run here'
         Write-Host '(with a new string from `sudo mcp-gateway enroll` if this one has expired):'
-        Write-Host "  & '$Exe' enroll '<the string it printed>'"
+        Write-Host "  & $(Format-Quoted $Exe) enroll '<the string it printed>'"
         if ($Gateway) { Write-Warn "the gateway at $($Gateway.url) still has this host's old settings until then" }
     } elseif ($Gateway) {
         Write-Host "Enrolled as $($Gateway.name) with the gateway at $($Gateway.url). Ask Claude to list agents."
@@ -564,7 +570,7 @@ try {
         }
     } else {
         Write-Host 'Not enrolled with a gateway yet. Run `sudo mcp-gateway enroll` on the gateway host, then here:'
-        Write-Host "  & '$Exe' enroll '<the string it printed>'"
+        Write-Host "  & $(Format-Quoted $Exe) enroll '<the string it printed>'"
     }
     # A failed check or start is setup's exit code; otherwise the last program's would be.
     if ($CheckFailed -or -not $Started) { exit 1 }

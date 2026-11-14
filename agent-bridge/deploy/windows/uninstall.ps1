@@ -19,11 +19,10 @@ param([string]$Bridge)
 
 . (Join-Path $PSScriptRoot 'common.ps1')
 
-if ($env:OS -ne 'Windows_NT') { Stop-Setup 'this script is for Windows' }
 Assert-RunAsYou 'uninstall.ps1'
 
 # Everything below goes ahead without agent-bridge.exe, e.g. after its folder was deleted.
-$found = Find-Bridge $Bridge -Optional
+$found = Find-Bridge $Bridge -Optional -PreferInstalled
 $Exe = if ($found) { $found.Exe } else { '' }
 
 Write-Step 'Leaving the gateway'
@@ -71,7 +70,7 @@ if (Get-NetFirewallRule -Name $RuleName -ErrorAction SilentlyContinue) {
 }
 
 Write-Step 'Removing the settings and state'
-foreach ($file in @($EnvFile, $StateFile, "$StateFile.tmp", $LogFile, "$LogFile.1", $RunFile)) {
+foreach ($file in @($EnvFile, "$EnvFile.tmp", $StateFile, "$StateFile.tmp", $LogFile, "$LogFile.1", $RunFile)) {
     if (Test-Path -LiteralPath $file) {
         # A process that hasn't quite exited may still hold the log for a moment.
         for ($try = 1; ; $try++) {

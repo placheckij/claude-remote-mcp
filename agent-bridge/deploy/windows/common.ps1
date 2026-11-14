@@ -4,6 +4,12 @@
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
+# Before anything reads %APPDATA%, which only Windows has.
+if ($env:OS -ne 'Windows_NT') {
+    Write-Host 'error: these scripts are for Windows; see agent-bridge/deploy for the others' -ForegroundColor Red
+    exit 1
+}
+
 $script:TaskName = 'agent-bridge'
 $script:RuleName = 'agent-bridge'
 # As agent_bridge/state.py has them on Windows.
@@ -70,47 +76,57 @@ function Get-InstalledExe {
     return ''
 }
 
-function Find-Bridge([string]$Given, [switch]$Optional) {
-    <# agent-bridge.exe: the one given, the installed one (which run.cmd names), the one a
-       package ships beside this folder, or the checkout's .venv (Checkout is then the repo,
-       which needs `uv sync`), else on PATH. Not found, it stops setup, or with -Optional
-       returns $null. #>
+function Find-Bridge([string]$Given, [switch]$Optional, [switch]$PreferInstalled) {
+    <# agent-bridge.exe: the one given; the one a package ships beside this folder, or this
+       checkout's .venv (Checkout is then the repo, which needs `uv sync`); the installed one
+       (which run.cmd names); else the one on PATH. So setup run from a newer package or
+       checkout moves the task to it. -PreferInstalled (for uninstall) takes the installed
+       one first. Not found, it stops setup, or with -Optional returns $null. #>
     if ($Given) {
         if (Test-Path -LiteralPath $Given -PathType Leaf) { return @{ Exe = (Resolve-Path -LiteralPath $Given).Path; Checkout = $null } }
         if ($Optional) { return $null }
         Stop-Setup "-Bridge: $Given doesn't exist"
     }
-    $repo = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..\..'))
-    $inCheckout = Test-Path -LiteralPath (Join-Path $repo 'agent-bridge\pyproject.toml')
-    $checkoutExe = Join-Path $repo '.venv\Scripts\agent-bridge.exe'
     $installed = Get-InstalledExe
-    if ($installed -and (Test-Path -LiteralPath $installed -PathType Leaf)) {
-        $sameCheckout = $inCheckout -and [string]::Equals($installed, $checkoutExe, [StringComparison]::OrdinalIgnoreCase)
-        return @{ Exe = $installed; Checkout = $(if ($sameCheckout) { $repo } else { $null }) }
-    }
+    $installedFound = if ($installed -and (Test-Path -LiteralPath $installed -PathType Leaf)) { @{ Exe = $installed; Checkout = $null } } else { $null }
+    if ($PreferInstalled -and $installedFound) { return $installedFound }
     $beside = Join-Path $PSScriptRoot 'agent-bridge.exe'
     if (Test-Path -LiteralPath $beside -PathType Leaf) { return @{ Exe = $beside; Checkout = $null } }
-    if ($inCheckout) { return @{ Exe = $checkoutExe; Checkout = $repo } }
+    $repo = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..\..'))
+    if (Test-Path -LiteralPath (Join-Path $repo 'agent-bridge\pyproject.toml')) {
+        return @{ Exe = (Join-Path $repo '.venv\Scripts\agent-bridge.exe'); Checkout = $repo }
+    }
+    if ($installedFound) { return $installedFound }
     $onPath = Get-Command agent-bridge.exe -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
     if ($onPath) { return @{ Exe = $onPath.Source; Checkout = $null } }
     if ($Optional) { return $null }
     Stop-Setup 'agent-bridge not found: run this from a checkout of claude-remote-mcp, or pass -Bridge <path to agent-bridge.exe>'
 }
 
+$script:NativeOutput = @()
+
 function Invoke-Native {
-    <# Runs a program, shows everything it prints, and returns its exit code. Its stderr is
-       shown as plain lines: Windows PowerShell would otherwise turn each one into an error. #>
-    param([Parameter(Mandatory)][string]$FilePath, [string[]]$ArgumentList = @())
+    <# Runs a program and returns its exit code. What it printed, stdout and stderr, is kept in
+       $script:NativeOutput as plain lines (Windows PowerShell would otherwise turn each stderr
+       line into an error), and shown unless -Quiet. #>
+    param([Parameter(Mandatory)][string]$FilePath, [string[]]$ArgumentList = @(), [switch]$Quiet)
     $saved = $ErrorActionPreference
     $ErrorActionPreference = 'Continue'
     try {
-        & $FilePath @ArgumentList 2>&1 | ForEach-Object {
-            if ($_ -is [Management.Automation.ErrorRecord]) { Write-Host $_.Exception.Message } else { Write-Host $_ }
-        }
+        $script:NativeOutput = @(& $FilePath @ArgumentList 2>&1 | ForEach-Object {
+                $text = if ($_ -is [Management.Automation.ErrorRecord]) { $_.Exception.Message } else { [string]$_ }
+                if (-not $Quiet) { Write-Host $text }
+                $text
+            })
         return $LASTEXITCODE
     } finally {
         $ErrorActionPreference = $saved
     }
+}
+
+function Format-Quoted([string]$Text) {
+    <# $Text in single quotes as PowerShell reads them, for commands printed to copy. #>
+    return "'" + $Text.Replace("'", "''") + "'"
 }
 
 function Test-IsBridge([string]$CommandLine) {
@@ -178,7 +194,8 @@ function Stop-Bridge([string]$Exe, [int]$Port) {
     $exes = @(@($Exe, (Get-InstalledExe)) | Where-Object { $_ })
     Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {
         $line = [string]$_.CommandLine
-        $line -and ($line.IndexOf($script:RunFile, [StringComparison]::OrdinalIgnoreCase) -ge 0 -or
+        # cmd.exe only: an editor with run.cmd open names it too.
+        $line -and (($_.Name -eq 'cmd.exe' -and $line.IndexOf($script:RunFile, [StringComparison]::OrdinalIgnoreCase) -ge 0) -or
             ((Test-IsBridge $line) -and @($exes | Where-Object { $line.IndexOf($_, [StringComparison]::OrdinalIgnoreCase) -ge 0 }).Count -gt 0))
     } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
     if ($Port -le 0) { return }

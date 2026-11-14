@@ -333,6 +333,8 @@ def test_a_rerun_keeps_the_token_and_other_settings_and_asks_nothing(machine: Ma
     # Kept: another program naming agent-bridge.exe, and an editor on its source.
     machine.listen(0, 5000, "agent-bridge.exe", f'"{machine.bridge}" check')
     machine.listen(0, 5001, "Code.exe", r"Code.exe C:\src\agent_bridge\cli.py")
+    run = machine.localappdata / "agent-bridge" / "run.cmd"
+    machine.listen(0, 5002, "notepad.exe", f'notepad.exe "{run}"')
 
     # An answer to any question would stop setup or show below as a new name, port or enrollment.
     output = machine.setup(input="not an answer\n" * 5)
@@ -345,7 +347,9 @@ def test_a_rerun_keeps_the_token_and_other_settings_and_asks_nothing(machine: Ma
     # The first run's bridge, including the cmd.exe and launcher that hold no port.
     calls = machine.calls()
     assert {"Stop-Process 4240", "Stop-Process 4241", "Stop-Process 4242"} <= set(calls)
-    assert "Stop-Process 5000" not in calls and "Stop-Process 5001" not in calls
+    assert not {"Stop-Process 5000", "Stop-Process 5001", "Stop-Process 5002"} & set(calls)
+    # The installed token never goes on a command line.
+    assert not any("token-format" in call or token in call for call in calls)
     assert "Enrolled as win-test" in output
     assert "Elevated" not in "\n".join(machine.calls()), "the firewall rule was there already"
 
@@ -626,3 +630,37 @@ def test_a_bridge_that_does_not_start_is_not_called_done(machine: Machine) -> No
 
     assert "agent-bridge didn't start" in output
     assert "Done. agent-bridge listens" not in output
+
+
+def test_an_address_that_isnt_an_ip_stops_setup_before_the_bridge(machine: Machine) -> None:
+    machine.setup("-Enrollment ''", input="\n\n")
+
+    output = machine.setup("-Address 'mypc.local'", expect=1)
+
+    assert "must be an IP address" in output
+    assert r"Disable-ScheduledTask \agent-bridge" not in machine.calls()
+
+
+def test_a_name_answered_while_enrolled_under_another_asks_to_enroll_again(machine: Machine) -> None:
+    machine.setup(f"-Enrollment '{STRING}'", input="\n\n")
+    machine.env_file.unlink()
+
+    output = machine.setup(input=f"\nwin-new\n{STRING}\n")
+
+    assert "knows this host as win-test" in output
+    assert "Enrolled as win-new" in output
+
+
+def test_uninstall_removes_a_leftover_copy_of_the_env_file(machine: Machine) -> None:
+    machine.setup("-Enrollment ''", input="\n\n")
+    (machine.appdata / "agent-bridge" / "env.tmp").write_text("AGENT_BRIDGE_TOKEN=secret\n")
+
+    machine.run("uninstall.ps1")
+
+    assert not (machine.appdata / "agent-bridge").exists()
+
+
+def test_another_os_is_told_so_before_anything_reads_appdata(machine: Machine) -> None:
+    output = machine.setup(expect=1, OS="Linux", APPDATA="")
+
+    assert "these scripts are for Windows" in output
