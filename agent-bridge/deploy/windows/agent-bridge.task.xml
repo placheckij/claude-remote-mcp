@@ -1,0 +1,72 @@
+<?xml version="1.0" encoding="UTF-16"?>
+<!--
+  The scheduled task that runs agent-bridge: at logon, as you, in your session (where the
+  herdr server runs), with no window. setup.ps1 fills in the {{...}} fields and registers it.
+
+  The action is `conhost.exe headless` (no console window) running cmd.exe on run.cmd,
+  which setup writes beside the log; run.cmd runs `agent-bridge serve` and appends its
+  output to the log.
+-->
+<Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+  <RegistrationInfo>
+    <Description>agent-bridge: lets mcp-gateway drive your herdr agents. Installed by agent-bridge\deploy\windows\setup.ps1; remove it with uninstall.ps1 from the same folder.</Description>
+    <URI>\agent-bridge</URI>
+  </RegistrationInfo>
+  <!-- Both triggers repeat every minute while you are logged on, which is ignored while it
+       runs: it starts once the LAN address exists (after Wi-Fi connects), and again if it
+       stops. Task Scheduler can't see it fail, since conhost.exe always exits with 0. A
+       trigger's repetition starts only when it fires, so the logon trigger covers every
+       logon, and the registration trigger the time from setup to the next logon. -->
+  <Triggers>
+    <LogonTrigger>
+      <Enabled>true</Enabled>
+      <UserId>{{USER}}</UserId>
+      <Repetition>
+        <Interval>PT1M</Interval>
+        <StopAtDurationEnd>false</StopAtDurationEnd>
+      </Repetition>
+    </LogonTrigger>
+    <RegistrationTrigger>
+      <Enabled>true</Enabled>
+      <Repetition>
+        <Interval>PT1M</Interval>
+        <StopAtDurationEnd>false</StopAtDurationEnd>
+      </Repetition>
+    </RegistrationTrigger>
+  </Triggers>
+  <Principals>
+    <Principal id="Author">
+      <UserId>{{USER}}</UserId>
+      <LogonType>InteractiveToken</LogonType>
+      <RunLevel>LeastPrivilege</RunLevel>
+    </Principal>
+  </Principals>
+  <Settings>
+    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
+    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
+    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
+    <AllowHardTerminate>true</AllowHardTerminate>
+    <StartWhenAvailable>false</StartWhenAvailable>
+    <RunOnlyIfNetworkAvailable>false</RunOnlyIfNetworkAvailable>
+    <IdleSettings>
+      <StopOnIdleEnd>false</StopOnIdleEnd>
+      <RestartOnIdle>false</RestartOnIdle>
+    </IdleSettings>
+    <AllowStartOnDemand>true</AllowStartOnDemand>
+    <Enabled>true</Enabled>
+    <Hidden>true</Hidden>
+    <RunOnlyIfIdle>false</RunOnlyIfIdle>
+    <WakeToRun>false</WakeToRun>
+    <!-- No time limit: the default stops a task after 72 hours. -->
+    <ExecutionTimeLimit>PT0S</ExecutionTimeLimit>
+    <!-- Normal priority; a task's default (7) is below normal. -->
+    <Priority>5</Priority>
+  </Settings>
+  <Actions Context="Author">
+    <Exec>
+      <Command>{{COMMAND}}</Command>
+      <Arguments>{{ARGUMENTS}}</Arguments>
+      <WorkingDirectory>{{WORKING_DIRECTORY}}</WorkingDirectory>
+    </Exec>
+  </Actions>
+</Task>
