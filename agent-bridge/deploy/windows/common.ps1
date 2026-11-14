@@ -37,6 +37,8 @@ function Restore-Task {
     <# Brings the task back if Stop-Bridge disabled it: a setup that stops halfway must not
        leave the bridge off. #>
     if ($script:TaskDisabled) {
+        # Tried once: Stop-Setup and setup's finally both come here.
+        $script:TaskDisabled = $false
         try { Resume-Task } catch { Write-Warn "couldn't start the agent-bridge task again ($($_.Exception.Message)); run setup again" }
     }
 }
@@ -146,6 +148,11 @@ function Invoke-Native {
                 $text
             })
         return $LASTEXITCODE
+    } catch {
+        # Blocked from starting (AppLocker, Smart App Control) or not there.
+        $script:NativeOutput = @($_.Exception.Message)
+        if (-not $Quiet) { Write-Host $_.Exception.Message }
+        return -1
     } finally {
         $ErrorActionPreference = $saved
         $env:PYTHONUTF8 = $savedUtf8
