@@ -571,20 +571,25 @@ def test_a_failed_rotation_puts_the_old_token_back(host: Host) -> None:
     assert host.log("systemctl.log").count(f"--user restart {UNIT}") == 2
 
 
-def test_a_new_name_on_an_enrolled_host_asks_to_enroll_again(host: Host) -> None:
+def test_a_new_name_on_an_enrolled_host_says_how_to_rename_it_on_the_gateway(host: Host) -> None:
     host.install()
 
     result = host.setup(NAME="newbox")
-    assert "knows this host as linux-box" in result.stdout
-    assert "Enrollment string" in result.stderr
-    # Not enrolled again, so the name stays the gateway's.
-    assert "The name stays linux-box" in result.stdout
+
+    assert not PROMPT.search(result.stderr), result.stderr
+    assert not [line for line in host.log("agent-bridge.log") if line.startswith("enroll")]
+    assert "sudo mcp-gateway bridges rename linux-box newbox" in result.stdout
     assert host.env()["AGENT_BRIDGE_NAME"] == "linux-box"
 
+
+def test_an_enrollment_string_doesnt_rename_an_enrolled_host(host: Host) -> None:
+    host.install()
+
     result = host.setup(NAME="newbox", ENROLLMENT=ENROLLMENT)
-    assert "as newbox" in result.stdout
-    assert host.env()["AGENT_BRIDGE_NAME"] == "newbox"
-    assert "The name stays" not in result.stdout
+
+    assert "as linux-box" in result.stdout
+    assert "sudo mcp-gateway bridges rename linux-box newbox" in result.stdout
+    assert host.env()["AGENT_BRIDGE_NAME"] == "linux-box"
 
 
 def test_a_rename_done_on_the_gateway_is_followed(host: Host) -> None:
@@ -598,17 +603,7 @@ def test_a_rename_done_on_the_gateway_is_followed(host: Host) -> None:
     assert host.env()["AGENT_BRIDGE_NAME"] == "studio"
     assert not [line for line in host.log("agent-bridge.log") if line.startswith("enroll")]
     assert "as studio" in result.stdout
-
-
-def test_a_rename_the_gateway_refuses_puts_the_old_name_back(host: Host) -> None:
-    host.install()
-    (host.home / "enroll-codes").write_text("1\n")
-
-    result = host.setup(NAME="newbox", ENROLLMENT=ENROLLMENT, check=False)
-
-    assert result.returncode != 0
-    assert "the name stays linux-box" in result.stderr
-    assert host.env()["AGENT_BRIDGE_NAME"] == "linux-box"
+    assert "bridges rename" not in result.stdout
 
 
 def test_settings_written_with_export_are_taken_over(host: Host) -> None:

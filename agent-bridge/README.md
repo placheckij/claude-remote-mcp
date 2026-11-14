@@ -454,7 +454,9 @@ asked for; the installed value is kept unless you pass one, and an empty one rem
 `HERDR_SERVICE=0` (no service for herdr's server, if you start it yourself).
 
 Re-run it after pulling new code. It asks nothing it already knows; to change a setting,
-pass it as a variable or edit the env file.
+pass it as a variable or edit the env file. The name is the exception: once the host is
+enrolled, it is the gateway's. Rename the host on the gateway host with
+`sudo mcp-gateway bridges rename <old> <new>`, and the next run takes the new name.
 
 #### Restart, stop, uninstall
 
