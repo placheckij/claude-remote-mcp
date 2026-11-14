@@ -58,8 +58,11 @@ case $1 in
       --token-format) ;;
       *) echo "ok    agent-bridge answers"
          [ -f "$HOME/gateway-took-token" ] && echo "ok    the gateway at http://10.0.0.1:8766 has this host as mac"
-         [ -f "$HOME/gateway-dropped" ] && echo "FAIL  the gateway at http://10.0.0.1:8766 has this host (not enrolled)"
+         # The messages cli.py prints from the gateway's refusals (enrollment.py).
+         [ -f "$HOME/gateway-dropped" ] && echo "FAIL  the gateway at http://10.0.0.1:8766 has this host (This agent host isn't enrolled with the gateway.)"
+         [ -f "$HOME/gateway-other-token" ] && echo "FAIL  the gateway at http://10.0.0.1:8766 has this host (That isn't this agent host's token.)"
          [ -f "$HOME/gateway-down" ] && echo "FAIL  the gateway at http://10.0.0.1:8766 has this host (no answer from the gateway at http://10.0.0.1:8766 (ConnectError))"
+         [ -f "$HOME/gateway-move-refused" ] && echo "FAIL  the gateway at http://10.0.0.1:8766 has this host (The gateway couldn't ask http://127.0.0.1:9000 about itself (no answer from an agent-bridge).)"
          # As cli.py saves a name the gateway answers with, e.g. after `bridges rename`.
          [ -f "$HOME/gateway-name" ] && sed -i '' "s/\\"name\\": \\"[^\\"]*\\"/\\"name\\": \\"$(cat "$HOME/gateway-name")\\"/" "$dir/state.json" ;;
     esac ;;
@@ -533,15 +536,27 @@ def test_a_host_the_gateway_dropped_enrolls_again_with_a_string(mac: Mac) -> Non
     assert "It is enrolled with the gateway at http://10.0.0.1:8766 as mac" in result.stdout
 
 
-def test_a_gateway_that_doesnt_answer_keeps_the_enrollment(mac: Mac) -> None:
+@pytest.mark.parametrize("failure", ["gateway-down", "gateway-move-refused"])
+def test_a_gateway_check_that_fails_otherwise_keeps_the_enrollment(mac: Mac, failure: str) -> None:
+    # No answer, or a new port in the env file that the old service doesn't answer on yet.
     mac.install()
-    (mac.home / "gateway-down").touch()
+    (mac.home / failure).touch()
 
     result = mac.setup()
 
     assert "Enrollment string" not in result.stderr
-    assert "no answer from the gateway" in result.stdout
+    assert "keeping the enrollment as mac" in result.stdout
     assert "It is enrolled with the gateway at http://10.0.0.1:8766 as mac" in result.stdout
+
+
+def test_a_gateway_with_another_token_for_the_host_is_asked_to_enroll_again(mac: Mac) -> None:
+    mac.install()
+    (mac.home / "gateway-other-token").touch()
+
+    result = mac.setup()
+
+    assert "Enrollment string" in result.stderr
+    assert "It is enrolled" not in result.stdout
 
 
 @pytest.mark.parametrize("env", [{"HOST": "mac.local"}, {"HOST": "::"}, {"PORT": "70000"}, {"PORT": "0"}])

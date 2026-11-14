@@ -222,14 +222,17 @@ done
 GATEWAY_GONE=""
 if [[ $SOURCE == env_file && -n $(enrolled name) ]]; then
   GATEWAY_CHECK="$(bridge check 2>&1 | grep "the gateway at" || true)"
-  if [[ $GATEWAY_CHECK == *"no answer from the gateway"* ]]; then
-    # Down, or this Mac is off the LAN: the gateway keeps the host, and the next start
-    # reports the address by itself.
-    echo "warning: no answer from the gateway at $(enrolled url) right now; keeping the enrollment as $(enrolled name)"
-  elif [[ $GATEWAY_CHECK == "FAIL  the gateway at"* ]]; then
-    GATEWAY_GONE=1
-    echo "warning: the gateway at $(enrolled url) didn't confirm it has this host as $(enrolled name); enrolling again fixes that"
-  fi
+  case $GATEWAY_CHECK in
+    # Only these two say it has no record of this host with this token (enrollment.py's
+    # not_enrolled and unauthorized).
+    *"isn't enrolled with the gateway"* | *"isn't this agent host's token"*)
+      GATEWAY_GONE=1
+      echo "warning: the gateway at $(enrolled url) didn't confirm it has this host as $(enrolled name); enrolling again fixes that" ;;
+    # Anything else (no answer, or a new address it couldn't reach before the service
+    # restarts) leaves the record as it is; the next start reports the address by itself.
+    "FAIL  the gateway at"*)
+      echo "warning: couldn't check with the gateway at $(enrolled url) right now (${GATEWAY_CHECK#*has this host }); keeping the enrollment as $(enrolled name)" ;;
+  esac
 fi
 
 NAME_GIVEN=${NAME+x}
