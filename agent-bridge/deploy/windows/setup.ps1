@@ -135,7 +135,7 @@ function Test-Format([string]$Option, [string]$Value) {
         if ($Checkout -and -not $script:Synced) {
             Write-Host 'agent-bridge didn''t run as it is; installing its dependencies first.'
             # The running bridge holds the .venv's files.
-            Stop-Bridge $Exe 0
+            Stop-Bridge $Exe (Get-InstalledPort)
             Sync-Checkout
             $script:Synced = $true
             continue
@@ -236,13 +236,12 @@ function Wait-Bridge([int]$Port) {
 
 function Start-Bridge([int]$Port) {
     <# Starts the task; whether agent-bridge then listens on $Port. #>
-    # Stop-Bridge leaves it disabled.
-    Enable-ScheduledTask -TaskName $TaskName -TaskPath '\' | Out-Null
-    $script:TaskDisabled = $false
+    # Stop-Bridge leaves it disabled; this also brings back the every-minute repeat.
+    Resume-Task
     Start-ScheduledTask -TaskName $TaskName -TaskPath '\'
     if (Wait-Bridge $Port) { return $true }
     Write-Warn "agent-bridge isn't listening on port $Port. The end of $LogFile`:"
-    if (Test-Path -LiteralPath $LogFile) { Get-Content -LiteralPath $LogFile -Tail 15 | ForEach-Object { Write-Host "  $_" } }
+    if (Test-Path -LiteralPath $LogFile) { Get-Content -LiteralPath $LogFile -Tail 15 -Encoding UTF8 | ForEach-Object { Write-Host "  $_" } }
     return $false
 }
 
@@ -343,7 +342,7 @@ try {
     # .NET also reads 192.168.1 and 010.0.0.5 as IPv4 addresses, which Python doesn't: an
     # IPv4 address must be written as .NET writes it back.
     $ipv4 = [Net.Sockets.AddressFamily]::InterNetwork
-    if (-not [Net.IPAddress]::TryParse($Address, [ref]$parsed) -or
+    if ($Address -match '[\[\]]' -or -not [Net.IPAddress]::TryParse($Address, [ref]$parsed) -or
         ($parsed.AddressFamily -eq $ipv4 -and $parsed.ToString() -ne $Address)) {
         Stop-Setup "the LAN address must be an IP address, like 192.168.1.20; got $Address"
     }
@@ -578,8 +577,8 @@ try {
         Write-Host 'Not enrolled with a gateway yet. Run `sudo mcp-gateway enroll` on the gateway host, then here:'
         Write-Host "  & $(Format-Quoted $Exe) enroll '<the string it printed>'"
     }
-    # A failed check or start is setup's exit code; otherwise the last program's would be.
-    if ($CheckFailed -or -not $Started) { exit 1 }
+    # A failed check, start or enrollment is setup's exit code; otherwise the last program's would be.
+    if ($CheckFailed -or -not $Started -or ($null -ne $EnrollCode -and $EnrollCode -ne 0)) { exit 1 }
     exit 0
 } finally {
     Restore-Task
