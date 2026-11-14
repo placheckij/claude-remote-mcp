@@ -318,6 +318,9 @@ function Stop-Bridge([string]$Exe, [int[]]$Port) {
         if ($holder) {
             Write-Host "Stopping the agent-bridge on port $one (PID $($holder.Id)): $($holder.CommandLine)"
             Stop-Process -Id $holder.Id -Force -ErrorAction SilentlyContinue
+            # Gone, not only out of WMI's sight with its socket still listed, which would look
+            # like another program on the port.
+            Wait-Process -Id $holder.Id -Timeout 10 -ErrorAction SilentlyContinue
         }
         # Only an agent-bridge is worth waiting for: nothing here stops another program.
         for ($i = 0; $i -lt 20; $i++) {
@@ -327,17 +330,44 @@ function Stop-Bridge([string]$Exe, [int[]]$Port) {
     }
 }
 
-$script:KeyLine = '^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=(.*)$'
+# A setting, KEY=value, with any key python-dotenv takes unquoted; the value may run on
+# over several lines (Join-EnvLine).
+$script:KeyLine = '(?s)^\s*(?:export\s+)?([^=#\s''][^=#\s]*)\s*=(.*)$'
+# python-dotenv's quoted values: a backslash takes the character after it along, whatever it
+# is, so "C:\x\" is a quote left open, not C:\x\; and they may run on over several lines.
+$script:SingleQuoted = "(?s)^'((?:\\.|[^'\\])*)'"
+$script:DoubleQuoted = '(?s)^"((?:\\.|[^"\\])*)"'
+
+function Join-EnvLine([string[]]$Lines) {
+    <# $Lines as python-dotenv reads them, as @{ Text; Lines; First; Last } (line numbers
+       from 1): a quoted value that runs on past its line takes the lines up to its closing
+       quote along, Text joining them with newlines. One never closed is a line of its own,
+       which python-dotenv skips. #>
+    for ($i = 0; $i -lt $Lines.Count; $i++) {
+        $last = $i
+        if ($Lines[$i] -match $script:KeyLine) {
+            $value = $Matches[2].TrimStart()
+            $pattern = if ($value.StartsWith("'")) { $script:SingleQuoted } elseif ($value.StartsWith('"')) { $script:DoubleQuoted } else { $null }
+            if ($pattern -and $value -notmatch $pattern) {
+                for ($j = $i + 1; $j -lt $Lines.Count; $j++) {
+                    $value += "`n" + $Lines[$j]
+                    if ($value -match $pattern) { $last = $j; break }
+                }
+            }
+        }
+        $group = @($Lines[$i..$last])
+        @{ Text = $group -join "`n"; Lines = $group; First = $i + 1; Last = $last + 1 }
+        $i = $last
+    }
+}
 
 function ConvertFrom-EnvValue([string]$Raw) {
     <# A value as python-dotenv reads it: in '...' with \\ and \' as escapes, in "..." with
        those, \" and \a \b \f \n \r \t \v, either maybe followed by a comment; or plain up to a
        ` #` comment. #>
     $value = $Raw.Trim()
-    # A backslash takes the character after it along, whatever it is, so "C:\x\" is a quote
-    # left open, as python-dotenv reads it, not C:\x\.
-    if ($value -match "^'((?:\\.|[^'\\])*)'\s*(#.*)?$") { return $Matches[1] -replace "\\(['\\])", '$1' }
-    if ($value -match '^"((?:\\.|[^"\\])*)"\s*(#.*)?$') {
+    if ($value -match ($script:SingleQuoted + '\s*(#.*)?$')) { return $Matches[1] -replace "\\(['\\])", '$1' }
+    if ($value -match ($script:DoubleQuoted + '\s*(#.*)?$')) {
         return [regex]::Replace($Matches[1], '\\([\\''"abfnrtv])', {
                 param($escape)
                 switch -CaseSensitive ($escape.Groups[1].Value) {
@@ -433,15 +463,6 @@ function New-EnvValueTable {
     return , (New-Object 'Collections.Generic.Dictionary[string,string]' ([StringComparer]::Ordinal))
 }
 
-function Test-QuoteLeftOpen([string]$Line) {
-    <# Whether $Line's value opens a quote it never closes, which python-dotenv reads on into
-       the lines below (up to the next such quote), so their settings are lost. #>
-    if ($Line -notmatch $script:KeyLine) { return $false }
-    $value = $Matches[2].Trim()
-    return ($value.StartsWith("'") -and $value -notmatch "^'(?:\\.|[^'\\])*'") -or
-        ($value.StartsWith('"') -and $value -notmatch '^"(?:\\.|[^"\\])*"')
-}
-
 function Read-EnvFile([string]$Path) {
     <# The env file's lines, its values by key, as python-dotenv reads them, and the names
        its ${NAME}s look up in the environment (Referenced). #>
@@ -450,8 +471,8 @@ function Read-EnvFile([string]$Path) {
     $referenced = New-Object 'Collections.Generic.HashSet[string]' ([StringComparer]::Ordinal)
     $lines = @()
     if (Test-Path -LiteralPath $Path) { $lines = @(Get-Content -LiteralPath $Path -Encoding UTF8) }
-    foreach ($line in $lines) {
-        $entry = ConvertFrom-EnvLine $line $exact $referenced
+    foreach ($group in @(Join-EnvLine $lines)) {
+        $entry = ConvertFrom-EnvLine $group.Text $exact $referenced
         if ($entry -and $null -ne $entry.Value) {
             $exact[$entry.Name] = $entry.Value
             $values[$entry.Name.ToUpperInvariant()] = $entry.Value

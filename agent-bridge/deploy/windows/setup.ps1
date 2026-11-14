@@ -102,29 +102,28 @@ function Write-EnvFile([string]$Path, [string[]]$Lines, $Settings) {
         $out.Add('# doesn''t set are kept; see agent-bridge\README.md for the others.')
     }
     $done = @{}
-    $number = 0
-    foreach ($line in $Lines) {
-        $number++
-        $entry = ConvertFrom-EnvLine $line $exact
+    foreach ($group in @(Join-EnvLine $Lines)) {
+        $entry = ConvertFrom-EnvLine $group.Text $exact
         if (-not $entry) {
-            $out.Add($line)
+            $out.AddRange([string[]]$group.Lines)
             continue
+        }
+        # Lines python-dotenv skips together, setup's included: neither kept nor replaced,
+        # which would drop the lines inside.
+        if ($null -eq $entry.Value -and $group.Last -gt $group.First) {
+            Stop-Setup ("lines $($group.First)-$($group.Last) of $EnvFile are one quoted value with more after its closing " +
+                "quote, so agent-bridge skips them all. Fix or remove them, then run setup again.")
         }
         $key = $entry.Name.ToUpperInvariant()
         if (-not $Settings.Contains($key)) {
-            # Kept, it would hide the lines below from agent-bridge (one of setup's, it replaces).
-            if (Test-QuoteLeftOpen $line) {
-                Stop-Setup ("line $number of $EnvFile opens a quote it doesn't close, so agent-bridge reads the lines " +
-                    "below into $($entry.Name). Close the quote or remove the line, then run setup again.")
-            }
-            $out.Add($line)
+            $out.AddRange([string[]]$group.Lines)
             if ($null -ne $entry.Value) { $exact[$entry.Name] = $entry.Value }
             continue
         }
         # A line python-dotenv skips ($null) is replaced like one with another value.
         if (-not $done.ContainsKey($key) -and $Settings[$key]) {
             if ($null -ne $entry.Value -and $entry.Value -ceq [string]$Settings[$key]) {
-                $out.Add($line)
+                $out.AddRange([string[]]$group.Lines)
                 $exact[$entry.Name] = $entry.Value
             } else {
                 $out.Add((Format-EnvLine $key $Settings[$key]))
