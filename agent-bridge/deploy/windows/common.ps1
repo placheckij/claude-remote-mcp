@@ -388,7 +388,9 @@ function Get-NameUnlikeLogon([string[]]$Names) {
     'COMSPEC', 'OS', 'NUMBER_OF_PROCESSORS', 'PROCESSOR_ARCHITECTURE', 'SESSIONNAME'
     # As a logon sets them: the user's win over the machine's, the session's over both.
     $logon = @{}
-    foreach ($path in $script:LastingEnvironment.Machine, $script:LastingEnvironment.User, 'HKCU:\Volatile Environment') {
+    # The session's own, such as CLIENTNAME over Remote Desktop, are under its number.
+    $session = "HKCU:\Volatile Environment\$((Get-Process -Id $PID).SessionId)"
+    foreach ($path in $script:LastingEnvironment.Machine, $script:LastingEnvironment.User, 'HKCU:\Volatile Environment', $session) {
         $variables = Get-LastingVariable $path
         foreach ($variable in $variables.Keys) { $logon[$variable.ToUpperInvariant()] = $variables[$variable] }
     }
@@ -399,29 +401,30 @@ function Get-NameUnlikeLogon([string[]]$Names) {
         } | Select-Object -Unique)
 }
 
-function Expand-EnvReference([string]$Value, $Earlier) {
+function Expand-EnvReference([string]$Value, $Earlier, $Referenced = $null) {
     <# ${NAME} and ${NAME:-default} in $Value, as python-dotenv expands them: from the file's
        earlier values first, by their exact names, then this window's environment as the
        agent-bridge setup runs has it (Test-FromEnvironment; Get-NameUnlikeLogon tells setup
-       where the task's differs). #>
+       where the task's differs). Names looked up in the environment go in $Referenced. #>
     return [regex]::Replace($Value, '\$\{([^}:]*)(?::-([^}]*))?\}', {
             param($reference)
             $name = $reference.Groups[1].Value
             if ($Earlier.ContainsKey($name)) { return [string]$Earlier[$name] }
+            if ($null -ne $Referenced) { [void]$Referenced.Add($name) }
             $fromEnvironment = [Environment]::GetEnvironmentVariable($name)
             if ($null -ne $fromEnvironment -and (Test-FromEnvironment $name)) { return $fromEnvironment }
             return $reference.Groups[2].Value
         })
 }
 
-function ConvertFrom-EnvLine([string]$Line, $Exact) {
+function ConvertFrom-EnvLine([string]$Line, $Exact, $Referenced = $null) {
     <# A line's @{ Name; Value } as python-dotenv reads it, ${NAME} expanded from $Exact (the
        values so far, by exact name); Value is $null for a line python-dotenv skips. $null for
        a line without a setting. #>
     if ($Line -notmatch $script:KeyLine) { return $null }
     $name = $Matches[1]
     $raw = ConvertFrom-EnvValue $Matches[2]
-    $value = if ($null -eq $raw) { $null } else { Expand-EnvReference $raw $Exact }
+    $value = if ($null -eq $raw) { $null } else { Expand-EnvReference $raw $Exact $Referenced }
     return @{ Name = $name; Value = $value }
 }
 
@@ -430,20 +433,31 @@ function New-EnvValueTable {
     return , (New-Object 'Collections.Generic.Dictionary[string,string]' ([StringComparer]::Ordinal))
 }
 
+function Test-QuoteLeftOpen([string]$Line) {
+    <# Whether $Line's value opens a quote it never closes, which python-dotenv reads on into
+       the lines below (up to the next such quote), so their settings are lost. #>
+    if ($Line -notmatch $script:KeyLine) { return $false }
+    $value = $Matches[2].Trim()
+    return ($value.StartsWith("'") -and $value -notmatch "^'(?:\\.|[^'\\])*'") -or
+        ($value.StartsWith('"') -and $value -notmatch '^"(?:\\.|[^"\\])*"')
+}
+
 function Read-EnvFile([string]$Path) {
-    <# The env file's lines, and its values by key, as python-dotenv reads them. #>
+    <# The env file's lines, its values by key, as python-dotenv reads them, and the names
+       its ${NAME}s look up in the environment (Referenced). #>
     $values = [ordered]@{}
     $exact = New-EnvValueTable
+    $referenced = New-Object 'Collections.Generic.HashSet[string]' ([StringComparer]::Ordinal)
     $lines = @()
     if (Test-Path -LiteralPath $Path) { $lines = @(Get-Content -LiteralPath $Path -Encoding UTF8) }
     foreach ($line in $lines) {
-        $entry = ConvertFrom-EnvLine $line $exact
+        $entry = ConvertFrom-EnvLine $line $exact $referenced
         if ($entry -and $null -ne $entry.Value) {
             $exact[$entry.Name] = $entry.Value
             $values[$entry.Name.ToUpperInvariant()] = $entry.Value
         }
     }
-    return @{ Lines = $lines; Values = $values }
+    return @{ Lines = $lines; Values = $values; Referenced = @($referenced) }
 }
 
 function Read-State {
