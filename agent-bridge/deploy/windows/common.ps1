@@ -367,12 +367,20 @@ function Get-LastingVariable([string]$Path) {
     return $found
 }
 
-function Get-WindowOnlyName([string[]]$Names) {
-    <# Those of $Names whose value in this window a logon doesn't give: set here only, or
-       otherwise in your lasting variables, the machine's or the session's (Volatile
-       Environment). The scheduled task, started at logon, has another value or none. Only
-       upper-case names, the only ones python-dotenv finds in the environment, and not those
-       Windows sets for every process. #>
+function Test-FromEnvironment([string]$Name) {
+    <# Whether agent-bridge takes ${$Name} from the environment: Python on Windows upper-cases
+       the environment's names, so only an upper-case one is found there, and agent-bridge
+       runs without AGENT_BRIDGE_* variables (Invoke-Native removes this window's, and setup
+       refuses lasting ones). #>
+    return $Name -ceq $Name.ToUpperInvariant() -and $Name -notlike 'AGENT_BRIDGE_*'
+}
+
+function Get-NameUnlikeLogon([string[]]$Names) {
+    <# Those of $Names that agent-bridge takes from the environment and that a logon sets
+       otherwise than this window has them: set here only, set only at logon (setx after this
+       window opened), or to another value, by your lasting variables, the machine's or the
+       session's (Volatile Environment). Setup checks this window's value; the scheduled task,
+       started at logon, gets the other. Not those Windows sets for every process. #>
     $everyProcess = 'USERPROFILE', 'APPDATA', 'LOCALAPPDATA', 'HOMEDRIVE', 'HOMEPATH', 'HOMESHARE', 'USERNAME',
     'USERDOMAIN', 'USERDNSDOMAIN', 'LOGONSERVER', 'COMPUTERNAME', 'SYSTEMROOT', 'WINDIR', 'SYSTEMDRIVE',
     'PROGRAMFILES', 'PROGRAMFILES(X86)', 'PROGRAMW6432', 'COMMONPROGRAMFILES', 'COMMONPROGRAMFILES(X86)',
@@ -385,23 +393,23 @@ function Get-WindowOnlyName([string[]]$Names) {
         foreach ($variable in $variables.Keys) { $logon[$variable.ToUpperInvariant()] = $variables[$variable] }
     }
     return @($Names | Where-Object {
-            $value = [Environment]::GetEnvironmentVariable($_)
-            $null -ne $value -and $_ -ceq $_.ToUpperInvariant() -and $everyProcess -notcontains $_ -and
-            -not ($logon.ContainsKey($_) -and $logon[$_] -ceq $value)
+            $atLogon = if ($logon.ContainsKey($_)) { $logon[$_] } else { $null }
+            (Test-FromEnvironment $_) -and $everyProcess -notcontains $_ -and
+            [Environment]::GetEnvironmentVariable($_) -cne $atLogon
         } | Select-Object -Unique)
 }
 
 function Expand-EnvReference([string]$Value, $Earlier) {
     <# ${NAME} and ${NAME:-default} in $Value, as python-dotenv expands them: from the file's
-       earlier values first, by their exact names, then this window's environment (as the
-       agent-bridge setup runs has it; Get-WindowOnlyName tells setup what the task lacks),
-       whose names Python on Windows has upper-cased, so ${userprofile} isn't found there. #>
+       earlier values first, by their exact names, then this window's environment as the
+       agent-bridge setup runs has it (Test-FromEnvironment; Get-NameUnlikeLogon tells setup
+       where the task's differs). #>
     return [regex]::Replace($Value, '\$\{([^}:]*)(?::-([^}]*))?\}', {
             param($reference)
             $name = $reference.Groups[1].Value
             if ($Earlier.ContainsKey($name)) { return [string]$Earlier[$name] }
             $fromEnvironment = [Environment]::GetEnvironmentVariable($name)
-            if ($null -ne $fromEnvironment -and $name -ceq $name.ToUpperInvariant()) { return $fromEnvironment }
+            if ($null -ne $fromEnvironment -and (Test-FromEnvironment $name)) { return $fromEnvironment }
             return $reference.Groups[2].Value
         })
 }

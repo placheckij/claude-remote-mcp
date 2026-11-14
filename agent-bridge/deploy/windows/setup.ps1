@@ -403,20 +403,23 @@ try {
     $Installed = Read-EnvFile $EnvFile
     # ${NAME} in the env file is expanded from this window's variables here, and from a
     # logon's for the service: say which differ.
-    # In values only, and not names set above in the file, which python-dotenv looks up first.
+    # In values as python-dotenv reads them (no comment; a line it skips sets nothing), and
+    # not names set above in the file, which it looks up first.
     $defined = New-Object 'Collections.Generic.HashSet[string]' ([StringComparer]::Ordinal)
     $referenced = @(foreach ($line in $Installed.Lines) {
             if ($line -notmatch $KeyLine) { continue }
             # Not $name, which is $Name, this host's.
             $lineKey = $Matches[1]
-            foreach ($match in [regex]::Matches($Matches[2], '\$\{([^}:]*)')) {
+            $lineValue = ConvertFrom-EnvValue $Matches[2]
+            if ($null -eq $lineValue) { continue }
+            foreach ($match in [regex]::Matches($lineValue, '\$\{([^}:]*)')) {
                 if (-not $defined.Contains($match.Groups[1].Value)) { $match.Groups[1].Value }
             }
             [void]$defined.Add($lineKey)
         })
-    foreach ($windowOnly in (Get-WindowOnlyName $referenced)) {
-        Write-Warn ("`${$windowOnly} in $EnvFile is set only in this window, or otherwise than at logon: agent-bridge, " +
-            "started at logon, won't see this value. Set it with setx and open a new window, or write the value there instead.")
+    foreach ($unlike in (Get-NameUnlikeLogon $referenced)) {
+        Write-Warn ("`${$unlike} in $EnvFile is set otherwise in this window, where setup checks it, than at logon, " +
+            "where agent-bridge starts. Set it with setx and open a new window, or write the value there instead.")
     }
     function Get-Installed([string]$Key) {
         if ($Installed.Values.Contains("AGENT_BRIDGE_$Key")) { return $Installed.Values["AGENT_BRIDGE_$Key"] }
