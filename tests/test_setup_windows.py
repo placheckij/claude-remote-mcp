@@ -997,7 +997,7 @@ def test_a_reference_to_a_variable_only_this_window_has_is_not_counted(machine: 
     # HERDR_HOME is set in this window only, not in the logon environment the task gets.
     output = machine.setup(HERDR_HOME=str(machine.herdr.parent))
 
-    assert "${HERDR_HOME} in" in output and "set only in this window" in output
+    assert "${HERDR_HOME} in" in output and "set otherwise in this window" in output
 
 
 def test_uninstall_falls_back_to_the_installed_agent_bridge(machine: Machine) -> None:
@@ -1105,7 +1105,7 @@ def test_references_to_names_set_above_or_in_comments_are_not_called_window_only
     # Both set in this window only; python-dotenv takes HERDR_HOME from the file first.
     output = machine.setup(HERDR_HOME=str(machine.root), OTHER_ONLY="x")
 
-    assert "set only in this window" not in output
+    assert "set otherwise in this window" not in output
     assert "Done." in output
 
 
@@ -1117,7 +1117,7 @@ def test_a_name_passed_in_survives_a_window_only_reference(machine: Machine) -> 
 
     output = machine.setup("-Name win-pc", HERDR_HOME=str(machine.herdr.parent))
 
-    assert "set only in this window" in output
+    assert "set otherwise in this window" in output
     assert machine.env()["AGENT_BRIDGE_NAME"] == "win-pc"
 
 
@@ -1157,3 +1157,38 @@ def test_window_only_references_are_upper_case_ones_whose_logon_value_differs(ma
 
     assert "${herdr_low}" not in output
     assert "${HERDR_SET} in" in output
+
+
+def test_a_reference_set_at_logon_but_not_in_this_window_is_warned_about(machine: Machine) -> None:
+    machine.setup("-Enrollment ''", input="\n\n")
+    with machine.env_file.open("a", encoding="utf-8") as file:
+        file.write("AGENT_BRIDGE_X1=${HERDR_SET:-d}\n")
+
+    # setx after this window opened: x at logon, nothing here.
+    output = machine.setup(FAKE_USER_VARIABLE="HERDR_SET")
+
+    assert "${HERDR_SET} in" in output
+
+
+def test_agent_bridge_variables_in_this_window_are_not_expanded_into_the_settings(machine: Machine) -> None:
+    machine.setup("-Enrollment ''", input="\n\n")
+    text = machine.env_file.read_text(encoding="utf-8")
+    text = text.replace("AGENT_BRIDGE_PORT=8765", "AGENT_BRIDGE_PORT=${AGENT_BRIDGE_LEFTOVER:-8765}")
+    machine.env_file.write_text(text, encoding="utf-8")
+
+    # agent-bridge runs without it, so the port is the default, as it reads it.
+    output = machine.setup(AGENT_BRIDGE_LEFTOVER="9000")
+
+    assert "listens on http://127.0.0.1:8765" in output
+    assert "${AGENT_BRIDGE_LEFTOVER} in" not in output
+
+
+def test_references_in_comments_dont_count_and_skipped_lines_define_nothing(machine: Machine) -> None:
+    machine.setup("-Enrollment ''", input="\n\n")
+    with machine.env_file.open("a", encoding="utf-8") as file:
+        file.write("AGENT_BRIDGE_X1=plain # was ${OLD_ONLY}\nFOO_S='open\nAGENT_BRIDGE_X2=${FOO_S}\n")
+
+    output = machine.setup(OLD_ONLY="x", FOO_S="y")
+
+    assert "${OLD_ONLY}" not in output
+    assert "${FOO_S} in" in output
