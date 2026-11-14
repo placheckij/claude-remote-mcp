@@ -117,10 +117,17 @@ $script:NativeOutput = @()
 function Invoke-Native {
     <# Runs a program and returns its exit code. What it printed, stdout and stderr, is kept in
        $script:NativeOutput as plain lines (Windows PowerShell would otherwise turn each stderr
-       line into an error), and shown unless -Quiet. #>
-    param([Parameter(Mandatory)][string]$FilePath, [string[]]$ArgumentList = @(), [switch]$Quiet)
+       line into an error), and shown unless -Quiet. It runs with none of the session's
+       AGENT_BRIDGE_* variables, which would win over the env file, plus $Environment's; and
+       from the temp folder, away from a .env in the current one, which agent-bridge reads too. #>
+    param([Parameter(Mandatory)][string]$FilePath, [string[]]$ArgumentList = @(), [switch]$Quiet,
+        [hashtable]$Environment = @{})
     $saved = $ErrorActionPreference
     $ErrorActionPreference = 'Continue'
+    $savedVariables = @(Get-ChildItem Env: | Where-Object { $_.Name -like 'AGENT_BRIDGE_*' })
+    foreach ($variable in $savedVariables) { Remove-Item -LiteralPath "Env:$($variable.Name)" }
+    foreach ($name in $Environment.Keys) { Set-Item -LiteralPath "Env:$name" -Value $Environment[$name] }
+    Push-Location -LiteralPath ([IO.Path]::GetTempPath())
     # In UTF-8 mode, as run.cmd runs the service: agent-bridge reads the env file, which setup
     # writes as UTF-8, in the locale's code page otherwise. Only for this call, not for the
     # session setup may have been started from.
@@ -142,6 +149,9 @@ function Invoke-Native {
     } finally {
         $ErrorActionPreference = $saved
         $env:PYTHONUTF8 = $savedUtf8
+        Pop-Location
+        foreach ($name in $Environment.Keys) { Remove-Item -LiteralPath "Env:$name" -ErrorAction SilentlyContinue }
+        foreach ($variable in $savedVariables) { Set-Item -LiteralPath "Env:$($variable.Name)" -Value $variable.Value }
         if ($savedEncoding) { try { [Console]::OutputEncoding = $savedEncoding } catch { $savedEncoding = $null } }
     }
 }
