@@ -748,6 +748,31 @@ def test_a_setting_written_with_spaces_or_in_lower_case_is_replaced(host: Host) 
     assert "9000" not in text and "agent_bridge_token" not in text
 
 
+def test_a_variable_in_a_setting_is_read_expanded_as_the_loader_reads_it(host: Host) -> None:
+    host.install()
+    other = host.home / "other"
+    other.mkdir()
+    lines = host.env_file.read_text().splitlines()
+    host.env_file.write_text("".join(
+        "AGENT_BRIDGE_ALLOWED_ROOTS=${HOME}/other\n" if line.startswith("AGENT_BRIDGE_ALLOWED_ROOTS=")
+        else f"{line}\n" for line in lines))
+
+    host.setup()
+
+    assert host.env()["AGENT_BRIDGE_ALLOWED_ROOTS"] == str(other)
+
+
+def test_a_value_the_loader_would_expand_is_refused(host: Host) -> None:
+    folder = host.home / "a${x}"
+    folder.mkdir()
+
+    result = host.install(ALLOWED_ROOTS=str(folder), check=False)
+
+    assert result.returncode != 0
+    assert "can't contain" in result.stderr
+    assert not host.env_file.exists()
+
+
 def test_a_double_quoted_escape_is_read_as_the_loader_reads_it(host: Host) -> None:
     from dotenv import dotenv_values
 
