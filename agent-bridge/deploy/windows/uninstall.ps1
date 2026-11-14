@@ -82,6 +82,7 @@ foreach ($file in @($EnvFile, "$EnvFile.tmp", $StateFile, "$StateFile.tmp", $Log
         }
     }
 }
+Remove-Item -LiteralPath $CheckDir -Recurse -Force -ErrorAction SilentlyContinue
 foreach ($folder in @($SettingsDir, $StateDir)) {
     if ((Test-Path -LiteralPath $folder) -and -not (Get-ChildItem -LiteralPath $folder -Force)) {
         Remove-Item -LiteralPath $folder -Force
