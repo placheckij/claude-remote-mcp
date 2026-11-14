@@ -212,6 +212,18 @@ def test_reads_only_the_env_file_without_a_legacy_dotenv(
     assert "move them to" not in caplog.text
 
 
+def test_reads_a_legacy_dotenv_written_with_export_or_lowercase(
+    env: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    env.delenv("AGENT_BRIDGE_TOKEN")
+    Path(".env").write_text(f"export AGENT_BRIDGE_TOKEN={TOKEN}\nagent_bridge_port=9000\n")
+
+    settings = Settings.from_env()
+
+    assert (settings.token, settings.port) == (TOKEN, 9000)
+    assert "move them to" in caplog.text
+
+
 def test_names_the_env_file_in_errors(env: pytest.MonkeyPatch) -> None:
     env.delenv("AGENT_BRIDGE_TOKEN")
     with pytest.raises(RuntimeError, match=f"env file: {re.escape(os.environ['AGENT_BRIDGE_ENV_FILE'])}"):

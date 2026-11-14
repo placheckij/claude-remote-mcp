@@ -112,10 +112,10 @@ running gateway picks up each change before its next request.
 sudo mcp-gateway enroll        # --address and --port if the defaults are wrong
 ```
 
-opens a 30-minute window for any number of agent hosts and prints the string their
-setup asks for, `crm1@<LAN address>:8766#<secret>`. On each agent host,
-`agent-bridge enroll '<string>'` (which its setup runs) sends its id, address, token and
-name; the gateway calls that address's `/info`, checks it answers with the same id, and
+opens a 30-minute window for any number of agent hosts and prints the string they
+enroll with, `crm1@<LAN address>:8766#<secret>`, once the gateway answers at that
+address (the setup script's listens on IPv4 only). On each agent host,
+`agent-bridge enroll '<string>'` sends its id, address, token and name; the gateway calls that address's `/info`, checks it answers with the same id, and
 adds the host (or replaces its record, if it enrolled before). Each enrollment is logged
 as a warning.
 
@@ -123,7 +123,8 @@ as a warning.
   `enrollment.json` (mode 600). A new `enroll` replaces it. Three wrong strings from one
   address lock that address out of the window; ten in all close it.
 - **Names** are the agent host's `AGENT_BRIDGE_NAME`. One that another host has is
-  refused (`409`), and the agent host's setup asks again.
+  refused (`409`), and `agent-bridge enroll` exits with 3: set another
+  `AGENT_BRIDGE_NAME` and run it again.
 - **Afterwards** each agent-bridge sends its address on every start
   (`PUT /bridges/{id}/address`) and removes itself on uninstall (`DELETE /bridges/{id}`),
   both with its own token. A new address is kept only once its `/info` answers with the
@@ -187,7 +188,7 @@ the connector is added, claude.ai:
 | Access token | 1 hour; claude.ai refreshes it by itself |
 | Refresh token | 90 days; replaced on every refresh (the old one stops working) |
 | Callback | only `https://claude.ai/api/mcp/auth_callback` can be registered, so a sign-in can't hand a code to anyone else. Claude Code's loopback callback isn't accepted |
-| Wrong passphrases | logged with the source address; a sign-in link dies after 5, and an address with 10 within 15 minutes is refused until they age out, so one stranger guessing doesn't lock you out. The address is Cloudflare's `CF-Connecting-IP` when the request comes from the local cloudflared, else the peer's; IPv6 counts by /64. Changing addresses doesn't buy more: 100 from all sources together stop every sign-in for those 15 minutes (tokens already issued keep working) |
+| Wrong passphrases | logged with the source address; a sign-in link dies after 5, and an address with 10 within 15 minutes is refused until they age out, so one stranger guessing doesn't lock you out. The address is Cloudflare's `CF-Connecting-IP` when the request comes from the local cloudflared, the last `X-Forwarded-For` entry from another reverse proxy on this host, else the peer's; IPv6 counts by /64. Changing addresses doesn't buy more: 100 from all sources together stop every sign-in for those 15 minutes (tokens already issued keep working) |
 | Phishing | someone could send you a sign-in link they started. The code can only go to claude.ai, where it only completes the sign-in that claude.ai itself started (its `state`), and the page says to continue only while you are connecting in Claude |
 | Storage | `MCP_GATEWAY_STATE_DIR/oauth.json`: the clients that signed in and SHA-256 hashes of their tokens, never the tokens. A registration that never signs in is kept in memory only (at most 100). Written to a new temporary file, synced to disk and renamed over the old one, so a crash leaves either the old file or the new one; on Linux, so does a power cut. Checked whole at startup: a damaged file stops the gateway with a message naming the file, the bad fields and the client ids involved (not secret), never field values or token hashes |
 | Failed saves | A sign-in or refresh whose save fails (e.g. a full disk) fails and changes nothing: a refresh can be retried with the same refresh token, a sign-in is started again. A revocation whose save fails still revokes at once, and `oauth.json`, which still lists the revoked tokens, is deleted (that needs no space): a restart before the next successful save signs every client out instead of bringing them back, and that save writes the file again. When a revocation can't be made safe on disk (the file can't be deleted, or the folder won't sync, so a power cut could undo it), an error in the log says so and what to do in that case; the usual fix, once the disk can be written, is to stop mcp-gateway, delete `oauth.json` and start it again, but on a read-only disk stopping it only loses the revocation. Until a save is fully on disk, every save that isn't is logged as an error too, also after a restart if the state folder won't sync then |
@@ -412,10 +413,12 @@ reverse proxy:
    added by hand):
    ```sh
    uv run --frozen --no-dev --package mcp-gateway \
-     uvicorn mcp_gateway.server:main --factory --host 0.0.0.0 --port 8766 --no-server-header
+     uvicorn mcp_gateway.server:main --factory --host 0.0.0.0 --port 8766 --no-server-header --no-proxy-headers
    ```
    Keep it running with your system's service manager (systemd, launchd, NSSM, …), as
    [one process](#one-process): no `--workers`. On Windows nothing stops a second one.
+   Keep `--no-proxy-headers`: without it uvicorn takes the caller from the proxy's
+   `X-Forwarded-For`, and the gateway answers 404 to whatever doesn't come from 127.0.0.1.
 3. Publish over HTTPS at `MCP_GATEWAY_PUBLIC_HOST` only `/mcp` and the OAuth paths:
    `/authorize`, `/login`, `/token`, `/register`, `/revoke`,
    `/.well-known/oauth-authorization-server` and

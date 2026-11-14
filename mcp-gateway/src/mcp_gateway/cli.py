@@ -49,13 +49,14 @@ def main(
     ask_token: Callable[[str], str] = getpass.getpass,
     connect: Callable[[str, str], AgentBridge] = AgentBridge.connect,
     lan_address: Callable[[], str | None] = lambda: _lan_address(),
+    reachable: Callable[[str, int], bool] = lambda address, port: _reachable(address, port),
 ) -> int:
     args = _parser().parse_args(argv)
     try:
         state_dir = _state_dir(args.state_dir)
         _become_owner_of(state_dir)
         if args.group == "enroll":
-            _enroll(Enrollment(state_dir / "enrollment.json"), args.address or lan_address(), args.port)
+            _enroll(Enrollment(state_dir / "enrollment.json"), args.address or lan_address(), args.port, reachable)
             return 0
         registry = Registry(state_dir / "bridges.json")
         if args.command == "add":
@@ -85,7 +86,9 @@ def _parser() -> argparse.ArgumentParser:
         "enroll", help=f"let agent-bridges add themselves for {WINDOW_S // 60} minutes; prints the string they need"
     )
     enroll.add_argument("--address", help="this host's address on the LAN; default: the one the default route uses")
-    enroll.add_argument("--port", type=int, default=DEFAULT_PORT, help=f"the gateway's port (default {DEFAULT_PORT})")
+    # setup.sh's wrapper sets MCP_GATEWAY_PORT to the port it serves on.
+    port = int(os.environ.get("MCP_GATEWAY_PORT") or DEFAULT_PORT)
+    enroll.add_argument("--port", type=int, default=port, help=f"the gateway's port (default {port})")
     bridges = groups.add_parser("bridges", help="the agent-bridges this gateway calls").add_subparsers(
         dest="command", required=True
     )
@@ -127,16 +130,32 @@ def _become_owner_of(state_dir: Path) -> None:
     os.setuid(owner.st_uid)
 
 
-def _enroll(enrollment: Enrollment, address: str | None, port: int) -> None:
+def _enroll(enrollment: Enrollment, address: str | None, port: int, reachable: Callable[[str, int], bool]) -> None:
     if address is None:
         raise _Refused("Couldn't tell this host's LAN address; give it with --address.")
     if not is_lan(address):
         raise _Refused(f"{address} isn't a private, loopback or link-local IP address; give one with --address.")
+    if "%" in address:
+        raise _Refused(f"{address} has a zone, which the enrollment string can't carry; give another with --address.")
+    host =f"[{address}]" if ":" in address else address
+    # E.g. an IPv6 address while the gateway listens on 0.0.0.0, or one listening on 127.0.0.1.
+    if not reachable(address, port):
+        raise _Refused(
+            f"Nothing answers at {host}:{port}, so agent hosts couldn't enroll there. Is mcp-gateway running, "
+            "listening on that address? Give another with --address and --port."
+        )
     secret, expires_at = enrollment.open()
-    host = f"[{address}]" if ":" in address else address
     until = datetime.fromtimestamp(expires_at).strftime("%H:%M")
     print(f"Agent hosts can enroll until {until}, as many as you like. On each one, run:")
     print(f"  agent-bridge enroll '{PREFIX}@{host}:{port}#{secret}'")
+
+
+def _reachable(address: str, port: int) -> bool:
+    try:
+        socket.create_connection((address, port), timeout=3).close()
+    except OSError:
+        return False
+    return True
 
 
 def _lan_address() -> str | None:

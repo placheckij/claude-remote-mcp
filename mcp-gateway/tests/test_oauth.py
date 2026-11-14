@@ -387,6 +387,19 @@ def test_the_address_header_counts_only_from_the_tunnel() -> None:
     assert source("192.168.1.50") == "192.168.1.50"
 
 
+def test_behind_another_proxy_the_address_is_the_one_it_added() -> None:
+    # nginx or Caddy on this host: the client may send its own X-Forwarded-For, which the
+    # proxy appends to.
+    def source(peer: str, forwarded: str) -> str:
+        headers = [(b"x-forwarded-for", forwarded.encode())]
+        return _source(Request({"type": "http", "headers": headers, "client": (peer, 50000)}))
+
+    assert source("127.0.0.1", "10.9.9.9, 203.0.113.8") == "203.0.113.8"
+    assert source("192.168.1.50", "203.0.113.8") == "192.168.1.50"
+    # A value that isn't an address can't be a fresh key per guess.
+    assert source("127.0.0.1", "guess-1") == "127.0.0.1"
+
+
 def test_only_the_tunnel_reaches_the_sign_in(tmp_path: Path, clock: Clock) -> None:
     # The gateway listens on the LAN for enrollment; the rest is for cloudflared only.
     oauth = GatewayOAuth(settings(tmp_path), clock=clock)
