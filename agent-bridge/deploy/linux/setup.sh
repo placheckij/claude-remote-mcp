@@ -126,12 +126,19 @@ listener() { # listener PORT: the PID listening on PORT, "?" when its PID can't 
 
 command_of() { ps -o args= -p "$1" 2>/dev/null || true; }
 
-default_config() { # default_config DIR: whether DIR is Claude's own config, which agent-bridge refuses
-  local dir home
-  dir="$(realpath -m "$1")"
-  home="$(realpath -m "$HOME")"
-  [[ $dir == "$home" || $dir == "$home/.claude" || $dir == "$home/.claude/"* \
-    || $dir/.claude.json -ef $home/.claude.json ]]
+check_env() { # check_env FILE: agent-bridge's own check of the settings in FILE, as serve reads them
+  (
+    for var in $(compgen -v AGENT_BRIDGE_); do unset "$var"; done
+    # Beside the file: serve also reads a .env in its working folder.
+    cd "$(dirname "$1")"
+    AGENT_BRIDGE_ENV_FILE=$1 exec "$REPO_DIR/.venv/bin/python" -c '
+import sys
+from agent_bridge.config import Settings
+try:
+    Settings.from_env()
+except RuntimeError as error:
+    sys.exit(f"error: {error}")'
+  )
 }
 
 unit_path() { # unit_path PATH: refuses what systemd can't run, even quoted
@@ -273,8 +280,6 @@ fi
 [[ -n ${AGENT_BRIDGE_CLAUDE_CONFIG_DIR+x} ]] \
   || ask_optional AGENT_BRIDGE_CLAUDE_CONFIG_DIR "Separate Claude config folder for agents" "$HOME/.claude-agents"
 absolute AGENT_BRIDGE_CLAUDE_CONFIG_DIR
-[[ -z $AGENT_BRIDGE_CLAUDE_CONFIG_DIR ]] || ! default_config "$AGENT_BRIDGE_CLAUDE_CONFIG_DIR" \
-  || die "$AGENT_BRIDGE_CLAUDE_CONFIG_DIR is your own Claude config; the agents need a separate one, e.g. $HOME/.claude-agents"
 if [[ -z ${TRUST_ROOT+x} ]]; then
   if [[ -z $AGENT_BRIDGE_CLAUDE_CONFIG_DIR ]]; then
     TRUST_ROOT=""
@@ -345,6 +350,8 @@ write_env() {
     [[ -z $ACCOUNTS ]] || line ACCOUNTS "$ACCOUNTS"
     [[ ! -f $ENV_FILE ]] || grep -Ev "^(export[[:space:]]+)?AGENT_BRIDGE_($MANAGED)=" "$ENV_FILE" || true
   } >"$TMP_ENV"
+  # Before it replaces the working settings, or the service would fail at every start.
+  check_env "$TMP_ENV" || die "agent-bridge won't start with these settings (above); nothing was changed"
   mv "$TMP_ENV" "$ENV_FILE"
 }
 
