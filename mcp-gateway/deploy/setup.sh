@@ -8,7 +8,7 @@
 #   sudo PUBLIC_HOST=mcp.example.com mcp-gateway/deploy/setup.sh
 # On a re-run, values not given are taken from /etc/mcp-gateway/env; pass one to change
 # it. Only PUBLIC_HOST is asked for, if missing. At the end the script opens a 30-minute
-# enrollment window and prints the string each agent host's setup asks for; open another
+# enrollment window and prints the string for `agent-bridge enroll` on each agent host; open another
 # later with `sudo mcp-gateway enroll`, which this script installs. The gateway listens on
 # every interface for that; the tunnel publishes only /mcp and the OAuth paths.
 # Don't put tokens on the command line (shell history, process list): let the script ask,
@@ -192,11 +192,12 @@ chown root:"$SERVICE_USER" "$ENV_FILE"
 chmod 0640 "$ENV_FILE"
 
 # `sudo mcp-gateway bridges …` runs as the service user, so bridges.json stays its own.
-# AGENT_BRIDGE_TOKEN, if set, is passed on for `bridges add` without a terminal.
+# AGENT_BRIDGE_TOKEN, if set, is passed on for `bridges add` without a terminal;
+# MCP_GATEWAY_PORT is the port `enroll` puts in the string.
 cat >/usr/local/bin/mcp-gateway <<EOF
 #!/bin/sh
 # Installed by mcp-gateway/deploy/setup.sh: mcp-gateway's commands, on the service's state.
-exec sudo --preserve-env=AGENT_BRIDGE_TOKEN -u $SERVICE_USER $APP_DIR/.venv/bin/mcp-gateway --state-dir $STATE_DIR "\$@"
+exec sudo --preserve-env=AGENT_BRIDGE_TOKEN -u $SERVICE_USER /usr/bin/env MCP_GATEWAY_PORT=$PORT $APP_DIR/.venv/bin/mcp-gateway --state-dir $STATE_DIR "\$@"
 EOF
 chmod 0755 /usr/local/bin/mcp-gateway
 
@@ -215,7 +216,9 @@ WorkingDirectory=$APP_DIR
 # and wrong-passphrase counts in memory.
 # Every interface: agent-bridges on the LAN enroll here. The tunnel still connects to
 # 127.0.0.1; other callers reach only the enrollment routes, which refuse what it forwards.
-ExecStart=$APP_DIR/.venv/bin/uvicorn mcp_gateway.server:main --factory --host 0.0.0.0 --port $PORT --no-server-header
+# --no-proxy-headers: uvicorn would otherwise take the tunnel's caller from X-Forwarded-For,
+# and the gateway, seeing a caller other than 127.0.0.1, would answer 404 to everything.
+ExecStart=$APP_DIR/.venv/bin/uvicorn mcp_gateway.server:main --factory --host 0.0.0.0 --port $PORT --no-server-header --no-proxy-headers
 Restart=on-failure
 RestartSec=5
 # $STATE_DIR, the one place the service can write (ProtectSystem=strict).

@@ -228,7 +228,11 @@ def claude_env(config_dir: Path | None) -> dict[str, str]:
 def _has_settings(path: Path) -> bool:
     """Whether a file has AGENT_BRIDGE_* lines; a checkout's .env may be mcp-gateway's."""
     try:
-        return any(line.lstrip().startswith("AGENT_BRIDGE_") for line in path.read_text().splitlines())
+        # As dotenv reads them: `export ` in front, and names in any case.
+        return any(
+            line.strip().removeprefix("export ").lstrip().upper().startswith("AGENT_BRIDGE_")
+            for line in path.read_text().splitlines()
+        )
     except (OSError, UnicodeDecodeError):
         return False
 

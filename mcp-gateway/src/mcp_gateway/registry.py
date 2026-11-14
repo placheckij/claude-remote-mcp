@@ -171,16 +171,18 @@ class Registry:
         return bridge
 
     def move(self, bridge_id: str, url: str) -> Bridge:
-        """Gives an enrolled bridge a new address."""
+        """Gives an enrolled bridge a new address. Its /info has just answered there as this
+        bridge, so another record there is out of date, e.g. after two hosts swapped
+        addresses, and is dropped, as enroll() does."""
         url = url.rstrip("/")
 
         def move(bridges: list[Bridge]) -> list[Bridge]:
             current = _find_id(bridges, bridge_id)
-            for other in bridges:
-                if other.bridge_id != bridge_id and other.url == url:
-                    raise RegistryError(f"{url} is already the address of {other.name}.")
+            stale = [b for b in bridges if b.bridge_id != bridge_id and b.url == url]
+            for record in stale:
+                log.warning("Dropping %s: %s now answers as %s.", record.name, record.url, current.name)
             moved = current.model_copy(update={"url": url})
-            return [moved if b.bridge_id == bridge_id else b for b in bridges]
+            return [moved if b.bridge_id == bridge_id else b for b in bridges if b not in stale]
 
         self._change(move)
         return _find_id(self.bridges, bridge_id)

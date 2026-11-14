@@ -48,7 +48,9 @@ The gateway and the agent host can be one machine.
    passphrase, and prints an enrollment string for the agent hosts, good for 30 minutes
    (`sudo mcp-gateway enroll` prints a new one).
 3. **Agent hosts:** start [agent-bridge](agent-bridge/README.md#run) on each, then
-   [enroll](agent-bridge/README.md#enroll-with-the-gateway) it with that string.
+   [enroll](agent-bridge/README.md#enroll-with-the-gateway) it with that string. A Mac
+   set up with [`setup-macos.sh`](agent-bridge/README.md#with-the-setup-script) is added
+   on the gateway host with `sudo mcp-gateway bridges add <url>` instead.
 4. **claude.ai:** [add the custom connector](mcp-gateway/README.md#add-the-connector-in-claudeai)
    by its URL and sign in with that passphrase.
 

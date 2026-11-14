@@ -175,6 +175,45 @@ def test_enroll_exits_1_on_other_refusals(capsys, settings: Path, fake: FakeGate
     assert "Couldn't enroll" in err
 
 
+@pytest.mark.parametrize("answer", [httpx.Response(200, json={"ok": True}), httpx.Response(200, text="<html>")])
+def test_enroll_exits_1_when_another_server_answers(capsys, settings: Path, fake: FakeGateway, answer) -> None:
+    fake.answers[("POST", "enroll")] = answer
+
+    code, _, err = run(capsys, "enroll", STRING)
+
+    assert code == 1
+    assert "not as an mcp-gateway" in err
+    assert load(state_path()).gateway is None
+
+
+def test_enroll_warns_when_the_gateway_is_older(capsys, settings: Path, fake: FakeGateway) -> None:
+    fake.answers[("POST", "enroll")] = httpx.Response(200, json={"name": "mac", "gateway_id": "g" * 32, "api_version": 1})
+
+    code, _, err = run(capsys, "enroll", STRING)
+
+    assert code == 0
+    assert "The gateway is older" in err
+
+
+def test_enroll_says_how_to_retry_when_the_state_cant_be_saved(
+    capsys, settings: Path, fake: FakeGateway, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fake.answers[("POST", "enroll")] = httpx.Response(200, json={"name": "mac", "gateway_id": "g" * 32, "api_version": 2})
+
+    def full(path: Path, state: State) -> None:
+        if state.gateway is not None:
+            raise cli.StateError(f"Can't write {path} (No space left on device).")
+        save(path, state)
+
+    monkeypatch.setattr(cli, "save", full)
+
+    code, _, err = run(capsys, "enroll", STRING)
+
+    assert code == 1
+    assert "enrolled this host as mac, but Can't write" in err
+    assert f"agent-bridge enroll '{STRING}'" in err
+
+
 @pytest.mark.parametrize("string", ["crm1@192.168.1.10:8766", "http://192.168.1.10:8766", "crm1@host:8766#xyz"])
 def test_enroll_refuses_a_bad_string(capsys, settings: Path, string: str) -> None:
     code, _, err = run(capsys, "enroll", string)
@@ -225,6 +264,18 @@ def test_unenroll_forgets_a_gateway_that_forgot_this_host(capsys, settings: Path
     assert load(state_path()).gateway is None
 
 
+def test_unenroll_keeps_the_gateway_on_any_other_404(capsys, settings: Path, fake: FakeGateway) -> None:
+    # The gateway refusing a caller off the LAN, or another server now at its address.
+    state = enrolled()
+    fake.answers[("DELETE", "bridges")] = httpx.Response(404, json={"error": "not found"})
+
+    code, _, err = run(capsys, "unenroll")
+
+    assert code == 0
+    assert "sudo mcp-gateway bridges remove mac" in err
+    assert load(state_path()) == state
+
+
 def test_unenroll_without_a_gateway(capsys) -> None:
     code, out, _ = run(capsys, "unenroll")
 
@@ -255,6 +306,23 @@ def test_check_passes_with_the_service_up_and_enrolled(
     assert code == 0, out
     assert [line.split()[0] for line in out.splitlines()] == ["ok"] * 4
     assert fake.body() == {"url": "http://192.168.1.20:8765"}
+
+
+def test_check_keeps_the_name_the_gateway_has_now(
+    capsys, settings: Path, fake: FakeGateway, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Renamed there with `sudo mcp-gateway bridges rename mac studio`.
+    state = enrolled()
+    monkeypatch.setattr(cli, "Herdr", FakeHerdr)
+    monkeypatch.setattr(cli.httpx, "get", lambda url, **kwargs: httpx.Response(
+        200, json={"bridge_id": state.bridge_id}, request=httpx.Request("GET", url)))
+    fake.answers[("PUT", "bridges")] = httpx.Response(200, json={"name": "studio", "gateway_id": "g", "api_version": 2})
+
+    code, out, _ = run(capsys, "check")
+
+    assert code == 0, out
+    assert "has this host as studio" in out
+    assert load(state_path()).gateway.name == "studio"
 
 
 def test_check_fails_with_one_line_per_check(
@@ -307,6 +375,21 @@ def test_the_address_is_reported_on_start(fake: FakeGateway, monkeypatch: pytest
     assert "has this host as mac" in caplog.text
 
 
+def test_the_address_report_keeps_the_name_the_gateway_has_now(fake: FakeGateway, monkeypatch) -> None:
+    monkeypatch.setattr(gateway, "REPORT_DELAYS", (0,))
+    state = enrolled()
+    settings = Settings(token=TOKEN, allowed_roots=(Path.cwd().resolve(),), host="192.168.1.20")
+    fake.answers[("PUT", "bridges")] = httpx.Response(200, json={"name": "studio", "gateway_id": "g", "api_version": 2})
+
+    asyncio.run(gateway.keep_address(state, settings, state_path()))
+
+    assert load(state_path()).gateway.name == "studio"
+    # Not over a state file enrolled with another gateway since.
+    save(state_path(), State(bridge_id=state.bridge_id))
+    asyncio.run(gateway.keep_address(state, settings, state_path()))
+    assert load(state_path()).gateway is None
+
+
 def test_a_failed_address_report_says_how_to_enroll_again(fake: FakeGateway, monkeypatch, caplog) -> None:
     monkeypatch.setattr(gateway, "REPORT_DELAYS", (0, 0))
     state = State(bridge_id="1" * 32, gateway=Gateway(url=GATEWAY, gateway_id="g", name="mac"))
@@ -315,4 +398,19 @@ def test_a_failed_address_report_says_how_to_enroll_again(fake: FakeGateway, mon
     asyncio.run(gateway.keep_address(state, settings))
 
     assert len(fake.requests) == 2
+    assert "agent-bridge enroll <string>" in caplog.text
+
+
+@pytest.mark.parametrize(("status", "code"), [(404, "not_enrolled"), (401, "unauthorized")])
+def test_the_address_report_stops_when_retrying_cant_help(
+    fake: FakeGateway, monkeypatch, caplog, status: int, code: str
+) -> None:
+    monkeypatch.setattr(gateway, "REPORT_DELAYS", (0, 0, 0))
+    state = State(bridge_id="1" * 32, gateway=Gateway(url=GATEWAY, gateway_id="g", name="mac"))
+    settings = Settings(token=TOKEN, allowed_roots=(Path.cwd().resolve(),), host="192.168.1.20")
+    fake.answers[("PUT", "bridges")] = httpx.Response(status, json={"error": {"code": code, "message": "x"}})
+
+    asyncio.run(gateway.keep_address(state, settings))
+
+    assert len(fake.requests) == 1
     assert "agent-bridge enroll <string>" in caplog.text

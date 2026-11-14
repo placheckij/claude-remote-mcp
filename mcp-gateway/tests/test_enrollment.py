@@ -2,6 +2,7 @@
 
 import json
 import logging
+import socket
 from pathlib import Path
 
 import httpx
@@ -269,6 +270,21 @@ def test_a_new_address_must_answer_as_the_bridge(gateway: Gateway) -> None:
     assert gateway.hosts()[0]["url"] == URL
 
 
+def test_a_bridge_now_at_another_records_address_takes_it(gateway: Gateway) -> None:
+    # E.g. two hosts that swapped addresses: the one still holding it is out of date.
+    secret = gateway.open()
+    other = "http://192.168.1.21:8765"
+    gateway.bridges[other] = httpx.Response(200, json={**INFO, "bridge_id": "2" * 32})
+    gateway.enroll(secret)
+    gateway.enroll(secret, bridge_id="2" * 32, url=other, name="linux")
+    gateway.bridges[other] = httpx.Response(200, json=INFO)
+
+    response = address(gateway, other)
+
+    assert response.status_code == 200, response.text
+    assert [(h["name"], h["url"]) for h in gateway.hosts()] == [("mac", other)]
+
+
 def test_address_updates_are_refused_without_the_token_or_off_the_lan(gateway: Gateway) -> None:
     gateway.enroll(gateway.open())
     gateway.bridges["http://192.168.1.20:9999"] = httpx.Response(200, json=INFO)
@@ -302,6 +318,31 @@ def test_other_paths_are_for_cloudflared_on_this_host_only(gateway: Gateway) -> 
     assert lan.get("/.well-known/oauth-protected-resource/mcp").status_code == 404
 
 
+def test_says_once_when_uvicorn_gave_the_tunnels_caller(
+    gateway: Gateway, caplog: pytest.LogCaptureFixture
+) -> None:
+    # Started without --no-proxy-headers: uvicorn put X-Forwarded-For in the client.
+    forwarded = gateway.client(("203.0.113.9", 0))
+    for _ in range(2):
+        assert forwarded.post("/mcp", headers={"CF-Connecting-IP": "203.0.113.9"}).status_code == 404
+    # Not for callers on the LAN, who can send any header.
+    gateway.client().post("/mcp", headers={"CF-Connecting-IP": "203.0.113.9"})
+
+    errors = [r.message for r in caplog.records if r.levelno == logging.ERROR]
+    assert len(errors) == 1 and "--no-proxy-headers" in errors[0]
+
+
+def test_a_host_removed_by_hand_is_refused_at_once(gateway: Gateway) -> None:
+    gateway.enroll(gateway.open())
+    # In another process, as `sudo mcp-gateway bridges remove mac` runs.
+    Registry(gateway.state_dir / "bridges.json").remove("mac")
+    gateway.bridges["http://192.168.1.20:9999"] = httpx.Response(200, json=INFO)
+    asked = len(gateway.asked)
+
+    assert address(gateway, "http://192.168.1.20:9999").status_code == 404
+    assert len(gateway.asked) == asked
+
+
 @pytest.mark.parametrize(
     ("address", "lan"),
     [("10.1.2.3", True), ("172.16.0.1", True), ("192.168.0.1", True), ("127.0.0.1", True), ("169.254.1.1", True),
@@ -332,8 +373,11 @@ def test_an_unreadable_file_starts_over_once(tmp_path: Path) -> None:
     assert json.loads((tmp_path / "enrollment.json").read_text())["secret_sha256"] is None
 
 
-def run_cli(tmp_path: Path, capsys: pytest.CaptureFixture, *args: str, lan: str | None = "192.168.1.10"):
-    code = cli.main(["--state-dir", str(tmp_path), "enroll", *args], lan_address=lambda: lan)
+def run_cli(
+    tmp_path: Path, capsys: pytest.CaptureFixture, *args: str, lan: str | None = "192.168.1.10", listening: bool = True
+):
+    code = cli.main(["--state-dir", str(tmp_path), "enroll", *args], lan_address=lambda: lan,
+                    reachable=lambda address, port: listening)
     out, err = capsys.readouterr()
     return code, out, err
 
@@ -358,8 +402,37 @@ def test_cli_takes_an_address_and_port(tmp_path: Path, capsys: pytest.CaptureFix
     assert "'crm1@[fd00::5]:9000#" in out
 
 
+def test_cli_takes_the_port_setup_sh_serves_on(
+    tmp_path: Path, capsys: pytest.CaptureFixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("MCP_GATEWAY_PORT", "8800")
+
+    assert "'crm1@192.168.1.10:8800#" in run_cli(tmp_path, capsys)[1]
+
+
 def test_cli_refuses_without_a_lan_address(tmp_path: Path, capsys: pytest.CaptureFixture) -> None:
     assert run_cli(tmp_path, capsys, lan=None)[0] == 1
     code, _, err = run_cli(tmp_path, capsys, "--address", "8.8.8.8")
     assert code == 1
     assert "8.8.8.8 isn't a private" in err
+    # agent-bridge's string can't carry a zone.
+    code, out, err = run_cli(tmp_path, capsys, "--address", "fe80::1%eth0")
+    assert (code, out) == (1, "")
+    assert "has a zone" in err
+
+
+def test_cli_refuses_an_address_the_gateway_doesnt_answer_on(tmp_path: Path, capsys: pytest.CaptureFixture) -> None:
+    # E.g. IPv6 while it listens on 0.0.0.0.
+    code, out, err = run_cli(tmp_path, capsys, "--address", "fd00::5", listening=False)
+
+    assert (code, out) == (1, "")
+    assert "Nothing answers at [fd00::5]:8766" in err
+
+
+def test_reachable_tries_a_connection() -> None:
+    with socket.socket() as server:
+        server.bind(("127.0.0.1", 0))
+        server.listen()
+        port = server.getsockname()[1]
+        assert cli._reachable("127.0.0.1", port)
+    assert not cli._reachable("127.0.0.1", port)

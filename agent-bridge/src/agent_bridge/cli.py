@@ -22,7 +22,7 @@ from agent_bridge.config import Settings, check_name_format, check_token_format
 from agent_bridge.gateway import GatewayError, GatewayUnreachable, enroll, parse_enrollment, report_address, unenroll
 from agent_bridge.herdr import Herdr, HerdrError
 from agent_bridge.host import API_VERSION
-from agent_bridge.state import Gateway, StateError, env_file, load, load_or_create, save, state_file
+from agent_bridge.state import Gateway, StateError, env_file, load, load_or_create, rename, save, state_file
 
 OK, FAILED, INVALID, NAME_TAKEN, UNREACHABLE = 0, 1, 2, 3, 4
 
@@ -78,7 +78,8 @@ def _settings(for_service: bool = True) -> Settings:
 def _serve(run: Callable[..., None]) -> int:
     logging.basicConfig(level=logging.INFO, format="%(levelname)-9s %(message)s")
     settings = _settings()
-    app = create_app(settings, state=load_or_create(state_file()))
+    path = state_file()
+    app = create_app(settings, state=load_or_create(path), state_path=path)
     run(app, host=settings.host, port=settings.port, server_header=False)
     return OK
 
@@ -101,7 +102,14 @@ def _enroll(string: str) -> int:
         print(f"Couldn't enroll: {error}", file=sys.stderr)
         return NAME_TAKEN if error.code == "name_taken" else FAILED
     gateway = Gateway(url=gateway_url, gateway_id=reply["gateway_id"], name=reply["name"])
-    save(path, state.model_copy(update={"gateway": gateway}))
+    try:
+        save(path, state.model_copy(update={"gateway": gateway}))
+    except StateError as error:
+        # The gateway has it already; enrolling again replaces that record.
+        print(f"The gateway enrolled this host as {reply['name']}, but {error} Fix that, then run again "
+              "(with a new string from `sudo mcp-gateway enroll` once this one expires):", file=sys.stderr)
+        print(f"  agent-bridge enroll '{string.strip()}'", file=sys.stderr)
+        return FAILED
     print(f"Enrolled as {reply['name']} with the gateway at {gateway_url}.")
     if reply.get("api_version", API_VERSION) < API_VERSION:
         print("The gateway is older than this agent-bridge and may not call it: update the gateway.", file=sys.stderr)
@@ -126,8 +134,9 @@ def _unenroll() -> int:
         print(f"Couldn't leave the gateway: {error}.\n{by_hand}", file=sys.stderr)
         return OK
     except GatewayError as error:
-        # Already removed there (404), or it has another token for this host (401).
-        if error.status != 404:
+        # Already removed there, or it has another token for this host (401). Only the
+        # gateway's own code says removed: its other 404s, or another server's, don't.
+        if error.code != "not_enrolled":
             print(f"The gateway refused: {error}\n{by_hand}", file=sys.stderr)
             return OK
     save(path, state.model_copy(update={"gateway": None}))
@@ -179,8 +188,9 @@ def _check() -> int:
         print("--    not enrolled with a gateway")
     else:
         try:
-            asyncio.run(report_address(state.gateway.url, state, settings))
-            report(True, f"the gateway at {state.gateway.url} has this host as {state.gateway.name}")
+            name = asyncio.run(report_address(state.gateway.url, state, settings))["name"]
+            report(True, f"the gateway at {state.gateway.url} has this host as {name}")
+            rename(state_file(), state.gateway, name)
         except GatewayError as error:
             report(False, f"the gateway at {state.gateway.url} has this host", str(error))
     return FAILED if failed else OK
