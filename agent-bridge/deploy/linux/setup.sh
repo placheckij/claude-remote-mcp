@@ -75,7 +75,8 @@ bridge() { # the venv's agent-bridge, reading only the files this script writes
 installed() { # installed KEY: the installed AGENT_BRIDGE_KEY, or nothing
   local value=""
   [[ -f $ENV_FILE ]] || return 0
-  value="$(sed -n "s/^AGENT_BRIDGE_$1=//p" "$ENV_FILE" | tail -n 1)"
+  # With or without `export ` in front, as the loader reads it.
+  value="$(sed -nE "s/^(export[[:space:]]+)?AGENT_BRIDGE_$1=//p" "$ENV_FILE" | tail -n 1)"
   case $value in
     # Single-quoted by line(), which doubles backslashes for the loader.
     \'*\') value=${value#\'}; value=${value%\'}; value="$(printf '%s' "$value" | sed 's/\\\\/\\/g')" ;;
@@ -85,7 +86,7 @@ installed() { # installed KEY: the installed AGENT_BRIDGE_KEY, or nothing
 }
 
 answered() { # answered KEY: whether an earlier run set KEY, even to nothing
-  [[ -f $ENV_FILE ]] && grep -q "^AGENT_BRIDGE_$1=" "$ENV_FILE"
+  [[ -f $ENV_FILE ]] && grep -Eq "^(export[[:space:]]+)?AGENT_BRIDGE_$1=" "$ENV_FILE"
 }
 
 pick() { # pick VAR KEY: VAR passed in, else the installed KEY; fails when that is empty
@@ -145,6 +146,8 @@ enrolled() { # enrolled KEY: the gateway's KEY (name, url) from the state file, 
   tr -d '\n' <"$STATE_FILE" | sed -n "s/.*\"gateway\": *{[^}]*\"$1\": *\"\([^\"]*\)\".*/\1/p"
 }
 
+# 0 is off, as for HERDR_SERVICE.
+[[ ${ROTATE_TOKEN:-0} != 0 ]] || ROTATE_TOKEN=""
 [[ $(uname -s) == Linux ]] || die "this script is for Linux; on macOS run agent-bridge/deploy/setup-macos.sh"
 [[ $EUID -ne 0 ]] || die "run as your own user, not with sudo: agent-bridge must run next to your herdr server"
 [[ -f "$REPO_DIR/agent-bridge/pyproject.toml" ]] || die "run from a checkout of claude-remote-mcp"
@@ -173,7 +176,13 @@ done
 
 # uname, as some distributions don't install hostname.
 DEFAULT_NAME="$(uname -n | cut -d. -f1 | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9]+/-/g; s/^-+//; s/-+$//')"
-pick NAME NAME || ask NAME "This host's name in agent ids, like $DEFAULT_NAME/w1:p1" "${DEFAULT_NAME:-agent-host}"
+# A name passed in or typed is a rename; an installed one follows a rename on the gateway.
+ENROLLED_NAME="$(enrolled name)"
+NAME_GIVEN=${NAME+1}
+pick NAME NAME || {
+  ask NAME "This host's name in agent ids, like $DEFAULT_NAME/w1:p1" "${ENROLLED_NAME:-${DEFAULT_NAME:-agent-host}}"
+  NAME_GIVEN=1
+}
 until bridge check --name-format "$NAME"; do
   ask NAME "This host's name" "" "required"
   [[ -n $NAME ]] || die "NAME is required"
@@ -278,9 +287,10 @@ fi
   || die "the installed token won't do; run again with ROTATE_TOKEN=1"
 
 # Asked for until this host is enrolled, and again with a new token or name.
-ENROLLED_NAME="$(enrolled name)"
 RENAMED=""
-[[ -z $ENROLLED_NAME || $ENROLLED_NAME == "$NAME" ]] || RENAMED=1
+if [[ -n $ENROLLED_NAME && $ENROLLED_NAME != "$NAME" ]]; then
+  if [[ -n $NAME_GIVEN ]]; then RENAMED=1; else NAME=$ENROLLED_NAME; fi
+fi
 if [[ -z ${ENROLLMENT+x} ]] && [[ -z $ENROLLED_NAME || -n $NEW_TOKEN || -n $RENAMED ]]; then
   [[ -z $RENAMED ]] || printf '\nThe gateway knows this host as %s; enroll again to rename it %s.\n' "$ENROLLED_NAME" "$NAME"
   [[ -z $ENROLLED_NAME || -z $NEW_TOKEN || -n ${ROTATE_TOKEN:-} ]] \
@@ -289,6 +299,13 @@ if [[ -z ${ENROLLMENT+x} ]] && [[ -z $ENROLLED_NAME || -n $NEW_TOKEN || -n $RENA
   ask ENROLLMENT "Enrollment string it printed, crm1@…" "" "Enter to enroll later"
 fi
 ENROLLMENT=${ENROLLMENT:-}
+# Only the gateway renames a host: without enrolling, the name stays.
+RENAME_HINT=""
+if [[ -n $RENAMED && -z $ENROLLMENT ]]; then
+  RENAME_HINT="The name stays $ENROLLED_NAME, the gateway's. To rename it $NAME, run sudo mcp-gateway enroll on the gateway host, then run this again with NAME=$NAME ENROLLMENT='<what it printed>'"
+  NAME=$ENROLLED_NAME
+  RENAMED=""
+fi
 [[ -z ${ROTATE_TOKEN:-} || -n $ENROLLMENT ]] \
   || die "ROTATE_TOKEN needs an enrollment string, so the gateway learns the new token: run sudo mcp-gateway enroll on the gateway host and pass what it prints as ENROLLMENT"
 
@@ -317,7 +334,7 @@ write_env() {
     line CLAUDE_CONFIG_DIR "$AGENT_BRIDGE_CLAUDE_CONFIG_DIR"
     line TRUST_ROOT "$TRUST_ROOT"
     [[ -z $ACCOUNTS ]] || line ACCOUNTS "$ACCOUNTS"
-    [[ ! -f $ENV_FILE ]] || grep -Ev "^AGENT_BRIDGE_($MANAGED)=" "$ENV_FILE" || true
+    [[ ! -f $ENV_FILE ]] || grep -Ev "^(export[[:space:]]+)?AGENT_BRIDGE_($MANAGED)=" "$ENV_FILE" || true
   } >"$TMP_ENV"
   mv "$TMP_ENV" "$ENV_FILE"
 }
@@ -416,13 +433,17 @@ while [[ -n $ENROLLMENT ]]; do
   esac
 done
 
-# The gateway still has the old token: put it back, or the gateway's calls are refused.
-if [[ -n ${ROTATE_TOKEN:-} && -z $ENROLLED && -n $OLD_TOKEN && -n $(enrolled name) ]]; then
-  log "Putting the old token back: the gateway didn't learn the new one"
-  TOKEN=$OLD_TOKEN
+# The gateway still has the old token and name: put them back, or its calls are refused.
+ROTATED=""
+[[ -z ${ROTATE_TOKEN:-} || -z $OLD_TOKEN ]] || ROTATED=1
+if [[ -z $ENROLLED && -n $(enrolled name) ]] && [[ -n $ROTATED || -n $RENAMED ]]; then
+  UNDONE=""
+  if [[ -n $ROTATED ]]; then TOKEN=$OLD_TOKEN; UNDONE="the token was not rotated"; fi
+  if [[ -n $RENAMED ]]; then NAME=$ENROLLED_NAME; UNDONE="${UNDONE:+$UNDONE and }the name stays $ENROLLED_NAME"; fi
+  log "Putting the old settings back: the gateway didn't take the new ones"
   write_env
   start_service
-  die "the token was not rotated${TAKEN:+, as the gateway has another host named $TAKEN}; run again with ROTATE_TOKEN=1${TAKEN:+, another NAME} and a new string from sudo mcp-gateway enroll"
+  die "$UNDONE${TAKEN:+, as the gateway has another host named $TAKEN}; run again the same way${TAKEN:+ with another NAME}, with a new string from sudo mcp-gateway enroll"
 fi
 [[ -z $TAKEN ]] || die "the gateway has another host by that name; run again with another NAME"
 
@@ -438,8 +459,7 @@ $LOGIN_HINT
 EOF
 if [[ -n $(enrolled name) ]]; then
   echo "It is enrolled with the gateway at $(enrolled url) as $(enrolled name): Claude reaches its agents as $(enrolled name)/…"
-  [[ $(enrolled name) == "$NAME" ]] \
-    || echo "NAME is $NAME, but the gateway still knows it as $(enrolled name): to rename it, run sudo mcp-gateway enroll on the gateway host, then run this again with ENROLLMENT='<what it printed>'"
+  [[ -z $RENAME_HINT ]] || echo "$RENAME_HINT"
   [[ -z $NEW_TOKEN || -n $ENROLLED ]] \
     || echo "The gateway has this host's old token and its calls will be refused: run sudo mcp-gateway enroll on the gateway host, then run this again with ENROLLMENT='<what it printed>'"
 else

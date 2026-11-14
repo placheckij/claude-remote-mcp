@@ -577,11 +577,64 @@ def test_a_new_name_on_an_enrolled_host_asks_to_enroll_again(host: Host) -> None
     result = host.setup(NAME="newbox")
     assert "knows this host as linux-box" in result.stdout
     assert "Enrollment string" in result.stderr
-    assert "still knows it as linux-box" in result.stdout
+    # Not enrolled again, so the name stays the gateway's.
+    assert "The name stays linux-box" in result.stdout
+    assert host.env()["AGENT_BRIDGE_NAME"] == "linux-box"
 
-    result = host.setup(ENROLLMENT=ENROLLMENT)
+    result = host.setup(NAME="newbox", ENROLLMENT=ENROLLMENT)
     assert "as newbox" in result.stdout
-    assert "still knows it" not in result.stdout
+    assert host.env()["AGENT_BRIDGE_NAME"] == "newbox"
+    assert "The name stays" not in result.stdout
+
+
+def test_a_rename_done_on_the_gateway_is_followed(host: Host) -> None:
+    host.install()
+    # What the bridge saves after `sudo mcp-gateway bridges rename linux-box studio`.
+    host.state_file.write_text(host.state_file.read_text().replace('"linux-box"', '"studio"'))
+
+    result = host.setup()
+
+    assert not PROMPT.search(result.stderr), result.stderr
+    assert host.env()["AGENT_BRIDGE_NAME"] == "studio"
+    assert not [line for line in host.log("agent-bridge.log") if line.startswith("enroll")]
+    assert "as studio" in result.stdout
+
+
+def test_a_rename_the_gateway_refuses_puts_the_old_name_back(host: Host) -> None:
+    host.install()
+    (host.home / "enroll-codes").write_text("1\n")
+
+    result = host.setup(NAME="newbox", ENROLLMENT=ENROLLMENT, check=False)
+
+    assert result.returncode != 0
+    assert "the name stays linux-box" in result.stderr
+    assert host.env()["AGENT_BRIDGE_NAME"] == "linux-box"
+
+
+def test_settings_written_with_export_are_taken_over(host: Host) -> None:
+    host.env_file.parent.mkdir(parents=True)
+    host.env_file.write_text(
+        f"export AGENT_BRIDGE_TOKEN={'t' * 40}\n"
+        f"export AGENT_BRIDGE_ALLOWED_ROOTS={host.home / 'projects'}\n"
+        "export AGENT_BRIDGE_HOST=127.0.0.1\n"
+        "export AGENT_BRIDGE_NAME=linux-box\n"
+    )
+
+    host.setup(AGENT_BRIDGE_CLAUDE_CONFIG_DIR="", TRUST_ROOT="", ENROLLMENT="")
+
+    text = host.env_file.read_text()
+    assert "export" not in text
+    assert host.env()["AGENT_BRIDGE_TOKEN"] == "t" * 40
+    assert host.env()["AGENT_BRIDGE_NAME"] == "linux-box"
+
+
+def test_rotate_token_0_is_off(host: Host) -> None:
+    host.install()
+    first = host.env()["AGENT_BRIDGE_TOKEN"]
+
+    host.setup(ROTATE_TOKEN="0")
+
+    assert host.env()["AGENT_BRIDGE_TOKEN"] == first
 
 
 def test_a_rotation_the_gateway_cant_be_reached_for_puts_the_old_token_back(host: Host) -> None:
