@@ -258,6 +258,19 @@ def test_settings_agent_bridge_would_refuse_leave_the_installed_ones(
     assert f"--user restart {UNIT}" not in host.log("systemctl.log")
 
 
+def test_settings_are_checked_with_the_env_file_serve_also_reads_in_the_home_folder(host: Host) -> None:
+    host.install()
+    before = host.env_file.read_text()
+    # systemd starts the unit in the home folder, and serve reads a .env there too.
+    (host.home / ".env").write_text("AGENT_BRIDGE_MAX_AGENTS=0\n")
+
+    result = host.setup(check=False)
+
+    assert result.returncode != 0
+    assert "AGENT_BRIDGE_MAX_AGENTS" in result.stderr
+    assert host.env_file.read_text() == before
+
+
 def test_without_a_default_route_it_asks_for_the_address(host: Host) -> None:
     (host.home / "no-route").touch()
 
