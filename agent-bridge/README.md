@@ -303,7 +303,8 @@ setting, edit the env file and re-run the script.
 Re-run it after pulling new code. If the plist still holds the settings, the script moves
 them to the env file, keeps the token, and asks for the name and an enrollment string.
 Give the name the host has on the gateway: the gateway replaces its record at the same
-address.
+address. If the Mac's address has changed since, the old record holds the name; remove it
+first with `sudo mcp-gateway bridges remove <name>` on the gateway host.
 
 #### By hand
 

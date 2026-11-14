@@ -465,6 +465,8 @@ while [[ -n $ENROLLMENT ]]; do
     3) # The gateway has another host by that name.
       NAME_TAKEN=$NAME
       NAME=""
+      # It drops an old record only at the same address, e.g. one added with bridges add.
+      echo "If $NAME_TAKEN is this Mac's old record (its address has changed), remove it on the gateway host with: sudo mcp-gateway bridges remove $NAME_TAKEN, then run again. Otherwise, choose another name."
       until [[ -n $NAME ]] && bridge check --name-format "$NAME"; do
         ask NAME "Another name for this host" "" "required"
         # Out of the enroll loop, past the token check below; the env file keeps the name.
