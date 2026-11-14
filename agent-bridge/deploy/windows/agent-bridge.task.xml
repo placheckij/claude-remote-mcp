@@ -11,18 +11,27 @@
     <Description>agent-bridge: lets mcp-gateway drive your herdr agents. Installed by agent-bridge\deploy\windows\setup.ps1; remove it with uninstall.ps1 from the same folder.</Description>
     <URI>\agent-bridge</URI>
   </RegistrationInfo>
+  <!-- Both triggers repeat every minute while you are logged on, which is ignored while it
+       runs: it starts once the LAN address exists (after Wi-Fi connects), and again if it
+       stops. Task Scheduler can't see it fail, since conhost.exe always exits with 0. A
+       trigger's repetition starts only when it fires, so the logon trigger covers every
+       logon, and the registration trigger the time from setup to the next logon. -->
   <Triggers>
     <LogonTrigger>
       <Enabled>true</Enabled>
       <UserId>{{USER}}</UserId>
-      <!-- Tried again every minute while you are logged on, and ignored while it runs: it
-           starts once the LAN address exists (after Wi-Fi connects), and again if it stops.
-           Task Scheduler can't see it fail, since conhost.exe always exits with 0. -->
       <Repetition>
         <Interval>PT1M</Interval>
         <StopAtDurationEnd>false</StopAtDurationEnd>
       </Repetition>
     </LogonTrigger>
+    <RegistrationTrigger>
+      <Enabled>true</Enabled>
+      <Repetition>
+        <Interval>PT1M</Interval>
+        <StopAtDurationEnd>false</StopAtDurationEnd>
+      </Repetition>
+    </RegistrationTrigger>
   </Triggers>
   <Principals>
     <Principal id="Author">

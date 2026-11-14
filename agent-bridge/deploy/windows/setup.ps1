@@ -54,6 +54,8 @@ param(
 
 . (Join-Path $PSScriptRoot 'common.ps1')
 $Bound = $PSBoundParameters
+# Any error that stops setup enables the task again, as Stop-Setup does.
+trap { Restore-Task; break }
 
 # --- Helpers ---------------------------------------------------------------------------
 
@@ -120,8 +122,12 @@ function ConvertTo-FullPath([string]$Path, [string]$What) {
 }
 
 function Test-Format([string]$Option, [string]$Value) {
-    <# Whether agent-bridge accepts $Value as a token or name; it says why not. #>
-    return (Invoke-Native $Exe @('check', "$Option=$Value")) -eq 0
+    <# Whether agent-bridge accepts $Value as a token or name; it says why not. Only exit 2
+       means a bad value: anything else is agent-bridge failing to run. #>
+    $code = Invoke-Native $Exe @('check', "$Option=$Value")
+    if ($code -eq 0) { return $true }
+    if ($code -eq 2) { return $false }
+    Stop-Setup "$Exe didn't run (exit $code; see above)"
 }
 
 function Get-DefaultName {
@@ -175,7 +181,7 @@ function New-Token {
 
 function Find-FreePort([int]$From) {
     for ($candidate = $From; $candidate -le 65535; $candidate++) {
-        if (-not (Get-PortHolder $candidate)) { return $candidate }
+        if (-not (Get-PortHolder $candidate) -and -not (Test-PortExcluded $candidate)) { return $candidate }
     }
     return 0
 }
@@ -212,6 +218,7 @@ function Wait-Bridge([int]$Port) {
 function Start-Bridge([int]$Port) {
     # Stop-Bridge leaves it disabled.
     Enable-ScheduledTask -TaskName $TaskName -TaskPath '\' | Out-Null
+    $script:TaskDisabled = $false
     Start-ScheduledTask -TaskName $TaskName -TaskPath '\'
     if (-not (Wait-Bridge $Port)) {
         Write-Warn "agent-bridge isn't listening on port $Port yet. The end of $LogFile`:"
@@ -279,6 +286,7 @@ if ($Bound.ContainsKey('Name')) {
     if (-not (Test-Format '--name-format' $Name)) { Stop-Setup "-Name: $Name won't do" }
 } else {
     $Name = Get-Installed 'NAME'
+    if ($Name -and -not (Test-Format '--name-format' $Name)) { Stop-Setup "AGENT_BRIDGE_NAME in $EnvFile won't do; pass -Name" }
     if (-not $Name) { $Name = Read-Name "This host's name, as Claude will say it" (Get-DefaultName) }
     if (-not $Name) { Stop-Setup 'this host needs a name' }
 }
@@ -345,9 +353,14 @@ foreach ($path in @($Exe, $LogFile)) { if ($path.Contains('%')) { Stop-Setup "ag
 # Before stopping the running bridge, so the process holding the port can still be told apart.
 while ($true) {
     $holder = Get-PortHolder $Port
-    if (-not $holder -or (Test-IsBridge $holder.CommandLine)) { break }
-    Write-Host "Port $Port is in use by another program: PID $($holder.Id), $($holder.Name)"
-    if ($holder.CommandLine) { Write-Host "  $($holder.CommandLine)" }
+    if ($holder -and -not (Test-IsBridge $holder.CommandLine)) {
+        Write-Host "Port $Port is in use by another program: PID $($holder.Id), $($holder.Name)"
+        if ($holder.CommandLine) { Write-Host "  $($holder.CommandLine)" }
+    } elseif (-not $holder -and (Test-PortExcluded $Port)) {
+        Write-Host "Windows keeps port $Port for itself (see: netsh int ipv4 show excludedportrange protocol=tcp)."
+    } else {
+        break
+    }
     if ($Bound.ContainsKey('Port')) { Stop-Setup "stop that program, or pass another -Port" }
     $free = Find-FreePort ($Port + 1)
     if ($free -eq 0) { Stop-Setup 'no free port found' }
@@ -379,7 +392,9 @@ Write-EnvFile $EnvFile $Installed.Lines $Settings
 Write-Step "Registering the scheduled task $TaskName"
 New-Item -ItemType Directory -Force -Path $StateDir | Out-Null
 $cmd = Join-Path $env:SystemRoot 'System32\cmd.exe'
-$run = "(if exist `"$LogFile`" move /y `"$LogFile`" `"$LogFile.1`" >nul) & `"$Exe`" serve > `"$LogFile`" 2>&1"
+# Unbuffered and UTF-8, so the log has each line as it happens and any text intact.
+$run = "set `"PYTHONUNBUFFERED=1`" & set `"PYTHONIOENCODING=utf-8`" & " +
+    "(if exist `"$LogFile`" move /y `"$LogFile`" `"$LogFile.1`" >nul) & `"$Exe`" serve > `"$LogFile`" 2>&1"
 $fields = @{
     '{{USER}}'              = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
     '{{COMMAND}}'           = Join-Path $env:SystemRoot 'System32\conhost.exe'
@@ -389,34 +404,44 @@ $fields = @{
 $xml = Get-Content -LiteralPath (Join-Path $PSScriptRoot 'agent-bridge.task.xml') -Raw
 foreach ($field in $fields.Keys) { $xml = $xml.Replace($field, [Security.SecurityElement]::Escape($fields[$field])) }
 Register-ScheduledTask -TaskName $TaskName -TaskPath '\' -Xml $xml -Force | Out-Null
+# Registered enabled.
+$script:TaskDisabled = $false
 
 Write-Step "Firewall rule for TCP $Port, on Private networks only"
 $network = Get-Network $Address
-$makePrivate = ''
+$elevated = @()
+$ruleWanted = -not (Test-FirewallRule $Port)
+if ($ruleWanted) {
+    $elevated += "Remove-NetFirewallRule -Name '$RuleName' -ErrorAction SilentlyContinue; " +
+        "New-NetFirewallRule -Name '$RuleName' -DisplayName 'agent-bridge' -Description 'Lets mcp-gateway on the LAN reach agent-bridge. Added by agent-bridge\deploy\windows\setup.ps1.' " +
+        "-Direction Inbound -Action Allow -Protocol TCP -LocalPort $Port -Profile Private | Out-Null"
+}
 if ($network -and $network.Category -eq 'Public') {
     Write-Host "Windows treats the network $Address is on ($($network.Name)) as Public, where the rule doesn't"
     Write-Host 'apply, so the gateway couldn''t reach agent-bridge. On your own network, make it Private.'
     if (Read-YesNo "Make $($network.Name) a Private network?") {
-        $makePrivate = "Set-NetConnectionProfile -InterfaceIndex $($network.Index) -NetworkCategory Private; "
+        $elevated += "Set-NetConnectionProfile -InterfaceIndex $($network.Index) -NetworkCategory Private"
     } else {
         Write-Warn 'the gateway can''t reach agent-bridge until this network is Private'
     }
 } elseif ($network -and $network.Category -ne 'Private') {
     Write-Warn "the network $Address is on is $($network.Category); the rule applies only on Private networks"
 }
-$newRule = "Remove-NetFirewallRule -Name '$RuleName' -ErrorAction SilentlyContinue; " +
-    "New-NetFirewallRule -Name '$RuleName' -DisplayName 'agent-bridge' -Description 'Lets mcp-gateway on the LAN reach agent-bridge. Added by agent-bridge\deploy\windows\setup.ps1.' " +
-    "-Direction Inbound -Action Allow -Protocol TCP -LocalPort $Port -Profile Private | Out-Null"
-if ($makePrivate -or -not (Test-FirewallRule $Port)) {
+if ($elevated.Count -eq 0) {
+    Write-Host 'ok, already there'
+} else {
     Write-Host 'Windows asks for admin rights for this.'
-    if (Invoke-Elevated "$makePrivate$newRule") {
+    # Each step on its own, so the rule is added even where the network can't be changed.
+    $failed = Invoke-Elevated $elevated
+    $byHand = @(for ($i = 0; $i -lt $elevated.Count; $i++) {
+        if ($failed -eq -1 -or ($failed -band [int][Math]::Pow(2, $i))) { $elevated[$i] }
+    })
+    if ($byHand.Count -eq 0) {
         Write-Host 'ok'
     } else {
-        Write-Warn 'not changed, so the gateway can''t reach agent-bridge. In a PowerShell run as administrator:'
-        Write-Host "  $makePrivate$newRule"
+        Write-Warn 'not done, so the gateway can''t reach agent-bridge. In a PowerShell run as administrator:'
+        foreach ($command in $byHand) { Write-Host "  $command" }
     }
-} else {
-    Write-Host 'ok, already there'
 }
 
 Write-Step 'Starting agent-bridge'

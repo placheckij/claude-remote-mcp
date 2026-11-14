@@ -32,10 +32,16 @@ function Get-NetTCPConnection { param([int]$LocalPort, $State, $ErrorAction)
     $l = Get-Listener $LocalPort
     if ($l) { [pscustomobject]@{ OwningProcess = $l.pid } } }
 function Get-CimInstance { param($ClassName, $Filter, $ErrorAction)
-    if ($ClassName -eq 'Win32_ComputerSystem') { return [pscustomobject]@{ UserName = $env:FAKE_CONSOLE_USER } }
+    if ($Filter -match "Name='explorer.exe'") {
+        if ($env:FAKE_DESKTOP_USER) { return [pscustomobject]@{ Name = 'explorer.exe' } }
+        return }
     $all = @((Get-Fake).listen | ForEach-Object { [pscustomobject]@{ ProcessId = $_.pid; Name = $_.name; CommandLine = $_.cmd; ExecutablePath = $_.path } })
     if ($Filter -match 'ProcessId=(\d+)') { return $all | Where-Object { $_.ProcessId -eq [int]$Matches[1] } }
     $all }
+function Invoke-CimMethod { param($InputObject, $MethodName, $ErrorAction)
+    $domain, $user = $env:FAKE_DESKTOP_USER -split '\\', 2
+    [pscustomobject]@{ Domain = $domain; User = $user } }
+function netsh { foreach ($range in ($env:FAKE_EXCLUDED_PORTS -split ',')) { if ($range) { "  $($range -replace '-', '  ')" } } }
 function Stop-Process { param([int]$Id, [switch]$Force, $ErrorAction)
     Add-Call "Stop-Process $Id"
     $f = Get-Fake; $f.listen = @($f.listen | Where-Object { $_.pid -ne $Id }); Set-Fake $f }
@@ -64,10 +70,16 @@ function Start-ScheduledTask { param($TaskName, $TaskPath)
     $port = 8765
     foreach ($line in Get-Content -LiteralPath (Join-Path $env:APPDATA 'agent-bridge\env')) {
         if ($line -match '^AGENT_BRIDGE_PORT=(\d+)') { $port = [int]$Matches[1] } }
-    # What Task Scheduler starts: python.exe running the agent-bridge.exe launcher.
+    # What Task Scheduler starts: cmd.exe, the agent-bridge.exe launcher, and python.exe
+    # running it, which is the one that listens. Port 0: not listening.
     $f = Get-Fake
-    $f.listen = @($f.listen) + @([pscustomobject]@{ port = $port; pid = 4242; name = 'python.exe';
-        path = 'C:\Python\python.exe'; cmd = "`"C:\Python\python.exe`" `"$env:FAKE_BRIDGE`" serve" })
+    $f.listen = @($f.listen) + @(
+        [pscustomobject]@{ port = 0; pid = 4240; name = 'cmd.exe'; path = 'C:\Windows\System32\cmd.exe';
+            cmd = "cmd.exe /d /s /c `"(if exist log move log log.1) & `"$env:FAKE_BRIDGE`" serve > log 2>&1`"" },
+        [pscustomobject]@{ port = 0; pid = 4241; name = 'agent-bridge.exe'; path = $env:FAKE_BRIDGE;
+            cmd = "`"$env:FAKE_BRIDGE`" serve" },
+        [pscustomobject]@{ port = $port; pid = 4242; name = 'python.exe'; path = 'C:\Python\python.exe';
+            cmd = "`"C:\Python\python.exe`" `"$env:FAKE_BRIDGE`" serve" })
     Set-Fake $f }
 
 function Get-NetFirewallRule { param($Name, $ErrorAction)
@@ -81,6 +93,7 @@ function Get-NetFirewallApplicationFilter { param($Program, $ErrorAction)
 function Get-NetFirewallPortFilter { param($AssociatedNetFirewallRule)
     [pscustomobject]@{ Protocol = 'TCP'; LocalPort = [string]$AssociatedNetFirewallRule.Port } }
 function Start-Process { param($FilePath, $Verb, [switch]$Wait, [switch]$PassThru, $WindowStyle, $ArgumentList)
+    if ($env:FAKE_UAC_DECLINED) { throw 'The operation was canceled by the user.' }
     $command = [Text.Encoding]::Unicode.GetString([Convert]::FromBase64String($ArgumentList[-1]))
     Add-Call "Elevated $command"
     $f = Get-Fake
@@ -112,6 +125,9 @@ if args[0] == "check":
     if len(args) == 1:
         print("ok    fake checks")
         sys.exit(0)
+    if os.environ.get("FAKE_BROKEN_CHECK"):
+        print("ImportError: no module named fastapi", file=sys.stderr)
+        sys.exit(1)
     option, _, value = args[1].partition("=")
     ok = re.fullmatch(r"[a-z][a-z0-9-]{0,31}", value) if option == "--name-format" else len(value) >= 32
     if not ok:
@@ -209,14 +225,18 @@ class Machine:
             "FAKE_ENROLL_CODES": str(self.enroll_codes),
             "FAKE_BRIDGE": str(self.bridge),
             "FAKE_CATEGORY": "Private",
-            "FAKE_CONSOLE_USER": "",
+            "FAKE_DESKTOP_USER": "",
+            "FAKE_EXCLUDED_PORTS": "",
+            "FAKE_UAC_DECLINED": "",
+            "FAKE_BROKEN_CHECK": "",
             "FAKE_ELEVATED_EXIT": "0",
             "FAKE_BLOCKED_PROGRAM": "",
             **fakes,
         }
         result = subprocess.run(
             [POWERSHELL, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(runner)],
-            env=env, input=input, capture_output=True, text=True, timeout=120,
+            # PowerShell's own errors come in the console's code page, localized.
+            env=env, input=input, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=120,
         )
         output = result.stdout + result.stderr
         assert result.returncode == expect, output
@@ -262,6 +282,8 @@ def test_the_task_runs_agent_bridge_serve_hidden_at_logon_as_this_user(machine: 
     sid = task.find("t:Principals/t:Principal/t:UserId", ns).text
     assert re.fullmatch(r"S-1-5-[0-9-]+", sid)
     assert task.find("t:Triggers/t:LogonTrigger/t:UserId", ns).text == sid
+    # Its repetition covers the time until the next logon.
+    assert task.find("t:Triggers/t:RegistrationTrigger/t:Repetition/t:Interval", ns).text == "PT1M"
     assert task.find("t:Principals/t:Principal/t:LogonType", ns).text == "InteractiveToken"
     assert task.find("t:Settings/t:Hidden", ns).text == "true"
     assert task.find("t:Settings/t:ExecutionTimeLimit", ns).text == "PT0S"
@@ -269,8 +291,8 @@ def test_the_task_runs_agent_bridge_serve_hidden_at_logon_as_this_user(machine: 
     assert exec_.find("t:Command", ns).text == rf"{SYSTEM_ROOT}\System32\conhost.exe"
     log = machine.localappdata / "agent-bridge" / "agent-bridge.log"
     assert exec_.find("t:Arguments", ns).text == (
-        rf'--headless "{SYSTEM_ROOT}\System32\cmd.exe" /d /s /c "(if exist "{log}" move /y "{log}" "{log}.1" >nul) '
-        rf'& "{machine.bridge}" serve > "{log}" 2>&1"'
+        rf'--headless "{SYSTEM_ROOT}\System32\cmd.exe" /d /s /c "set "PYTHONUNBUFFERED=1" & set "PYTHONIOENCODING=utf-8" & '
+        rf'(if exist "{log}" move /y "{log}" "{log}.1" >nul) & "{machine.bridge}" serve > "{log}" 2>&1"'
     )
     assert exec_.find("t:WorkingDirectory", ns).text == str(machine.localappdata / "agent-bridge")
 
@@ -282,16 +304,22 @@ def test_a_rerun_keeps_the_token_and_other_settings_and_asks_nothing(machine: Ma
     with machine.env_file.open("a", encoding="utf-8") as file:
         file.write(added)
 
-    # No input: a question would get Enter, and a new name, port or enrollment would show below.
-    output = machine.setup()
+    # Kept: another program naming agent-bridge.exe, and an editor on its source.
+    machine.listen(0, 5000, "agent-bridge.exe", f'"{machine.bridge}" check')
+    machine.listen(0, 5001, "Code.exe", r"Code.exe C:\src\agent_bridge\cli.py")
+
+    # An answer to any question would stop setup or show below as a new name, port or enrollment.
+    output = machine.setup(input="not an answer\n" * 5)
 
     env = machine.env()
     assert env["AGENT_BRIDGE_TOKEN"] == token
     assert env["AGENT_BRIDGE_PORT"] == "8765"
     assert added in machine.env_file.read_text(encoding="utf-8").replace("\r\n", "\n")
     assert not any(call.startswith("agent-bridge enroll") for call in machine.calls())
-    # The bridge the first run started was stopped by its command line.
-    assert "Stop-Process 4242" in machine.calls()
+    # The first run's bridge, including the cmd.exe and launcher that hold no port.
+    calls = machine.calls()
+    assert {"Stop-Process 4240", "Stop-Process 4241", "Stop-Process 4242"} <= set(calls)
+    assert "Stop-Process 5000" not in calls and "Stop-Process 5001" not in calls
     assert "Enrolled as win-test" in output
     assert "Elevated" not in "\n".join(machine.calls()), "the firewall rule was there already"
 
@@ -378,7 +406,7 @@ def test_a_declined_uac_prompt_prints_the_command_to_run(machine: Machine) -> No
 
 
 def test_another_account_than_the_one_logged_on_is_refused(machine: Machine) -> None:
-    output = machine.setup("-Enrollment ''", expect=1, FAKE_CONSOLE_USER="SOMEPC\\somebody-else")
+    output = machine.setup("-Enrollment ''", expect=1, FAKE_DESKTOP_USER="SOMEPC\\somebody-else")
 
     assert "run setup.ps1 as SOMEPC\\somebody-else" in output
     assert not machine.env_file.exists()
@@ -470,3 +498,46 @@ def test_uninstall_goes_ahead_without_agent_bridge(machine: Machine) -> None:
     # Still stopped through the port, since it's an agent-bridge.
     assert "Stop-Process 4242" in calls
     assert not (machine.appdata / "agent-bridge").exists()
+
+
+def test_a_port_windows_keeps_for_itself_is_not_offered(machine: Machine) -> None:
+    output = machine.setup("-Enrollment ''", input="\n\n\n", FAKE_EXCLUDED_PORTS="8765-8770")
+
+    assert "Windows keeps port 8765 for itself" in output
+    assert machine.env()["AGENT_BRIDGE_PORT"] == "8771"
+
+
+def test_agent_bridge_failing_to_run_is_not_called_a_bad_value(machine: Machine) -> None:
+    output = machine.setup("-Name 'win-pc'", "-Enrollment ''", expect=1, FAKE_BROKEN_CHECK="1")
+
+    assert "didn't run (exit 1; see above)" in output
+    assert "won't do" not in output
+
+
+def test_an_error_after_stopping_the_bridge_enables_the_task_again(machine: Machine) -> None:
+    machine.setup("-Enrollment ''", input="\n\n")
+    # The env file can't be written: a folder is where its temporary file goes.
+    (machine.appdata / "agent-bridge" / "env.tmp").mkdir()
+
+    machine.setup(expect=1)
+
+    calls = machine.calls()
+    assert calls.index(r"Disable-ScheduledTask \agent-bridge") < calls.index(r"Enable-ScheduledTask \agent-bridge")
+    assert machine.fake()["enabled"] is True
+
+
+def test_a_declined_uac_prompt_prints_every_command_to_run(machine: Machine) -> None:
+    output = machine.setup("-Enrollment ''", input="\n\ny\n", FAKE_CATEGORY="Public", FAKE_UAC_DECLINED="1")
+
+    assert "New-NetFirewallRule -Name 'agent-bridge'" in output
+    assert "Set-NetConnectionProfile -InterfaceIndex 7 -NetworkCategory Private" in output
+
+
+def test_a_network_that_cant_be_made_private_still_gets_the_rule(machine: Machine) -> None:
+    # Bit 1: the second command, the network profile, failed.
+    output = machine.setup("-Enrollment ''", input="\n\ny\n", FAKE_CATEGORY="Public", FAKE_ELEVATED_EXIT="2")
+
+    assert machine.fake()["rule"] == {"port": 8765, "profile": "Private"}
+    by_hand = output.split("In a PowerShell run as administrator:")[1]
+    assert "Set-NetConnectionProfile" in by_hand
+    assert "New-NetFirewallRule" not in by_hand

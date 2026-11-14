@@ -56,7 +56,7 @@ Write-Step 'Removing the firewall rule'
 if (Get-NetFirewallRule -Name $RuleName -ErrorAction SilentlyContinue) {
     $removeRule = "Remove-NetFirewallRule -Name '$RuleName'"
     Write-Host 'Windows asks for admin rights for this.'
-    if (Invoke-Elevated $removeRule) {
+    if ((Invoke-Elevated @($removeRule)) -eq 0) {
         Write-Host 'removed'
     } else {
         Write-Warn 'not removed. In a PowerShell run as administrator:'
