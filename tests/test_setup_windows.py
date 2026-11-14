@@ -813,3 +813,29 @@ def test_the_settings_copy_lives_in_the_state_folder_and_uninstall_removes_a_lef
     machine.run("uninstall.ps1")
 
     assert not (machine.localappdata / "agent-bridge").exists()
+
+
+def test_a_free_port_is_found_below_a_busy_one_near_the_top(machine: Machine) -> None:
+    machine.setup("-Enrollment ''", input="\n\n")
+    text = machine.env_file.read_text(encoding="utf-8").replace("AGENT_BRIDGE_PORT=8765", "AGENT_BRIDGE_PORT=65535")
+    machine.env_file.write_text(text, encoding="utf-8")
+    machine.listen(65535, 77, "other.exe", "other.exe")
+
+    machine.setup(input="\n", FAKE_EXCLUDED_PORTS="1024-1030")
+
+    # Past 65535 the search goes on from 1024, skipping what Windows keeps.
+    assert machine.env()["AGENT_BRIDGE_PORT"] == "1031"
+
+
+def test_a_value_with_a_dotenv_reference_is_refused(machine: Machine) -> None:
+    folder = machine.profile / "${client}"
+    output = machine.setup(f"-Roots '{folder}'", "-Enrollment ''", input="\n\n", expect=1)
+
+    assert "can't hold ${" in output
+    assert not machine.env_file.exists()
+
+
+def test_printed_commands_run_agent_bridge_in_utf8_mode(machine: Machine) -> None:
+    output = machine.setup("-Enrollment ''", input="\n\n")
+
+    assert "$env:PYTHONUTF8 = '1'; & " in output

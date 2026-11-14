@@ -33,7 +33,7 @@ if ($Exe -and (Test-Path -LiteralPath $Exe)) {
     # Exits 0 even when the gateway can't be reached, after printing what to run there, and
     # says so itself when not enrolled; any other exit is agent-bridge failing to run.
     $left = (Invoke-Native $Exe @('unenroll')) -eq 0
-    if (-not $left) { Write-Warn "$Exe didn't run, so this host couldn't take itself off the gateway." }
+    if (-not $left) { Write-Warn "agent-bridge failed (see above), so this host couldn't take itself off the gateway." }
 } elseif ($gateway) {
     Write-Warn "agent-bridge.exe isn't there any more, so this host can't take itself off the gateway."
 } else {
@@ -41,6 +41,10 @@ if ($Exe -and (Test-Path -LiteralPath $Exe)) {
 }
 if ($gateway -and -not $left) {
     Write-Host "Remove it on the gateway host ($($gateway.url)) with: sudo mcp-gateway bridges remove $($gateway.name)"
+} elseif (-not $left -and $Exe) {
+    # The state file may be what it couldn't read: name the host as the env file does.
+    $name = [string](Read-EnvFile $EnvFile).Values['AGENT_BRIDGE_NAME']
+    if ($name) { Write-Host "If the gateway still has this host, remove it there with: sudo mcp-gateway bridges remove $name" }
 }
 
 Write-Step "Removing the scheduled task $TaskName"
