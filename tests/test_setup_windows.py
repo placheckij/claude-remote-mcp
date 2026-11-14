@@ -57,7 +57,8 @@ function Get-ItemProperty { param($LiteralPath, $ErrorAction)
     [pscustomobject]@{ Path = 'C:\Windows' } }
 
 function Get-ScheduledTask { param($TaskName, $TaskPath, $ErrorAction)
-    if ((Get-Fake).task) { [pscustomobject]@{ TaskName = $TaskName } } }
+    $f = Get-Fake
+    if ($f.task) { [pscustomobject]@{ TaskName = $TaskName; State = $(if ($f.enabled) { 'Ready' } else { 'Disabled' }) } } }
 function Register-ScheduledTask { param($TaskName, $TaskPath, $Xml, [switch]$Force)
     Add-Call "Register-ScheduledTask $TaskPath$TaskName"
     Set-Content -LiteralPath $env:FAKE_TASK_XML -Value $Xml -Encoding Unicode
@@ -839,3 +840,16 @@ def test_printed_commands_run_agent_bridge_in_utf8_mode(machine: Machine) -> Non
     output = machine.setup("-Enrollment ''", input="\n\n")
 
     assert "$env:PYTHONUTF8 = '1'; & " in output
+
+
+def test_a_task_you_disabled_stays_off_when_setup_stops_early(machine: Machine) -> None:
+    machine.setup("-Enrollment ''", input="\n\n")
+    fake = machine.fake()
+    fake["enabled"] = False
+    machine.save(fake)
+    (machine.appdata / "agent-bridge" / "env.tmp").mkdir()
+
+    machine.setup(expect=1)
+
+    assert r"Register-ScheduledTask \agent-bridge" not in machine.calls()
+    assert machine.fake()["enabled"] is False

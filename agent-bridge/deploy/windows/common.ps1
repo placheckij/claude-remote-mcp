@@ -141,8 +141,6 @@ function Invoke-Native {
     # console's code page.
     $savedEncoding = $null
     try { $savedEncoding = [Console]::OutputEncoding; [Console]::OutputEncoding = New-Object Text.UTF8Encoding $false } catch { $savedEncoding = $null }
-    # A program that can't be started leaves $LASTEXITCODE as the last one's: -1 says so.
-    $global:LASTEXITCODE = -1
     try {
         $script:NativeOutput = @(& $FilePath @ArgumentList 2>&1 | ForEach-Object {
                 $text = if ($_ -is [Management.Automation.ErrorRecord]) { $_.Exception.Message } else { [string]$_ }
@@ -193,7 +191,7 @@ function Test-IsBridge([string]$CommandLine) {
         ($CommandLine -match '(?i)\bagent_bridge\.app:main\b')
 }
 
-function Get-PortHolders([int]$Port) {
+function Get-PortListener([int]$Port) {
     <# Every process listening on TCP $Port on any address, as @{ Id; Name; CommandLine; Path }. #>
     $ids = @(Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue |
         Select-Object -ExpandProperty OwningProcess -Unique)
@@ -213,7 +211,7 @@ function Get-PortHolder([int]$Port) {
     <# A process listening on TCP $Port, or $null. With several, one that isn't agent-bridge
        comes first, so a port that agent-bridge shares with another program doesn't count as
        agent-bridge's. #>
-    $holders = @(Get-PortHolders $Port)
+    $holders = @(Get-PortListener $Port)
     if ($holders.Count -eq 0) { return $null }
     $other = @($holders | Where-Object { -not (Test-IsBridge $_.CommandLine) })
     if ($other.Count -gt 0) { return $other[0] }
@@ -223,7 +221,7 @@ function Get-PortHolder([int]$Port) {
 function Get-BridgeListener([int]$Port) {
     <# The agent-bridge listening on $Port, even beside another program on another address, or
        $null. #>
-    return @(Get-PortHolders $Port | Where-Object { Test-IsBridge $_.CommandLine }) | Select-Object -First 1
+    return @(Get-PortListener $Port | Where-Object { Test-IsBridge $_.CommandLine }) | Select-Object -First 1
 }
 
 function Get-ExcludedPortRange {
@@ -248,7 +246,8 @@ function Stop-Bridge([string]$Exe, [int]$Port) {
     $task = Get-ScheduledTask -TaskName $script:TaskName -TaskPath '\' -ErrorAction SilentlyContinue
     if ($task) {
         Disable-ScheduledTask -TaskName $script:TaskName -TaskPath '\' | Out-Null
-        $script:TaskDisabled = $true
+        # Brought back on the way out only if it was on: one you disabled stays off.
+        if ([string]$task.State -ne 'Disabled') { $script:TaskDisabled = $true }
         Stop-ScheduledTask -TaskName $script:TaskName -TaskPath '\'
     }
     # Ending the task ends only the conhost.exe it started; the cmd.exe running run.cmd, the
@@ -267,15 +266,15 @@ function Stop-Bridge([string]$Exe, [int]$Port) {
     # Until they are gone and have let go of the .venv's files and the log.
     if ($stopped.Count -gt 0) { Wait-Process -Id $stopped -Timeout 10 -ErrorAction SilentlyContinue }
     if ($Port -le 0) { return }
-    $holder = Get-PortHolder $Port
-    if ($holder -and (Test-IsBridge $holder.CommandLine)) {
+    # Even beside another program on the port, on another address.
+    $holder = Get-BridgeListener $Port
+    if ($holder) {
         Write-Host "Stopping the agent-bridge on port $Port (PID $($holder.Id)): $($holder.CommandLine)"
         Stop-Process -Id $holder.Id -Force -ErrorAction SilentlyContinue
     }
     # Only an agent-bridge is worth waiting for: nothing here stops another program.
     for ($i = 0; $i -lt 20; $i++) {
-        $holder = Get-PortHolder $Port
-        if (-not $holder -or -not (Test-IsBridge $holder.CommandLine)) { break }
+        if (-not (Get-BridgeListener $Port)) { break }
         Start-Sleep -Milliseconds 500
     }
 }

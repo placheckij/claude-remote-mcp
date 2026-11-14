@@ -77,18 +77,18 @@ function Read-YesNo([string]$Prompt) {
 
 function ConvertTo-EnvValue([string]$Value) {
     <# Plain when python-dotenv reads it back unchanged, else in single quotes with \ and '
-       escaped. (It would still expand ${NAME}, which no path here has.) #>
+       escaped. (Write-EnvFile refuses ${, which python-dotenv expands even there.) #>
     if ($Value -match '^[A-Za-z0-9_.,:;/\\+~=@-]*$') { return $Value }
     return "'" + ($Value -replace "([\\'])", '\$1') + "'"
 }
 
 function Write-EnvFile([string]$Path, [string[]]$Lines, $Settings) {
+    <# Sets $Settings' keys (an empty value removes the line) and keeps every other line,
+       e.g. AGENT_BRIDGE_ACCOUNTS added by hand. Written beside the file and moved over it. #>
     # python-dotenv expands ${NAME} in any value, quoted or not, and has no escape for it.
     foreach ($key in $Settings.Keys) {
         if ([string]$Settings[$key] -match '\$\{') { Stop-Setup "$key can't hold `${ (agent-bridge would read it as a variable): $($Settings[$key])" }
     }
-    <# Sets $Settings' keys (an empty value removes the line) and keeps every other line,
-       e.g. AGENT_BRIDGE_ACCOUNTS added by hand. Written beside the file and moved over it. #>
     $out = New-Object Collections.Generic.List[string]
     if ($Lines.Count -eq 0) {
         $out.Add('# agent-bridge settings, written by agent-bridge\deploy\windows\setup.ps1. Lines it')
@@ -208,8 +208,10 @@ function Find-FreePort([int]$From) {
     $listening = @{}
     foreach ($connection in @(Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue)) { $listening[[int]$connection.LocalPort] = $true }
     $excluded = @(Get-ExcludedPortRange)
-    $candidates = @(([Math]::Min($From, 65536))..65535) + @(1024..([Math]::Min($From, 65536) - 1)) | Where-Object { $_ -le 65535 }
-    foreach ($candidate in $candidates) {
+    for ($candidate = $From; $candidate -le 65535; $candidate++) {
+        if (-not $listening.ContainsKey($candidate) -and -not (Test-PortExcluded $candidate $excluded)) { return $candidate }
+    }
+    for ($candidate = 1024; $candidate -lt $From -and $candidate -le 65535; $candidate++) {
         if (-not $listening.ContainsKey($candidate) -and -not (Test-PortExcluded $candidate $excluded)) { return $candidate }
     }
     return 0
@@ -256,7 +258,7 @@ function Start-Bridge([int]$Port, [switch]$Registered) {
     return $false
 }
 
-function Test-Settings($Settings) {
+function Test-EnvCopy($Settings) {
     <# Whether agent-bridge accepts the env file setup is about to write, by its own rules
        (roots, address, name, Claude config, trust root, accounts): `agent-bridge check` on a
        copy in the temp folder, with a state file that doesn't exist, so it asks no gateway.
@@ -479,7 +481,7 @@ try {
         AGENT_BRIDGE_HERDR_BIN     = $HerdrBin
     }
     foreach ($key in $Optional.Keys) { $Settings[$key] = $Optional[$key] }
-    if (-not (Test-Settings $Settings)) { Stop-Setup "agent-bridge wouldn't start with these settings (above); $(Get-Unchanged)" }
+    if (-not (Test-EnvCopy $Settings)) { Stop-Setup "agent-bridge wouldn't start with these settings (above); $(Get-Unchanged)" }
 
     # --- Install ---------------------------------------------------------------------------
 
@@ -490,7 +492,7 @@ try {
     if ($Checkout -and -not $Synced) {
         Sync-Checkout
         # The new code is what will run: it may refuse what the old one accepted.
-        if (-not (Test-Settings $Settings)) { Stop-Setup "agent-bridge's new code wouldn't start with these settings (above); $(Get-Unchanged)" }
+        if (-not (Test-EnvCopy $Settings)) { Stop-Setup "agent-bridge's new code wouldn't start with these settings (above); $(Get-Unchanged)" }
     }
 
     Write-Step "Writing $EnvFile"
@@ -520,7 +522,7 @@ try {
         Write-Warn "the network $Address is on is $($network.Category); the rule applies only on Private networks"
     }
     if ($elevated.Count -eq 0) {
-        Write-Host 'ok, already there'
+        Write-Host 'The rule is already there.'
     } else {
         Write-Host 'Windows asks for admin rights for this.'
         # Each step on its own, so the rule is added even where the network can't be changed.
