@@ -295,7 +295,9 @@ To skip the questions or change an installed value, pass it as a variable, e.g.
 The others are `HOST`, `PORT`, `HERDR_BIN`, `AGENT_BRIDGE_CLAUDE_CONFIG_DIR` and
 `TRUST_ROOT` (pass these two empty for no folder trust), `AGENT_BRIDGE_ACCOUNTS` (never
 asked for; an empty one removes it), and `ROTATE_TOKEN=1`, which replaces the token and
-needs `ENROLLMENT`. For any other setting, edit the env file and re-run the script.
+needs `ENROLLMENT` (if enrolling fails, the old token is put back). A new `NAME` on an
+enrolled host asks for an enrollment string, to rename it on the gateway. For any other
+setting, edit the env file and re-run the script.
 
 Re-run it after pulling new code. If the plist still holds the settings, the script moves
 them to the env file, keeps the token, and asks for the name and an enrollment string.

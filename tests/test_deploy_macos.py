@@ -25,7 +25,8 @@ PROMPT = re.compile(r"\]: ")
 STUBS = {
     "uv": "exit 0",
     "herdr": "exit 0",
-    "netstat": "exit 0",
+    # `netstat -anv -p tcp`: the listeners in $HOME/netstat, if any.
+    "netstat": '[ -f "$HOME/netstat" ] && cat "$HOME/netstat"\nexit 0',
     # Logs, and answers `print` with the PID in $HOME/launchd-pid, as a loaded job would.
     "launchctl": """
 echo "$*" >> "$HOME/launchctl.log"
@@ -162,6 +163,8 @@ def test_a_fresh_install_writes_the_settings_starts_the_service_and_enrolls(mac:
 
     assert "enrolled with the gateway at http://10.0.0.1:8766 as mac" in result.stdout
     assert env["AGENT_BRIDGE_TOKEN"] not in result.stdout + result.stderr
+    # Never on a command line, where ps would show it.
+    assert env["AGENT_BRIDGE_TOKEN"] not in mac.log("agent-bridge.log")
     assert "bridges add" not in result.stdout
 
 
@@ -197,6 +200,26 @@ def test_an_upgrade_moves_the_plist_settings_into_the_env_file_and_keeps_the_tok
     assert "EnvironmentVariables" not in plist
     assert plist["ProgramArguments"][-1] == "serve"
     assert "as mac" in result.stdout
+
+
+def test_an_upgrade_carries_the_plists_other_settings_into_the_env_file(mac: Mac) -> None:
+    mac.plist.parent.mkdir(parents=True)
+    mac.plist.write_bytes(plistlib.dumps({
+        "Label": LABEL,
+        "ProgramArguments": [str(mac.repo / ".venv" / "bin" / "uvicorn"), "agent_bridge.app:main", "--factory",
+                             "--host", "127.0.0.1", "--port", "8765"],
+        "EnvironmentVariables": {"AGENT_BRIDGE_TOKEN": "t" * 40,
+                                 "AGENT_BRIDGE_ALLOWED_ROOTS": str(mac.home / "projects"),
+                                 "AGENT_BRIDGE_MAX_AGENTS": "3", "AGENT_BRIDGE_CLAUDE_ARGS": "",
+                                 "PATH": "/usr/bin"},
+    }))
+
+    mac.setup(NAME="mac", ENROLLMENT=ENROLLMENT)
+
+    env = mac.env()
+    assert env["AGENT_BRIDGE_MAX_AGENTS"] == "3"
+    assert env["AGENT_BRIDGE_CLAUDE_ARGS"] == ""
+    assert "PATH" not in env
 
 
 def test_an_upgrade_without_folder_trust_doesnt_ask_for_it(mac: Mac) -> None:
@@ -257,6 +280,37 @@ def test_rotate_token_replaces_the_token_and_enrolls_again(mac: Mac) -> None:
     assert f"enroll {ENROLLMENT}" in mac.log("agent-bridge.log")
 
 
+@pytest.mark.parametrize("code", ["4", "1"])
+def test_rotate_token_puts_the_installed_token_back_when_enrolling_fails(mac: Mac, code: str) -> None:
+    mac.install()
+    first = mac.env()["AGENT_BRIDGE_TOKEN"]
+    (mac.home / "enroll-codes").write_text(f"{code}\n")
+
+    result = mac.setup(ROTATE_TOKEN="1", ENROLLMENT=ENROLLMENT, check=False)
+
+    assert result.returncode != 0
+    assert "installed one is back" in result.stderr
+    assert mac.env()["AGENT_BRIDGE_TOKEN"] == first
+
+
+def test_a_new_name_on_an_enrolled_host_enrolls_again(mac: Mac) -> None:
+    mac.install()
+
+    result = mac.setup(NAME="studio", ENROLLMENT=ENROLLMENT)
+
+    assert f"enroll {ENROLLMENT}" in mac.log("agent-bridge.log")
+    assert "as studio" in result.stdout
+
+
+def test_a_new_name_without_enrolling_says_the_gateway_kept_the_old_one(mac: Mac) -> None:
+    mac.install()
+
+    result = mac.setup(NAME="studio")
+
+    assert "Enrollment string" in result.stderr
+    assert "still has it as mac, not studio" in result.stdout
+
+
 def test_rotate_token_without_an_enrollment_string_changes_nothing(mac: Mac) -> None:
     mac.install()
     before = mac.env()
@@ -278,6 +332,27 @@ def test_a_port_another_program_holds_is_named_and_a_free_one_offered(mac: Mac) 
     assert "999" in result.stdout + result.stderr
     assert "[8766]: " in result.stderr
     assert mac.env()["AGENT_BRIDGE_PORT"] == "8766"
+
+
+def test_a_port_only_netstat_sees_is_another_users_program(mac: Mac) -> None:
+    (mac.home / "netstat").write_text("tcp4  0  0  *.8765  *.*  LISTEN  131072  131072  0  0\n")
+
+    result = mac.install()
+
+    assert "another user's program" in result.stdout
+    assert mac.env()["AGENT_BRIDGE_PORT"] == "8766"
+
+
+def test_an_installed_address_the_mac_no_longer_has_is_replaced(mac: Mac) -> None:
+    mac.install(HOST="192.0.2.99")
+    for name, body in {"route": "echo '  interface: en9'", "ipconfig": "echo 192.0.2.7"}.items():
+        (mac.stubs / name).write_text(f"#!/bin/sh\n{body}\n")
+        (mac.stubs / name).chmod(0o755)
+
+    result = mac.setup()
+
+    assert mac.env()["AGENT_BRIDGE_HOST"] == "192.0.2.7"
+    assert "The LAN address is now 192.0.2.7 (was 192.0.2.99)" in result.stdout
 
 
 @pytest.mark.parametrize("holder", ["launchd job", "command line"])
@@ -344,6 +419,17 @@ def test_uninstall_leaves_the_gateway_then_removes_the_service_and_files(mac: Ma
 
     assert "unenroll" in mac.log("agent-bridge.log")
     assert f"bootout gui/{os.getuid()}/{LABEL}" in mac.log("launchctl.log")
+    assert not mac.plist.exists()
+    assert not mac.support.exists()
+
+
+def test_uninstall_without_the_venv_still_removes_the_service_and_files(mac: Mac) -> None:
+    mac.install()
+    (mac.repo / ".venv" / "bin" / "agent-bridge").unlink()
+
+    result = mac.run("macos/uninstall.sh")
+
+    assert "bridges remove" in result.stdout
     assert not mac.plist.exists()
     assert not mac.support.exists()
 
