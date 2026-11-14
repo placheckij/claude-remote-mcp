@@ -97,8 +97,8 @@ pick() { # pick VAR KEY: VAR passed in, else the installed KEY; fails when that 
 
 has_address() { [[ $1 == 127.0.0.1 ]] || ip -4 -o addr show 2>/dev/null | grep -q "inet $1/"; }
 
-lan_address() { # the source address of the default route; nothing is sent
-  ip -4 route get 1.1.1.1 2>/dev/null | sed -n 's/.* src \([0-9.]*\).*/\1/p' | head -n 1
+lan_address() { # the source address of the default route, or nothing; nothing is sent
+  ip -4 route get 1.1.1.1 2>/dev/null | sed -n 's/.* src \([0-9.]*\).*/\1/p' | head -n 1 || true
 }
 
 find_herdr() { # the installed herdr, else the one on PATH, else one in the usual places
@@ -125,6 +125,14 @@ listener() { # listener PORT: the PID listening on PORT, "?" when its PID can't 
 }
 
 command_of() { ps -o args= -p "$1" 2>/dev/null || true; }
+
+default_config() { # default_config DIR: whether DIR is Claude's own config, which agent-bridge refuses
+  local dir home
+  dir="$(realpath -m "$1")"
+  home="$(realpath -m "$HOME")"
+  [[ $dir == "$home" || $dir == "$home/.claude" || $dir == "$home/.claude/"* \
+    || $dir/.claude.json -ef $home/.claude.json ]]
+}
 
 unit_path() { # unit_path PATH: refuses what systemd can't run, even quoted
   [[ $1 != *[\"\\]* ]] || die "systemd can't run a program whose path has \" or \\ in it: $1"
@@ -265,6 +273,8 @@ fi
 [[ -n ${AGENT_BRIDGE_CLAUDE_CONFIG_DIR+x} ]] \
   || ask_optional AGENT_BRIDGE_CLAUDE_CONFIG_DIR "Separate Claude config folder for agents" "$HOME/.claude-agents"
 absolute AGENT_BRIDGE_CLAUDE_CONFIG_DIR
+[[ -z $AGENT_BRIDGE_CLAUDE_CONFIG_DIR ]] || ! default_config "$AGENT_BRIDGE_CLAUDE_CONFIG_DIR" \
+  || die "$AGENT_BRIDGE_CLAUDE_CONFIG_DIR is your own Claude config; the agents need a separate one, e.g. $HOME/.claude-agents"
 if [[ -z ${TRUST_ROOT+x} ]]; then
   if [[ -z $AGENT_BRIDGE_CLAUDE_CONFIG_DIR ]]; then
     TRUST_ROOT=""
