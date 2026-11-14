@@ -132,6 +132,16 @@ pick() { # pick VAR KEY: VAR passed in, else the installed KEY; fails when that 
   [[ -n ${!1} ]]
 }
 
+canonical() { # canonical ADDRESS: an IP address as ifconfig writes it (lower case and
+  # compressed for IPv6), or ADDRESS as it is when it isn't one
+  "$REPO_DIR/.venv/bin/python" -I -c '
+import ipaddress, sys
+try:
+    print(ipaddress.ip_address(sys.argv[1]))
+except ValueError:
+    print(sys.argv[1])' "$1"
+}
+
 has_address() { # has_address ADDRESS: whether an interface has it, IPv4 or IPv6
   [[ $1 == 127.0.0.1 ]] && return 0
   ifconfig | awk -v address="$1" '($1 == "inet" || $1 == "inet6") && ($2 == address || index($2, address "%") == 1) {found = 1} END {exit !found}'
@@ -163,12 +173,24 @@ listener() { # listener PORT: the PID listening on PORT, "?" when only netstat s
 
 command_of() { ps -o command= -p "$1" 2>/dev/null || true; }
 
+plist_command() { # the installed plist's ProgramArguments, space-separated as ps shows them
+  local i=0 arg command=""
+  while arg="$(plist_value "ProgramArguments:$i")" && [[ -n $arg ]]; do
+    command="${command:+$command }$arg"
+    i=$((i + 1))
+  done
+  printf '%s' "$command"
+}
+
 ours() { # ours PID: whether PID is this service, by launchd's PID or else its command line
-  local pattern='agent-bridge serve|agent_bridge'
+  local command
   [[ $1 != "?" ]] || return 1
   [[ $1 != "$(launchctl print "$DOMAIN/$LABEL" 2>/dev/null | awk '$1 == "pid" {print $3; exit}' || true)" ]] || return 0
-  # Started by launchd (PID 1): a bridge started by hand runs under a shell, and keeps the port.
-  [[ $(ps -o ppid= -p "$1" 2>/dev/null | tr -d ' ' || true) == 1 && $(command_of "$1") =~ $pattern ]]
+  # Run by launchd (PID 1) with the installed plist's command, after the interpreter ps
+  # shows in front of a script. A bridge started by hand keeps the port.
+  command="$(plist_command)"
+  [[ -n $command && $(ps -o ppid= -p "$1" 2>/dev/null | tr -d ' ' || true) == 1 ]] || return 1
+  [[ $(command_of "$1") == "$command" || $(command_of "$1") == *" $command" ]]
 }
 
 enrolled() { # enrolled KEY: the gateway's KEY (name, url) from the state file, or nothing
@@ -212,7 +234,7 @@ done
 
 # The installed address while this Mac still has it; otherwise its current one.
 if [[ -z ${HOST+x} ]]; then
-  INSTALLED_HOST="$(installed HOST)"
+  INSTALLED_HOST="$(canonical "$(installed HOST)")"
   if [[ -n $INSTALLED_HOST ]] && has_address "$INSTALLED_HOST"; then
     HOST=$INSTALLED_HOST
   else
@@ -220,6 +242,7 @@ if [[ -z ${HOST+x} ]]; then
     [[ -z $INSTALLED_HOST || -z $HOST ]] || echo "The LAN address is now $HOST (was $INSTALLED_HOST)."
   fi
 fi
+HOST="$(canonical "$HOST")"
 [[ -n $HOST ]] || die "couldn't find this Mac's LAN address; pass it, e.g. HOST=192.168.1.20"
 [[ $HOST != 0.0.0.0 ]] || die "listen on the LAN address, not 0.0.0.0"
 has_address "$HOST" || echo "warning: no interface has $HOST right now; agent-bridge retries every 10 s until one does"
@@ -430,6 +453,8 @@ while [[ -n $ENROLLMENT ]]; do
       start_service ;;
     4) break ;; # agent-bridge printed the command to run once the gateway is up
     *)
+      # The gateway has it: another string wouldn't help with the state file.
+      [[ -z $GATEWAY_TOOK ]] || break
       ask ENROLLMENT "Enrollment string, crm1@…" "" "Enter to enroll later" ;;
   esac
 done
@@ -462,6 +487,9 @@ if [[ -n $GATEWAY_NAME && ( -z $NEW_TOKEN || -n $ENROLLED_NOW || -n $GATEWAY_TOO
   echo "It is enrolled with the gateway at $(enrolled url) as $GATEWAY_NAME: Claude reaches its agents as $GATEWAY_NAME/…"
   [[ -z $RENAMING || -n $ENROLLED_NOW ]] \
     || echo "The gateway still has it as $GATEWAY_NAME, not $NAME: run again with NAME=$NAME and an enrollment string to rename it."
+elif [[ -n $GATEWAY_TOOK ]]; then
+  echo "The gateway enrolled it, but its state file couldn't be written (see above). Fix that, then enroll again with a new string from sudo mcp-gateway enroll:"
+  echo "  $AGENT_BRIDGE enroll '<what it printed>'"
 elif [[ -n $GATEWAY_NAME ]]; then
   echo "The gateway has it as $GATEWAY_NAME, but with an older token, so it can't reach it. Run sudo mcp-gateway enroll on the gateway host, then here:"
   echo "  $AGENT_BRIDGE enroll '<what it printed>'"

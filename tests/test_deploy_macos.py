@@ -353,6 +353,26 @@ def test_an_installed_ipv6_address_the_mac_still_has_is_kept(mac: Mac) -> None:
     assert "http://[fd00::20]:8765" in result.stdout
 
 
+def test_an_ipv6_address_written_another_way_is_kept_in_ifconfigs_form(mac: Mac) -> None:
+    (mac.stubs / "ifconfig").write_text("#!/bin/sh\necho '\tinet6 fd00::20 prefixlen 64'\n")
+    (mac.stubs / "ifconfig").chmod(0o755)
+    mac.install(HOST="FD00:0:0:0:0:0:0:20")
+
+    mac.setup()
+
+    assert mac.env()["AGENT_BRIDGE_HOST"] == "fd00::20"
+
+
+def test_enrolled_but_with_no_state_file_written_doesnt_ask_again(mac: Mac) -> None:
+    (mac.home / "enroll-codes").write_text("state\n")
+
+    result = mac.install()
+
+    assert "Enrollment string" not in result.stderr
+    assert "state file couldn't be written" in result.stdout
+    assert mac.log("agent-bridge.log").count("enroll ") == 1
+
+
 def test_a_variable_passed_in_changes_an_installed_setting(mac: Mac) -> None:
     mac.install()
     other = mac.home / "other"
@@ -502,13 +522,33 @@ def test_the_port_the_installed_service_holds_is_kept(mac: Mac, holder: str) -> 
         (mac.home / "launchd-pid").write_text("4242")
         (mac.home / "ps-4242").write_text("/usr/bin/python3 something\n")
     else:
-        (mac.home / "ps-4242").write_text(f"{mac.repo}/.venv/bin/uvicorn agent_bridge.app:main --factory\n")
+        # The version being replaced, run by launchd from its plist, behind its interpreter.
+        mac.plist.parent.mkdir(parents=True)
+        arguments = [str(mac.repo / ".venv" / "bin" / "uvicorn"), "agent_bridge.app:main", "--factory",
+                     "--host", "127.0.0.1", "--port", "8765"]
+        mac.plist.write_bytes(plistlib.dumps({"Label": LABEL, "ProgramArguments": arguments}))
+        (mac.home / "ps-4242").write_text(f"/usr/bin/python3 {' '.join(arguments)}\n")
         (mac.home / "ppid-4242").write_text("    1\n")
 
     result = mac.install()
 
     assert mac.env()["AGENT_BRIDGE_PORT"] == "8765"
     assert not PROMPT.search(result.stderr), result.stderr
+
+
+def test_a_bridge_started_by_hand_and_left_to_launchd_doesnt_count_as_the_service(mac: Mac) -> None:
+    # Started with & in a terminal that has closed, so launchd (PID 1) is its parent now.
+    mac.plist.parent.mkdir(parents=True)
+    mac.plist.write_bytes(plistlib.dumps(
+        {"Label": LABEL, "ProgramArguments": [str(mac.repo / ".venv" / "bin" / "agent-bridge"), "serve"]}))
+    (mac.home / "port-8765").write_text("555\n")
+    (mac.home / "ps-555").write_text("/usr/bin/python3 /Users/me/other-checkout/.venv/bin/agent-bridge serve\n")
+    (mac.home / "ppid-555").write_text("1\n")
+
+    result = mac.install()
+
+    assert "PID 555" in result.stdout
+    assert mac.env()["AGENT_BRIDGE_PORT"] == "8766"
 
 
 def test_a_bridge_started_by_hand_on_the_port_is_named_and_a_free_port_offered(mac: Mac) -> None:
