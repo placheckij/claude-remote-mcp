@@ -135,6 +135,8 @@ state = Path(os.environ["LOCALAPPDATA"]) / "agent-bridge" / "state.json"
 args = sys.argv[1:]
 if args[0] == "check":
     if len(args) == 1:
+        with calls.open("a", encoding="utf-8") as log:
+            log.write("token " + os.environ.get("AGENT_BRIDGE_TOKEN", "from the env file") + "\n")
         # As the real one: the settings first, from AGENT_BRIDGE_ENV_FILE when it is set.
         env_file = os.environ.get("AGENT_BRIDGE_ENV_FILE") or str(Path(os.environ["APPDATA"]) / "agent-bridge" / "env")
         bad = os.environ.get("FAKE_BAD_SETTINGS")
@@ -299,7 +301,8 @@ def test_a_first_install_writes_the_settings_registers_the_task_and_enrolls(mach
     assert "Register-ScheduledTask \\agent-bridge" in calls
     assert "Start-ScheduledTask \\agent-bridge" in calls
     assert f"agent-bridge enroll {STRING}" in calls
-    assert calls[-1] == "agent-bridge check"
+    # Last, before the fake's note of which token it saw.
+    assert calls[-2] == "agent-bridge check"
     assert machine.fake()["rule"] == {"port": 8765, "profile": "Private"}
     assert "Enrolled as win-test with the gateway at http://127.0.0.1:8766" in output
     assert env["AGENT_BRIDGE_TOKEN"] not in output
@@ -735,3 +738,15 @@ def test_the_settings_are_checked_in_a_copy_without_a_gateway(machine: Machine) 
     # in the session (set for every run here) never reaches agent-bridge.
     calls = machine.calls()
     assert calls.index("agent-bridge check") < calls.index(r"Register-ScheduledTask \agent-bridge")
+
+
+def test_the_settings_check_never_sends_the_real_token(machine: Machine) -> None:
+    machine.setup("-Enrollment ''", input="\n\n")
+    token = machine.env()["AGENT_BRIDGE_TOKEN"]
+
+    machine.setup()
+
+    tokens = [call for call in machine.calls() if call.startswith("token ")]
+    # The copy's check uses a throwaway token; the final check reads the env file's.
+    assert tokens[0] != f"token {token}" and tokens[0] != "token from the env file"
+    assert tokens[-1] == "token from the env file"

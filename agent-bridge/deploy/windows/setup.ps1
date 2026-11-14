@@ -119,6 +119,18 @@ function ConvertTo-FullPath([string]$Path, [string]$What) {
     return [IO.Path]::GetFullPath($path)
 }
 
+function Repair-Checkout {
+    <# After agent-bridge failed to run: in a checkout not synced yet, takes it as a .venv
+       that needs `uv sync` after a pull, syncs it, and returns $true to try again. #>
+    if (-not $Checkout -or $script:Synced) { return $false }
+    Write-Host 'agent-bridge didn''t run as it is; installing its dependencies first.'
+    # The running bridge holds the .venv's files.
+    Stop-Bridge $Exe (Get-InstalledPort)
+    Sync-Checkout
+    $script:Synced = $true
+    return $true
+}
+
 function Test-Format([string]$Option, [string]$Value) {
     <# Whether agent-bridge accepts $Value as a name (--name-format); it says why not. Only
        exit 2 with agent-bridge's own message means a bad value. In a checkout, agent-bridge
@@ -132,14 +144,7 @@ function Test-Format([string]$Option, [string]$Value) {
         $usage = @($output | Where-Object { $_ -match '^usage:' }).Count -gt 0
         $output | ForEach-Object { Write-Host $_ }
         if ($code -eq 2 -and -not $usage) { return $false }
-        if ($Checkout -and -not $script:Synced) {
-            Write-Host 'agent-bridge didn''t run as it is; installing its dependencies first.'
-            # The running bridge holds the .venv's files.
-            Stop-Bridge $Exe (Get-InstalledPort)
-            Sync-Checkout
-            $script:Synced = $true
-            continue
-        }
+        if (Repair-Checkout) { continue }
         if ($usage) { Stop-Setup "$Exe has no ``check $Option``: it is older than this setup.ps1" }
         Stop-Setup "$Exe didn't run (exit $code; see above)"
     }
@@ -251,30 +256,29 @@ function Test-Settings($Settings) {
     <# Whether agent-bridge accepts the env file setup is about to write, by its own rules
        (roots, address, name, Claude config, trust root, accounts): `agent-bridge check` on a
        copy in the temp folder, with a state file that doesn't exist, so it asks no gateway.
-       Run before the working bridge is stopped, so settings it refuses never replace it. #>
+       Run before the working bridge is stopped, so settings it refuses never replace it. Its
+       token is a throwaway one: check also calls the address, which may not be this host. #>
     $temporary = Join-Path ([IO.Path]::GetTempPath()) "agent-bridge-setup-$PID"
     New-Item -ItemType Directory -Force -Path $temporary | Out-Null
     try {
         $copy = Join-Path $temporary 'env'
         Write-EnvFile $copy $Installed.Lines $Settings
-        $environment = @{ AGENT_BRIDGE_ENV_FILE = $copy; AGENT_BRIDGE_STATE_FILE = (Join-Path $temporary 'state.json') }
+        $environment = @{
+            AGENT_BRIDGE_ENV_FILE   = $copy
+            AGENT_BRIDGE_STATE_FILE = (Join-Path $temporary 'state.json')
+            AGENT_BRIDGE_TOKEN      = (New-Token)
+        }
         while ($true) {
             $code = Invoke-Native $Exe @('check') -Quiet -Environment $environment
             # Its first line is about the settings, in these words on every platform.
             $verdict = @($script:NativeOutput | Where-Object { $_ -match '^(ok|FAIL)\s+settings\b' }) | Select-Object -First 1
             if ($verdict -match '^ok') { return $true }
             if ($verdict) {
-                Write-Host ($verdict -replace [regex]::Escape($copy), $EnvFile)
+                Write-Host $verdict.Replace($copy, $EnvFile)
                 return $false
             }
             $script:NativeOutput | ForEach-Object { Write-Host $_ }
-            if ($Checkout -and -not $script:Synced) {
-                Write-Host 'agent-bridge didn''t run as it is; installing its dependencies first.'
-                Stop-Bridge $Exe (Get-InstalledPort)
-                Sync-Checkout
-                $script:Synced = $true
-                continue
-            }
+            if (Repair-Checkout) { continue }
             Stop-Setup "$Exe didn't run (exit $code; see above)"
         }
     } finally {
@@ -326,6 +330,16 @@ try {
         }
     }
     if (-not (Test-Path -LiteralPath $Exe)) { Stop-Setup "$Exe doesn't exist" }
+
+    # The task gets your environment, where these win over the env file.
+    foreach ($scope in 'User', 'Machine') {
+        $lasting = @([Environment]::GetEnvironmentVariables($scope).Keys | Where-Object { $_ -like 'AGENT_BRIDGE_*' })
+        if ($lasting.Count -gt 0) {
+            $remove = ($lasting | ForEach-Object { "[Environment]::SetEnvironmentVariable('$_', `$null, '$scope')" }) -join '; '
+            Stop-Setup ("$($lasting -join ', ') set in your $($scope.ToLowerInvariant()) environment would win over $EnvFile " +
+                "for the service. Remove $(if ($lasting.Count -gt 1) { 'them' } else { 'it' })$(if ($scope -eq 'Machine') { ' as administrator' }), then run setup again:`n  $remove")
+        }
+    }
 
     $Installed = Read-EnvFile $EnvFile
     function Get-Installed([string]$Key) {
@@ -444,7 +458,7 @@ try {
         AGENT_BRIDGE_HERDR_BIN     = $HerdrBin
     }
     foreach ($key in $Optional.Keys) { $Settings[$key] = $Optional[$key] }
-    if (-not (Test-Settings $Settings)) { Stop-Setup "agent-bridge wouldn't start with these settings (above); nothing was changed" }
+    if (-not (Test-Settings $Settings)) { Stop-Setup "agent-bridge wouldn't start with these settings (above); the installed ones are as they were" }
 
     # --- Install ---------------------------------------------------------------------------
 
@@ -491,7 +505,10 @@ try {
     Stop-Bridge $Exe $Port
     if (Get-PortHolder $Port) { Stop-Setup "port $Port is still in use; stop what holds it and run setup again" }
 
-    if ($Checkout -and -not $Synced) { Sync-Checkout }
+    if ($Checkout -and -not $Synced) {
+        Sync-Checkout
+        $Synced = $true
+    }
 
     Write-Step "Writing $EnvFile"
     Write-EnvFile $EnvFile $Installed.Lines $Settings
@@ -552,7 +569,10 @@ try {
     }
 
     Write-Step 'Checks'
-    $CheckFailed = (Invoke-Native $Exe @('check')) -ne 0
+    # Not when it didn't start: check would send the token to the address, which this host
+    # may not have.
+    $CheckFailed = if ($Started) { (Invoke-Native $Exe @('check')) -ne 0 } else { $true }
+    if (-not $Started) { Write-Host 'skipped: agent-bridge isn''t running' }
     # Read once: the bridge may stop between two looks.
     $listener = Get-PortHolder $Port
     $Blocked = if ($listener -and $listener.Path -and (Test-IsBridge $listener.CommandLine)) { $listener.Path } else { '' }
