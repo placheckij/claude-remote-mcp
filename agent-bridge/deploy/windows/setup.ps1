@@ -111,11 +111,12 @@ function Write-EnvFile([string]$Path, [string[]]$Lines, $Settings) {
         $key = $entry.Name.ToUpperInvariant()
         if (-not $Settings.Contains($key)) {
             $out.Add($line)
-            $exact[$entry.Name] = $entry.Value
+            if ($null -ne $entry.Value) { $exact[$entry.Name] = $entry.Value }
             continue
         }
+        # A line python-dotenv skips ($null) is replaced like one with another value.
         if (-not $done.ContainsKey($key) -and $Settings[$key]) {
-            if ($entry.Value -ceq [string]$Settings[$key]) {
+            if ($null -ne $entry.Value -and $entry.Value -ceq [string]$Settings[$key]) {
                 $out.Add($line)
                 $exact[$entry.Name] = $entry.Value
             } else {
@@ -390,9 +391,8 @@ try {
     if (-not (Test-Path -LiteralPath $Exe)) { Stop-Setup "$Exe doesn't exist" }
 
     # The task gets your environment, where these win over the env file.
-    $scopes = @{ User = 'HKCU:\Environment'; Machine = 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Environment' }
     foreach ($scope in 'User', 'Machine') {
-        $variables = Get-ItemProperty -LiteralPath $scopes[$scope] -ErrorAction SilentlyContinue
+        $variables = Get-ItemProperty -LiteralPath $LastingEnvironment[$scope] -ErrorAction SilentlyContinue
         $lasting = @(if ($variables) { $variables.PSObject.Properties.Name | Where-Object { $_ -like 'AGENT_BRIDGE_*' } })
         if ($lasting.Count -gt 0) {
             $remove = ($lasting | ForEach-Object { "[Environment]::SetEnvironmentVariable('$_', `$null, '$scope')" }) -join '; '
@@ -402,6 +402,12 @@ try {
     }
 
     $Installed = Read-EnvFile $EnvFile
+    # ${NAME} in the env file is expanded from this window's variables here, and from a
+    # logon's for the service: say which this window has alone.
+    $referenced = @($Installed.Lines | ForEach-Object { [regex]::Matches($_, '\$\{([^}:]*)') | ForEach-Object { $_.Groups[1].Value } })
+    foreach ($name in (Get-WindowOnlyName $referenced)) {
+        Write-Warn "`${$name} in $EnvFile is set only in this window: agent-bridge, started at logon, won't have it. Set it with setx, or write the value there instead."
+    }
     function Get-Installed([string]$Key) {
         if ($Installed.Values.Contains("AGENT_BRIDGE_$Key")) { return $Installed.Values["AGENT_BRIDGE_$Key"] }
         return ''
