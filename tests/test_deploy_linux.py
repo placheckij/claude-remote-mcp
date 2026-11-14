@@ -792,10 +792,12 @@ def test_settings_that_cant_be_read_stop_the_setup_and_keep_the_token(host: Host
     before = host.env_file.read_text()
     (host.repo / ".venv" / "bin" / "python").write_text("#!/bin/sh\nexit 1\n")
 
-    result = host.setup(check=False)
+    result = host.setup(check=False, input="")
 
     assert result.returncode != 0
     assert "couldn't read" in result.stderr
+    # Before asking anything it would throw away.
+    assert not PROMPT.search(result.stderr), result.stderr
     assert host.env_file.read_text() == before
 
 
