@@ -10,10 +10,10 @@ setlocal DisableDelayedExpansion
 rem Each line in the log as it happens; and the env file, and the output, read as UTF-8.
 set "PYTHONUNBUFFERED=1"
 set "PYTHONUTF8=1"
-set "LOG={{LOG}}"
 
 rem The task starts this every minute when it isn't running, so the log is kept across
-rem starts, and set aside as .1 only once it passes 1 MB.
-for %%F in ("%LOG%") do if %%~zF GTR 1048576 move /y "%LOG%" "%LOG%.1" >nul
-echo ==== %DATE% %TIME% starting agent-bridge >> "%LOG%"
-"{{EXE}}" serve >> "%LOG%" 2>&1
+rem starts, and set aside as .1 only once it passes 1 MB. (The log's path written out, not
+rem set as LOG, which agent-bridge would get, and a ${LOG} in the env file with it.)
+for %%F in ("{{LOG}}") do if %%~zF GTR 1048576 move /y "{{LOG}}" "{{LOG}}.1" >nul
+echo ==== %DATE% %TIME% starting agent-bridge >> "{{LOG}}"
+"{{EXE}}" serve >> "{{LOG}}" 2>&1

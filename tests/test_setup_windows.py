@@ -367,8 +367,9 @@ def test_the_task_runs_a_wrapper_that_logs_agent_bridge_serve(machine: Machine) 
     text = run.decode("utf-8")
     log = machine.localappdata / "agent-bridge" / "agent-bridge.log"
     assert "{{" not in text
-    assert f'set "LOG={log}"' in text
-    assert f'"{machine.bridge}" serve >> "%LOG%" 2>&1' in text
+    assert f'"{machine.bridge}" serve >> "{log}" 2>&1' in text
+    # Not set for agent-bridge to inherit.
+    assert "set \"LOG=" not in text
     assert 'set "PYTHONUTF8=1"' in text
 
 
@@ -1194,16 +1195,17 @@ def test_references_in_comments_dont_count_and_skipped_lines_define_nothing(mach
     assert "${FOO_S} in" in output
 
 
-def test_a_kept_line_whose_quote_is_left_open_stops_setup_before_the_bridge(machine: Machine) -> None:
+def test_lines_python_dotenv_skips_together_stop_setup_before_the_bridge(machine: Machine) -> None:
     machine.setup("-Enrollment ''", input="\n\n")
     text = machine.env_file.read_text(encoding="utf-8")
     machine.env_file.write_text('AGENT_BRIDGE_ACCOUNTS="C:\\x\\"\n' + text + 'AGENT_BRIDGE_X9="z"\n', encoding="utf-8")
-    # python-dotenv reads the lines below into it, up to the next double quote.
+    # python-dotenv reads the lines below into it, up to the next double quote, and then
+    # skips them all for the z" after it.
     assert "AGENT_BRIDGE_PORT" not in machine.env()
 
     output = machine.setup(expect=1)
 
-    assert "opens a quote it doesn't close" in output
+    assert "lines 1-" in output and "one quoted value with more after its closing quote" in output
     assert r"Disable-ScheduledTask \agent-bridge" not in machine.calls()
 
 
@@ -1217,3 +1219,32 @@ def test_an_unclosed_reference_and_one_setup_replaces_are_not_warned_about(machi
 
     assert "is set otherwise" not in output
     assert "Done." in output
+
+
+def test_a_quoted_value_over_several_lines_is_read_and_kept(machine: Machine) -> None:
+    machine.setup("-Enrollment ''", input="\n\n")
+    accounts = 'AGENT_BRIDGE_ACCOUNTS=\'{\n  "work": {"config_dir": null, "folders": []}\n}\'\n'
+    text = machine.env_file.read_text(encoding="utf-8")
+    machine.env_file.write_text(accounts + text, encoding="utf-8")
+    before = machine.env()
+
+    output = machine.setup(input="not an answer\n" * 3)
+
+    assert "Done." in output
+    assert machine.env() == before
+    # Kept as written (read_text turns the file's CRLF into \n).
+    assert accounts in machine.env_file.read_text(encoding="utf-8")
+
+
+def test_keys_python_dotenv_takes_beyond_letters_count_for_references(machine: Machine) -> None:
+    machine.setup("-Enrollment ''", input="\n\n")
+    text = machine.env_file.read_text(encoding="utf-8")
+    herdr = r"AGENT_BRIDGE_HERDR_BIN=${my.dir}\herdr.exe"
+    text = text.replace(f"AGENT_BRIDGE_HERDR_BIN={machine.herdr}", f"my.dir={machine.herdr.parent}\n{herdr}")
+    machine.env_file.write_text(text, encoding="utf-8")
+    assert machine.env()["AGENT_BRIDGE_HERDR_BIN"] == str(machine.herdr)
+
+    output = machine.setup(input="not an answer\n" * 3)
+
+    assert "Done." in output
+    assert herdr in machine.env_file.read_text(encoding="utf-8")
