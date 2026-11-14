@@ -163,10 +163,16 @@ function Invoke-Native {
     }
 }
 
+function ConvertTo-Port([string]$Value) {
+    <# $Value as a TCP port, or 0 when it isn't one. #>
+    if ($Value -match '^\d{1,5}$' -and [int]$Value -ge 1 -and [int]$Value -le 65535) { return [int]$Value }
+    return 0
+}
+
 function Get-InstalledPort {
     <# The port the env file sets, else agent-bridge's default. #>
-    $port = (Read-EnvFile $script:EnvFile).Values['AGENT_BRIDGE_PORT']
-    if ($port -match '^\d{1,5}$' -and [int]$port -ge 1 -and [int]$port -le 65535) { return [int]$port }
+    $port = ConvertTo-Port ([string](Read-EnvFile $script:EnvFile).Values['AGENT_BRIDGE_PORT'])
+    if ($port) { return $port }
     return 8765
 }
 

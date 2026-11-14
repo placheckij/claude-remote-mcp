@@ -256,34 +256,45 @@ function Test-Settings($Settings) {
     <# Whether agent-bridge accepts the env file setup is about to write, by its own rules
        (roots, address, name, Claude config, trust root, accounts): `agent-bridge check` on a
        copy in the temp folder, with a state file that doesn't exist, so it asks no gateway.
-       Run before the working bridge is stopped, so settings it refuses never replace it. Its
-       token is a throwaway one: check also calls the address, which may not be this host. #>
+       Run before the working bridge is stopped, so settings it refuses never replace it.
+       check also calls the address with the token. When this host doesn't have that address,
+       the token is checked against 127.0.0.1 instead, and the address with a throwaway token,
+       so the real one never goes to another machine. #>
     $temporary = Join-Path ([IO.Path]::GetTempPath()) "agent-bridge-setup-$PID"
     New-Item -ItemType Directory -Force -Path $temporary | Out-Null
     try {
         $copy = Join-Path $temporary 'env'
         Write-EnvFile $copy $Installed.Lines $Settings
-        $environment = @{
-            AGENT_BRIDGE_ENV_FILE   = $copy
-            AGENT_BRIDGE_STATE_FILE = (Join-Path $temporary 'state.json')
-            AGENT_BRIDGE_TOKEN      = (New-Token)
+        $files = @{ AGENT_BRIDGE_ENV_FILE = $copy; AGENT_BRIDGE_STATE_FILE = (Join-Path $temporary 'state.json') }
+        $runs = @($files)
+        if ($Settings['AGENT_BRIDGE_HOST'] -ne '127.0.0.1' -and -not (Test-LocalAddress $Settings['AGENT_BRIDGE_HOST'])) {
+            $runs = @(($files + @{ AGENT_BRIDGE_HOST = '127.0.0.1' }), ($files + @{ AGENT_BRIDGE_TOKEN = (New-Token) }))
         }
-        while ($true) {
-            $code = Invoke-Native $Exe @('check') -Quiet -Environment $environment
-            # Its first line is about the settings, in these words on every platform.
-            $verdict = @($script:NativeOutput | Where-Object { $_ -match '^(ok|FAIL)\s+settings\b' }) | Select-Object -First 1
-            if ($verdict -match '^ok') { return $true }
-            if ($verdict) {
-                Write-Host $verdict.Replace($copy, $EnvFile)
-                return $false
+        foreach ($environment in $runs) {
+            while ($true) {
+                $code = Invoke-Native $Exe @('check') -Quiet -Environment $environment
+                # Its first line is about the settings, in these words on every platform.
+                $verdict = @($script:NativeOutput | Where-Object { $_ -match '^(ok|FAIL)\s+settings\b' }) | Select-Object -First 1
+                if ($verdict -match '^ok') { break }
+                if ($verdict) {
+                    Write-Host $verdict.Replace($copy, $EnvFile)
+                    return $false
+                }
+                $script:NativeOutput | ForEach-Object { Write-Host $_ }
+                if (Repair-Checkout) { continue }
+                Stop-Setup "$Exe didn't run (exit $code; see above)"
             }
-            $script:NativeOutput | ForEach-Object { Write-Host $_ }
-            if (Repair-Checkout) { continue }
-            Stop-Setup "$Exe didn't run (exit $code; see above)"
         }
+        return $true
     } finally {
         Remove-Item -LiteralPath $temporary -Recurse -Force -ErrorAction SilentlyContinue
     }
+}
+
+function Get-Unchanged {
+    <# What a refusal leaves as it was. #>
+    if ($script:Synced -and $Checkout) { return "the installed settings are as they were, but $Checkout\.venv was updated" }
+    return 'the installed ones are as they were'
 }
 
 function Sync-Checkout {
@@ -332,8 +343,10 @@ try {
     if (-not (Test-Path -LiteralPath $Exe)) { Stop-Setup "$Exe doesn't exist" }
 
     # The task gets your environment, where these win over the env file.
+    $scopes = @{ User = 'HKCU:\Environment'; Machine = 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Environment' }
     foreach ($scope in 'User', 'Machine') {
-        $lasting = @([Environment]::GetEnvironmentVariables($scope).Keys | Where-Object { $_ -like 'AGENT_BRIDGE_*' })
+        $variables = Get-ItemProperty -LiteralPath $scopes[$scope] -ErrorAction SilentlyContinue
+        $lasting = @(if ($variables) { $variables.PSObject.Properties.Name | Where-Object { $_ -like 'AGENT_BRIDGE_*' } })
         if ($lasting.Count -gt 0) {
             $remove = ($lasting | ForEach-Object { "[Environment]::SetEnvironmentVariable('$_', `$null, '$scope')" }) -join '; '
             Stop-Setup ("$($lasting -join ', ') set in your $($scope.ToLowerInvariant()) environment would win over $EnvFile " +
@@ -388,10 +401,10 @@ try {
 
     if (-not $Bound.ContainsKey('Port')) {
         $installedPort = Get-Installed 'PORT'
-        if ($installedPort -and $installedPort -notmatch '^\d{1,5}$') { Stop-Setup "AGENT_BRIDGE_PORT in $EnvFile isn't a port: $installedPort" }
-        $Port = if ($installedPort) { [int]$installedPort } else { 8765 }
+        if ($installedPort -and -not (ConvertTo-Port $installedPort)) { Stop-Setup "AGENT_BRIDGE_PORT in $EnvFile isn't a port: $installedPort" }
+        $Port = if ($installedPort) { ConvertTo-Port $installedPort } else { 8765 }
     }
-    if ($Port -lt 1 -or $Port -gt 65535) { Stop-Setup "the port must be between 1 and 65535, got $Port" }
+    if (-not (ConvertTo-Port ([string]$Port))) { Stop-Setup "the port must be between 1 and 65535, got $Port" }
 
     # herdr.exe: the installed path while it still exists, else found again.
     if (-not $Bound.ContainsKey('HerdrBin')) {
@@ -445,8 +458,8 @@ try {
         $free = Find-FreePort ($Port + 1)
         if ($free -eq 0) { Stop-Setup 'no free port found' }
         $answer = Read-Value 'Port to use instead' ([string]$free)
-        if ($answer -notmatch '^\d{1,5}$' -or [int]$answer -lt 1 -or [int]$answer -gt 65535) { Stop-Setup "not a port: $answer" }
-        $Port = [int]$answer
+        if (-not (ConvertTo-Port $answer)) { Stop-Setup "not a port: $answer" }
+        $Port = ConvertTo-Port $answer
     }
 
     $Settings = [ordered]@{
@@ -458,7 +471,7 @@ try {
         AGENT_BRIDGE_HERDR_BIN     = $HerdrBin
     }
     foreach ($key in $Optional.Keys) { $Settings[$key] = $Optional[$key] }
-    if (-not (Test-Settings $Settings)) { Stop-Setup "agent-bridge wouldn't start with these settings (above); the installed ones are as they were" }
+    if (-not (Test-Settings $Settings)) { Stop-Setup "agent-bridge wouldn't start with these settings (above); $(Get-Unchanged)" }
 
     # --- Install ---------------------------------------------------------------------------
 
@@ -508,6 +521,8 @@ try {
     if ($Checkout -and -not $Synced) {
         Sync-Checkout
         $Synced = $true
+        # The new code is what will run: it may refuse what the old one accepted.
+        if (-not (Test-Settings $Settings)) { Stop-Setup "agent-bridge's new code wouldn't start with these settings (above); $(Get-Unchanged)" }
     }
 
     Write-Step "Writing $EnvFile"
