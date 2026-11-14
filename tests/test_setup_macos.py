@@ -36,6 +36,7 @@ def home(tmp_path: Path) -> Path:
 
 def setup(home: Path, **env: str) -> subprocess.CompletedProcess:
     stubs = home.parent / "stubs"
+    (home / "launchctl.log").unlink(missing_ok=True)
     result = subprocess.run(
         [str(SCRIPT)],
         env={
