@@ -44,6 +44,13 @@ Cloudflare Tunnel. See [mcp-gateway/README.md](mcp-gateway/README.md).
   those at the gateway's API version or one behind are called. Arguments (agent ids, prompt length, waits) are
   checked before anything is sent. Project names and paths go to agent-bridge as given:
   it resolves and checks them, and reports each agent's project.
+- **Enrollment.** Agent hosts add themselves. `mcp-gateway enroll` opens a 30-minute
+  window and prints a string with the gateway's LAN address and a secret; each
+  agent-bridge sends that secret with its id, address, token and name to `POST /enroll`.
+  The gateway adds it once the address's `/info` answers with the same id. Bridges then
+  report their address on every start and remove themselves on uninstall, with their own
+  token. These routes share the gateway's listener but serve only LAN callers the tunnel
+  didn't forward, and call only LAN addresses.
 - **Agent operations.** `list_agents`, `agent_details`, `read_output`, `send_prompt`,
   `wait_for_agent`, `answer_agent`, `start_agent`, `rename_agent` and `stop_agent`.
   agent-bridge's JSON comes back as one short line per agent plus the last output lines.
@@ -56,7 +63,9 @@ its memory, and it reads `oauth.json` only at startup.
 The machine where Claude Code runs. See [agent-bridge/README.md](agent-bridge/README.md).
 
 - **agent-bridge** is a small HTTP API on the LAN with its own bearer token. It turns
-  each request into `herdr` CLI calls and keeps no state of its own.
+  each request into `herdr` CLI calls. Its settings are an env file, and enrolling adds a
+  state file with its id and its gateway; the platform setups run its commands
+  (`agent-bridge serve`, `enroll`, `unenroll`, `check`).
 - **Workspace management.** herdr owns the agents. Each agent started here gets its own
   herdr workspace, named after the agent; renaming renames both. Agents are addressed by
   their herdr pane id, e.g. `w1:p1`.
@@ -77,10 +86,14 @@ The machine where Claude Code runs. See [agent-bridge/README.md](agent-bridge/RE
 | Signed-in clients and hashes of their tokens | `oauth.json` on the gateway host |
 | Sign-ins in progress, authorization codes, wrong-passphrase counts | mcp-gateway's memory |
 | Agent hosts: URL, token and what each last said about itself | `bridges.json` on the gateway host |
+| The gateway's id and the enrollment window: a hash of its secret, its expiry, wrong tries | `enrollment.json` on the gateway host |
+| Wrong enrollment strings per address | mcp-gateway's memory |
+| agent-bridge's settings | its env file on the agent host |
+| agent-bridge's id and the gateway it enrolled with | its `state.json` on the agent host |
 | Agents, their workspaces and output | herdr on the agent host |
 | Claude logins and trusted folders | each account's Claude config on the agent host |
 
-agent-bridge holds nothing: after a restart it sees the same agents through herdr.
+agent-bridge holds no agents: after a restart it sees the same ones through herdr.
 
 ## Trust boundaries
 
@@ -89,7 +102,11 @@ agent-bridge holds nothing: after a restart it sees the same agents through herd
    sign-in produces.
 2. **Gateway to agent host:** a separate bearer token, over the LAN only. agent-bridge
    isn't reachable from the internet.
-3. **agent-bridge to agents:** allowed roots, the agent limit and the trust root bound
+3. **LAN to gateway:** the gateway listens on the LAN for enrollment only; everything
+   else answers loopback (cloudflared) only. Enrolling needs the window's secret, and
+   changing a host's record that host's token. Enrollment refuses callers off the LAN
+   and anything the tunnel forwards.
+4. **agent-bridge to agents:** allowed roots, the agent limit and the trust root bound
    what a request can start or change.
 
 [SECURITY.md](SECURITY.md) says how to report a vulnerability and what is in scope.

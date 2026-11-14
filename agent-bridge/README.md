@@ -2,8 +2,9 @@
 
 A small HTTP service on the machine where your Claude Code agents run (the *agent
 host*). [`mcp-gateway`](../mcp-gateway/) calls it over the LAN. It turns each request
-into `herdr` CLI calls and returns trimmed results. It keeps no state of its own: herdr
-owns the agents, which are addressed by their herdr pane id (e.g. `w1:p1`).
+into `herdr` CLI calls and returns trimmed results. herdr owns the agents, which are
+addressed by their herdr pane id (e.g. `w1:p1`); agent-bridge's own state is only its id
+and the gateway it [enrolled](#enroll-with-the-gateway) with.
 
 ```
 mcp-gateway ──LAN, bearer token──> agent-bridge :8765 ──> herdr CLI ──> Claude Code agents
@@ -15,11 +16,11 @@ It sees and controls every herdr agent of its user, including ones started by ha
 
 | | |
 |---|---|
-| OS | macOS or Linux, wherever [herdr](https://github.com/herdrdev/herdr) runs. Tested on macOS; Linux should work but is untested, and Windows would need WSL. |
+| OS | macOS, Linux or Windows (natively), wherever [herdr](https://github.com/herdrdev/herdr) runs. Tested on macOS; the tests also run on Linux and Windows. |
 | herdr | 0.8.0 or newer (tested with 0.8.0); its server must be running for the same user (it is whenever herdr is open, and keeps running after you detach) |
 | Claude Code | the `claude` CLI, installed and logged in for that user |
 | Python | 3.11+, via [uv](https://docs.astral.sh/uv/) (uv installs it if needed) |
-| Network | reachable from the gateway host on one TCP port (default 8765). Give the host a fixed LAN address, e.g. a DHCP reservation. Nothing is exposed to the internet. |
+| Network | reachable from the gateway host on one TCP port (default 8765), and able to reach the gateway on its port (8766) to enroll. Give the host a fixed LAN address, e.g. a DHCP reservation. Nothing is exposed to the internet. |
 | Always on | the agents and agent-bridge only answer while the host is awake and the user is logged in; see [Keeping the agent host available](#keeping-the-agent-host-available) |
 
 ## Keeping the agent host available
@@ -62,7 +63,7 @@ All routes require `Authorization: Bearer $AGENT_BRIDGE_TOKEN`.
 
 | Route | herdr | Notes |
 |---|---|---|
-| `GET /info` | `--version` | the host: `api_version` (2; a bridge without `/info` is 1), `name` (the hostname as a slug), `platform` (`darwin`, `linux` or `windows`), `bridge_version`, `herdr_version` (`null` if herdr can't be run), `roots`, `projects_root` (the first root), the `accounts`' names and `max_agents` |
+| `GET /info` | `--version` | the host: `api_version` (2; a bridge without `/info` is 1), `bridge_id` (from the state file), `name` (`AGENT_BRIDGE_NAME`, or the hostname as a slug), `platform` (`darwin`, `linux` or `windows`), `bridge_version`, `herdr_version` (`null` if herdr can't be run), `roots`, `projects_root` (the first root), the `accounts`' names and `max_agents` |
 | `GET /projects/{name}` | | `{"cwd": …}` of the folder `name` under the first allowed root that has one; `404 project_not_found` otherwise, also for anything but one folder name (`..`, `.`, `~`, `/`, `\`, `:`) |
 | `GET /agents` | `agent list` | every herdr agent, in any folder. `project` is the agent's folder under the closest allowed root, joined with `/` on every platform (`grafik/api` for `<root>/grafik/api`), `null` at a root or outside them. An `idle` or `done` agent whose last message ends with a question has it in `question` (read from its screen with `agent read`, so it is a guess; herdr itself can't tell that agent from one that simply finished) |
 | `GET /agents/{id}` | `agent get` | the same, including `question` |
@@ -180,18 +181,31 @@ trusted.
 
 ## Configuration
 
-Read from the environment, or from a `.env` file in the working directory (the
-environment wins). An invalid setting stops startup with one line per problem, naming
-the variable.
+Read from the environment, or from the env file (the environment wins), one
+`AGENT_BRIDGE_…=value` per line. An invalid setting stops startup with one line per
+problem, naming the variable. Enrolling adds a state file. Both must be readable only by
+you (`chmod 600`):
+
+| Platform | Settings (env file) | State |
+|---|---|---|
+| macOS | `~/Library/Application Support/agent-bridge/env` | `~/Library/Application Support/agent-bridge/state.json` |
+| Linux | `~/.config/agent-bridge/env` | `~/.local/state/agent-bridge/state.json` |
+| Windows | `%APPDATA%\agent-bridge\env` | `%LOCALAPPDATA%\agent-bridge\state.json` |
+
+`AGENT_BRIDGE_ENV_FILE` and `AGENT_BRIDGE_STATE_FILE` point elsewhere. A `.env` file in
+the working folder is read too, under the env file, with a warning.
 
 | Variable | Default | |
 |---|---|---|
-| `AGENT_BRIDGE_TOKEN` | — | required, at least 32 characters; given to `mcp-gateway bridges add` on the gateway host |
-| `AGENT_BRIDGE_ALLOWED_ROOTS` | — | required, `:`-separated absolute folders agents may start in; `/`, the home folder or anything above it is refused |
+| `AGENT_BRIDGE_TOKEN` | — | required, at least 32 characters: letters, digits, `. _ ~ + / -` and trailing `=` |
+| `AGENT_BRIDGE_ALLOWED_ROOTS` | — | required, absolute folders agents may start in, separated by `:` (`;` on Windows); `/`, the home folder or anything above it, and on Windows `\\` paths, are refused |
+| `AGENT_BRIDGE_HOST` | — | the LAN address to listen on, given to the gateway too; an IP address, not `0.0.0.0` (`127.0.0.1` when mcp-gateway runs on the same machine). `serve` needs it |
+| `AGENT_BRIDGE_PORT` | `8765` | |
+| `AGENT_BRIDGE_NAME` | — | this host's name in agent ids (`mac/w1:p1`): a lowercase letter, then up to 31 lowercase letters, digits or `-`. `serve` needs it |
 | `AGENT_BRIDGE_CLAUDE_CONFIG_DIR` | unset | `CLAUDE_CONFIG_DIR` for new agents; unset uses Claude Code's default config |
 | `AGENT_BRIDGE_ACCOUNTS` | none | named Claude logins and the folders they're for, as JSON (see [Claude accounts](#claude-accounts)); names are lower-case, e.g. `work` |
 | `AGENT_BRIDGE_CLAUDE_ARGS` | `--permission-mode auto` | extra `claude` arguments, shell-quoted; set it empty for none |
-| `AGENT_BRIDGE_HERDR_BIN` | `herdr` | use the full path under a service manager, e.g. `~/.local/bin/herdr` |
+| `AGENT_BRIDGE_HERDR_BIN` | `herdr` | the full path, e.g. `~/.local/bin/herdr`; `serve` needs it set |
 | `AGENT_BRIDGE_TRUST_ROOT` | unset | auto-trust folders under it; needs `AGENT_BRIDGE_CLAUDE_CONFIG_DIR`; absolute, and like the allowed roots never `/` or the home folder |
 | `AGENT_BRIDGE_MAX_AGENTS` | `10` | no new agents while this many or more exist (all herdr agents count) |
 | `AGENT_BRIDGE_MAX_OUTPUT_CHARS` | `8000` | terminal output beyond this is cut from the front (`truncated: true`) |
@@ -199,26 +213,38 @@ the variable.
 
 ## Run
 
-The herdr server must be running in the same user session. Bind to the host's LAN
-address, not `0.0.0.0` (or to `127.0.0.1` when mcp-gateway runs on the same machine).
-
-To try it in the foreground, generate a token and start it by hand. To keep it running, set
-it up as a service instead (below); on macOS the setup script generates the token for you.
-Either way the gateway host adds this bridge with `sudo mcp-gateway bridges add <url>`, which asks for the token. Generate it
-once and keep a copy, e.g. in a password manager: it goes into the service's config and
-into the gateway's list of agent hosts, and is stored nowhere else.
+The herdr server must be running in the same user session. To try it in the foreground,
+write the [env file](#configuration) and start it from the checkout. To keep it running,
+set it up as a service instead (below).
 
 ```sh
 uv sync --all-packages
-AGENT_BRIDGE_TOKEN=$(openssl rand -hex 32)
-echo "$AGENT_BRIDGE_TOKEN"     # copy it somewhere safe
-AGENT_BRIDGE_TOKEN=$AGENT_BRIDGE_TOKEN \
-AGENT_BRIDGE_ALLOWED_ROOTS=$HOME/projects \
-  uv run --package agent-bridge uvicorn agent_bridge.app:main --factory --host 192.168.1.20 --port 8765
+uv run --package agent-bridge agent-bridge serve
 ```
 
-Check from the gateway host, with the same token set there as `AGENT_BRIDGE_TOKEN`:
-`curl -H "Authorization: Bearer $AGENT_BRIDGE_TOKEN" http://192.168.1.20:8765/agents`.
+### Commands
+
+| Command | Does | Exit codes |
+|---|---|---|
+| `agent-bridge serve` | runs the service from the env and state files, and tells the gateway its address | |
+| `agent-bridge enroll <string>` | joins the gateway that printed the string (below) | 0 enrolled, 3 name taken, 4 gateway unreachable (prints the command to retry), 1 otherwise |
+| `agent-bridge unenroll` | leaves that gateway | 0; prints the gateway's command when it can't be reached |
+| `agent-bridge check` | checks the settings, the files' modes, herdr, the running service and the gateway, one line each | 0 all passed, 1 one failed |
+| `agent-bridge check --token-format <token>`, `--name-format <name>` | checks a value before it goes in the env file | 0 fine, 2 not (why, on stderr) |
+
+### Enroll with the gateway
+
+With agent-bridge running, run `sudo mcp-gateway enroll` on the gateway host, then here:
+
+```sh
+uv run --package agent-bridge agent-bridge enroll 'crm1@192.168.1.10:8766#…'
+```
+
+The gateway checks that the address in `AGENT_BRIDGE_HOST` and `AGENT_BRIDGE_PORT`
+answers as this bridge, and adds it under `AGENT_BRIDGE_NAME`. From then on, every start
+tells the gateway the current address; if it can't be reached, agent-bridge logs how to
+enroll again and serves on. A bridge can also be added by hand on the gateway host with
+`sudo mcp-gateway bridges add <url>`, which asks for the token.
 
 The examples below use `/path/to/claude-remote-mcp` for the checkout, `192.168.1.20` for
 the LAN address and `~/projects` for the projects folder; replace them with yours.
@@ -381,6 +407,8 @@ Not yet tested. It runs as your user, next to your herdr server. Put the setting
 ```sh
 AGENT_BRIDGE_TOKEN=…
 AGENT_BRIDGE_ALLOWED_ROOTS=/home/me/projects
+AGENT_BRIDGE_HOST=192.168.1.20
+AGENT_BRIDGE_NAME=linux-box
 AGENT_BRIDGE_HERDR_BIN=/home/me/.local/bin/herdr
 ```
 
@@ -392,8 +420,7 @@ Description=agent-bridge (claude-remote)
 After=network-online.target
 
 [Service]
-EnvironmentFile=%h/.config/agent-bridge/env
-ExecStart=/path/to/claude-remote-mcp/.venv/bin/uvicorn agent_bridge.app:main --factory --host 192.168.1.20 --port 8765
+ExecStart=/path/to/claude-remote-mcp/.venv/bin/agent-bridge serve
 Restart=always
 RestartSec=10
 
@@ -413,8 +440,9 @@ systemctl --user stop agent-bridge             # until the next start or login
 systemctl --user disable --now agent-bridge    # and don't start at login
 
 # Uninstall
+/path/to/claude-remote-mcp/.venv/bin/agent-bridge unenroll
 systemctl --user disable --now agent-bridge
-rm ~/.config/systemd/user/agent-bridge.service ~/.config/agent-bridge/env
+rm -r ~/.config/systemd/user/agent-bridge.service ~/.config/agent-bridge ~/.local/state/agent-bridge
 systemctl --user daemon-reload
 ```
 

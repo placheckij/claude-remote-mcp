@@ -1,7 +1,8 @@
 """MCP server exposed to claude.ai as a custom connector.
 
 Layout: tools.py (the MCP tools) → hosts.py (which agent host an id names) → bridge.py
-(agent-bridge client); registry.py keeps the hosts in bridges.json, and cli.py changes it.
+(agent-bridge client); registry.py keeps the hosts in bridges.json, cli.py changes it, and
+enrollment.py lets bridges on the LAN add themselves.
 replies.py turns agent-bridge's JSON into short speakable text. oauth.py signs the
 connector in and keeps its tokens; auth.py checks them in front of the MCP endpoint.
 """
@@ -20,6 +21,7 @@ from uvicorn.config import STARTUP_FAILURE
 from mcp_gateway.auth import BearerAuth
 from mcp_gateway.bridge import AgentBridge
 from mcp_gateway.config import Settings, StartupError
+from mcp_gateway.enrollment import Enrollment, enrollment_routes
 from mcp_gateway.hosts import Hosts
 from mcp_gateway.oauth import GatewayOAuth
 from mcp_gateway.registry import Registry, RegistryError
@@ -36,6 +38,7 @@ def create_app(
     settings: Settings,
     connect: Callable[[str, str], AgentBridge] = AgentBridge.connect,
     oauth: GatewayOAuth | None = None,
+    enrollment: Enrollment | None = None,
 ) -> ASGIApp:
     """`connect` makes the client for a bridge's URL and token."""
     oauth = oauth or GatewayOAuth(settings)
@@ -58,7 +61,10 @@ def create_app(
             allowed_origins=list(ALLOWED_ORIGINS),
         ),
     )
-    return BearerAuth(StatelessEdges(app, hosts, oauth), oauth.load_access_token, oauth.resource_metadata_url)
+    app = BearerAuth(StatelessEdges(app, hosts, oauth), oauth.load_access_token, oauth.resource_metadata_url)
+    # In front of the token check: bridges have no OAuth token, and the routes check their own.
+    enrollment = enrollment or Enrollment(settings.state_dir / "enrollment.json")
+    return enrollment_routes(app, registry, enrollment, connect)
 
 
 class StatelessEdges:
