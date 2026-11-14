@@ -189,10 +189,9 @@ until bridge check --name-format "$NAME"; do
 done
 # Once enrolled, the gateway's name is this host's name: hosts are renamed there, and the
 # installed NAME follows.
-RENAME_HINT=""
+WANTED_NAME=""
 if [[ -n $ENROLLED_NAME && $ENROLLED_NAME != "$NAME" ]]; then
-  [[ -z $NAME_GIVEN ]] \
-    || RENAME_HINT="The gateway names this host $ENROLLED_NAME, so NAME stays that. To rename it $NAME, run on the gateway host: sudo mcp-gateway bridges rename $ENROLLED_NAME $NAME"
+  [[ -z $NAME_GIVEN ]] || WANTED_NAME=$NAME
   NAME=$ENROLLED_NAME
 fi
 
@@ -401,6 +400,14 @@ fi
 
 start_service
 
+# Starting has the bridge ask the gateway for its name, so a rename done there since the
+# bridge last started shows up only now; enrolling with the old one would undo it.
+if [[ -n $(enrolled name) && $(enrolled name) != "$NAME" ]]; then
+  NAME="$(enrolled name)"
+  write_env
+  start_service
+fi
+
 # --- Enroll --------------------------------------------------------------------------
 
 ENROLLED=""
@@ -451,7 +458,8 @@ $LOGIN_HINT
 EOF
 if [[ -n $(enrolled name) ]]; then
   echo "It is enrolled with the gateway at $(enrolled url) as $(enrolled name): Claude reaches its agents as $(enrolled name)/…"
-  [[ -z $RENAME_HINT ]] || echo "$RENAME_HINT"
+  [[ -z $WANTED_NAME || $WANTED_NAME == "$(enrolled name)" ]] \
+    || echo "The gateway names this host $(enrolled name), so NAME stays that. To rename it $WANTED_NAME, run on the gateway host: sudo mcp-gateway bridges rename $(enrolled name) $WANTED_NAME"
   [[ -z $NEW_TOKEN || -n $ENROLLED ]] \
     || echo "The gateway has this host's old token and its calls will be refused: run sudo mcp-gateway enroll on the gateway host, then run this again with ENROLLMENT='<what it printed>'"
 else
