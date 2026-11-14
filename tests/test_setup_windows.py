@@ -43,9 +43,11 @@ function Get-CimInstance { param($ClassName, $Filter, $ErrorAction)
 function Invoke-CimMethod { param($InputObject, $MethodName, $ErrorAction)
     $domain, $user = $env:FAKE_DESKTOP_USER -split '\\', 2
     [pscustomobject]@{ Domain = $domain; User = $user } }
-function netsh { foreach ($range in ($env:FAKE_EXCLUDED_PORTS -split ',')) { if ($range) { "  $($range -replace '-', '  ')" } } }
+function netsh { if ($args[1] -eq 'ipv6') { return }
+    foreach ($range in ($env:FAKE_EXCLUDED_PORTS -split ',')) { if ($range) { "  $($range -replace '-', '  ')" } } }
 function Stop-Process { param([int]$Id, [switch]$Force, $ErrorAction)
     Add-Call "Stop-Process $Id"
+    if ($env:FAKE_UNKILLABLE -and [string]$Id -eq $env:FAKE_UNKILLABLE -and (Get-Content -LiteralPath $env:FAKE_CALLS | Where-Object { $_ -like 'agent-bridge enroll*' })) { return }
     $f = Get-Fake; $f.listen = @($f.listen | Where-Object { $_.pid -ne $Id }); Set-Fake $f }
 function Start-Sleep { param([int]$Seconds, [int]$Milliseconds) }
 # The user's and the machine's lasting environment variables, read from the registry.
@@ -270,6 +272,7 @@ class Machine:
             "FAKE_NO_START": "",
             "FAKE_BAD_SETTINGS": "",
             "FAKE_USER_VARIABLE": "",
+            "FAKE_UNKILLABLE": "",
             "AGENT_BRIDGE_STATE_FILE": r"C:\leftover\state.json",
             "FAKE_ELEVATED_EXIT": "0",
             "FAKE_BLOCKED_PROGRAM": "",
@@ -853,3 +856,36 @@ def test_a_task_you_disabled_stays_off_when_setup_stops_early(machine: Machine) 
 
     assert r"Register-ScheduledTask \agent-bridge" not in machine.calls()
     assert machine.fake()["enabled"] is False
+
+
+def test_references_are_case_sensitive_as_python_dotenv_reads_them(machine: Machine) -> None:
+    machine.setup("-Enrollment ''", input="\n\n")
+    with machine.env_file.open("a", encoding="utf-8") as file:
+        file.write("root=C:\\x\nAGENT_BRIDGE_X1=${ROOT}\nAGENT_BRIDGE_X2=${root}\nAGENT_BRIDGE_X3=${userprofile}\n")
+
+    output = machine.run(
+        "setup.ps1", f"-Bridge '{machine.bridge}'",
+    )
+
+    # As python-dotenv reads them: only the exact name, and the environment's upper-case ones.
+    from dotenv import dotenv_values
+    expected = dotenv_values(machine.env_file)
+    assert expected["AGENT_BRIDGE_X1"] == "" and expected["AGENT_BRIDGE_X2"] == "C:\\x"
+    assert "Done." in output
+
+
+def test_uninstall_without_an_env_file_leaves_other_bridges_on_8765(machine: Machine) -> None:
+    machine.listen(8765, 91, "python.exe", r'"C:\dev\.venv\Scripts\agent-bridge.exe" serve')
+
+    machine.run("uninstall.ps1")
+
+    assert "Stop-Process 91" not in machine.calls()
+
+
+def test_a_rename_that_cant_free_the_port_is_not_called_running(machine: Machine) -> None:
+    machine.enroll_codes.write_text("3 0")
+    # Stop-Process doesn't end this one, so it still holds the port after Stop-Bridge.
+    output = machine.setup(f"-Enrollment '{STRING}'", input="\n\nwin-other\n", expect=1, FAKE_UNKILLABLE="4242")
+
+    assert "the old agent-bridge still holds port" in output
+    assert "Done. agent-bridge listens" not in output

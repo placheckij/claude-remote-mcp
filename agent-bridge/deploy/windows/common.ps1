@@ -227,7 +227,8 @@ function Get-BridgeListener([int]$Port) {
 function Get-ExcludedPortRange {
     <# The TCP port ranges Windows keeps for itself (Hyper-V, WSL and Docker reserve them),
        where nothing can listen although nothing does, as objects with First and Last. #>
-    foreach ($line in @(netsh int ipv4 show excludedportrange protocol=tcp)) {
+    # IPv4's and IPv6's: the address may be either.
+    foreach ($line in @(netsh int ipv4 show excludedportrange protocol=tcp) + @(netsh int ipv6 show excludedportrange protocol=tcp)) {
         if ($line -match '^\s*(\d+)\s+(\d+)') { [pscustomobject]@{ First = [int]$Matches[1]; Last = [int]$Matches[2] } }
     }
 }
@@ -302,13 +303,14 @@ function ConvertFrom-EnvValue([string]$Raw) {
 
 function Expand-EnvReference([string]$Value, $Earlier) {
     <# ${NAME} and ${NAME:-default} in $Value, as python-dotenv expands them: from the file's
-       earlier values first, then the environment. #>
+       earlier values first, by their exact names, then the environment, whose names Python
+       on Windows has upper-cased, so ${userprofile} isn't found there. #>
     return [regex]::Replace($Value, '\$\{([^}:]*)(?::-([^}]*))?\}', {
             param($reference)
             $name = $reference.Groups[1].Value
-            if ($Earlier.Contains($name.ToUpperInvariant())) { return [string]$Earlier[$name.ToUpperInvariant()] }
+            if ($Earlier.ContainsKey($name)) { return [string]$Earlier[$name] }
             $fromEnvironment = [Environment]::GetEnvironmentVariable($name)
-            if ($null -ne $fromEnvironment) { return $fromEnvironment }
+            if ($null -ne $fromEnvironment -and $name -ceq $name.ToUpperInvariant()) { return $fromEnvironment }
             return $reference.Groups[2].Value
         })
 }
@@ -316,12 +318,16 @@ function Expand-EnvReference([string]$Value, $Earlier) {
 function Read-EnvFile([string]$Path) {
     <# The env file's lines, and its values by key, as python-dotenv reads them. #>
     $values = [ordered]@{}
+    # By exact name, as python-dotenv keeps them, for ${NAME}.
+    $exact = New-Object 'Collections.Generic.Dictionary[string,string]' ([StringComparer]::Ordinal)
     $lines = @()
     if (Test-Path -LiteralPath $Path) { $lines = @(Get-Content -LiteralPath $Path -Encoding UTF8) }
     foreach ($line in $lines) {
         if ($line -match $script:KeyLine) {
-            $key = $Matches[1].ToUpperInvariant()
-            $values[$key] = Expand-EnvReference (ConvertFrom-EnvValue $Matches[2]) $values
+            $name = $Matches[1]
+            $value = Expand-EnvReference (ConvertFrom-EnvValue $Matches[2]) $exact
+            $exact[$name] = $value
+            $values[$name.ToUpperInvariant()] = $value
         }
     }
     return @{ Lines = $lines; Values = $values }

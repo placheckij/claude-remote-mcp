@@ -48,7 +48,8 @@ if ($gateway -and -not $left) {
 }
 
 Write-Step "Removing the scheduled task $TaskName"
-Stop-Bridge $Exe (Get-InstalledPort)
+# Without an env file there is no port of ours: an agent-bridge on 8765 may be anyone's.
+Stop-Bridge $Exe $(if (Test-Path -LiteralPath $EnvFile) { Get-InstalledPort } else { 0 })
 if (Get-ScheduledTask -TaskName $TaskName -TaskPath '\' -ErrorAction SilentlyContinue) {
     Unregister-ScheduledTask -TaskName $TaskName -TaskPath '\' -Confirm:$false
     Write-Host 'removed'
