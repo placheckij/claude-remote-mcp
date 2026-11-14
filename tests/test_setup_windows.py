@@ -554,6 +554,8 @@ def test_an_error_after_stopping_the_bridge_enables_the_task_again(machine: Mach
     calls = machine.calls()
     assert calls.index(r"Disable-ScheduledTask \agent-bridge") < calls.index(r"Enable-ScheduledTask \agent-bridge")
     assert machine.fake()["enabled"] is True
+    # And started: Stop-Bridge ended the bridge, and enabling fires no trigger.
+    assert calls[-1] == r"Start-ScheduledTask \agent-bridge"
 
 
 def test_a_declined_uac_prompt_prints_every_command_to_run(machine: Machine) -> None:
@@ -664,3 +666,16 @@ def test_another_os_is_told_so_before_anything_reads_appdata(machine: Machine) -
     output = machine.setup(expect=1, OS="Linux", APPDATA="")
 
     assert "these scripts are for Windows" in output
+
+
+def test_a_short_ipv4_address_is_refused_as_agent_bridge_would(machine: Machine) -> None:
+    output = machine.setup("-Address '192.168.1'", "-Enrollment ''", input="\n\n", expect=1)
+
+    assert "must be an IP address" in output
+
+
+def test_a_reserved_port_passed_in_says_to_pass_another(machine: Machine) -> None:
+    output = machine.setup("-Port 8765", "-Enrollment ''", input="\n\n", expect=1, FAKE_EXCLUDED_PORTS="8765-8765")
+
+    assert "error: pass another -Port" in output
+    assert "stop that program" not in output

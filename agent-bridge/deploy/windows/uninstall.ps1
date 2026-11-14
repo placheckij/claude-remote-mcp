@@ -30,24 +30,21 @@ Write-Step 'Leaving the gateway'
 $gateway = Get-EnrolledGateway
 $left = $false
 if ($Exe -and (Test-Path -LiteralPath $Exe)) {
-    # Exits 0 even when the gateway can't be reached, after printing what to run there; any
-    # other exit is agent-bridge failing to run.
+    # Exits 0 even when the gateway can't be reached, after printing what to run there, and
+    # says so itself when not enrolled; any other exit is agent-bridge failing to run.
     $left = (Invoke-Native $Exe @('unenroll')) -eq 0
     if (-not $left) { Write-Warn "$Exe didn't run, so this host couldn't take itself off the gateway." }
 } elseif ($gateway) {
     Write-Warn "agent-bridge.exe isn't there any more, so this host can't take itself off the gateway."
+} else {
+    Write-Host 'Not enrolled with a gateway.'
 }
 if ($gateway -and -not $left) {
     Write-Host "Remove it on the gateway host ($($gateway.url)) with: sudo mcp-gateway bridges remove $($gateway.name)"
-} elseif (-not $gateway) {
-    Write-Host 'Not enrolled with a gateway.'
 }
 
 Write-Step "Removing the scheduled task $TaskName"
-$installed = (Read-EnvFile $EnvFile).Values
-$port = 8765
-if ($installed.Contains('AGENT_BRIDGE_PORT') -and $installed['AGENT_BRIDGE_PORT'] -match '^\d{1,5}$') { $port = [int]$installed['AGENT_BRIDGE_PORT'] }
-Stop-Bridge $Exe $port
+Stop-Bridge $Exe (Get-InstalledPort)
 if (Get-ScheduledTask -TaskName $TaskName -TaskPath '\' -ErrorAction SilentlyContinue) {
     Unregister-ScheduledTask -TaskName $TaskName -TaskPath '\' -Confirm:$false
     Write-Host 'removed'

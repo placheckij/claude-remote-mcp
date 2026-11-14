@@ -257,7 +257,7 @@ function Assert-Narrow([string]$Folder, [string]$What) {
 
 function Sync-Checkout {
     Write-Step "Installing dependencies into $Checkout\.venv"
-    if ((Invoke-Native uv @('sync', '--all-packages', '--directory', $Checkout)) -ne 0) { Stop-Setup 'uv sync failed' }
+    if ((Invoke-Native uv @('sync', '--all-packages', '--frozen', '--directory', $Checkout)) -ne 0) { Stop-Setup 'uv sync failed' }
 }
 
 function Get-BlockRule([string]$Program) {
@@ -340,7 +340,11 @@ try {
     if (-not $Address) { Stop-Setup 'no LAN address: connect to the network, or pass -Address' }
     # As agent-bridge checks it, before a bad one replaces a working bridge.
     $parsed = $null
-    if (-not [Net.IPAddress]::TryParse($Address, [ref]$parsed) -or $Address -match '^\d+$') {
+    # .NET also reads 192.168.1 and 010.0.0.5 as IPv4 addresses, which Python doesn't: an
+    # IPv4 address must be written as .NET writes it back.
+    $ipv4 = [Net.Sockets.AddressFamily]::InterNetwork
+    if (-not [Net.IPAddress]::TryParse($Address, [ref]$parsed) -or
+        ($parsed.AddressFamily -eq $ipv4 -and $parsed.ToString() -ne $Address)) {
         Stop-Setup "the LAN address must be an IP address, like 192.168.1.20; got $Address"
     }
     if ($parsed.Equals([Net.IPAddress]::Any) -or $parsed.Equals([Net.IPAddress]::IPv6Any)) {
@@ -401,12 +405,14 @@ try {
         if ($holder -and -not (Test-IsBridge $holder.CommandLine)) {
             Write-Host "Port $Port is in use by another program: PID $($holder.Id), $($holder.Name)"
             if ($holder.CommandLine) { Write-Host "  $($holder.CommandLine)" }
+            $instead = 'stop that program, or pass another -Port'
         } elseif (-not $holder -and (Test-PortExcluded $Port @(Get-ExcludedPortRange))) {
             Write-Host "Windows keeps port $Port for itself (see: netsh int ipv4 show excludedportrange protocol=tcp)."
+            $instead = 'pass another -Port'
         } else {
             break
         }
-        if ($Bound.ContainsKey('Port')) { Stop-Setup "stop that program, or pass another -Port" }
+        if ($Bound.ContainsKey('Port')) { Stop-Setup $instead }
         $free = Find-FreePort ($Port + 1)
         if ($free -eq 0) { Stop-Setup 'no free port found' }
         $answer = Read-Value 'Port to use instead' ([string]$free)

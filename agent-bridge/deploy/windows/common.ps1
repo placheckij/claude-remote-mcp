@@ -31,6 +31,8 @@ function Restore-Task {
        leave the bridge off at the next logon. #>
     if ($script:TaskDisabled) {
         Enable-ScheduledTask -TaskName $script:TaskName -TaskPath '\' -ErrorAction SilentlyContinue | Out-Null
+        # Stop-Bridge ended the bridge too, and enabling fires no trigger.
+        Start-ScheduledTask -TaskName $script:TaskName -TaskPath '\' -ErrorAction SilentlyContinue
         $script:TaskDisabled = $false
     }
 }
@@ -112,6 +114,10 @@ function Invoke-Native {
     param([Parameter(Mandatory)][string]$FilePath, [string[]]$ArgumentList = @(), [switch]$Quiet)
     $saved = $ErrorActionPreference
     $ErrorActionPreference = 'Continue'
+    # agent-bridge writes UTF-8 (PYTHONUTF8 above); Windows PowerShell decodes what a program
+    # prints with the console's code page.
+    $savedEncoding = $null
+    try { $savedEncoding = [Console]::OutputEncoding; [Console]::OutputEncoding = New-Object Text.UTF8Encoding $false } catch { $savedEncoding = $null }
     try {
         $script:NativeOutput = @(& $FilePath @ArgumentList 2>&1 | ForEach-Object {
                 $text = if ($_ -is [Management.Automation.ErrorRecord]) { $_.Exception.Message } else { [string]$_ }
@@ -121,7 +127,15 @@ function Invoke-Native {
         return $LASTEXITCODE
     } finally {
         $ErrorActionPreference = $saved
+        if ($savedEncoding) { try { [Console]::OutputEncoding = $savedEncoding } catch { $savedEncoding = $null } }
     }
+}
+
+function Get-InstalledPort {
+    <# The port the env file sets, else agent-bridge's default. #>
+    $port = (Read-EnvFile $script:EnvFile).Values['AGENT_BRIDGE_PORT']
+    if ($port -match '^\d{1,5}$') { return [int]$port }
+    return 8765
 }
 
 function Format-Quoted([string]$Text) {
