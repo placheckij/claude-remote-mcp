@@ -803,9 +803,11 @@ def test_references_in_the_env_file_are_read_as_agent_bridge_reads_them(machine:
     text = text.replace(f"AGENT_BRIDGE_ALLOWED_ROOTS={machine.profile / 'Projects'}", r"AGENT_BRIDGE_ALLOWED_ROOTS=${USERPROFILE}\Projects")
     machine.env_file.write_text(text, encoding="utf-8")
 
-    machine.setup()
+    # Read as agent-bridge reads it (so no question and nothing refused), and kept as written.
+    output = machine.setup(input="not an answer\n" * 3)
 
-    assert machine.env()["AGENT_BRIDGE_ALLOWED_ROOTS"] == str(machine.profile / "Projects")
+    assert "Done." in output
+    assert r"AGENT_BRIDGE_ALLOWED_ROOTS=${USERPROFILE}\Projects" in machine.env_file.read_text(encoding="utf-8")
 
 
 def test_the_settings_copy_lives_in_the_state_folder_and_uninstall_removes_a_leftover(machine: Machine) -> None:
@@ -889,3 +891,48 @@ def test_a_rename_that_cant_free_the_port_is_not_called_running(machine: Machine
 
     assert "the old agent-bridge still holds port" in output
     assert "Done. agent-bridge listens" not in output
+
+
+def test_a_reference_setup_doesnt_change_is_kept_as_written(machine: Machine) -> None:
+    machine.setup("-Enrollment ''", input="\n\n")
+    text = machine.env_file.read_text(encoding="utf-8")
+    herdr = r"AGENT_BRIDGE_HERDR_BIN=${LOCALAPPDATA}\Programs\Herdr\bin\herdr.exe"
+    text = text.replace(f"AGENT_BRIDGE_HERDR_BIN={machine.herdr}", herdr)
+    machine.env_file.write_text(text, encoding="utf-8")
+
+    machine.setup()
+
+    assert herdr in machine.env_file.read_text(encoding="utf-8")
+
+
+def test_a_task_a_killed_setup_left_disabled_is_brought_back(machine: Machine) -> None:
+    machine.setup("-Enrollment ''", input="\n\n")
+    fake = machine.fake()
+    fake["enabled"] = False
+    machine.save(fake)
+    (machine.localappdata / "agent-bridge" / "task-disabled-by-setup").write_text("setup")
+    (machine.appdata / "agent-bridge" / "env.tmp").mkdir()
+
+    machine.setup(expect=1)
+
+    assert machine.fake()["enabled"] is True
+    assert not (machine.localappdata / "agent-bridge" / "task-disabled-by-setup").exists()
+
+
+def test_a_name_with_a_quote_is_asked_for_again(machine: Machine) -> None:
+    output = machine.setup("-Enrollment ''", input='\nwin"pc\nwin-pc\n')
+
+    assert 'The name win"pc won\'t do' in output
+    assert machine.env()["AGENT_BRIDGE_NAME"] == "win-pc"
+
+
+def test_a_port_change_stops_an_agent_bridge_on_the_old_port(machine: Machine) -> None:
+    machine.setup("-Enrollment ''", input="\n\n")
+    # Started some other way than the task, on the installed port.
+    fake = machine.fake()
+    fake["listen"] = [{"port": 8765, "pid": 93, "name": "python.exe", "path": "", "cmd": "python.exe -m agent_bridge.cli serve"}]
+    machine.save(fake)
+
+    machine.setup("-Port 8766")
+
+    assert "Stop-Process 93" in machine.calls()

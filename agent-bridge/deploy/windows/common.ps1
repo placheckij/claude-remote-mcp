@@ -22,6 +22,9 @@ $script:LogFile = Join-Path $script:StateDir 'agent-bridge.log'
 $script:RunFile = Join-Path $script:StateDir 'run.cmd'
 # Where setup checks a copy of the settings; uninstall removes what a killed setup left.
 $script:CheckDir = Join-Path $script:StateDir 'setup-check'
+# There while setup has the task disabled: a setup killed meanwhile leaves it, and the next
+# one then knows the task was setup's to bring back, not one you turned off.
+$script:DisabledMarker = Join-Path $script:StateDir 'task-disabled-by-setup'
 # Set while Stop-Bridge has the task disabled, so leaving early enables it again.
 $script:TaskDisabled = $false
 
@@ -33,6 +36,7 @@ function Resume-Task {
     $xml = Export-ScheduledTask -TaskName $script:TaskName -TaskPath '\'
     Register-ScheduledTask -TaskName $script:TaskName -TaskPath '\' -Xml $xml -Force | Out-Null
     $script:TaskDisabled = $false
+    Remove-Item -LiteralPath $script:DisabledMarker -Force -ErrorAction SilentlyContinue
 }
 
 function Restore-Task {
@@ -170,7 +174,9 @@ function ConvertTo-Port([string]$Value) {
 }
 
 function Get-InstalledPort {
-    <# The port the env file sets, else agent-bridge's default. #>
+    <# The port the env file sets, else agent-bridge's default; 0 without an env file, when
+       no port is ours and an agent-bridge on 8765 may be anyone's. #>
+    if (-not (Test-Path -LiteralPath $script:EnvFile)) { return 0 }
     $port = ConvertTo-Port ([string](Read-EnvFile $script:EnvFile).Values['AGENT_BRIDGE_PORT'])
     if ($port) { return $port }
     return 8765
@@ -247,8 +253,12 @@ function Stop-Bridge([string]$Exe, [int]$Port) {
     $task = Get-ScheduledTask -TaskName $script:TaskName -TaskPath '\' -ErrorAction SilentlyContinue
     if ($task) {
         Disable-ScheduledTask -TaskName $script:TaskName -TaskPath '\' | Out-Null
-        # Brought back on the way out only if it was on: one you disabled stays off.
-        if ([string]$task.State -ne 'Disabled') { $script:TaskDisabled = $true }
+        # Brought back on the way out only if it was on, or setup had turned it off before:
+        # one you disabled stays off.
+        if ([string]$task.State -ne 'Disabled' -or (Test-Path -LiteralPath $script:DisabledMarker)) {
+            $script:TaskDisabled = $true
+            if (Test-Path -LiteralPath $script:StateDir) { Set-Content -LiteralPath $script:DisabledMarker -Value 'setup' }
+        }
         Stop-ScheduledTask -TaskName $script:TaskName -TaskPath '\'
     }
     # Ending the task ends only the conhost.exe it started; the cmd.exe running run.cmd, the

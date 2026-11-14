@@ -82,30 +82,43 @@ function ConvertTo-EnvValue([string]$Value) {
     return "'" + ($Value -replace "([\\'])", '\$1') + "'"
 }
 
+function Format-EnvLine([string]$Key, [string]$Value) {
+    # python-dotenv expands ${NAME} in any value, quoted or not, and has no escape for it.
+    if ($Value -match '\$\{') { Stop-Setup "$Key can't hold `${ (agent-bridge would read it as a variable): $Value" }
+    return "$Key=$(ConvertTo-EnvValue $Value)"
+}
+
 function Write-EnvFile([string]$Path, [string[]]$Lines, $Settings) {
     <# Sets $Settings' keys (an empty value removes the line) and keeps every other line,
-       e.g. AGENT_BRIDGE_ACCOUNTS added by hand. Written beside the file and moved over it. #>
-    # python-dotenv expands ${NAME} in any value, quoted or not, and has no escape for it.
-    foreach ($key in $Settings.Keys) {
-        if ([string]$Settings[$key] -match '\$\{') { Stop-Setup "$key can't hold `${ (agent-bridge would read it as a variable): $($Settings[$key])" }
-    }
+       e.g. AGENT_BRIDGE_ACCOUNTS added by hand. A line whose value is already the one to set
+       stays as it is, so a ${NAME} written there by hand isn't replaced by what it expands to.
+       Written beside the file and moved over it. #>
     $out = New-Object Collections.Generic.List[string]
+    $exact = New-Object 'Collections.Generic.Dictionary[string,string]' ([StringComparer]::Ordinal)
     if ($Lines.Count -eq 0) {
         $out.Add('# agent-bridge settings, written by agent-bridge\deploy\windows\setup.ps1. Lines it')
         $out.Add('# doesn''t set are kept; see agent-bridge\README.md for the others.')
     }
     $done = @{}
     foreach ($line in $Lines) {
-        if ($line -match $KeyLine -and $Settings.Contains($Matches[1].ToUpperInvariant())) {
-            $key = $Matches[1].ToUpperInvariant()
-            if (-not $done.ContainsKey($key) -and $Settings[$key]) { $out.Add("$key=$(ConvertTo-EnvValue $Settings[$key])") }
+        $current = $null
+        if ($line -match $KeyLine) {
+            $name = $Matches[1]
+            $current = Expand-EnvReference (ConvertFrom-EnvValue $Matches[2]) $exact
+            $exact[$name] = $current
+        }
+        if ($null -ne $current -and $Settings.Contains($name.ToUpperInvariant())) {
+            $key = $name.ToUpperInvariant()
+            if (-not $done.ContainsKey($key) -and $Settings[$key]) {
+                if ($current -ceq [string]$Settings[$key]) { $out.Add($line) } else { $out.Add((Format-EnvLine $key $Settings[$key])) }
+            }
             $done[$key] = $true
         } else {
             $out.Add($line)
         }
     }
     foreach ($key in $Settings.Keys) {
-        if (-not $done.ContainsKey($key) -and $Settings[$key]) { $out.Add("$key=$(ConvertTo-EnvValue $Settings[$key])") }
+        if (-not $done.ContainsKey($key) -and $Settings[$key]) { $out.Add((Format-EnvLine $key $Settings[$key])) }
     }
     New-Item -ItemType Directory -Force -Path (Split-Path -Parent $Path) | Out-Null
     $temporary = "$Path.tmp"
@@ -165,6 +178,13 @@ function Read-Name([string]$Prompt, [string]$Default) {
     <# Asks until agent-bridge accepts the name; '' when nothing was given. #>
     while ($true) {
         $value = Read-Value $Prompt $Default
+        # Windows PowerShell passes a " inside an argument on mangled, so agent-bridge would
+        # check another name than the one written; no name may have one, or a space.
+        if ($value -match '["\s]') {
+            Write-Host "The name $value won't do: lowercase letters, digits and - only."
+            $Default = ''
+            continue
+        }
         if (-not $value -or (Test-Format '--name-format' $value)) { return $value }
         $Default = ''
     }
@@ -487,6 +507,9 @@ try {
 
     Write-Step 'Stopping the running agent-bridge, if any'
     Stop-Bridge $Exe $Port
+    # And one on the port it had, when that changes.
+    $oldPort = Get-InstalledPort
+    if ($oldPort -and $oldPort -ne $Port) { Stop-Bridge $Exe $oldPort }
     if (Get-PortHolder $Port) { Stop-Setup "port $Port is still in use; stop what holds it and run setup again" }
 
     if ($Checkout -and -not $Synced) {
@@ -560,6 +583,7 @@ try {
     Register-ScheduledTask -TaskName $TaskName -TaskPath '\' -Xml $xml -Force | Out-Null
     # Registered enabled.
     $script:TaskDisabled = $false
+    Remove-Item -LiteralPath $DisabledMarker -Force -ErrorAction SilentlyContinue
     $Started = Start-Bridge $Port -Registered
 
     # --- Enroll ----------------------------------------------------------------------------
@@ -646,7 +670,11 @@ try {
         Write-Host "  `$env:PYTHONUTF8 = '1'; & $(Format-Quoted $Exe) enroll '<the string it printed>'"
         if ($Gateway) { Write-Warn "the gateway at $($Gateway.url) still has this host's old settings until then" }
     } elseif ($Gateway) {
-        Write-Host "Enrolled as $($Gateway.name) with the gateway at $($Gateway.url). Ask Claude to list agents."
+        if ($Started) {
+            Write-Host "Enrolled as $($Gateway.name) with the gateway at $($Gateway.url). Ask Claude to list agents."
+        } else {
+            Write-Host "Enrolled as $($Gateway.name) with the gateway at $($Gateway.url); Claude can reach it once agent-bridge runs."
+        }
         if (($NewToken -or $NameChanged) -and $null -eq $EnrollCode) {
             Write-Warn 'the gateway still has the old token or name: enroll again'
         }

@@ -48,8 +48,7 @@ if ($gateway -and -not $left) {
 }
 
 Write-Step "Removing the scheduled task $TaskName"
-# Without an env file there is no port of ours: an agent-bridge on 8765 may be anyone's.
-Stop-Bridge $Exe $(if (Test-Path -LiteralPath $EnvFile) { Get-InstalledPort } else { 0 })
+Stop-Bridge $Exe (Get-InstalledPort)
 if (Get-ScheduledTask -TaskName $TaskName -TaskPath '\' -ErrorAction SilentlyContinue) {
     Unregister-ScheduledTask -TaskName $TaskName -TaskPath '\' -Confirm:$false
     Write-Host 'removed'
@@ -72,7 +71,7 @@ if (Get-NetFirewallRule -Name $RuleName -ErrorAction SilentlyContinue) {
 }
 
 Write-Step 'Removing the settings and state'
-foreach ($file in @($EnvFile, "$EnvFile.tmp", $StateFile, "$StateFile.tmp", $LogFile, "$LogFile.1", $RunFile)) {
+foreach ($file in @($EnvFile, "$EnvFile.tmp", $StateFile, "$StateFile.tmp", $LogFile, "$LogFile.1", $RunFile, $DisabledMarker)) {
     if (Test-Path -LiteralPath $file) {
         # A process that hasn't quite exited may still hold the log for a moment.
         for ($try = 1; ; $try++) {
