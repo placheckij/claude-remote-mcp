@@ -22,17 +22,18 @@ param([string]$Bridge)
 if ($env:OS -ne 'Windows_NT') { Stop-Setup 'this script is for Windows' }
 Assert-RunAsYou 'uninstall.ps1'
 
-$found = Find-Bridge $Bridge
-$Exe = $found.Exe
+# Everything below goes ahead without agent-bridge.exe, e.g. after its folder was deleted.
+$found = Find-Bridge $Bridge -Optional
+$Exe = if ($found) { $found.Exe } else { '' }
 
 Write-Step 'Leaving the gateway'
-if (Test-Path -LiteralPath $Exe) {
+if ($Exe -and (Test-Path -LiteralPath $Exe)) {
     # Exits 0 even when the gateway can't be reached, after printing what to run there.
     Invoke-Native $Exe @('unenroll') | Out-Null
 } else {
     $gateway = Get-EnrolledGateway
     if ($gateway) {
-        Write-Warn "$Exe is gone, so this host can't take itself off the gateway at $($gateway.url)."
+        Write-Warn "agent-bridge.exe isn't there any more, so this host can't take itself off the gateway at $($gateway.url)."
         Write-Host "Remove it on the gateway host with: sudo mcp-gateway bridges remove $($gateway.name)"
     } else {
         Write-Host 'Not enrolled with a gateway.'
@@ -40,11 +41,9 @@ if (Test-Path -LiteralPath $Exe) {
 }
 
 Write-Step "Removing the scheduled task $TaskName"
-$port = 0
-if (Test-Path -LiteralPath $EnvFile) {
-    $line = Get-Content -LiteralPath $EnvFile -Encoding UTF8 | Where-Object { $_ -match '^\s*AGENT_BRIDGE_PORT\s*=\s*[''"]?(\d+)' } | Select-Object -First 1
-    if ($line -and $line -match '(\d+)') { $port = [int]$Matches[1] }
-}
+$installed = (Read-EnvFile $EnvFile).Values
+$port = 8765
+if ($installed.Contains('AGENT_BRIDGE_PORT') -and $installed['AGENT_BRIDGE_PORT'] -match '^\d{1,5}$') { $port = [int]$installed['AGENT_BRIDGE_PORT'] }
 Stop-Bridge $Exe $port
 if (Get-ScheduledTask -TaskName $TaskName -TaskPath '\' -ErrorAction SilentlyContinue) {
     Unregister-ScheduledTask -TaskName $TaskName -TaskPath '\' -Confirm:$false

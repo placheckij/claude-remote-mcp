@@ -70,17 +70,9 @@ function Read-Value([string]$Prompt, [string]$Default) {
 }
 
 function Read-YesNo([string]$Prompt) {
-    <# Asks a yes/no question that defaults to yes. #>
-    return (Read-Value "$Prompt [Y/n]" '') -notmatch '^(?i)n'
-}
-
-function ConvertFrom-EnvValue([string]$Raw) {
-    <# A value as python-dotenv reads it: quoted, with \\ and \' (and \" in "...") as escapes,
-       or plain up to a ` #` comment. #>
-    $value = $Raw.Trim()
-    if ($value -match "^'(.*)'$") { return $Matches[1] -replace "\\(['\\])", '$1' }
-    if ($value -match '^"(.*)"$') { return $Matches[1] -replace "\\([`"'\\])", '$1' }
-    return ($value -replace '\s+#.*$', '')
+    <# Asks a yes/no question; only an answer starting with y is yes, so Enter, or running
+       without anyone to ask, is no. #>
+    return (Read-Value "$Prompt [y/N]" '') -match '^(?i)y'
 }
 
 function ConvertTo-EnvValue([string]$Value) {
@@ -88,19 +80,6 @@ function ConvertTo-EnvValue([string]$Value) {
        escaped. (It would still expand ${NAME}, which no path here has.) #>
     if ($Value -match '^[A-Za-z0-9_.,:;/\\+~=@-]*$') { return $Value }
     return "'" + ($Value -replace "([\\'])", '\$1') + "'"
-}
-
-$KeyLine = '^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=(.*)$'
-
-function Read-EnvFile([string]$Path) {
-    <# The env file's lines, and its values by key. #>
-    $values = [ordered]@{}
-    $lines = @()
-    if (Test-Path -LiteralPath $Path) { $lines = @(Get-Content -LiteralPath $Path -Encoding UTF8) }
-    foreach ($line in $lines) {
-        if ($line -match $KeyLine) { $values[$Matches[1].ToUpperInvariant()] = ConvertFrom-EnvValue $Matches[2] }
-    }
-    return @{ Lines = $lines; Values = $values }
 }
 
 function Write-EnvFile([string]$Path, [string[]]$Lines, $Settings) {
@@ -231,11 +210,29 @@ function Wait-Bridge([int]$Port) {
 }
 
 function Start-Bridge([int]$Port) {
+    # Stop-Bridge leaves it disabled.
+    Enable-ScheduledTask -TaskName $TaskName -TaskPath '\' | Out-Null
     Start-ScheduledTask -TaskName $TaskName -TaskPath '\'
     if (-not (Wait-Bridge $Port)) {
         Write-Warn "agent-bridge isn't listening on port $Port yet. The end of $LogFile`:"
         if (Test-Path -LiteralPath $LogFile) { Get-Content -LiteralPath $LogFile -Tail 15 | ForEach-Object { Write-Host "  $_" } }
     }
+}
+
+function Sync-Checkout {
+    Write-Step "Installing dependencies into $Checkout\.venv"
+    if ((Invoke-Native uv @('sync', '--all-packages', '--directory', $Checkout)) -ne 0) { Stop-Setup 'uv sync failed' }
+}
+
+function Get-BlockRule([int]$Port) {
+    <# Inbound rules that block the program listening on $Port, e.g. python.exe after a
+       Cancel at Windows' firewall prompt; they win over the rule setup adds. #>
+    $holder = Get-PortHolder $Port
+    if (-not $holder -or -not $holder.Path) { return @() }
+    return @(Get-NetFirewallApplicationFilter -Program $holder.Path -ErrorAction SilentlyContinue |
+        Get-NetFirewallRule -ErrorAction SilentlyContinue | Where-Object {
+            [string]$_.Direction -eq 'Inbound' -and [string]$_.Action -eq 'Block' -and [string]$_.Enabled -eq 'True'
+        })
 }
 
 # --- Checks and questions --------------------------------------------------------------
@@ -255,8 +252,7 @@ if ($Checkout) {
     }
     # A first install has nothing running yet that holds the .venv's files.
     if (-not (Test-Path -LiteralPath $Exe)) {
-        Write-Step "Installing dependencies into $Checkout\.venv"
-        if ((Invoke-Native uv @('sync', '--all-packages', '--directory', $Checkout)) -ne 0) { Stop-Setup 'uv sync failed' }
+        Sync-Checkout
         $Synced = $true
     }
 }
@@ -305,6 +301,7 @@ if ($Address -ne '127.0.0.1' -and -not (Test-LocalAddress $Address)) {
 
 if (-not $Bound.ContainsKey('Port')) {
     $installedPort = Get-Installed 'PORT'
+    if ($installedPort -and $installedPort -notmatch '^\d{1,5}$') { Stop-Setup "AGENT_BRIDGE_PORT in $EnvFile isn't a port: $installedPort" }
     $Port = if ($installedPort) { [int]$installedPort } else { 8765 }
 }
 if ($Port -lt 1 -or $Port -gt 65535) { Stop-Setup "the port must be between 1 and 65535, got $Port" }
@@ -365,10 +362,7 @@ Write-Step 'Stopping the running agent-bridge, if any'
 Stop-Bridge $Exe $Port
 if (Get-PortHolder $Port) { Stop-Setup "port $Port is still in use; stop what holds it and run setup again" }
 
-if ($Checkout -and -not $Synced) {
-    Write-Step "Installing dependencies into $Checkout\.venv"
-    if ((Invoke-Native uv @('sync', '--all-packages', '--directory', $Checkout)) -ne 0) { Stop-Setup 'uv sync failed' }
-}
+if ($Checkout -and -not $Synced) { Sync-Checkout }
 
 Write-Step "Writing $EnvFile"
 $Settings = [ordered]@{
@@ -426,23 +420,32 @@ if ($makePrivate -or -not (Test-FirewallRule $Port)) {
 }
 
 Write-Step 'Starting agent-bridge'
+# Said before it starts: Windows may ask as soon as Python listens on the LAN address.
+Write-Host 'If Windows asks whether to let Python through the firewall, allow it on Private networks:'
+Write-Host 'Cancel adds a rule that blocks Python, which wins over the rule above.'
 Start-Bridge $Port
 
 # --- Enroll ----------------------------------------------------------------------------
 
 $Gateway = Get-EnrolledGateway
+# The gateway knows this host by the name it enrolled with; a new -Name needs enrolling again.
+$NameChanged = $Gateway -and $Bound.ContainsKey('Name') -and $Name -ne $Gateway.name
 $String = ''
 if ($Bound.ContainsKey('Enrollment')) {
     $String = $Enrollment
-} elseif (-not $Gateway -or $NewToken) {
+} elseif (-not $Gateway -or $NewToken -or $NameChanged) {
     Write-Host ''
-    if ($Gateway) { Write-Host "The gateway at $($Gateway.url) still has the old token: enroll again." }
+    if ($Gateway -and $NewToken) { Write-Host "The gateway at $($Gateway.url) still has the old token: enroll again." }
+    if ($NameChanged) { Write-Host "The gateway at $($Gateway.url) knows this host as $($Gateway.name): enroll again to rename it." }
     Write-Host 'To join a gateway, run `sudo mcp-gateway enroll` on the gateway host and paste the string it prints.'
     $String = Read-Value 'Enrollment string (Enter to skip)' ''
 }
+$EnrollCode = $null
 if ($String) {
     Write-Step 'Enrolling with the gateway'
-    while ((Invoke-Native $Exe @('enroll', $String)) -eq 3) {
+    while ($true) {
+        $EnrollCode = Invoke-Native $Exe @('enroll', $String)
+        if ($EnrollCode -ne 3) { break }
         # The name is taken by another host on that gateway.
         $Name = Read-Name 'Another name for this host' ''
         if (-not $Name) { break }
@@ -456,6 +459,7 @@ if ($String) {
 
 Write-Step 'Checks'
 $CheckFailed = (Invoke-Native $Exe @('check')) -ne 0
+$Blocking = @(Get-BlockRule $Port)
 
 # --- Done ------------------------------------------------------------------------------
 
@@ -465,16 +469,27 @@ Write-Host ''
 Write-Host "Done. agent-bridge listens on http://${UrlHost}:$Port and starts at every logon."
 Write-Host "Its log: $LogFile"
 if ($CheckFailed) { Write-Host 'A check failed: see the log (a 502 from herdr means its server isn''t running).' }
-Write-Host 'If Windows asks whether to let Python through the firewall, allow it on Private networks.'
+if ($Blocking.Count -gt 0) {
+    $path = (Get-PortHolder $Port).Path
+    Write-Warn "a firewall rule blocks $path, so the gateway can't reach agent-bridge. In a PowerShell run as administrator:"
+    Write-Host "  Get-NetFirewallApplicationFilter -Program '$path' | Get-NetFirewallRule | Where-Object Action -eq Block | Remove-NetFirewallRule"
+}
 if ($ConfigDir -and -not (Test-Path -LiteralPath (Join-Path $ConfigDir '.claude.json'))) {
     Write-Host ''
     Write-Host "Run Claude once in the agents' config and log in, or new agents can't start:"
     Write-Host "  `$env:CLAUDE_CONFIG_DIR = '$ConfigDir'; claude"
 }
 Write-Host ''
-if ($Gateway) {
+if ($null -ne $EnrollCode -and $EnrollCode -ne 0) {
+    Write-Host 'Not enrolled: see "Enrolling with the gateway" above. Once that is fixed, run here'
+    Write-Host '(with a new string from `sudo mcp-gateway enroll` if this one has expired):'
+    Write-Host "  & '$Exe' enroll '<the string it printed>'"
+    if ($Gateway) { Write-Warn "the gateway at $($Gateway.url) still has this host's old settings until then" }
+} elseif ($Gateway) {
     Write-Host "Enrolled as $($Gateway.name) with the gateway at $($Gateway.url). Ask Claude to list agents."
-    if ($NewToken -and -not $String) { Write-Warn 'the token is new, and the gateway still has the old one: enroll again' }
+    if (($NewToken -or $NameChanged) -and $null -eq $EnrollCode) {
+        Write-Warn 'the gateway still has the old token or name: enroll again'
+    }
 } else {
     Write-Host 'Not enrolled with a gateway yet. Run `sudo mcp-gateway enroll` on the gateway host, then here:'
     Write-Host "  & '$Exe' enroll '<the string it printed>'"

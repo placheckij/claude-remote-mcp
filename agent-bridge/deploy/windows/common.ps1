@@ -38,12 +38,14 @@ function Assert-RunAsYou([string]$Script) {
     }
 }
 
-function Find-Bridge([string]$Given) {
+function Find-Bridge([string]$Given, [switch]$Optional) {
     <# agent-bridge.exe: the one given, the one a package ships beside this folder, or the
-       checkout's .venv (Checkout is then the repo, which needs `uv sync`), else on PATH. #>
+       checkout's .venv (Checkout is then the repo, which needs `uv sync`), else on PATH.
+       Not found, it stops setup, or with -Optional returns $null. #>
     if ($Given) {
-        if (-not (Test-Path -LiteralPath $Given -PathType Leaf)) { Stop-Setup "-Bridge: $Given doesn't exist" }
-        return @{ Exe = (Resolve-Path -LiteralPath $Given).Path; Checkout = $null }
+        if (Test-Path -LiteralPath $Given -PathType Leaf) { return @{ Exe = (Resolve-Path -LiteralPath $Given).Path; Checkout = $null } }
+        if ($Optional) { return $null }
+        Stop-Setup "-Bridge: $Given doesn't exist"
     }
     $beside = Join-Path $PSScriptRoot 'agent-bridge.exe'
     if (Test-Path -LiteralPath $beside -PathType Leaf) { return @{ Exe = $beside; Checkout = $null } }
@@ -53,6 +55,7 @@ function Find-Bridge([string]$Given) {
     }
     $onPath = Get-Command agent-bridge.exe -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
     if ($onPath) { return @{ Exe = $onPath.Source; Checkout = $null } }
+    if ($Optional) { return $null }
     Stop-Setup 'agent-bridge not found: run this from a checkout of claude-remote-mcp, or pass -Bridge <path to agent-bridge.exe>'
 }
 
@@ -80,33 +83,33 @@ function Test-IsBridge([string]$CommandLine) {
 }
 
 function Get-PortHolder([int]$Port) {
-    <# The process listening on TCP $Port on any address, as @{ Id; Name; CommandLine }, or $null. #>
-    $ids = @()
-    if (Get-Command Get-NetTCPConnection -ErrorAction SilentlyContinue) {
-        $ids = @(Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue |
-            Select-Object -ExpandProperty OwningProcess -Unique)
-    } else {
-        foreach ($line in (& netstat.exe -ano -p TCP) + (& netstat.exe -ano -p TCPv6)) {
-            if ($line -match "^\s*TCP\s+\S+:$Port\s+\S+\s+LISTENING\s+(\d+)\s*$") { $ids += [int]$Matches[1] }
-        }
-        $ids = @($ids | Select-Object -Unique)
-    }
+    <# The process listening on TCP $Port on any address, as @{ Id; Name; CommandLine; Path },
+       or $null. (Get-NetTCPConnection is on every Windows setup.ps1 runs on.) #>
+    $ids = @(Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue |
+        Select-Object -ExpandProperty OwningProcess -Unique)
     if ($ids.Count -eq 0) { return $null }
     $process = Get-CimInstance Win32_Process -Filter "ProcessId=$($ids[0])" -ErrorAction SilentlyContinue
-    if (-not $process) { return @{ Id = $ids[0]; Name = '?'; CommandLine = '' } }
+    if (-not $process) { return @{ Id = $ids[0]; Name = '?'; CommandLine = ''; Path = '' } }
     # Empty for another user's process, or an elevated one: then it isn't ours either.
-    return @{ Id = $ids[0]; Name = $process.Name; CommandLine = [string]$process.CommandLine }
+    return @{ Id = $ids[0]; Name = $process.Name; CommandLine = [string]$process.CommandLine; Path = [string]$process.ExecutablePath }
 }
 
 function Stop-Bridge([string]$Exe, [int]$Port) {
-    <# Stops the task and the bridge it runs, and any agent-bridge still holding $Port. #>
+    <# Stops the task and the bridge it runs, and any agent-bridge still holding $Port. The task
+       is left disabled, or its one-minute repeat could start the old bridge again meanwhile;
+       registering it again enables it. #>
     $task = Get-ScheduledTask -TaskName $TaskName -TaskPath '\' -ErrorAction SilentlyContinue
-    if ($task) { Stop-ScheduledTask -TaskName $TaskName -TaskPath '\' }
+    if ($task) {
+        Disable-ScheduledTask -TaskName $TaskName -TaskPath '\' | Out-Null
+        Stop-ScheduledTask -TaskName $TaskName -TaskPath '\'
+    }
     # Ending the task ends only the conhost.exe it started; cmd.exe and the bridge behind it
-    # keep running, so they are ended here by their command lines.
-    Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {
-        (Test-IsBridge $_.CommandLine) -and ([string]$_.CommandLine).IndexOf($Exe, [StringComparison]::OrdinalIgnoreCase) -ge 0
-    } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+    # keep running, so they are ended here by their command lines: ones that run this $Exe.
+    if ($Exe) {
+        Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {
+            (Test-IsBridge $_.CommandLine) -and ([string]$_.CommandLine).IndexOf($Exe, [StringComparison]::OrdinalIgnoreCase) -ge 0
+        } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+    }
     if ($Port -le 0) { return }
     $holder = Get-PortHolder $Port
     if ($holder -and (Test-IsBridge $holder.CommandLine)) {
@@ -114,6 +117,28 @@ function Stop-Bridge([string]$Exe, [int]$Port) {
         Stop-Process -Id $holder.Id -Force -ErrorAction SilentlyContinue
     }
     for ($i = 0; $i -lt 20 -and (Get-PortHolder $Port); $i++) { Start-Sleep -Milliseconds 500 }
+}
+
+$KeyLine = '^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=(.*)$'
+
+function ConvertFrom-EnvValue([string]$Raw) {
+    <# A value as python-dotenv reads it: quoted, with \\ and \' (and \" in "...") as escapes,
+       or plain up to a ` #` comment. #>
+    $value = $Raw.Trim()
+    if ($value -match "^'(.*)'$") { return $Matches[1] -replace "\\(['\\])", '$1' }
+    if ($value -match '^"(.*)"$') { return $Matches[1] -replace "\\([`"'\\])", '$1' }
+    return ($value -replace '\s+#.*$', '')
+}
+
+function Read-EnvFile([string]$Path) {
+    <# The env file's lines, and its values by key, as python-dotenv reads them. #>
+    $values = [ordered]@{}
+    $lines = @()
+    if (Test-Path -LiteralPath $Path) { $lines = @(Get-Content -LiteralPath $Path -Encoding UTF8) }
+    foreach ($line in $lines) {
+        if ($line -match $KeyLine) { $values[$Matches[1].ToUpperInvariant()] = ConvertFrom-EnvValue $Matches[2] }
+    }
+    return @{ Lines = $lines; Values = $values }
 }
 
 function Read-State {

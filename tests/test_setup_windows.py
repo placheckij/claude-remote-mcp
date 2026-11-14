@@ -33,7 +33,7 @@ function Get-NetTCPConnection { param([int]$LocalPort, $State, $ErrorAction)
     if ($l) { [pscustomobject]@{ OwningProcess = $l.pid } } }
 function Get-CimInstance { param($ClassName, $Filter, $ErrorAction)
     if ($ClassName -eq 'Win32_ComputerSystem') { return [pscustomobject]@{ UserName = $env:FAKE_CONSOLE_USER } }
-    $all = @((Get-Fake).listen | ForEach-Object { [pscustomobject]@{ ProcessId = $_.pid; Name = $_.name; CommandLine = $_.cmd } })
+    $all = @((Get-Fake).listen | ForEach-Object { [pscustomobject]@{ ProcessId = $_.pid; Name = $_.name; CommandLine = $_.cmd; ExecutablePath = $_.path } })
     if ($Filter -match 'ProcessId=(\d+)') { return $all | Where-Object { $_.ProcessId -eq [int]$Matches[1] } }
     $all }
 function Stop-Process { param([int]$Id, [switch]$Force, $ErrorAction)
@@ -46,25 +46,38 @@ function Get-ScheduledTask { param($TaskName, $TaskPath, $ErrorAction)
 function Register-ScheduledTask { param($TaskName, $TaskPath, $Xml, [switch]$Force)
     Add-Call "Register-ScheduledTask $TaskPath$TaskName"
     Set-Content -LiteralPath $env:FAKE_TASK_XML -Value $Xml -Encoding Unicode
-    $f = Get-Fake; $f.task = $true; Set-Fake $f; [pscustomobject]@{} }
+    $f = Get-Fake; $f.task = $true; $f.enabled = $true; Set-Fake $f; [pscustomobject]@{} }
 function Unregister-ScheduledTask { param($TaskName, $TaskPath, $Confirm)
     Add-Call "Unregister-ScheduledTask $TaskPath$TaskName"
     $f = Get-Fake; $f.task = $false; Set-Fake $f }
 function Stop-ScheduledTask { param($TaskName, $TaskPath) Add-Call "Stop-ScheduledTask $TaskPath$TaskName" }
+function Disable-ScheduledTask { param($TaskName, $TaskPath)
+    Add-Call "Disable-ScheduledTask $TaskPath$TaskName"
+    $f = Get-Fake; $f.enabled = $false; Set-Fake $f }
+function Enable-ScheduledTask { param($TaskName, $TaskPath)
+    Add-Call "Enable-ScheduledTask $TaskPath$TaskName"
+    $f = Get-Fake; $f.enabled = $true; Set-Fake $f }
 function Start-ScheduledTask { param($TaskName, $TaskPath)
     Add-Call "Start-ScheduledTask $TaskPath$TaskName"
+    # As Task Scheduler does, which won't start a disabled task.
+    if (-not (Get-Fake).enabled) { throw 'The task is disabled.' }
     $port = 8765
     foreach ($line in Get-Content -LiteralPath (Join-Path $env:APPDATA 'agent-bridge\env')) {
         if ($line -match '^AGENT_BRIDGE_PORT=(\d+)') { $port = [int]$Matches[1] } }
     # What Task Scheduler starts: python.exe running the agent-bridge.exe launcher.
     $f = Get-Fake
     $f.listen = @($f.listen) + @([pscustomobject]@{ port = $port; pid = 4242; name = 'python.exe';
-        cmd = "`"C:\Python\python.exe`" `"$env:FAKE_BRIDGE`" serve" })
+        path = 'C:\Python\python.exe'; cmd = "`"C:\Python\python.exe`" `"$env:FAKE_BRIDGE`" serve" })
     Set-Fake $f }
 
 function Get-NetFirewallRule { param($Name, $ErrorAction)
+    # Piped an application filter: the rule that blocks that program.
+    $piped = @($input)
+    if ($piped.Count) { return $piped | ForEach-Object { [pscustomobject]@{ Direction = 'Inbound'; Action = 'Block'; Enabled = 'True' } } }
     $r = (Get-Fake).rule
     if ($r) { [pscustomobject]@{ Name = $Name; Enabled = 'True'; Direction = 'Inbound'; Action = 'Allow'; Profile = $r.profile; Port = $r.port } } }
+function Get-NetFirewallApplicationFilter { param($Program, $ErrorAction)
+    if ($env:FAKE_BLOCKED_PROGRAM -and $Program -eq $env:FAKE_BLOCKED_PROGRAM) { [pscustomobject]@{ Program = $Program } } }
 function Get-NetFirewallPortFilter { param($AssociatedNetFirewallRule)
     [pscustomobject]@{ Protocol = 'TCP'; LocalPort = [string]$AssociatedNetFirewallRule.Port } }
 function Start-Process { param($FilePath, $Verb, [switch]$Wait, [switch]$PassThru, $WindowStyle, $ArgumentList)
@@ -109,9 +122,9 @@ if args[0] == "enroll":
     queue = codes.read_text().split() if codes.exists() else []
     code = int(queue.pop(0)) if queue else 0
     codes.write_text(" ".join(queue))
-    if code == 3:
-        print("Couldn't enroll: the name is taken. Choose another name.", file=sys.stderr)
-        sys.exit(3)
+    if code:
+        print(f"Couldn't enroll (fake exit code {code}).", file=sys.stderr)
+        sys.exit(code)
     env = (Path(os.environ["APPDATA"]) / "agent-bridge" / "env").read_text()
     name = re.search(r"^AGENT_BRIDGE_NAME=(.*)$", env, re.M).group(1)
     state.parent.mkdir(parents=True, exist_ok=True)
@@ -151,7 +164,7 @@ class Machine:
         self.bridge = root / "bin" / "agent-bridge.cmd"
         self.bridge.parent.mkdir()
         self.bridge.write_text(f'@"{sys.executable}" "{root / "fake_bridge.py"}" %*\r\n@exit /b %ERRORLEVEL%\r\n')
-        self.save({"task": False, "rule": None, "listen": []})
+        self.save({"task": False, "enabled": False, "rule": None, "listen": []})
 
     def save(self, fake: dict) -> None:
         self.state.write_text(json.dumps(fake))
@@ -161,7 +174,7 @@ class Machine:
 
     def listen(self, port: int, pid: int, name: str, cmd: str) -> None:
         fake = self.fake()
-        fake["listen"].append({"port": port, "pid": pid, "name": name, "cmd": cmd})
+        fake["listen"].append({"port": port, "pid": pid, "name": name, "cmd": cmd, "path": ""})
         self.save(fake)
 
     @property
@@ -198,6 +211,7 @@ class Machine:
             "FAKE_CATEGORY": "Private",
             "FAKE_CONSOLE_USER": "",
             "FAKE_ELEVATED_EXIT": "0",
+            "FAKE_BLOCKED_PROGRAM": "",
             **fakes,
         }
         result = subprocess.run(
@@ -386,3 +400,73 @@ def test_uninstall_leaves_the_gateway_and_removes_everything(machine: Machine) -
     assert fake["task"] is False and fake["rule"] is None and fake["listen"] == []
     assert not (machine.appdata / "agent-bridge").exists()
     assert not (machine.localappdata / "agent-bridge").exists()
+
+
+def test_setup_disables_the_task_while_it_replaces_the_bridge(machine: Machine) -> None:
+    machine.setup("-Enrollment ''", input="\n\n")
+
+    machine.setup()
+
+    # Otherwise the task's one-minute repeat could start the old bridge in between.
+    calls = machine.calls()
+    assert calls.index(r"Disable-ScheduledTask \agent-bridge") < calls.index(r"Stop-ScheduledTask \agent-bridge")
+    assert calls.index(r"Enable-ScheduledTask \agent-bridge") < calls.index(r"Start-ScheduledTask \agent-bridge")
+
+
+def test_enter_at_the_public_network_question_leaves_it_public(machine: Machine) -> None:
+    output = machine.setup("-Enrollment ''", input="\n\n\n", FAKE_CATEGORY="Public")
+
+    elevated = [call for call in machine.calls() if call.startswith("Elevated")]
+    assert "Set-NetConnectionProfile" not in elevated[0]
+    assert "can't reach agent-bridge until this network is Private" in output
+
+
+def test_an_unreachable_gateway_leaves_the_bridge_installed_but_not_enrolled(machine: Machine) -> None:
+    machine.enroll_codes.write_text("4")
+
+    output = machine.setup(f"-Enrollment '{STRING}'", input="\n\n")
+
+    assert r"Start-ScheduledTask \agent-bridge" in machine.calls()
+    assert "Not enrolled: see" in output
+    assert "Enrolled as" not in output
+
+
+def test_a_failed_enrollment_after_rotating_the_token_says_the_gateway_has_the_old_one(machine: Machine) -> None:
+    machine.setup(f"-Enrollment '{STRING}'", input="\n\n")
+    machine.enroll_codes.write_text("4")
+
+    output = machine.setup("-RotateToken", f"-Enrollment '{STRING}'")
+
+    assert "Not enrolled: see" in output
+    assert "still has this host's old settings" in output
+    assert "Enrolled as win-test" not in output
+
+
+def test_a_new_name_on_an_enrolled_host_asks_to_enroll_again(machine: Machine) -> None:
+    machine.setup(f"-Enrollment '{STRING}'", input="\n\n")
+
+    output = machine.setup("-Name 'win-new'", input=f"{STRING}\n")
+
+    assert "knows this host as win-test" in output
+    assert f"agent-bridge enroll {STRING}" in machine.calls()
+    assert "Enrolled as win-new" in output
+
+
+def test_a_firewall_rule_blocking_python_is_reported(machine: Machine) -> None:
+    output = machine.setup("-Enrollment ''", input="\n\n", FAKE_BLOCKED_PROGRAM=r"C:\Python\python.exe")
+
+    assert r"a firewall rule blocks C:\Python\python.exe" in output
+
+
+def test_uninstall_goes_ahead_without_agent_bridge(machine: Machine) -> None:
+    machine.setup(f"-Enrollment '{STRING}'", input="\n\n")
+    machine.bridge.unlink()
+
+    output = machine.run("uninstall.ps1", f"-Bridge '{machine.bridge}'")
+
+    assert "sudo mcp-gateway bridges remove win-test" in output
+    calls = machine.calls()
+    assert r"Unregister-ScheduledTask \agent-bridge" in calls
+    # Still stopped through the port, since it's an agent-bridge.
+    assert "Stop-Process 4242" in calls
+    assert not (machine.appdata / "agent-bridge").exists()
