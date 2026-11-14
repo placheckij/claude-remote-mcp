@@ -65,9 +65,11 @@ else echo "LISTEN 0 128 0.0.0.0:$port 0.0.0.0:* users:((\\"prog\\",pid=$pid,fd=3
 for arg; do pid=$arg; done
 [ -f "$HOME/ps-$pid" ] && cat "$HOME/ps-$pid"
 exit 0""",
+    # No default route when $HOME/no-route exists.
     "ip": """
 case "$*" in
-  *"route get"*) echo "1.1.1.1 via 10.0.0.254 dev eth0 src 10.0.0.5 uid 1000" ;;
+  *"route get"*) [ ! -f "$HOME/no-route" ] || { echo "RTNETLINK answers: Network is unreachable" >&2; exit 2; }
+    echo "1.1.1.1 via 10.0.0.254 dev eth0 src 10.0.0.5 uid 1000" ;;
   *"addr show"*) echo "2: eth0    inet 10.0.0.5/24 brd 10.0.0.255 scope global eth0" ;;
 esac""",
 }
@@ -223,6 +225,25 @@ def test_the_lan_address_is_found(host: Host) -> None:
                TRUST_ROOT="", ENROLLMENT="")
 
     assert host.env()["AGENT_BRIDGE_HOST"] == "10.0.0.5"
+
+
+@pytest.mark.parametrize("config", [".claude", ".claude/agents", "."])
+def test_your_own_claude_config_is_refused_for_the_agents(host: Host, config: str) -> None:
+    result = host.install(AGENT_BRIDGE_CLAUDE_CONFIG_DIR=str(host.home / config), check=False)
+
+    assert result.returncode != 0
+    assert "your own Claude config" in result.stderr
+    assert not host.env_file.exists()
+
+
+def test_without_a_default_route_it_asks_for_the_address(host: Host) -> None:
+    (host.home / "no-route").touch()
+
+    result = host.setup(ALLOWED_ROOTS=str(host.home / "projects"), NAME="linux-box", AGENT_BRIDGE_CLAUDE_CONFIG_DIR="",
+                        TRUST_ROOT="", ENROLLMENT="", check=False)
+
+    assert result.returncode != 0
+    assert "pass it, e.g. HOST=" in result.stderr
 
 
 def test_the_settings_from_the_readme_are_taken_over_and_the_token_kept(host: Host) -> None:
