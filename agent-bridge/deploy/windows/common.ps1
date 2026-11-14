@@ -4,17 +4,29 @@
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-$TaskName = 'agent-bridge'
-$RuleName = 'agent-bridge'
+$script:TaskName = 'agent-bridge'
+$script:RuleName = 'agent-bridge'
 # As agent_bridge/state.py has them on Windows.
-$SettingsDir = Join-Path $env:APPDATA 'agent-bridge'
-$EnvFile = Join-Path $SettingsDir 'env'
-$StateDir = Join-Path $env:LOCALAPPDATA 'agent-bridge'
-$StateFile = Join-Path $StateDir 'state.json'
-$LogFile = Join-Path $StateDir 'agent-bridge.log'
+$script:SettingsDir = Join-Path $env:APPDATA 'agent-bridge'
+$script:EnvFile = Join-Path $script:SettingsDir 'env'
+$script:StateDir = Join-Path $env:LOCALAPPDATA 'agent-bridge'
+$script:StateFile = Join-Path $script:StateDir 'state.json'
+$script:LogFile = Join-Path $script:StateDir 'agent-bridge.log'
+# Set while Stop-Bridge has the task disabled, so leaving early enables it again.
+$script:TaskDisabled = $false
+
+function Restore-Task {
+    <# Enables the task again if Stop-Bridge disabled it: a setup that stops halfway must not
+       leave the bridge off at the next logon. #>
+    if ($script:TaskDisabled) {
+        Enable-ScheduledTask -TaskName $script:TaskName -TaskPath '\' -ErrorAction SilentlyContinue | Out-Null
+        $script:TaskDisabled = $false
+    }
+}
 
 function Stop-Setup([string]$Message) {
     Write-Host "error: $Message" -ForegroundColor Red
+    Restore-Task
     exit 1
 }
 
@@ -28,12 +40,18 @@ function Write-Warn([string]$Message) {
 }
 
 function Assert-RunAsYou([string]$Script) {
-    <# Refuses another account than the one logged on here, e.g. an administrator's typed in
-       at a UAC prompt: the task and the settings would be that account's, away from herdr. #>
+    <# Refuses another account than the one whose desktop this session is, e.g. an
+       administrator's typed in at a UAC prompt: the task and the settings would be that
+       account's, away from herdr. Works the same over Remote Desktop. #>
     $me = [Security.Principal.WindowsIdentity]::GetCurrent().Name
-    $console = [string](Get-CimInstance Win32_ComputerSystem -ErrorAction SilentlyContinue).UserName
-    if ($console -and $console -ne $me) {
-        Stop-Setup ("run $Script as $console, who is logged on here, not as ${me}: agent-bridge must run " +
+    $session = (Get-Process -Id $PID).SessionId
+    $explorer = @(Get-CimInstance Win32_Process -Filter "Name='explorer.exe' AND SessionId=$session" -ErrorAction SilentlyContinue)
+    if ($explorer.Count -eq 0) { return }
+    $owner = Invoke-CimMethod -InputObject $explorer[0] -MethodName GetOwner -ErrorAction SilentlyContinue
+    if (-not $owner -or -not $owner.User) { return }
+    $desktop = "$($owner.Domain)\$($owner.User)"
+    if ($desktop -ne $me) {
+        Stop-Setup ("run $Script as $desktop, whose desktop this is, not as ${me}: agent-bridge must run " +
             "next to your herdr server. Open PowerShell normally; it asks for admin rights only for the firewall rule.")
     }
 }
@@ -83,28 +101,52 @@ function Test-IsBridge([string]$CommandLine) {
 }
 
 function Get-PortHolder([int]$Port) {
-    <# The process listening on TCP $Port on any address, as @{ Id; Name; CommandLine; Path },
-       or $null. (Get-NetTCPConnection is on every Windows setup.ps1 runs on.) #>
+    <# A process listening on TCP $Port on any address, as @{ Id; Name; CommandLine; Path }, or
+       $null. With several, one that isn't agent-bridge comes first, so a port that agent-bridge
+       shares with another program doesn't count as agent-bridge's. #>
     $ids = @(Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue |
         Select-Object -ExpandProperty OwningProcess -Unique)
-    if ($ids.Count -eq 0) { return $null }
-    $process = Get-CimInstance Win32_Process -Filter "ProcessId=$($ids[0])" -ErrorAction SilentlyContinue
-    if (-not $process) { return @{ Id = $ids[0]; Name = '?'; CommandLine = ''; Path = '' } }
-    # Empty for another user's process, or an elevated one: then it isn't ours either.
-    return @{ Id = $ids[0]; Name = $process.Name; CommandLine = [string]$process.CommandLine; Path = [string]$process.ExecutablePath }
+    $holders = foreach ($id in $ids) {
+        $process = Get-CimInstance Win32_Process -Filter "ProcessId=$id" -ErrorAction SilentlyContinue
+        # The command line is empty for another user's process, or an elevated one: then it
+        # isn't ours either.
+        if ($process) {
+            @{ Id = $id; Name = [string]$process.Name; CommandLine = [string]$process.CommandLine; Path = [string]$process.ExecutablePath }
+        } else {
+            @{ Id = $id; Name = '?'; CommandLine = ''; Path = '' }
+        }
+    }
+    $holders = @($holders)
+    if ($holders.Count -eq 0) { return $null }
+    $other = @($holders | Where-Object { -not (Test-IsBridge $_.CommandLine) })
+    if ($other.Count -gt 0) { return $other[0] }
+    return $holders[0]
+}
+
+function Test-PortExcluded([int]$Port) {
+    <# Whether Windows keeps $Port for itself (Hyper-V, WSL and Docker reserve ranges), where
+       nothing can listen although nothing does. #>
+    foreach ($line in @(netsh int ipv4 show excludedportrange protocol=tcp)) {
+        if ($line -match '^\s*(\d+)\s+(\d+)') {
+            if ($Port -ge [int]$Matches[1] -and $Port -le [int]$Matches[2]) { return $true }
+        }
+    }
+    return $false
 }
 
 function Stop-Bridge([string]$Exe, [int]$Port) {
     <# Stops the task and the bridge it runs, and any agent-bridge still holding $Port. The task
        is left disabled, or its one-minute repeat could start the old bridge again meanwhile;
-       registering it again enables it. #>
-    $task = Get-ScheduledTask -TaskName $TaskName -TaskPath '\' -ErrorAction SilentlyContinue
+       registering it again, Start-Bridge or Stop-Setup enable it again. #>
+    $task = Get-ScheduledTask -TaskName $script:TaskName -TaskPath '\' -ErrorAction SilentlyContinue
     if ($task) {
-        Disable-ScheduledTask -TaskName $TaskName -TaskPath '\' | Out-Null
-        Stop-ScheduledTask -TaskName $TaskName -TaskPath '\'
+        Disable-ScheduledTask -TaskName $script:TaskName -TaskPath '\' | Out-Null
+        $script:TaskDisabled = $true
+        Stop-ScheduledTask -TaskName $script:TaskName -TaskPath '\'
     }
-    # Ending the task ends only the conhost.exe it started; cmd.exe and the bridge behind it
-    # keep running, so they are ended here by their command lines: ones that run this $Exe.
+    # Ending the task ends only the conhost.exe it started; cmd.exe, the agent-bridge.exe
+    # launcher and python.exe behind it keep running, so they are ended here by their command
+    # lines: the ones that serve with this $Exe.
     if ($Exe) {
         Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {
             (Test-IsBridge $_.CommandLine) -and ([string]$_.CommandLine).IndexOf($Exe, [StringComparison]::OrdinalIgnoreCase) -ge 0
@@ -119,14 +161,14 @@ function Stop-Bridge([string]$Exe, [int]$Port) {
     for ($i = 0; $i -lt 20 -and (Get-PortHolder $Port); $i++) { Start-Sleep -Milliseconds 500 }
 }
 
-$KeyLine = '^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=(.*)$'
+$script:KeyLine = '^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=(.*)$'
 
 function ConvertFrom-EnvValue([string]$Raw) {
-    <# A value as python-dotenv reads it: quoted, with \\ and \' (and \" in "...") as escapes,
-       or plain up to a ` #` comment. #>
+    <# A value as python-dotenv reads it: quoted, with \\ and \' (and \" in "...") as escapes
+       and maybe a comment after it, or plain up to a ` #` comment. #>
     $value = $Raw.Trim()
-    if ($value -match "^'(.*)'$") { return $Matches[1] -replace "\\(['\\])", '$1' }
-    if ($value -match '^"(.*)"$') { return $Matches[1] -replace "\\([`"'\\])", '$1' }
+    if ($value -match "^'((?:\\'|[^'])*)'\s*(#.*)?$") { return $Matches[1] -replace "\\(['\\])", '$1' }
+    if ($value -match '^"((?:\\"|[^"])*)"\s*(#.*)?$') { return $Matches[1] -replace "\\([`"'\\])", '$1' }
     return ($value -replace '\s+#.*$', '')
 }
 
@@ -136,16 +178,16 @@ function Read-EnvFile([string]$Path) {
     $lines = @()
     if (Test-Path -LiteralPath $Path) { $lines = @(Get-Content -LiteralPath $Path -Encoding UTF8) }
     foreach ($line in $lines) {
-        if ($line -match $KeyLine) { $values[$Matches[1].ToUpperInvariant()] = ConvertFrom-EnvValue $Matches[2] }
+        if ($line -match $script:KeyLine) { $values[$Matches[1].ToUpperInvariant()] = ConvertFrom-EnvValue $Matches[2] }
     }
     return @{ Lines = $lines; Values = $values }
 }
 
 function Read-State {
     <# The state file's contents, or $null before there are any. #>
-    if (-not (Test-Path -LiteralPath $StateFile)) { return $null }
+    if (-not (Test-Path -LiteralPath $script:StateFile)) { return $null }
     try {
-        return Get-Content -LiteralPath $StateFile -Raw -Encoding UTF8 | ConvertFrom-Json
+        return Get-Content -LiteralPath $script:StateFile -Raw -Encoding UTF8 | ConvertFrom-Json
     } catch {
         return $null
     }
@@ -158,17 +200,18 @@ function Get-EnrolledGateway {
     return $null
 }
 
-function Invoke-Elevated([string]$Command) {
-    <# Runs $Command in an elevated, hidden Windows PowerShell (one UAC prompt); $true if it
-       succeeded. The callers print the command to run by hand when it didn't. #>
-    $wrapped = "`$ErrorActionPreference = 'Stop'; try { $Command; exit 0 } catch { exit 1 }"
+function Invoke-Elevated([string[]]$Commands) {
+    <# Runs each command in an elevated, hidden Windows PowerShell (one UAC prompt for all).
+       Returns which failed, as bit i set for $Commands[i] (0: all worked), or -1 when the UAC
+       prompt was declined. The callers print what to run by hand. #>
+    $steps = for ($i = 0; $i -lt $Commands.Count; $i++) { "try { $($Commands[$i]) } catch { `$failed += $([int][Math]::Pow(2, $i)) }" }
+    $wrapped = "`$ErrorActionPreference = 'Stop'; `$failed = 0; $($steps -join '; '); exit `$failed"
     $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($wrapped))
     try {
         $process = Start-Process -FilePath powershell.exe -Verb RunAs -Wait -PassThru -WindowStyle Hidden `
             -ArgumentList '-NoProfile', '-NonInteractive', '-EncodedCommand', $encoded
     } catch {
-        # Declined at the UAC prompt.
-        return $false
+        return -1
     }
-    return $process.ExitCode -eq 0
+    return $process.ExitCode
 }
