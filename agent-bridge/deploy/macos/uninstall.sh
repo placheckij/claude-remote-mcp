@@ -41,7 +41,9 @@ log "Removing $LABEL"
 launchctl bootout "$DOMAIN/$LABEL" 2>/dev/null || true
 rm -f "$PLIST" "$LOG_FILE"
 rm -f "$SUPPORT_DIR/env" "$SUPPORT_DIR/state.json" "$SUPPORT_DIR/state.json.tmp"
-rmdir "$SUPPORT_DIR" 2>/dev/null || echo "Left $SUPPORT_DIR: it holds other files."
+if [[ -d $SUPPORT_DIR ]]; then
+  rmdir "$SUPPORT_DIR" 2>/dev/null || echo "Left $SUPPORT_DIR: it holds other files."
+fi
 
 cat <<'EOF'
 
