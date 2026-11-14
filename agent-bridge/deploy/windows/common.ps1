@@ -61,21 +61,36 @@ function Assert-RunAsYou([string]$Script) {
     }
 }
 
+function Get-InstalledExe {
+    <# The agent-bridge.exe the installed run.cmd runs, or ''. #>
+    if (-not (Test-Path -LiteralPath $script:RunFile)) { return '' }
+    foreach ($line in @(Get-Content -LiteralPath $script:RunFile -Encoding UTF8)) {
+        if ($line -match '^"(.+)" serve\b') { return $Matches[1] }
+    }
+    return ''
+}
+
 function Find-Bridge([string]$Given, [switch]$Optional) {
-    <# agent-bridge.exe: the one given, the one a package ships beside this folder, or the
-       checkout's .venv (Checkout is then the repo, which needs `uv sync`), else on PATH.
-       Not found, it stops setup, or with -Optional returns $null. #>
+    <# agent-bridge.exe: the one given, the installed one (which run.cmd names), the one a
+       package ships beside this folder, or the checkout's .venv (Checkout is then the repo,
+       which needs `uv sync`), else on PATH. Not found, it stops setup, or with -Optional
+       returns $null. #>
     if ($Given) {
         if (Test-Path -LiteralPath $Given -PathType Leaf) { return @{ Exe = (Resolve-Path -LiteralPath $Given).Path; Checkout = $null } }
         if ($Optional) { return $null }
         Stop-Setup "-Bridge: $Given doesn't exist"
     }
+    $repo = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..\..'))
+    $inCheckout = Test-Path -LiteralPath (Join-Path $repo 'agent-bridge\pyproject.toml')
+    $checkoutExe = Join-Path $repo '.venv\Scripts\agent-bridge.exe'
+    $installed = Get-InstalledExe
+    if ($installed -and (Test-Path -LiteralPath $installed -PathType Leaf)) {
+        $sameCheckout = $inCheckout -and [string]::Equals($installed, $checkoutExe, [StringComparison]::OrdinalIgnoreCase)
+        return @{ Exe = $installed; Checkout = $(if ($sameCheckout) { $repo } else { $null }) }
+    }
     $beside = Join-Path $PSScriptRoot 'agent-bridge.exe'
     if (Test-Path -LiteralPath $beside -PathType Leaf) { return @{ Exe = $beside; Checkout = $null } }
-    $repo = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..\..'))
-    if (Test-Path -LiteralPath (Join-Path $repo 'agent-bridge\pyproject.toml')) {
-        return @{ Exe = (Join-Path $repo '.venv\Scripts\agent-bridge.exe'); Checkout = $repo }
-    }
+    if ($inCheckout) { return @{ Exe = $checkoutExe; Checkout = $repo } }
     $onPath = Get-Command agent-bridge.exe -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
     if ($onPath) { return @{ Exe = $onPath.Source; Checkout = $null } }
     if ($Optional) { return $null }
@@ -156,31 +171,48 @@ function Stop-Bridge([string]$Exe, [int]$Port) {
         $script:TaskDisabled = $true
         Stop-ScheduledTask -TaskName $script:TaskName -TaskPath '\'
     }
-    # Ending the task ends only the conhost.exe it started; cmd.exe, the agent-bridge.exe
-    # launcher and python.exe behind it keep running, so they are ended here by their command
-    # lines: the ones that serve with this $Exe.
-    if ($Exe) {
-        Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {
-            (Test-IsBridge $_.CommandLine) -and ([string]$_.CommandLine).IndexOf($Exe, [StringComparison]::OrdinalIgnoreCase) -ge 0
-        } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
-    }
+    # Ending the task ends only the conhost.exe it started; the cmd.exe running run.cmd, the
+    # agent-bridge.exe launcher and python.exe behind it keep running, so they are ended here
+    # by their command lines: run.cmd's, and the ones that serve with this $Exe or the
+    # installed one.
+    $exes = @(@($Exe, (Get-InstalledExe)) | Where-Object { $_ })
+    Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {
+        $line = [string]$_.CommandLine
+        $line -and ($line.IndexOf($script:RunFile, [StringComparison]::OrdinalIgnoreCase) -ge 0 -or
+            ((Test-IsBridge $line) -and @($exes | Where-Object { $line.IndexOf($_, [StringComparison]::OrdinalIgnoreCase) -ge 0 }).Count -gt 0))
+    } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
     if ($Port -le 0) { return }
     $holder = Get-PortHolder $Port
     if ($holder -and (Test-IsBridge $holder.CommandLine)) {
         Write-Host "Stopping the agent-bridge on port $Port (PID $($holder.Id)): $($holder.CommandLine)"
         Stop-Process -Id $holder.Id -Force -ErrorAction SilentlyContinue
     }
-    for ($i = 0; $i -lt 20 -and (Get-PortHolder $Port); $i++) { Start-Sleep -Milliseconds 500 }
+    # Only an agent-bridge is worth waiting for: nothing here stops another program.
+    for ($i = 0; $i -lt 20; $i++) {
+        $holder = Get-PortHolder $Port
+        if (-not $holder -or -not (Test-IsBridge $holder.CommandLine)) { break }
+        Start-Sleep -Milliseconds 500
+    }
 }
 
 $script:KeyLine = '^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=(.*)$'
 
 function ConvertFrom-EnvValue([string]$Raw) {
-    <# A value as python-dotenv reads it: quoted, with \\ and \' (and \" in "...") as escapes
-       and maybe a comment after it, or plain up to a ` #` comment. #>
+    <# A value as python-dotenv reads it: in '...' with \\ and \' as escapes, in "..." with
+       those, \" and \a \b \f \n \r \t \v, either maybe followed by a comment; or plain up to a
+       ` #` comment. #>
     $value = $Raw.Trim()
     if ($value -match "^'((?:\\'|[^'])*)'\s*(#.*)?$") { return $Matches[1] -replace "\\(['\\])", '$1' }
-    if ($value -match '^"((?:\\"|[^"])*)"\s*(#.*)?$') { return $Matches[1] -replace "\\([`"'\\])", '$1' }
+    if ($value -match '^"((?:\\"|[^"])*)"\s*(#.*)?$') {
+        return [regex]::Replace($Matches[1], '\\([\\''"abfnrtv])', {
+                param($escape)
+                switch -CaseSensitive ($escape.Groups[1].Value) {
+                    'a' { [string][char]7 } 'b' { [string][char]8 } 'f' { [string][char]12 }
+                    'n' { "`n" } 'r' { "`r" } 't' { "`t" } 'v' { [string][char]11 }
+                    default { $escape.Groups[1].Value }
+                }
+            })
+    }
     return ($value -replace '\s+#.*$', '')
 }
 

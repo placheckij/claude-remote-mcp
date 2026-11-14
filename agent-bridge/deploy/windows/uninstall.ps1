@@ -73,8 +73,17 @@ if (Get-NetFirewallRule -Name $RuleName -ErrorAction SilentlyContinue) {
 Write-Step 'Removing the settings and state'
 foreach ($file in @($EnvFile, $StateFile, "$StateFile.tmp", $LogFile, "$LogFile.1", $RunFile)) {
     if (Test-Path -LiteralPath $file) {
-        Remove-Item -LiteralPath $file -Force
-        Write-Host "removed $file"
+        # A process that hasn't quite exited may still hold the log for a moment.
+        for ($try = 1; ; $try++) {
+            try {
+                Remove-Item -LiteralPath $file -Force
+                Write-Host "removed $file"
+                break
+            } catch {
+                if ($try -ge 5) { Write-Warn "couldn't remove $file ($($_.Exception.Message)); delete it by hand"; break }
+                Start-Sleep -Seconds 1
+            }
+        }
     }
 }
 foreach ($folder in @($SettingsDir, $StateDir)) {

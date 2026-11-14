@@ -3,8 +3,9 @@
   The scheduled task that runs agent-bridge: at logon, as you, in your session (where the
   herdr server runs), with no window. setup.ps1 fills in the {{...}} fields and registers it.
 
-  The action is `agent-bridge serve` behind `conhost.exe headless` (no console window)
-  and `cmd.exe` (which writes its output to the log, keeping the previous run's as .1).
+  The action is `conhost.exe headless` (no console window) running cmd.exe on run.cmd,
+  which setup writes beside the log; run.cmd runs `agent-bridge serve` and appends its
+  output to the log.
 -->
 <Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
   <RegistrationInfo>

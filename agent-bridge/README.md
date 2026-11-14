@@ -483,8 +483,9 @@ It finds the LAN address and `herdr.exe` itself, including herdr's
 5. enrolls with the gateway (asking for another name if the gateway already has a host by
    that name), and runs `agent-bridge check`.
 
-Its log is `%LOCALAPPDATA%\agent-bridge\agent-bridge.log`, with a line for each start; past
-1 MB it is moved to `agent-bridge.log.1`. Re-run setup after pulling new code: it keeps the token and settings,
+Its log is `%LOCALAPPDATA%\agent-bridge\agent-bridge.log`, with a line for each start. A log
+over 1 MB is moved to `agent-bridge.log.1` when agent-bridge starts; while it runs, the log
+grows by a line per request. Re-run setup after pulling new code: it keeps the token and settings,
 and asks only for what's missing. Parameters skip the questions or change a setting:
 `-Roots`, `-Name`, `-Enrollment` (`''` skips), `-Address`, `-Port`, `-HerdrBin`,
 `-ClaudeConfigDir` and `-TrustRoot` (for [folder trust](#folder-trust); `''` removes

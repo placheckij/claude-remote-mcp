@@ -72,12 +72,14 @@ function Start-ScheduledTask { param($TaskName, $TaskPath)
     $port = 8765
     foreach ($line in Get-Content -LiteralPath (Join-Path $env:APPDATA 'agent-bridge\env')) {
         if ($line -match '^AGENT_BRIDGE_PORT=(\d+)') { $port = [int]$Matches[1] } }
-    # What Task Scheduler starts: cmd.exe, the agent-bridge.exe launcher, and python.exe
-    # running it, which is the one that listens. Port 0: not listening.
+    # What Task Scheduler starts: cmd.exe on run.cmd, the agent-bridge.exe launcher, and
+    # python.exe running it, which is the one that listens. Port 0: not listening.
+    if ($env:FAKE_NO_START) { return }
+    $run = Join-Path $env:LOCALAPPDATA 'agent-bridge\run.cmd'
     $f = Get-Fake
     $f.listen = @($f.listen) + @(
         [pscustomobject]@{ port = 0; pid = 4240; name = 'cmd.exe'; path = 'C:\Windows\System32\cmd.exe';
-            cmd = "cmd.exe /d /s /c `"(if exist log move log log.1) & `"$env:FAKE_BRIDGE`" serve > log 2>&1`"" },
+            cmd = "C:\Windows\System32\cmd.exe /d /c call `"$run`"" },
         [pscustomobject]@{ port = 0; pid = 4241; name = 'agent-bridge.exe'; path = $env:FAKE_BRIDGE;
             cmd = "`"$env:FAKE_BRIDGE`" serve" },
         [pscustomobject]@{ port = $port; pid = 4242; name = 'python.exe'; path = 'C:\Python\python.exe';
@@ -240,6 +242,7 @@ class Machine:
             "FAKE_BROKEN_CHECK": "",
             "FAKE_OLD_CHECK": "",
             "FAKE_BROKEN_UNENROLL": "",
+            "FAKE_NO_START": "",
             "FAKE_ELEVATED_EXIT": "0",
             "FAKE_BLOCKED_PROGRAM": "",
             **fakes,
@@ -598,3 +601,28 @@ def test_uninstall_says_how_to_remove_the_host_when_unenroll_fails(machine: Mach
 
     assert "sudo mcp-gateway bridges remove win-test" in output
     assert not (machine.localappdata / "agent-bridge").exists()
+
+
+def test_uninstall_uses_the_installed_agent_bridge(machine: Machine) -> None:
+    # Installed with -Bridge, uninstalled without: run.cmd says which agent-bridge it runs.
+    machine.setup(f"-Enrollment '{STRING}'", input="\n\n")
+
+    machine.run("uninstall.ps1")
+
+    assert machine.calls()[0] == "agent-bridge unenroll"
+
+
+def test_a_root_as_broad_as_the_home_folder_stops_setup_before_the_bridge(machine: Machine) -> None:
+    machine.setup("-Enrollment ''", input="\n\n")
+
+    output = machine.setup(f"-Roots '{machine.profile}'", expect=1)
+
+    assert "is too broad" in output
+    assert r"Disable-ScheduledTask \agent-bridge" not in machine.calls()
+
+
+def test_a_bridge_that_does_not_start_is_not_called_done(machine: Machine) -> None:
+    output = machine.setup("-Enrollment ''", input="\n\n", expect=1, FAKE_NO_START="1")
+
+    assert "agent-bridge didn't start" in output
+    assert "Done. agent-bridge listens" not in output
