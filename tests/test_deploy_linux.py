@@ -773,6 +773,39 @@ def test_a_value_the_loader_would_expand_is_refused(host: Host) -> None:
     assert not host.env_file.exists()
 
 
+def test_accounts_written_by_hand_over_several_lines_are_kept(host: Host) -> None:
+    from dotenv import dotenv_values
+
+    host.install()
+    # As the README shows it, in single quotes.
+    accounts = {
+        "work": {"config_dir": None, "folders": ["/home/me/projects/work"]},
+        "personal": {"config_dir": "/home/me/.claude-personal", "folders": ["/home/me/projects/own"]},
+    }
+    with host.env_file.open("a") as env:
+        env.write(f"AGENT_BRIDGE_ACCOUNTS='{json.dumps(accounts, indent=2)}'\n")
+
+    host.setup()
+
+    value = dotenv_values(host.env_file)["AGENT_BRIDGE_ACCOUNTS"]
+    assert "\n" not in value
+    assert json.loads(value) == accounts
+
+
+def test_accounts_with_an_apostrophe_or_a_dollar_are_kept(host: Host) -> None:
+    from dotenv import dotenv_values
+
+    host.install()
+    accounts = {"work": {"config_dir": "/home/me/Jo's $stuff", "folders": []}}
+    with host.env_file.open("a") as env:
+        env.write(f"AGENT_BRIDGE_ACCOUNTS={json.dumps(json.dumps(accounts))}\n")
+    assert json.loads(dotenv_values(host.env_file)["AGENT_BRIDGE_ACCOUNTS"]) == accounts
+
+    host.setup()
+
+    assert json.loads(dotenv_values(host.env_file)["AGENT_BRIDGE_ACCOUNTS"]) == accounts
+
+
 def test_a_double_quoted_escape_is_read_as_the_loader_reads_it(host: Host) -> None:
     from dotenv import dotenv_values
 
