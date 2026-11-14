@@ -190,7 +190,7 @@ enrolled() { # enrolled KEY: the gateway's KEY (name, url) from the state file, 
 
 # 0 is off, as for HERDR_SERVICE.
 [[ ${ROTATE_TOKEN:-0} != 0 ]] || ROTATE_TOKEN=""
-[[ $(uname -s) == Linux ]] || die "this script is for Linux; on macOS run agent-bridge/deploy/setup-macos.sh"
+[[ $(uname -s) == Linux ]] || die "this script is for Linux; on macOS run agent-bridge/deploy/macos/setup.sh"
 [[ $EUID -ne 0 ]] || die "run as your own user, not with sudo: agent-bridge must run next to your herdr server"
 [[ -f "$REPO_DIR/agent-bridge/pyproject.toml" ]] || die "run from a checkout of claude-remote-mcp"
 unit_path "$AGENT_BRIDGE"
