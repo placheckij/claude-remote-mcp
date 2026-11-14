@@ -74,21 +74,22 @@ bridge() { # the venv's agent-bridge, reading only the files this script writes
 }
 
 env_file() { # env_file get KEY | others: the env file as serve's loader reads it: python-dotenv
-  # (quotes, escapes, comments, `export`, spaces) with names in any case, the last one winning.
-  # get prints AGENT_BRIDGE_KEY's value, or exits 3 when no line sets it; others prints every
-  # line but the ones setting a setting this script writes.
+  # (quotes, escapes, comments, `export`, spaces, ${VAR} expanded) with names in any case, the
+  # last one winning. get prints AGENT_BRIDGE_KEY's value, or exits 3 when no line sets it;
+  # others prints every line but the ones setting a setting this script writes.
   "$REPO_DIR/.venv/bin/python" -c '
 import re, sys
+from dotenv import dotenv_values
 from dotenv.parser import parse_stream
 path, mode, managed = sys.argv[1:4]
-with open(path) as file:
-    bindings = list(parse_stream(file))
 if mode == "get":
-    values = [b.value for b in bindings if b.key and b.key.upper() == managed]
+    values = [value for key, value in dotenv_values(path).items() if key.upper() == managed]
     if not values or values[-1] is None:
         sys.exit(3)
     print(values[-1], end="")
 else:
+    with open(path) as file:
+        bindings = list(parse_stream(file))
     for b in bindings:
         if not (b.key and re.fullmatch(managed, b.key, re.IGNORECASE)):
             sys.stdout.write(b.original.string)' "$ENV_FILE" "$@"
@@ -350,8 +351,9 @@ ENROLLMENT=${ENROLLMENT:-}
 
 # --- Install -------------------------------------------------------------------------
 
-line() { # line KEY VALUE: one env file line, single-quoted so nothing in it is expanded
-  [[ $2 != *"'"* && $2 != *$'\n'* ]] || die "AGENT_BRIDGE_$1 can't contain ' or a line break"
+line() { # line KEY VALUE: one env file line, single-quoted
+  # The loader expands ${VAR} even in single quotes, so a value can't hold one literally.
+  [[ $2 != *"'"* && $2 != *$'\n'* && $2 != *'${'* ]] || die "AGENT_BRIDGE_$1 can't contain ', \${ or a line break"
   # The loader reads \\ in single quotes as one backslash.
   printf "AGENT_BRIDGE_%s='%s'\n" "$1" "$(printf '%s' "$2" | sed 's/\\/\\\\/g')"
 }
