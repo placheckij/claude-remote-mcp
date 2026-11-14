@@ -129,8 +129,9 @@ command_of() { ps -o args= -p "$1" 2>/dev/null || true; }
 check_env() { # check_env FILE: agent-bridge's own check of the settings in FILE, as serve reads them
   (
     for var in $(compgen -v AGENT_BRIDGE_); do unset "$var"; done
-    # Beside the file: serve also reads a .env in its working folder.
-    cd "$(dirname "$1")"
+    # serve also reads a .env in its working folder: the home folder, where systemd starts
+    # a user unit with no WorkingDirectory.
+    cd "$HOME"
     AGENT_BRIDGE_ENV_FILE=$1 exec "$REPO_DIR/.venv/bin/python" -c '
 import sys
 from agent_bridge.config import Settings
