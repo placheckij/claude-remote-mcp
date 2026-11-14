@@ -392,8 +392,7 @@ try {
 
     # The task gets your environment, where these win over the env file.
     foreach ($scope in 'User', 'Machine') {
-        $variables = Get-ItemProperty -LiteralPath $LastingEnvironment[$scope] -ErrorAction SilentlyContinue
-        $lasting = @(if ($variables) { $variables.PSObject.Properties.Name | Where-Object { $_ -like 'AGENT_BRIDGE_*' } })
+        $lasting = @((Get-LastingVariable $LastingEnvironment[$scope]).Keys | Where-Object { $_ -like 'AGENT_BRIDGE_*' })
         if ($lasting.Count -gt 0) {
             $remove = ($lasting | ForEach-Object { "[Environment]::SetEnvironmentVariable('$_', `$null, '$scope')" }) -join '; '
             Stop-Setup ("$($lasting -join ', ') set in your $($scope.ToLowerInvariant()) environment would win over $EnvFile " +
@@ -403,7 +402,7 @@ try {
 
     $Installed = Read-EnvFile $EnvFile
     # ${NAME} in the env file is expanded from this window's variables here, and from a
-    # logon's for the service: say which this window has alone.
+    # logon's for the service: say which differ.
     # In values only, and not names set above in the file, which python-dotenv looks up first.
     $defined = New-Object 'Collections.Generic.HashSet[string]' ([StringComparer]::Ordinal)
     $referenced = @(foreach ($line in $Installed.Lines) {
@@ -415,8 +414,9 @@ try {
             }
             [void]$defined.Add($lineKey)
         })
-    foreach ($name in (Get-WindowOnlyName $referenced)) {
-        Write-Warn "`${$name} in $EnvFile is set only in this window: agent-bridge, started at logon, won't have it. Set it with setx, or write the value there instead."
+    foreach ($windowOnly in (Get-WindowOnlyName $referenced)) {
+        Write-Warn ("`${$windowOnly} in $EnvFile is set only in this window, or otherwise than at logon: agent-bridge, " +
+            "started at logon, won't see this value. Set it with setx and open a new window, or write the value there instead.")
     }
     function Get-Installed([string]$Key) {
         if ($Installed.Values.Contains("AGENT_BRIDGE_$Key")) { return $Installed.Values["AGENT_BRIDGE_$Key"] }
@@ -613,7 +613,6 @@ try {
     Write-Host 'Cancel adds a rule that blocks Python, which wins over the rule above.'
     Register-ScheduledTask -TaskName $TaskName -TaskPath '\' -Xml $xml -Force | Out-Null
     # Registered enabled.
-    $script:TaskDisabled = $false
     Remove-Item -LiteralPath $DisabledMarker -Force -ErrorAction SilentlyContinue
     $Started = Start-Bridge $Port -Registered
 
