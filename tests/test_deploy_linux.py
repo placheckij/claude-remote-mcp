@@ -82,7 +82,6 @@ case $1 in
   check)
     case $2 in
       --name-format) case $3 in ''|*[!a-z0-9-]*) echo "The name must be lowercase." >&2; exit 2 ;; esac ;;
-      --token-format) ;;
       *) echo "ok    agent-bridge answers" ;;
     esac ;;
   enroll)
@@ -582,3 +581,69 @@ def test_a_new_name_on_an_enrolled_host_asks_to_enroll_again(host: Host) -> None
     result = host.setup(ENROLLMENT=ENROLLMENT)
     assert "as newbox" in result.stdout
     assert "still knows it" not in result.stdout
+
+
+def test_a_rotation_the_gateway_cant_be_reached_for_puts_the_old_token_back(host: Host) -> None:
+    host.install()
+    first = host.env()["AGENT_BRIDGE_TOKEN"]
+    (host.home / "enroll-codes").write_text("4\n")
+
+    result = host.setup(ROTATE_TOKEN="1", ENROLLMENT=ENROLLMENT, check=False)
+
+    assert result.returncode != 0
+    assert "not rotated" in result.stderr
+    assert host.env()["AGENT_BRIDGE_TOKEN"] == first
+
+
+def test_an_enrolled_host_whose_token_is_gone_asks_to_enroll_again(host: Host) -> None:
+    host.install()
+    lines = host.env_file.read_text().splitlines()
+    host.env_file.write_text("".join(f"{line}\n" for line in lines if not line.startswith("AGENT_BRIDGE_TOKEN=")))
+
+    result = host.setup()
+
+    assert "had no token" in result.stdout
+    assert "Enrollment string" in result.stderr
+    assert "old token and its calls will be refused" in result.stdout
+
+    result = host.setup(ENROLLMENT=ENROLLMENT)
+    assert f"enroll {ENROLLMENT}" in host.log("agent-bridge.log")
+    assert "old token" not in result.stdout
+
+
+def test_the_token_is_never_on_a_command_line(host: Host) -> None:
+    host.install()
+
+    token = host.env()["AGENT_BRIDGE_TOKEN"]
+    assert not [line for line in host.log("agent-bridge.log") if token in line]
+
+
+def test_an_installed_token_that_wont_do_stops_the_setup(host: Host) -> None:
+    host.install()
+    lines = host.env_file.read_text().splitlines()
+    host.env_file.write_text("".join(
+        "AGENT_BRIDGE_TOKEN='short'\n" if line.startswith("AGENT_BRIDGE_TOKEN=") else f"{line}\n" for line in lines))
+
+    result = host.setup(check=False)
+
+    assert result.returncode != 0
+    assert "ROTATE_TOKEN=1" in result.stderr
+
+
+def test_a_relative_path_is_refused(host: Host) -> None:
+    result = host.install(ALLOWED_ROOTS="projects", check=False)
+
+    assert result.returncode != 0
+    assert "ALLOWED_ROOTS must be a full path" in result.stderr
+    assert not host.env_file.exists()
+
+
+def test_an_agents_config_without_a_login_says_how_to_log_in(host: Host) -> None:
+    config = host.home / ".claude-agents"
+
+    result = host.install(AGENT_BRIDGE_CLAUDE_CONFIG_DIR=str(config), TRUST_ROOT=str(host.home / "projects"))
+
+    assert f"CLAUDE_CONFIG_DIR={config} claude" in result.stdout
+    (config / ".claude.json").parent.mkdir(parents=True, exist_ok=True)
+    (config / ".claude.json").write_text("{}")
+    assert "Log in to Claude" not in host.setup().stdout
