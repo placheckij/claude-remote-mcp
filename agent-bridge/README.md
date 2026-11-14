@@ -50,9 +50,8 @@ answers "The agent host is not reachable". The gateway host can't wake it: macOS
 - Turn off suspend: `sudo systemctl mask sleep.target suspend.target hibernate.target
   hybrid-sleep.target`. On a laptop, also set `HandleLidSwitch=ignore` and
   `HandleLidSwitchExternalPower=ignore` in `/etc/systemd/logind.conf`.
-- Run the user service without a login session: `loginctl enable-linger "$USER"` (see
-  [the systemd unit](#as-a-service-on-linux-systemd-user-unit)). herdr's server still
-  has to be started after a reboot.
+- The [setup script](#as-a-service-on-linux-systemd-user-unit) turns on lingering, so
+  agent-bridge and herdr's server start at boot and keep running after you log out.
 
 **Before you leave**, ask Claude to list your agents. If it answers that the agent host
 is not reachable, the host is asleep, logged out, or agent-bridge isn't running.
@@ -372,50 +371,78 @@ above, then removing the plist, `~/Library/Application Support/agent-bridge` and
 
 ### As a service on Linux (systemd user unit)
 
-Not yet tested. It runs as your user, next to your herdr server. Put the settings in
-`~/.config/agent-bridge/env` (`chmod 600`, it holds the token):
+A systemd user service runs agent-bridge as you, next to your herdr server. It starts at
+boot without anyone logging in (lingering), and restarts if it stops. A second user
+service runs herdr's server headless, so agents can start after a reboot too; you can
+still attach to it with `herdr`.
+
+#### With the setup script
+
+Run `sudo mcp-gateway enroll` on the gateway host first. Then run the script from the
+checkout as your own user, not with `sudo`, in your own login (SSH or a console; not
+through `su` or `sudo -u`, which have no user manager):
 
 ```sh
-AGENT_BRIDGE_TOKEN=…
-AGENT_BRIDGE_ALLOWED_ROOTS=/home/me/projects
-AGENT_BRIDGE_HOST=192.168.1.20
-AGENT_BRIDGE_NAME=linux-box
-AGENT_BRIDGE_HERDR_BIN=/home/me/.local/bin/herdr
+agent-bridge/deploy/linux/setup.sh
 ```
 
-and the unit in `~/.config/systemd/user/agent-bridge.service`:
+It asks only for what's missing:
 
-```ini
-[Unit]
-Description=agent-bridge (claude-remote)
-After=network-online.target
+- the folders agents may start in (`AGENT_BRIDGE_ALLOWED_ROOTS`, default `~/Projects`);
+- this host's name in agent ids (default: the hostname);
+- a separate Claude config (default `~/.claude-agents`) and a trust root (default: the
+  first folder agents may start in), for [folder trust](#folder-trust). Answer `-` at
+  the config question to skip both. If the config is new, log in to it once, as the
+  script reminds you at the end. This is asked once; later runs keep the answer;
+- the enrollment string `sudo mcp-gateway enroll` printed. Press Enter to enroll later.
 
-[Service]
-ExecStart=/path/to/claude-remote-mcp/.venv/bin/agent-bridge serve
-Restart=always
-RestartSec=10
+It finds the LAN address and `herdr` itself, and generates the token. Then it:
 
-[Install]
-WantedBy=default.target
-```
+1. runs `uv sync --all-packages` to install the dependencies;
+2. checks the port (8765). If another program holds it, it names that program and
+   offers a free port. If an agent-bridge started by hand holds it, stop that one first;
+3. writes the settings to `~/.config/agent-bridge/env`, readable only by you, keeping
+   any other lines in it;
+4. installs `agent-bridge.service` and `agent-bridge-herdr.service` in
+   `~/.config/systemd/user/`. It starts herdr's service only when no herdr server is
+   running, and never restarts it, so running agents stay;
+5. turns on lingering (`loginctl enable-linger`). If that is refused, it prints the
+   `sudo` command to run;
+6. (re)starts agent-bridge, runs `agent-bridge check`, and enrolls. If the gateway has
+   another host by that name, it asks for another one.
+
+The last lines say which name the gateway knows the host by. Nothing is copied to the
+gateway by hand.
+
+To skip the questions, pass the answers as variables, e.g.
+`ALLOWED_ROOTS=/home/me/projects NAME=linux-box ENROLLMENT='crm1@…' agent-bridge/deploy/linux/setup.sh`.
+The others are `HOST`, `PORT`, `HERDR_BIN`, `AGENT_BRIDGE_CLAUDE_CONFIG_DIR` and
+`TRUST_ROOT` (pass these two empty for no folder trust), `AGENT_BRIDGE_ACCOUNTS` (never
+asked for; the installed value is kept unless you pass one, and an empty one removes it),
+`ROTATE_TOKEN=1` (a new token; needs `ENROLLMENT`, so the gateway learns it) and
+`HERDR_SERVICE=0` (no service for herdr's server, if you start it yourself).
+
+Re-run it after pulling new code. It asks nothing it already knows; to change a setting,
+pass it as a variable or edit the env file. The name is the exception: once the host is
+enrolled, it is the gateway's. Rename the host on the gateway host with
+`sudo mcp-gateway bridges rename <old> <new>`, and the next run takes the new name.
+
+#### Restart, stop, uninstall
 
 ```sh
-systemctl --user daemon-reload
-systemctl --user enable --now agent-bridge
-loginctl enable-linger "$USER"     # keep it running while you're logged out
-
 systemctl --user status agent-bridge
 journalctl --user -u agent-bridge -f
-systemctl --user restart agent-bridge          # after pulling new code or editing env
-systemctl --user stop agent-bridge             # until the next start or login
-systemctl --user disable --now agent-bridge    # and don't start at login
+systemctl --user restart agent-bridge          # after editing the env file
+systemctl --user stop agent-bridge             # until the next start or boot
+systemctl --user disable --now agent-bridge    # and don't start at boot
 
-# Uninstall
-/path/to/claude-remote-mcp/.venv/bin/agent-bridge unenroll
-systemctl --user disable --now agent-bridge
-rm -r ~/.config/systemd/user/agent-bridge.service ~/.config/agent-bridge ~/.local/state/agent-bridge
-systemctl --user daemon-reload
+agent-bridge/deploy/linux/uninstall.sh
 ```
+
+The uninstall script leaves the gateway (`agent-bridge unenroll`), then removes both
+services, the env file and the state file. herdr's server keeps running with its agents
+until you stop it (`herdr server stop`) or reboot. Lingering stays on;
+`loginctl disable-linger` turns it off.
 
 ### When it's stopped or removed
 

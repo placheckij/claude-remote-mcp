@@ -1,0 +1,16 @@
+# setup.sh installs this in ~/.config/systemd/user/ and fills in @AGENT_BRIDGE@. The
+# settings are in the env file `agent-bridge serve` reads, never here.
+[Unit]
+Description=agent-bridge (claude-remote)
+# Ordering only: the bridge answers without herdr, and lists agents once it is up.
+After=agent-bridge-herdr.service
+
+[Service]
+ExecStart="@AGENT_BRIDGE@" serve
+# Also retries until the LAN address exists, e.g. right after boot. A user unit can't
+# order itself after network-online.target, which is a system unit.
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=default.target
