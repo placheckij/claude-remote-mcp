@@ -85,8 +85,11 @@ case $1 in
       --name-format) case $3 in ''|*[!a-z0-9-]*) echo "The name must be lowercase." >&2; exit 2 ;; esac ;;
       *)
         echo "ok    agent-bridge answers"
-        # As check saves the name the gateway answers with: $HOME/gateway-name, if any.
-        if [ -f "$HOME/gateway-name" ] && [ -f "$state" ]; then
+        # As check saves the name the gateway answers with: $HOME/gateway-name, if any, and
+        # only for the token in $HOME/gateway-token, if that exists.
+        token=$(sed -n "s/^AGENT_BRIDGE_TOKEN='\\(.*\\)'$/\\1/p" "$env")
+        if [ -f "$HOME/gateway-token" ] && [ "$token" != "$(cat "$HOME/gateway-token")" ]; then :
+        elif [ -f "$HOME/gateway-name" ] && [ -f "$state" ]; then
           sed -i "s/\\"name\\": \\"[^\\"]*\\"/\\"name\\": \\"$(cat "$HOME/gateway-name")\\"/" "$state"
         fi ;;
     esac ;;
@@ -614,13 +617,27 @@ def test_a_rename_done_on_the_gateway_is_followed(host: Host) -> None:
 def test_a_rename_on_the_gateway_the_bridge_hasnt_seen_isnt_undone_by_enrolling(host: Host) -> None:
     host.install()
     # Renamed on the gateway while the bridge ran: its state file has the old name until it
-    # next asks the gateway, at the restart.
+    # next asks the gateway, which answers only to the token it has.
     (host.home / "gateway-name").write_text("studio")
+    (host.home / "gateway-token").write_text(host.env()["AGENT_BRIDGE_TOKEN"])
 
     result = host.setup(ROTATE_TOKEN="1", ENROLLMENT=ENROLLMENT)
 
     assert host.env()["AGENT_BRIDGE_NAME"] == "studio"
     assert "as studio" in result.stdout
+
+
+def test_a_failed_rotation_puts_back_the_gateways_name_after_another_was_given(host: Host) -> None:
+    host.install()
+    first = host.env()["AGENT_BRIDGE_TOKEN"]
+    (host.home / "enroll-codes").write_text("3\n4\n")
+
+    result = host.setup(ROTATE_TOKEN="1", ENROLLMENT=ENROLLMENT, input="box2\n", check=False)
+
+    assert result.returncode != 0
+    assert "not rotated" in result.stderr
+    assert host.env()["AGENT_BRIDGE_TOKEN"] == first
+    assert host.env()["AGENT_BRIDGE_NAME"] == "linux-box"
 
 
 def test_settings_written_with_export_are_taken_over(host: Host) -> None:

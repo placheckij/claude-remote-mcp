@@ -177,6 +177,10 @@ done
 
 # uname, as some distributions don't install hostname.
 DEFAULT_NAME="$(uname -n | cut -d. -f1 | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9]+/-/g; s/^-+//; s/-+$//')"
+# The bridge saves the gateway's name for it when it asks, at its start or a check. Asked
+# here, with the installed token, so a rename done there since then is seen before a new
+# token (which the gateway doesn't know yet) is written or an enroll sends the old name.
+[[ -z $(enrolled name) || ! -f $ENV_FILE ]] || bridge check >/dev/null 2>&1 || true
 ENROLLED_NAME="$(enrolled name)"
 NAME_GIVEN=${NAME+1}
 pick NAME NAME || {
@@ -400,14 +404,6 @@ fi
 
 start_service
 
-# Starting has the bridge ask the gateway for its name, so a rename done there since the
-# bridge last started shows up only now; enrolling with the old one would undo it.
-if [[ -n $(enrolled name) && $(enrolled name) != "$NAME" ]]; then
-  NAME="$(enrolled name)"
-  write_env
-  start_service
-fi
-
 # --- Enroll --------------------------------------------------------------------------
 
 ENROLLED=""
@@ -440,6 +436,8 @@ done
 if [[ -n ${ROTATE_TOKEN:-} && -z $ENROLLED && -n $OLD_TOKEN && -n $(enrolled name) ]]; then
   log "Putting the old token back: the gateway didn't learn the new one"
   TOKEN=$OLD_TOKEN
+  # And its name for this host, should another one have been given for a taken name.
+  NAME="$(enrolled name)"
   write_env
   start_service
   die "the token was not rotated${TAKEN:+, as the gateway has another host named $TAKEN}; run again with ROTATE_TOKEN=1 and a new string from sudo mcp-gateway enroll"
