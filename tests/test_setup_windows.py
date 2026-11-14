@@ -1186,9 +1186,34 @@ def test_agent_bridge_variables_in_this_window_are_not_expanded_into_the_setting
 def test_references_in_comments_dont_count_and_skipped_lines_define_nothing(machine: Machine) -> None:
     machine.setup("-Enrollment ''", input="\n\n")
     with machine.env_file.open("a", encoding="utf-8") as file:
-        file.write("AGENT_BRIDGE_X1=plain # was ${OLD_ONLY}\nFOO_S='open\nAGENT_BRIDGE_X2=${FOO_S}\n")
+        file.write("AGENT_BRIDGE_X1=plain # was ${OLD_ONLY}\nFOO_S='a'b\nAGENT_BRIDGE_X2=${FOO_S}\n")
 
     output = machine.setup(OLD_ONLY="x", FOO_S="y")
 
     assert "${OLD_ONLY}" not in output
     assert "${FOO_S} in" in output
+
+
+def test_a_kept_line_whose_quote_is_left_open_stops_setup_before_the_bridge(machine: Machine) -> None:
+    machine.setup("-Enrollment ''", input="\n\n")
+    text = machine.env_file.read_text(encoding="utf-8")
+    machine.env_file.write_text('AGENT_BRIDGE_ACCOUNTS="C:\\x\\"\n' + text + 'AGENT_BRIDGE_X9="z"\n', encoding="utf-8")
+    # python-dotenv reads the lines below into it, up to the next double quote.
+    assert "AGENT_BRIDGE_PORT" not in machine.env()
+
+    output = machine.setup(expect=1)
+
+    assert "opens a quote it doesn't close" in output
+    assert r"Disable-ScheduledTask \agent-bridge" not in machine.calls()
+
+
+def test_an_unclosed_reference_and_one_setup_replaces_are_not_warned_about(machine: Machine) -> None:
+    machine.setup("-Enrollment ''", input="\n\n")
+    text = machine.env_file.read_text(encoding="utf-8").replace("AGENT_BRIDGE_PORT=8765", "AGENT_BRIDGE_PORT=${MYPORT}")
+    machine.env_file.write_text(text + "AGENT_BRIDGE_X1=${OPEN_ONLY\n", encoding="utf-8")
+
+    # ${OPEN_ONLY is literal text; -Port 9000 replaces the ${MYPORT} line.
+    output = machine.setup("-Port 9000", OPEN_ONLY="x", MYPORT="8765")
+
+    assert "is set otherwise" not in output
+    assert "Done." in output

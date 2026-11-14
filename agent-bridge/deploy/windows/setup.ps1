@@ -102,7 +102,9 @@ function Write-EnvFile([string]$Path, [string[]]$Lines, $Settings) {
         $out.Add('# doesn''t set are kept; see agent-bridge\README.md for the others.')
     }
     $done = @{}
+    $number = 0
     foreach ($line in $Lines) {
+        $number++
         $entry = ConvertFrom-EnvLine $line $exact
         if (-not $entry) {
             $out.Add($line)
@@ -110,6 +112,11 @@ function Write-EnvFile([string]$Path, [string[]]$Lines, $Settings) {
         }
         $key = $entry.Name.ToUpperInvariant()
         if (-not $Settings.Contains($key)) {
+            # Kept, it would hide the lines below from agent-bridge (one of setup's, it replaces).
+            if (Test-QuoteLeftOpen $line) {
+                Stop-Setup ("line $number of $EnvFile opens a quote it doesn't close, so agent-bridge reads the lines " +
+                    "below into $($entry.Name). Close the quote or remove the line, then run setup again.")
+            }
             $out.Add($line)
             if ($null -ne $entry.Value) { $exact[$entry.Name] = $entry.Value }
             continue
@@ -401,26 +408,6 @@ try {
     }
 
     $Installed = Read-EnvFile $EnvFile
-    # ${NAME} in the env file is expanded from this window's variables here, and from a
-    # logon's for the service: say which differ.
-    # In values as python-dotenv reads them (no comment; a line it skips sets nothing), and
-    # not names set above in the file, which it looks up first.
-    $defined = New-Object 'Collections.Generic.HashSet[string]' ([StringComparer]::Ordinal)
-    $referenced = @(foreach ($line in $Installed.Lines) {
-            if ($line -notmatch $KeyLine) { continue }
-            # Not $name, which is $Name, this host's.
-            $lineKey = $Matches[1]
-            $lineValue = ConvertFrom-EnvValue $Matches[2]
-            if ($null -eq $lineValue) { continue }
-            foreach ($match in [regex]::Matches($lineValue, '\$\{([^}:]*)')) {
-                if (-not $defined.Contains($match.Groups[1].Value)) { $match.Groups[1].Value }
-            }
-            [void]$defined.Add($lineKey)
-        })
-    foreach ($unlike in (Get-NameUnlikeLogon $referenced)) {
-        Write-Warn ("`${$unlike} in $EnvFile is set otherwise in this window, where setup checks it, than at logon, " +
-            "where agent-bridge starts. Set it with setx and open a new window, or write the value there instead.")
-    }
     function Get-Installed([string]$Key) {
         if ($Installed.Values.Contains("AGENT_BRIDGE_$Key")) { return $Installed.Values["AGENT_BRIDGE_$Key"] }
         return ''
@@ -554,6 +541,12 @@ try {
 
     Write-Step "Writing $EnvFile"
     Write-EnvFile $EnvFile $Installed.Lines $Settings
+    # ${NAME} in the env file is expanded from this window's variables here, and from a
+    # logon's for the service: say which differ, of those left in the file.
+    foreach ($unlike in (Get-NameUnlikeLogon (Read-EnvFile $EnvFile).Referenced)) {
+        Write-Warn ("`${$unlike} in $EnvFile is set otherwise in this window, where setup checks it, than at logon, " +
+            "where agent-bridge starts. Set it with setx and open a new window, or write the value there instead.")
+    }
 
     # The firewall now, not before the steps above: setup stopping there leaves the old
     # bridge's rule and settings as they were. And before registering, which starts
