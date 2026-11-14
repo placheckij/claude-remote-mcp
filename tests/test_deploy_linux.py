@@ -3,6 +3,7 @@ temporary HOME, with uv, systemctl, loginctl, ss, ps, ip, herdr and the venv's a
 replaced by stubs: what they write, ask and run."""
 
 import json
+import platform
 import re
 import shutil
 import subprocess
@@ -593,6 +594,30 @@ def test_a_rotation_the_gateway_cant_be_reached_for_puts_the_old_token_back(host
     assert result.returncode != 0
     assert "not rotated" in result.stderr
     assert host.env()["AGENT_BRIDGE_TOKEN"] == first
+
+
+def test_a_rotation_stopped_by_a_taken_name_puts_the_old_token_and_name_back(host: Host) -> None:
+    host.install()
+    first = host.env()["AGENT_BRIDGE_TOKEN"]
+    (host.home / "enroll-codes").write_text("3\n")
+
+    result = host.setup(ROTATE_TOKEN="1", ENROLLMENT=ENROLLMENT, check=False)
+
+    assert result.returncode != 0
+    assert "not rotated, as the gateway has another host named linux-box" in result.stderr
+    assert host.env()["AGENT_BRIDGE_TOKEN"] == first
+    assert host.env()["AGENT_BRIDGE_NAME"] == "linux-box"
+
+
+def test_the_default_name_needs_no_hostname_command(host: Host) -> None:
+    (host.stubs / "hostname").write_text("#!/bin/sh\nexit 127\n")
+    (host.stubs / "hostname").chmod(0o755)
+    expected = re.sub(r"[^a-z0-9]+", "-", platform.node().split(".")[0].lower()).strip("-")
+
+    host.setup(HOST="127.0.0.1", ALLOWED_ROOTS=str(host.home / "projects"), AGENT_BRIDGE_CLAUDE_CONFIG_DIR="",
+               TRUST_ROOT="", ENROLLMENT="")
+
+    assert host.env()["AGENT_BRIDGE_NAME"] == (expected or "agent-host")
 
 
 def test_an_enrolled_host_whose_token_is_gone_asks_to_enroll_again(host: Host) -> None:

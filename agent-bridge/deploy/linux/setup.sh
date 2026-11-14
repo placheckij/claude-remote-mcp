@@ -171,7 +171,8 @@ for ROOT in "${ROOT_LIST[@]}"; do
 done
 [[ -n $ROOTS ]] || die "ALLOWED_ROOTS needs at least one folder"
 
-DEFAULT_NAME="$(hostname -s | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9]+/-/g; s/^-+//; s/-+$//')"
+# uname, as some distributions don't install hostname.
+DEFAULT_NAME="$(uname -n | cut -d. -f1 | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9]+/-/g; s/^-+//; s/-+$//')"
 pick NAME NAME || ask NAME "This host's name in agent ids, like $DEFAULT_NAME/w1:p1" "${DEFAULT_NAME:-agent-host}"
 until bridge check --name-format "$NAME"; do
   ask NAME "This host's name" "" "required"
@@ -390,6 +391,7 @@ start_service
 # --- Enroll --------------------------------------------------------------------------
 
 ENROLLED=""
+TAKEN=""
 while [[ -n $ENROLLMENT ]]; do
   log "Enrolling with the gateway"
   status=0
@@ -397,11 +399,15 @@ while [[ -n $ENROLLMENT ]]; do
   case $status in
     0) ENROLLED=1; break ;;
     3) # The gateway has another host by that name.
+      TAKEN=$NAME
       NAME=""
       until [[ -n $NAME ]] && bridge check --name-format "$NAME"; do
         ask NAME "Another name for this host" "" "required"
-        [[ -n $NAME ]] || die "the gateway has another host by that name; run again with another NAME"
+        [[ -n $NAME ]] || break
       done
+      # No other name: stop below, once a rotated token is put back.
+      if [[ -z $NAME ]]; then NAME=$TAKEN; break; fi
+      TAKEN=""
       write_env
       start_service ;;
     4) break ;; # agent-bridge printed the command to run once the gateway is up
@@ -416,8 +422,9 @@ if [[ -n ${ROTATE_TOKEN:-} && -z $ENROLLED && -n $OLD_TOKEN && -n $(enrolled nam
   TOKEN=$OLD_TOKEN
   write_env
   start_service
-  die "the token was not rotated; run again with ROTATE_TOKEN=1 and a new string from sudo mcp-gateway enroll"
+  die "the token was not rotated${TAKEN:+, as the gateway has another host named $TAKEN}; run again with ROTATE_TOKEN=1${TAKEN:+, another NAME} and a new string from sudo mcp-gateway enroll"
 fi
+[[ -z $TAKEN ]] || die "the gateway has another host by that name; run again with another NAME"
 
 cat <<EOF
 
