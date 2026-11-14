@@ -26,7 +26,7 @@ if [[ -x $AGENT_BRIDGE ]]; then
   (
     for var in $(compgen -v AGENT_BRIDGE_); do unset "$var"; done
     exec "$AGENT_BRIDGE" unenroll
-  )
+  ) || echo "warning: agent-bridge unenroll failed (above); if this host was enrolled, remove it on the gateway host with: sudo mcp-gateway bridges remove <name>"
 else
   echo "warning: $AGENT_BRIDGE is missing; if this host was enrolled, remove it on the gateway host with: sudo mcp-gateway bridges remove <name>"
 fi

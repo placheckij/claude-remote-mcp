@@ -38,10 +38,11 @@ exit 0""",
 for arg; do case $arg in -iTCP:*) port=${arg#-iTCP:} ;; esac; done
 [ -f "$HOME/port-$port" ] && cat "$HOME/port-$port"
 exit 0""",
-    # `ps -o command= -p <pid>`: the command line in $HOME/ps-<pid>.
+    # `ps -o command= -p <pid>`: the command line in $HOME/ps-<pid>; `-o ppid=`: $HOME/ppid-<pid>.
     "ps": """
 for arg; do pid=$arg; done
-[ -f "$HOME/ps-$pid" ] && cat "$HOME/ps-$pid"
+case $* in *ppid=*) file="$HOME/ppid-$pid" ;; *) file="$HOME/ps-$pid" ;; esac
+[ -f "$file" ] && cat "$file"
 exit 0""",
 }
 
@@ -61,12 +62,16 @@ case $1 in
   enroll)
     code=$(head -n 1 "$HOME/enroll-codes" 2>/dev/null)
     sed -i '' 1d "$HOME/enroll-codes" 2>/dev/null
+    # As cli.py words it when the gateway took it but the state file couldn't be written.
+    [ "$code" = state ] && { echo "The gateway enrolled this host as mac, but can't write the state." >&2; exit 1; }
     [ "${code:-0}" = 0 ] || { echo "Couldn't enroll (stub exit $code)." >&2; exit "$code"; }
     name=$(sed -n "s/^AGENT_BRIDGE_NAME='\\(.*\\)'$/\\1/p" "$dir/env")
     printf '{"version": 1, "bridge_id": "b1", "gateway": {"url": "http://10.0.0.1:8766", "gateway_id": "g1", "name": "%s"}}' \\
       "$name" > "$dir/state.json"
     echo "Enrolled as $name." ;;
-  unenroll) rm -f "$dir/state.json"; echo "Left the gateway." ;;
+  unenroll)
+    [ -f "$HOME/unenroll-fails" ] && { echo "$dir/state.json isn't agent-bridge state." >&2; exit 1; }
+    rm -f "$dir/state.json"; echo "Left the gateway." ;;
 esac
 exit 0
 """
@@ -341,6 +346,29 @@ def test_rotate_token_keeps_the_new_token_when_the_gateway_took_it(mac: Mac) -> 
     assert mac.env()["AGENT_BRIDGE_TOKEN"] != first
 
 
+def test_rotate_token_keeps_the_new_token_when_enroll_says_the_gateway_took_it(mac: Mac) -> None:
+    # Not enrolled before (added by hand with `bridges add`), so check can't ask the gateway.
+    mac.install(ENROLLMENT="")
+    first = mac.env()["AGENT_BRIDGE_TOKEN"]
+    (mac.home / "enroll-codes").write_text("state\n")
+
+    mac.setup(ROTATE_TOKEN="1", ENROLLMENT=ENROLLMENT)
+
+    assert mac.env()["AGENT_BRIDGE_TOKEN"] != first
+
+
+def test_a_rename_on_the_gateway_is_kept(mac: Mac) -> None:
+    mac.install()
+    state = json.loads((mac.support / "state.json").read_text())
+    state["gateway"]["name"] = "studio"
+    (mac.support / "state.json").write_text(json.dumps(state))
+
+    result = mac.setup(ROTATE_TOKEN="1", ENROLLMENT=ENROLLMENT)
+
+    assert mac.env()["AGENT_BRIDGE_NAME"] == "studio"
+    assert "as studio" in result.stdout
+
+
 def test_a_new_name_on_an_enrolled_host_enrolls_again(mac: Mac) -> None:
     mac.install()
 
@@ -411,11 +439,23 @@ def test_the_port_the_installed_service_holds_is_kept(mac: Mac, holder: str) -> 
         (mac.home / "ps-4242").write_text("/usr/bin/python3 something\n")
     else:
         (mac.home / "ps-4242").write_text(f"{mac.repo}/.venv/bin/uvicorn agent_bridge.app:main --factory\n")
+        (mac.home / "ppid-4242").write_text("    1\n")
 
     result = mac.install()
 
     assert mac.env()["AGENT_BRIDGE_PORT"] == "8765"
     assert not PROMPT.search(result.stderr), result.stderr
+
+
+def test_a_bridge_started_by_hand_on_the_port_is_named_and_a_free_port_offered(mac: Mac) -> None:
+    (mac.home / "port-8765").write_text("555\n")
+    (mac.home / "ps-555").write_text(f"{mac.repo}/.venv/bin/python {mac.repo}/.venv/bin/agent-bridge serve\n")
+    (mac.home / "ppid-555").write_text("  777\n")
+
+    result = mac.install()
+
+    assert "PID 555" in result.stdout
+    assert mac.env()["AGENT_BRIDGE_PORT"] == "8766"
 
 
 def test_a_taken_name_is_asked_again(mac: Mac) -> None:
@@ -467,6 +507,17 @@ def test_uninstall_leaves_the_gateway_then_removes_the_service_and_files(mac: Ma
 
     assert "unenroll" in mac.log("agent-bridge.log")
     assert f"bootout gui/{os.getuid()}/{LABEL}" in mac.log("launchctl.log")
+    assert not mac.plist.exists()
+    assert not mac.support.exists()
+
+
+def test_uninstall_still_removes_the_service_and_files_when_unenroll_fails(mac: Mac) -> None:
+    mac.install()
+    (mac.home / "unenroll-fails").touch()
+
+    result = mac.run("macos/uninstall.sh")
+
+    assert "unenroll failed" in result.stdout
     assert not mac.plist.exists()
     assert not mac.support.exists()
 
