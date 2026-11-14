@@ -127,7 +127,6 @@ function Repair-Checkout {
     # The running bridge holds the .venv's files.
     Stop-Bridge $Exe (Get-InstalledPort)
     Sync-Checkout
-    $script:Synced = $true
     return $true
 }
 
@@ -260,7 +259,10 @@ function Test-Settings($Settings) {
        check also calls the address with the token. When this host doesn't have that address,
        the token is checked against 127.0.0.1 instead, and the address with a throwaway token,
        so the real one never goes to another machine. #>
-    $temporary = Join-Path ([IO.Path]::GetTempPath()) "agent-bridge-setup-$PID"
+    # In the state folder, not %TEMP%: the copy holds the token, and if setup is killed
+    # before the finally below, the next setup or uninstall removes it.
+    $temporary = $CheckDir
+    Remove-Item -LiteralPath $temporary -Recurse -Force -ErrorAction SilentlyContinue
     New-Item -ItemType Directory -Force -Path $temporary | Out-Null
     try {
         $copy = Join-Path $temporary 'env'
@@ -293,13 +295,17 @@ function Test-Settings($Settings) {
 
 function Get-Unchanged {
     <# What a refusal leaves as it was. #>
-    if ($script:Synced -and $Checkout) { return "the installed settings are as they were, but $Checkout\.venv was updated" }
+    if ($script:Synced -and $Checkout) {
+        return "the installed settings are as they were, but $Checkout\.venv was updated, so agent-bridge may not start until setup succeeds"
+    }
     return 'the installed ones are as they were'
 }
 
 function Sync-Checkout {
     Write-Step "Installing dependencies into $Checkout\.venv"
-    if ((Invoke-Native uv @('sync', '--all-packages', '--frozen', '--directory', $Checkout)) -ne 0) { Stop-Setup 'uv sync failed' }
+    # Counted as done even when it fails: it may have changed the .venv halfway.
+    $script:Synced = $true
+    if ((Invoke-Native uv @('sync', '--all-packages', '--frozen', '--directory', $Checkout)) -ne 0) { Stop-Setup "uv sync failed; $(Get-Unchanged)" }
 }
 
 function Get-BlockRule([string]$Program) {
@@ -335,10 +341,7 @@ try {
             Stop-Setup 'uv not found; install it: https://docs.astral.sh/uv/getting-started/installation/'
         }
         # A first install has nothing running yet that holds the .venv's files.
-        if (-not (Test-Path -LiteralPath $Exe)) {
-            Sync-Checkout
-            $Synced = $true
-        }
+        if (-not (Test-Path -LiteralPath $Exe)) { Sync-Checkout }
     }
     if (-not (Test-Path -LiteralPath $Exe)) { Stop-Setup "$Exe doesn't exist" }
 
@@ -475,8 +478,22 @@ try {
 
     # --- Install ---------------------------------------------------------------------------
 
-    # The firewall first: registering the task starts agent-bridge at once, and Windows may ask
-    # about Python as soon as it listens on the LAN address.
+    Write-Step 'Stopping the running agent-bridge, if any'
+    Stop-Bridge $Exe $Port
+    if (Get-PortHolder $Port) { Stop-Setup "port $Port is still in use; stop what holds it and run setup again" }
+
+    if ($Checkout -and -not $Synced) {
+        Sync-Checkout
+        # The new code is what will run: it may refuse what the old one accepted.
+        if (-not (Test-Settings $Settings)) { Stop-Setup "agent-bridge's new code wouldn't start with these settings (above); $(Get-Unchanged)" }
+    }
+
+    Write-Step "Writing $EnvFile"
+    Write-EnvFile $EnvFile $Installed.Lines $Settings
+
+    # The firewall now, not before the steps above: setup stopping there leaves the old
+    # bridge's rule and settings as they were. And before registering, which starts
+    # agent-bridge at once: Windows may ask about Python as soon as it listens on the LAN.
     Write-Step "Firewall rule for TCP $Port, on Private networks only"
     $network = Get-Network $Address
     $elevated = @()
@@ -514,19 +531,6 @@ try {
         }
     }
 
-    Write-Step 'Stopping the running agent-bridge, if any'
-    Stop-Bridge $Exe $Port
-    if (Get-PortHolder $Port) { Stop-Setup "port $Port is still in use; stop what holds it and run setup again" }
-
-    if ($Checkout -and -not $Synced) {
-        Sync-Checkout
-        $Synced = $true
-        # The new code is what will run: it may refuse what the old one accepted.
-        if (-not (Test-Settings $Settings)) { Stop-Setup "agent-bridge's new code wouldn't start with these settings (above); $(Get-Unchanged)" }
-    }
-
-    Write-Step "Writing $EnvFile"
-    Write-EnvFile $EnvFile $Installed.Lines $Settings
 
     Write-Step "Registering the scheduled task $TaskName, which starts agent-bridge"
     New-Item -ItemType Directory -Force -Path $StateDir | Out-Null
@@ -557,7 +561,12 @@ try {
     # The gateway knows this host by the name it enrolled with; a new -Name needs enrolling again.
     $NameChanged = $Gateway -and -not $NameInstalled -and $Name -ne $Gateway.name
     $String = ''
-    if ($Bound.ContainsKey('Enrollment')) {
+    if (-not $Started) {
+        if ($Bound.ContainsKey('Enrollment') -or -not $Gateway -or $NewToken -or $NameChanged) {
+            Write-Host ''
+            Write-Host 'Not enrolling now: the gateway asks agent-bridge for its /info first, and it isn''t running.'
+        }
+    } elseif ($Bound.ContainsKey('Enrollment')) {
         $String = $Enrollment
     } elseif (-not $Gateway -or $NewToken -or $NameChanged) {
         Write-Host ''
@@ -580,6 +589,7 @@ try {
             # So its /info has the new name too.
             Stop-Bridge $Exe $Port
             $Started = Start-Bridge $Port
+            if (-not $Started) { break }
         }
     }
 

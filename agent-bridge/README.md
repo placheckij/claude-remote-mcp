@@ -471,11 +471,14 @@ It finds the LAN address and `herdr.exe` itself, including herdr's
 1. checks the port (8765). If another program holds it, or Windows keeps it for Hyper-V or
    WSL, the script names that and offers a free port. A port held by agent-bridge itself is
    fine; it is restarted;
-2. adds an inbound firewall rule for the port on **Private** networks only. This is the
+2. checks the new settings with `agent-bridge check` on a copy, so settings agent-bridge
+   would refuse never replace a working install. Then it stops the running bridge, runs
+   `uv sync --all-packages --frozen` (checking the settings again with the new code), and
+   writes the env file;
+3. adds an inbound firewall rule for the port on **Private** networks only. This is the
    only step that asks for admin rights. If Windows treats your network as Public, the
    script asks whether to make it Private (answer `y`): the gateway can't reach
    agent-bridge otherwise;
-3. runs `uv sync --all-packages`, and writes the env file;
 4. registers the `agent-bridge` task, which starts it. The task runs
    `%LOCALAPPDATA%\agent-bridge\run.cmd`, which runs `agent-bridge serve` and writes its
    log. It is tried every minute while you're logged on, which does nothing while it runs.

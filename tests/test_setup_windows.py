@@ -774,3 +774,42 @@ def test_an_address_this_host_lacks_is_checked_without_sending_the_token_there(m
     token = machine.env()["AGENT_BRIDGE_TOKEN"]
     assert tokens[0] == "token from the env file"
     assert tokens[1] not in ("token from the env file", f"token {token}")
+
+
+def test_a_bridge_that_does_not_start_is_not_enrolled(machine: Machine) -> None:
+    output = machine.setup(f"-Enrollment '{STRING}'", input="\n\n", expect=1, FAKE_NO_START="1")
+
+    assert "Not enrolling now" in output
+    assert not any(call.startswith("agent-bridge enroll") for call in machine.calls())
+
+
+def test_an_aborted_setup_leaves_the_old_firewall_rule(machine: Machine) -> None:
+    machine.setup("-Enrollment ''", input="\n\n")
+    # The env file can't be written, after the bridge was stopped.
+    (machine.appdata / "agent-bridge" / "env.tmp").mkdir()
+
+    machine.setup("-Port 9000", expect=1)
+
+    assert machine.fake()["rule"] == {"port": 8765, "profile": "Private"}
+
+
+def test_references_in_the_env_file_are_read_as_agent_bridge_reads_them(machine: Machine) -> None:
+    machine.setup("-Enrollment ''", input="\n\n")
+    text = machine.env_file.read_text(encoding="utf-8")
+    text = text.replace(f"AGENT_BRIDGE_ALLOWED_ROOTS={machine.profile / 'Projects'}", r"AGENT_BRIDGE_ALLOWED_ROOTS=${USERPROFILE}\Projects")
+    machine.env_file.write_text(text, encoding="utf-8")
+
+    machine.setup()
+
+    assert machine.env()["AGENT_BRIDGE_ALLOWED_ROOTS"] == str(machine.profile / "Projects")
+
+
+def test_the_settings_copy_lives_in_the_state_folder_and_uninstall_removes_a_leftover(machine: Machine) -> None:
+    machine.setup("-Enrollment ''", input="\n\n")
+    leftover = machine.localappdata / "agent-bridge" / "setup-check"
+    leftover.mkdir()
+    (leftover / "env").write_text("AGENT_BRIDGE_TOKEN=secret\n")
+
+    machine.run("uninstall.ps1")
+
+    assert not (machine.localappdata / "agent-bridge").exists()

@@ -20,6 +20,8 @@ $script:StateFile = Join-Path $script:StateDir 'state.json'
 $script:LogFile = Join-Path $script:StateDir 'agent-bridge.log'
 # What the task runs, from run.cmd in this folder.
 $script:RunFile = Join-Path $script:StateDir 'run.cmd'
+# Where setup checks a copy of the settings; uninstall removes what a killed setup left.
+$script:CheckDir = Join-Path $script:StateDir 'setup-check'
 # Set while Stop-Bridge has the task disabled, so leaving early enables it again.
 $script:TaskDisabled = $false
 
@@ -289,13 +291,29 @@ function ConvertFrom-EnvValue([string]$Raw) {
     return ($value -replace '\s+#.*$', '')
 }
 
+function Expand-EnvReference([string]$Value, $Earlier) {
+    <# ${NAME} and ${NAME:-default} in $Value, as python-dotenv expands them: from the file's
+       earlier values first, then the environment. #>
+    return [regex]::Replace($Value, '\$\{([^}:]*)(?::-([^}]*))?\}', {
+            param($reference)
+            $name = $reference.Groups[1].Value
+            if ($Earlier.Contains($name.ToUpperInvariant())) { return [string]$Earlier[$name.ToUpperInvariant()] }
+            $fromEnvironment = [Environment]::GetEnvironmentVariable($name)
+            if ($null -ne $fromEnvironment) { return $fromEnvironment }
+            return $reference.Groups[2].Value
+        })
+}
+
 function Read-EnvFile([string]$Path) {
     <# The env file's lines, and its values by key, as python-dotenv reads them. #>
     $values = [ordered]@{}
     $lines = @()
     if (Test-Path -LiteralPath $Path) { $lines = @(Get-Content -LiteralPath $Path -Encoding UTF8) }
     foreach ($line in $lines) {
-        if ($line -match $script:KeyLine) { $values[$Matches[1].ToUpperInvariant()] = ConvertFrom-EnvValue $Matches[2] }
+        if ($line -match $script:KeyLine) {
+            $key = $Matches[1].ToUpperInvariant()
+            $values[$key] = Expand-EnvReference (ConvertFrom-EnvValue $Matches[2]) $values
+        }
     }
     return @{ Lines = $lines; Values = $values }
 }
