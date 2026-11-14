@@ -27,17 +27,21 @@ $found = Find-Bridge $Bridge -Optional
 $Exe = if ($found) { $found.Exe } else { '' }
 
 Write-Step 'Leaving the gateway'
+# Read first: the state file, which says where to remove this host by hand, goes below.
+$gateway = Get-EnrolledGateway
+$left = $false
 if ($Exe -and (Test-Path -LiteralPath $Exe)) {
-    # Exits 0 even when the gateway can't be reached, after printing what to run there.
-    Invoke-Native $Exe @('unenroll') | Out-Null
-} else {
-    $gateway = Get-EnrolledGateway
-    if ($gateway) {
-        Write-Warn "agent-bridge.exe isn't there any more, so this host can't take itself off the gateway at $($gateway.url)."
-        Write-Host "Remove it on the gateway host with: sudo mcp-gateway bridges remove $($gateway.name)"
-    } else {
-        Write-Host 'Not enrolled with a gateway.'
-    }
+    # Exits 0 even when the gateway can't be reached, after printing what to run there; any
+    # other exit is agent-bridge failing to run.
+    $left = (Invoke-Native $Exe @('unenroll')) -eq 0
+    if (-not $left) { Write-Warn "$Exe didn't run, so this host couldn't take itself off the gateway." }
+} elseif ($gateway) {
+    Write-Warn "agent-bridge.exe isn't there any more, so this host can't take itself off the gateway."
+}
+if ($gateway -and -not $left) {
+    Write-Host "Remove it on the gateway host ($($gateway.url)) with: sudo mcp-gateway bridges remove $($gateway.name)"
+} elseif (-not $gateway) {
+    Write-Host 'Not enrolled with a gateway.'
 }
 
 Write-Step "Removing the scheduled task $TaskName"
@@ -67,7 +71,7 @@ if (Get-NetFirewallRule -Name $RuleName -ErrorAction SilentlyContinue) {
 }
 
 Write-Step 'Removing the settings and state'
-foreach ($file in @($EnvFile, $StateFile, "$StateFile.tmp", $LogFile, "$LogFile.1")) {
+foreach ($file in @($EnvFile, $StateFile, "$StateFile.tmp", $LogFile, "$LogFile.1", $RunFile)) {
     if (Test-Path -LiteralPath $file) {
         Remove-Item -LiteralPath $file -Force
         Write-Host "removed $file"
@@ -81,3 +85,6 @@ foreach ($folder in @($SettingsDir, $StateDir)) {
 
 Write-Host ''
 Write-Host 'Done. agent-bridge is uninstalled; its code is still where it was.'
+
+# The last program's exit code would be the script's otherwise.
+exit 0

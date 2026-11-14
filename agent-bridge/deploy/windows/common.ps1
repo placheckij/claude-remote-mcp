@@ -12,8 +12,13 @@ $script:EnvFile = Join-Path $script:SettingsDir 'env'
 $script:StateDir = Join-Path $env:LOCALAPPDATA 'agent-bridge'
 $script:StateFile = Join-Path $script:StateDir 'state.json'
 $script:LogFile = Join-Path $script:StateDir 'agent-bridge.log'
+# What the task runs, from run.cmd in this folder.
+$script:RunFile = Join-Path $script:StateDir 'run.cmd'
 # Set while Stop-Bridge has the task disabled, so leaving early enables it again.
 $script:TaskDisabled = $false
+# As run.cmd does for the service: agent-bridge reads the env file in the locale's code
+# page otherwise, and setup writes it as UTF-8.
+$env:PYTHONUTF8 = '1'
 
 function Restore-Task {
     <# Enables the task again if Stop-Bridge disabled it: a setup that stops halfway must not
@@ -95,9 +100,12 @@ function Invoke-Native {
 
 function Test-IsBridge([string]$CommandLine) {
     <# Whether a command line is agent-bridge's service, wherever it is installed: a checkout's
-       .venv, a package's folder or shim, or uvicorn with agent_bridge.app:main as installed before. #>
+       .venv, a package's folder or shim, `python -m agent_bridge.cli serve`, or uvicorn with
+       agent_bridge.app:main as installed before. Other mentions of agent_bridge don't count. #>
     if (-not $CommandLine) { return $false }
-    return ($CommandLine -match '(?i)agent-bridge(\.(exe|cmd|bat))?"?\s+serve\b') -or ($CommandLine -match '(?i)\bagent_bridge\b')
+    return ($CommandLine -match '(?i)agent-bridge(\.(exe|cmd|bat))?"?\s+serve\b') -or
+        ($CommandLine -match '(?i)-m\s+agent_bridge(\.cli)?\s+serve\b') -or
+        ($CommandLine -match '(?i)\bagent_bridge\.app:main\b')
 }
 
 function Get-PortHolder([int]$Port) {
@@ -123,13 +131,17 @@ function Get-PortHolder([int]$Port) {
     return $holders[0]
 }
 
-function Test-PortExcluded([int]$Port) {
-    <# Whether Windows keeps $Port for itself (Hyper-V, WSL and Docker reserve ranges), where
-       nothing can listen although nothing does. #>
+function Get-ExcludedPortRange {
+    <# The TCP port ranges Windows keeps for itself (Hyper-V, WSL and Docker reserve them),
+       where nothing can listen although nothing does, as objects with First and Last. #>
     foreach ($line in @(netsh int ipv4 show excludedportrange protocol=tcp)) {
-        if ($line -match '^\s*(\d+)\s+(\d+)') {
-            if ($Port -ge [int]$Matches[1] -and $Port -le [int]$Matches[2]) { return $true }
-        }
+        if ($line -match '^\s*(\d+)\s+(\d+)') { [pscustomobject]@{ First = [int]$Matches[1]; Last = [int]$Matches[2] } }
+    }
+}
+
+function Test-PortExcluded([int]$Port, [object[]]$Ranges) {
+    foreach ($range in $Ranges) {
+        if ($range -and $Port -ge $range.First -and $Port -le $range.Last) { return $true }
     }
     return $false
 }

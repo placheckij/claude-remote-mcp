@@ -29,8 +29,10 @@ function Add-Call([string]$Call) { Add-Content -LiteralPath $env:FAKE_CALLS -Val
 function Get-Listener([int]$Port) { (Get-Fake).listen | Where-Object { $_.port -eq $Port } | Select-Object -First 1 }
 
 function Get-NetTCPConnection { param([int]$LocalPort, $State, $ErrorAction)
+    if (-not $LocalPort) {
+        return (Get-Fake).listen | Where-Object { $_.port } | ForEach-Object { [pscustomobject]@{ LocalPort = $_.port; OwningProcess = $_.pid } } }
     $l = Get-Listener $LocalPort
-    if ($l) { [pscustomobject]@{ OwningProcess = $l.pid } } }
+    if ($l) { [pscustomobject]@{ LocalPort = $LocalPort; OwningProcess = $l.pid } } }
 function Get-CimInstance { param($ClassName, $Filter, $ErrorAction)
     if ($Filter -match "Name='explorer.exe'") {
         if ($env:FAKE_DESKTOP_USER) { return [pscustomobject]@{ Name = 'explorer.exe' } }
@@ -125,6 +127,10 @@ if args[0] == "check":
     if len(args) == 1:
         print("ok    fake checks")
         sys.exit(0)
+    if os.environ.get("FAKE_OLD_CHECK"):
+        print("usage: agent-bridge check [-h]", file=sys.stderr)
+        print("agent-bridge: error: unrecognized arguments", file=sys.stderr)
+        sys.exit(2)
     if os.environ.get("FAKE_BROKEN_CHECK"):
         print("ImportError: no module named fastapi", file=sys.stderr)
         sys.exit(1)
@@ -149,6 +155,9 @@ if args[0] == "enroll":
     print(f"Enrolled as {name} with the gateway at http://127.0.0.1:8766.")
     sys.exit(0)
 if args[0] == "unenroll":
+    if os.environ.get("FAKE_BROKEN_UNENROLL"):
+        print("Traceback: ImportError", file=sys.stderr)
+        sys.exit(1)
     data = json.loads(state.read_text())
     data["gateway"] = None
     state.write_text(json.dumps(data))
@@ -229,6 +238,8 @@ class Machine:
             "FAKE_EXCLUDED_PORTS": "",
             "FAKE_UAC_DECLINED": "",
             "FAKE_BROKEN_CHECK": "",
+            "FAKE_OLD_CHECK": "",
+            "FAKE_BROKEN_UNENROLL": "",
             "FAKE_ELEVATED_EXIT": "0",
             "FAKE_BLOCKED_PROGRAM": "",
             **fakes,
@@ -289,12 +300,24 @@ def test_the_task_runs_agent_bridge_serve_hidden_at_logon_as_this_user(machine: 
     assert task.find("t:Settings/t:ExecutionTimeLimit", ns).text == "PT0S"
     exec_ = task.find("t:Actions/t:Exec", ns)
     assert exec_.find("t:Command", ns).text == rf"{SYSTEM_ROOT}\System32\conhost.exe"
-    log = machine.localappdata / "agent-bridge" / "agent-bridge.log"
-    assert exec_.find("t:Arguments", ns).text == (
-        rf'--headless "{SYSTEM_ROOT}\System32\cmd.exe" /d /s /c "set "PYTHONUNBUFFERED=1" & set "PYTHONIOENCODING=utf-8" & '
-        rf'(if exist "{log}" move /y "{log}" "{log}.1" >nul) & "{machine.bridge}" serve > "{log}" 2>&1"'
-    )
+    # One quoted path only: conhost.exe quotes each argument again, which breaks quotes inside.
+    run = machine.localappdata / "agent-bridge" / "run.cmd"
+    assert exec_.find("t:Arguments", ns).text == rf'--headless "{SYSTEM_ROOT}\System32\cmd.exe" /d /c call "{run}"'
     assert exec_.find("t:WorkingDirectory", ns).text == str(machine.localappdata / "agent-bridge")
+
+
+def test_the_task_runs_a_wrapper_that_logs_agent_bridge_serve(machine: Machine) -> None:
+    machine.setup("-Enrollment ''", input="\n\n")
+
+    run = (machine.localappdata / "agent-bridge" / "run.cmd").read_bytes()
+    # cmd misreads a batch file with LF line endings after chcp.
+    assert b"\r\n" in run and b"\n" not in run.replace(b"\r\n", b"")
+    text = run.decode("utf-8")
+    log = machine.localappdata / "agent-bridge" / "agent-bridge.log"
+    assert "{{" not in text
+    assert f'set "LOG={log}"' in text
+    assert f'"{machine.bridge}" serve >> "%LOG%" 2>&1' in text
+    assert 'set "PYTHONUTF8=1"' in text
 
 
 def test_a_rerun_keeps_the_token_and_other_settings_and_asks_nothing(machine: Machine) -> None:
@@ -541,3 +564,37 @@ def test_a_network_that_cant_be_made_private_still_gets_the_rule(machine: Machin
     by_hand = output.split("In a PowerShell run as administrator:")[1]
     assert "Set-NetConnectionProfile" in by_hand
     assert "New-NetFirewallRule" not in by_hand
+
+
+def test_the_firewall_comes_before_the_task_which_starts_the_bridge(machine: Machine) -> None:
+    machine.setup("-Enrollment ''", input="\n\n")
+
+    calls = machine.calls()
+    elevated = next(i for i, call in enumerate(calls) if call.startswith("Elevated"))
+    assert elevated < calls.index(r"Register-ScheduledTask \agent-bridge")
+
+
+def test_a_program_that_only_mentions_agent_bridge_is_another_program(machine: Machine) -> None:
+    machine.listen(8765, 77, "python.exe", r"python.exe C:\src\agent_bridge\tools\debug_server.py")
+
+    output = machine.setup("-Enrollment ''", input="\n\n\n")
+
+    assert "Port 8765 is in use by another program: PID 77" in output
+    assert "Stop-Process 77" not in machine.calls()
+    assert machine.env()["AGENT_BRIDGE_PORT"] == "8766"
+
+
+def test_an_agent_bridge_without_the_format_checks_is_called_too_old(machine: Machine) -> None:
+    output = machine.setup("-Name 'win-pc'", "-Enrollment ''", expect=1, FAKE_OLD_CHECK="1")
+
+    assert "it is older than this setup.ps1" in output
+    assert "won't do" not in output
+
+
+def test_uninstall_says_how_to_remove_the_host_when_unenroll_fails(machine: Machine) -> None:
+    machine.setup(f"-Enrollment '{STRING}'", input="\n\n")
+
+    output = machine.run("uninstall.ps1", f"-Bridge '{machine.bridge}'", FAKE_BROKEN_UNENROLL="1")
+
+    assert "sudo mcp-gateway bridges remove win-test" in output
+    assert not (machine.localappdata / "agent-bridge").exists()
