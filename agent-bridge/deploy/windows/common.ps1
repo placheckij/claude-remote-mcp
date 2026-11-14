@@ -73,8 +73,8 @@ function Assert-RunAsYou([string]$Script) {
     $explorer = @(Get-CimInstance Win32_Process -Filter "Name='explorer.exe' AND SessionId=$session" -ErrorAction SilentlyContinue)
     if ($explorer.Count -eq 0) { return }
     $owner = Invoke-CimMethod -InputObject $explorer[0] -MethodName GetOwner -ErrorAction SilentlyContinue
-    if (-not $owner -or -not $owner.User) { return }
-    $desktop = "$($owner.Domain)\$($owner.User)"
+    # Anyone can read the owner of their own desktop: an account that can't is another one.
+    $desktop = if ($owner -and $owner.User) { "$($owner.Domain)\$($owner.User)" } else { 'the user logged on here' }
     if ($desktop -ne $me) {
         Stop-Setup ("run $Script as $desktop, whose desktop this is, not as ${me}: agent-bridge must run " +
             "next to your herdr server. Open PowerShell normally; it asks for admin rights only for the firewall rule.")
@@ -98,8 +98,9 @@ function Find-Bridge([string]$Given, [switch]$Optional, [switch]$PreferInstalled
        one first. Not found, it stops setup, or with -Optional returns $null. #>
     if ($Given) {
         if (Test-Path -LiteralPath $Given -PathType Leaf) { return @{ Exe = (Resolve-Path -LiteralPath $Given).Path; Checkout = $null } }
-        if ($Optional) { return $null }
-        Stop-Setup "-Bridge: $Given doesn't exist"
+        # Uninstall looks on for the one installed now; setup stops.
+        if (-not $Optional) { Stop-Setup "-Bridge: $Given doesn't exist" }
+        if (-not $PreferInstalled) { return $null }
     }
     $installed = Get-InstalledExe
     $installedFound = if ($installed -and (Test-Path -LiteralPath $installed -PathType Leaf)) { @{ Exe = $installed; Checkout = $null } } else { $null }
@@ -254,8 +255,9 @@ function Test-PortExcluded([int]$Port, [object[]]$Ranges) {
     return $false
 }
 
-function Stop-Bridge([string]$Exe, [int]$Port) {
-    <# Stops the task and the bridge it runs, and any agent-bridge still holding $Port. The task
+function Stop-Bridge([string]$Exe, [int[]]$Port) {
+    <# Stops the task and the bridge it runs, and any agent-bridge still holding a port in $Port
+       (0 for none). The task
        is left disabled, or its one-minute repeat could start the old bridge again meanwhile;
        registering it again, Start-Bridge or Stop-Setup enable it again. #>
     $task = Get-ScheduledTask -TaskName $script:TaskName -TaskPath '\' -ErrorAction SilentlyContinue
@@ -285,17 +287,18 @@ function Stop-Bridge([string]$Exe, [int]$Port) {
     } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue; $_.ProcessId })
     # Until they are gone and have let go of the .venv's files and the log.
     if ($stopped.Count -gt 0) { Wait-Process -Id $stopped -Timeout 10 -ErrorAction SilentlyContinue }
-    if ($Port -le 0) { return }
-    # Even beside another program on the port, on another address.
-    $holder = Get-BridgeListener $Port
-    if ($holder) {
-        Write-Host "Stopping the agent-bridge on port $Port (PID $($holder.Id)): $($holder.CommandLine)"
-        Stop-Process -Id $holder.Id -Force -ErrorAction SilentlyContinue
-    }
-    # Only an agent-bridge is worth waiting for: nothing here stops another program.
-    for ($i = 0; $i -lt 20; $i++) {
-        if (-not (Get-BridgeListener $Port)) { break }
-        Start-Sleep -Milliseconds 500
+    foreach ($one in @($Port | Where-Object { $_ -gt 0 } | Select-Object -Unique)) {
+        # Even beside another program on the port, on another address.
+        $holder = Get-BridgeListener $one
+        if ($holder) {
+            Write-Host "Stopping the agent-bridge on port $one (PID $($holder.Id)): $($holder.CommandLine)"
+            Stop-Process -Id $holder.Id -Force -ErrorAction SilentlyContinue
+        }
+        # Only an agent-bridge is worth waiting for: nothing here stops another program.
+        for ($i = 0; $i -lt 20; $i++) {
+            if (-not (Get-BridgeListener $one)) { break }
+            Start-Sleep -Milliseconds 500
+        }
     }
 }
 
@@ -317,7 +320,27 @@ function ConvertFrom-EnvValue([string]$Raw) {
                 }
             })
     }
-    return ($value -replace '\s+#.*$', '')
+    # From the raw text: whitespace and # start a comment even right after the = (KEY= # x is
+    # empty), while a # right after it doesn't (KEY=#x is #x).
+    return ($Raw -replace '\s+#.*$', '').Trim()
+}
+
+function Get-LogonVariable([string]$Name) {
+    <# $Name as the scheduled task's environment has it, from a logon rather than this session:
+       the profile's folders and the like, then your lasting variables, then the machine's.
+       A variable set only in the window setup runs in isn't there. #>
+    $profileVariables = 'USERPROFILE', 'APPDATA', 'LOCALAPPDATA', 'HOMEDRIVE', 'HOMEPATH', 'USERNAME',
+    'USERDOMAIN', 'COMPUTERNAME', 'SYSTEMROOT', 'WINDIR', 'SYSTEMDRIVE', 'PROGRAMFILES', 'PROGRAMDATA',
+    'PUBLIC', 'ALLUSERSPROFILE', 'COMMONPROGRAMFILES'
+    if ($profileVariables -contains $Name.ToUpperInvariant()) { return [Environment]::GetEnvironmentVariable($Name) }
+    foreach ($path in 'HKCU:\Environment', 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Environment') {
+        $variables = Get-ItemProperty -LiteralPath $path -ErrorAction SilentlyContinue
+        if ($variables) {
+            $match = $variables.PSObject.Properties | Where-Object { $_.Name -eq $Name } | Select-Object -First 1
+            if ($match) { return [Environment]::ExpandEnvironmentVariables([string]$match.Value) }
+        }
+    }
+    return $null
 }
 
 function Expand-EnvReference([string]$Value, $Earlier) {
@@ -328,7 +351,7 @@ function Expand-EnvReference([string]$Value, $Earlier) {
             param($reference)
             $name = $reference.Groups[1].Value
             if ($Earlier.ContainsKey($name)) { return [string]$Earlier[$name] }
-            $fromEnvironment = [Environment]::GetEnvironmentVariable($name)
+            $fromEnvironment = Get-LogonVariable $name
             if ($null -ne $fromEnvironment -and $name -ceq $name.ToUpperInvariant()) { return $fromEnvironment }
             return $reference.Groups[2].Value
         })

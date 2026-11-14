@@ -331,6 +331,11 @@ function Test-EnvCopy($Settings) {
     }
 }
 
+function Write-EnrollCommand {
+    <# How to enroll by hand, in UTF-8 mode as setup and the task run agent-bridge. #>
+    Write-Host "  `$env:PYTHONUTF8 = '1'; & $(Format-Quoted $Exe) enroll '<the string it printed>'"
+}
+
 function Get-Unchanged {
     <# What a refusal leaves as it was. #>
     if ($script:Synced -and $Checkout) {
@@ -518,10 +523,8 @@ try {
     # --- Install ---------------------------------------------------------------------------
 
     Write-Step 'Stopping the running agent-bridge, if any'
-    Stop-Bridge $Exe $Port
     # And one on the port it had, when that changes.
-    $oldPort = Get-InstalledPort
-    if ($oldPort -and $oldPort -ne $Port) { Stop-Bridge $Exe $oldPort }
+    Stop-Bridge $Exe @($Port, (Get-InstalledPort))
     if (Get-PortHolder $Port) { Stop-Setup "port $Port is still in use; stop what holds it and run setup again" }
 
     if ($Checkout -and -not $Synced) {
@@ -679,7 +682,7 @@ try {
     if ($null -ne $EnrollCode -and $EnrollCode -ne 0) {
         Write-Host 'Not enrolled: see "Enrolling with the gateway" above. Once that is fixed, run here'
         Write-Host '(with a new string from `sudo mcp-gateway enroll` if this one has expired):'
-        Write-Host "  `$env:PYTHONUTF8 = '1'; & $(Format-Quoted $Exe) enroll '<the string it printed>'"
+        Write-EnrollCommand
         if ($Gateway) { Write-Warn "the gateway at $($Gateway.url) still has this host's old settings until then" }
     } elseif ($Gateway) {
         if ($Started) {
@@ -692,7 +695,7 @@ try {
         }
     } else {
         Write-Host 'Not enrolled with a gateway yet. Run `sudo mcp-gateway enroll` on the gateway host, then here:'
-        Write-Host "  `$env:PYTHONUTF8 = '1'; & $(Format-Quoted $Exe) enroll '<the string it printed>'"
+        Write-EnrollCommand
     }
     # A failed check, start or enrollment is setup's exit code; otherwise the last program's would be.
     if ($CheckFailed -or -not $Started -or ($null -ne $EnrollCode -and $EnrollCode -ne 0)) { exit 1 }
