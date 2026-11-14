@@ -201,6 +201,8 @@ systemctl --user show-environment >/dev/null 2>&1 \
 log "Installing dependencies into $REPO_DIR/.venv"
 (cd "$REPO_DIR" && uv sync --all-packages)
 [[ -x $AGENT_BRIDGE ]] || die "uv sync didn't install $AGENT_BRIDGE"
+# Read once here, where a failure stops the script: later reads run in $(…), where it can't.
+answered TOKEN || true
 
 # --- Settings: passed in, else installed, else asked ---------------------------------
 
