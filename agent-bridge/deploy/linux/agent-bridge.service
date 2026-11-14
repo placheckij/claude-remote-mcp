@@ -6,7 +6,7 @@ Description=agent-bridge (claude-remote)
 After=agent-bridge-herdr.service
 
 [Service]
-ExecStart=@AGENT_BRIDGE@ serve
+ExecStart="@AGENT_BRIDGE@" serve
 # Also retries until the LAN address exists, e.g. right after boot. A user unit can't
 # order itself after network-online.target, which is a system unit.
 Restart=always

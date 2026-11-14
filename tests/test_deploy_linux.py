@@ -72,7 +72,8 @@ esac""",
 }
 
 # The venv's agent-bridge: enroll exits with the next code in $HOME/enroll-codes (0 when
-# there is none) and on 0 writes the state file with the name from the env file.
+# there is none) and on 0 writes the state file with the name from the env file. unenroll
+# fails when $HOME/unenroll-fails exists.
 AGENT_BRIDGE = """#!/bin/sh
 echo "$*" >> "$HOME/agent-bridge.log"
 env="$HOME/.config/agent-bridge/env"
@@ -93,7 +94,9 @@ case $1 in
     printf '{\\n  "version": 1,\\n  "bridge_id": "b1",\\n  "gateway": {\\n    "url": "http://10.0.0.1:8766",\\n    "gateway_id": "g1",\\n    "name": "%s"\\n  }\\n}' \\
       "$name" > "$state"
     echo "Enrolled as $name." ;;
-  unenroll) rm -f "$state"; echo "Left the gateway." ;;
+  unenroll)
+    [ ! -f "$HOME/unenroll-fails" ] || { echo "$state isn't agent-bridge state." >&2; exit 1; }
+    rm -f "$state"; echo "Left the gateway." ;;
 esac
 exit 0
 """
@@ -188,9 +191,9 @@ def test_a_fresh_install_writes_the_settings_starts_the_services_and_enrolls(hos
     assert host.env_file.parent.stat().st_mode & 0o777 == 0o700
 
     unit = host.unit(UNIT).read_text()
-    assert f"ExecStart={host.repo}/.venv/bin/agent-bridge serve\n" in unit
+    assert f'ExecStart="{host.repo}/.venv/bin/agent-bridge" serve\n' in unit
     assert "AGENT_BRIDGE_" not in unit
-    assert f"ExecStart={host.stubs}/herdr server\n" in host.unit(HERDR_UNIT).read_text()
+    assert f'ExecStart="{host.stubs}/herdr" server\n' in host.unit(HERDR_UNIT).read_text()
     systemctl = host.log("systemctl.log")
     assert "--user daemon-reload" in systemctl
     assert f"--user enable --quiet {UNIT}" in systemctl
@@ -460,3 +463,122 @@ def test_uninstall_keeps_folders_that_hold_other_files(host: Host) -> None:
     assert not host.state_file.exists()
     assert (host.state_file.parent / "bridge.log").exists()
     assert f"Left {host.state_file.parent}" in result.stdout
+
+
+def test_uninstall_goes_on_when_leaving_the_gateway_fails(host: Host) -> None:
+    host.install()
+    (host.home / "unenroll-fails").touch()
+
+    result = host.run("linux/uninstall.sh")
+
+    assert "sudo mcp-gateway bridges remove" in result.stdout
+    assert not host.unit(UNIT).exists()
+    assert not host.env_file.exists()
+    assert not host.state_file.exists()
+
+
+def test_on_macos_it_points_to_the_macos_setup(host: Host) -> None:
+    (host.stubs / "uname").write_text("#!/bin/sh\necho Darwin\n")
+    (host.stubs / "uname").chmod(0o755)
+
+    result = host.install(check=False)
+
+    assert result.returncode != 0
+    script = re.search(r"run (agent-bridge/deploy/\S+)", result.stderr)
+    assert script and (DEPLOY.parent.parent / script[1]).is_file(), result.stderr
+
+
+def test_unit_paths_with_spaces_dollars_and_percents_are_quoted_for_systemd(host: Host) -> None:
+    folder = host.home / "my $tools 100%"
+    folder.mkdir()
+    herdr = folder / "herdr"
+    shutil.copy(host.stubs / "herdr", herdr)
+
+    host.install(HERDR_BIN=str(herdr))
+
+    # As `systemd-analyze verify` accepts it: $ is taken literally in the program's path.
+    assert f'ExecStart="{host.home}/my $tools 100%%/herdr" server\n' in host.unit(HERDR_UNIT).read_text()
+    assert host.env()["AGENT_BRIDGE_HERDR_BIN"] == str(herdr)
+
+
+def test_a_unit_path_systemd_cant_run_is_refused_before_anything_is_written(host: Host) -> None:
+    folder = host.home / 'say "hi"'
+    folder.mkdir()
+    herdr = folder / "herdr"
+    shutil.copy(host.stubs / "herdr", herdr)
+
+    result = host.install(HERDR_BIN=str(herdr), check=False)
+
+    assert result.returncode != 0
+    assert "systemd can't run" in result.stderr
+    assert not host.env_file.exists()
+
+
+def test_backslashes_in_a_setting_reach_the_bridge_unchanged_and_are_kept(host: Host) -> None:
+    from dotenv import dotenv_values
+
+    accounts = '{"work": "/home/me/a\\\\b"}'
+
+    host.install(AGENT_BRIDGE_ACCOUNTS=accounts)
+    assert dotenv_values(host.env_file)["AGENT_BRIDGE_ACCOUNTS"] == accounts
+
+    host.setup()
+    assert dotenv_values(host.env_file)["AGENT_BRIDGE_ACCOUNTS"] == accounts
+
+
+def test_accounts_are_kept_on_a_rerun_and_removed_when_passed_empty(host: Host) -> None:
+    accounts = '{"work": "/home/me/.claude-work"}'
+    host.install(AGENT_BRIDGE_ACCOUNTS=accounts)
+
+    host.setup()
+    assert host.env()["AGENT_BRIDGE_ACCOUNTS"] == accounts
+
+    host.setup(AGENT_BRIDGE_ACCOUNTS="")
+    assert "AGENT_BRIDGE_ACCOUNTS" not in host.env()
+
+
+def test_an_installed_address_the_host_no_longer_has_is_found_again(host: Host) -> None:
+    host.install(HOST="10.0.0.9")
+
+    result = host.setup()
+
+    assert host.env()["AGENT_BRIDGE_HOST"] == "10.0.0.5"
+    assert "The LAN address is now 10.0.0.5 (was 10.0.0.9)" in result.stdout
+
+
+def test_a_refused_enrollment_string_is_asked_again(host: Host) -> None:
+    (host.home / "enroll-codes").write_text("1\n0\n")
+    other = "crm1@10.0.0.1:8766#" + "b" * 24
+
+    result = host.install(input=f"{other}\n")
+
+    enrolls = [line for line in host.log("agent-bridge.log") if line.startswith("enroll")]
+    assert enrolls == [f"enroll {ENROLLMENT}", f"enroll {other}"]
+    assert "as linux-box" in result.stdout
+
+
+def test_a_failed_rotation_puts_the_old_token_back(host: Host) -> None:
+    host.install()
+    first = host.env()["AGENT_BRIDGE_TOKEN"]
+    (host.home / "enroll-codes").write_text("1\n")
+
+    result = host.setup(ROTATE_TOKEN="1", ENROLLMENT=ENROLLMENT, check=False)
+
+    assert result.returncode != 0
+    assert "not rotated" in result.stderr
+    assert host.env()["AGENT_BRIDGE_TOKEN"] == first
+    # Restarted with the new token, then again with the old one.
+    assert host.log("systemctl.log").count(f"--user restart {UNIT}") == 2
+
+
+def test_a_new_name_on_an_enrolled_host_asks_to_enroll_again(host: Host) -> None:
+    host.install()
+
+    result = host.setup(NAME="newbox")
+    assert "knows this host as linux-box" in result.stdout
+    assert "Enrollment string" in result.stderr
+    assert "still knows it as linux-box" in result.stdout
+
+    result = host.setup(ENROLLMENT=ENROLLMENT)
+    assert "as newbox" in result.stdout
+    assert "still knows it" not in result.stdout

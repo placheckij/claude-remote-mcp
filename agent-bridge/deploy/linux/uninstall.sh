@@ -27,10 +27,11 @@ systemctl --user show-environment >/dev/null 2>&1 \
 # the gateway can't be reached.
 log "Leaving the gateway"
 if [[ -x $AGENT_BRIDGE ]]; then
+  # A failure here (e.g. an unreadable state file) still removes the rest.
   (
     for var in $(compgen -v AGENT_BRIDGE_); do unset "$var"; done
     exec "$AGENT_BRIDGE" unenroll
-  )
+  ) || echo "warning: couldn't leave the gateway; if this host was enrolled, remove it on the gateway host with: sudo mcp-gateway bridges remove <name>"
 else
   echo "warning: $AGENT_BRIDGE is missing; if this host was enrolled, remove it on the gateway host with: sudo mcp-gateway bridges remove <name>"
 fi
