@@ -707,6 +707,15 @@ def test_uninstall_leaves_the_gateway_then_removes_the_service_and_files(mac: Ma
     assert not mac.support.exists()
 
 
+def test_uninstall_of_a_host_never_enrolled_says_how_to_remove_one_added_by_hand(mac: Mac) -> None:
+    mac.install(ENROLLMENT="")
+
+    result = mac.run("macos/uninstall.sh")
+
+    assert "added with bridges add" in result.stdout
+    assert not mac.support.exists()
+
+
 def test_uninstall_still_removes_the_service_and_files_when_unenroll_fails(mac: Mac) -> None:
     mac.install()
     (mac.home / "unenroll-fails").touch()

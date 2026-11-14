@@ -33,6 +33,9 @@ if [[ -x $AGENT_BRIDGE ]]; then
 else
   echo "warning: $AGENT_BRIDGE is missing; $BY_HAND"
 fi
+# unenroll can't remove a host the gateway added by hand: it has no record of it here.
+[[ -n $NAME ]] \
+  || echo "If the gateway has this host anyway (added with bridges add), remove it there: sudo mcp-gateway bridges remove <name> (see sudo mcp-gateway bridges list)"
 
 log "Removing $LABEL"
 launchctl bootout "$DOMAIN/$LABEL" 2>/dev/null || true

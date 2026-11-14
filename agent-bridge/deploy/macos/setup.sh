@@ -14,7 +14,8 @@
 # (found), AGENT_BRIDGE_CLAUDE_CONFIG_DIR and TRUST_ROOT (folder trust, see
 # agent-bridge/README.md; empty for none), AGENT_BRIDGE_ACCOUNTS (named Claude logins as
 # JSON; empty removes them), ROTATE_TOKEN=1 (a new token; needs ENROLLMENT, so the gateway
-# learns it). The settings go in the env file below, and its other lines are kept.
+# learns it). The settings go in the env file below; its other settings are kept, but not
+# its comments.
 
 set -euo pipefail
 
@@ -465,7 +466,8 @@ done
 
 # Unless the gateway took the new token, it still has the installed one, and the new one
 # would lock it out. `enroll` can fail after the gateway took it (a state file it can't
-# write, or a lost answer), so its output and the gateway itself are asked.
+# write, or a lost answer), so its output is read, and the gateway asked when the state file
+# names it. Without that, the installed token goes back on the chance the gateway has it.
 if [[ -n ${ROTATE_TOKEN:-} && -z $ENROLLED_NOW && -z $GATEWAY_TOOK && -n $INSTALLED_TOKEN ]]; then
   if [[ $(bridge check 2>&1 || true) == *"ok    the gateway at"* ]]; then
     ENROLLED_NOW=1 # the gateway answers to the new token
@@ -473,7 +475,7 @@ if [[ -n ${ROTATE_TOKEN:-} && -z $ENROLLED_NOW && -z $GATEWAY_TOOK && -n $INSTAL
     TOKEN=$INSTALLED_TOKEN
     write_env
     start_service
-    die "the gateway didn't take the new token, so the installed one is back; run again with ROTATE_TOKEN=1 and a new enrollment string"
+    die "the gateway didn't confirm the new token, so the installed one is back; run again with ROTATE_TOKEN=1 and a new enrollment string"
   fi
 fi
 [[ -z $NAME_TAKEN ]] || die "the gateway has another host named $NAME_TAKEN; run again with another NAME"
