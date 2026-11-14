@@ -55,6 +55,9 @@ function Register-ScheduledTask { param($TaskName, $TaskPath, $Xml, [switch]$For
     Add-Call "Register-ScheduledTask $TaskPath$TaskName"
     Set-Content -LiteralPath $env:FAKE_TASK_XML -Value $Xml -Encoding Unicode
     $f = Get-Fake; $f.task = $true; $f.enabled = $true; Set-Fake $f; [pscustomobject]@{} }
+function Export-ScheduledTask { param($TaskName, $TaskPath)
+    Get-Content -LiteralPath $env:FAKE_TASK_XML -Raw -Encoding Unicode }
+function Wait-Process { param($Id, $Timeout, $ErrorAction) }
 function Unregister-ScheduledTask { param($TaskName, $TaskPath, $Confirm)
     Add-Call "Unregister-ScheduledTask $TaskPath$TaskName"
     $f = Get-Fake; $f.task = $false; Set-Fake $f }
@@ -482,7 +485,7 @@ def test_enter_at_the_public_network_question_leaves_it_public(machine: Machine)
 def test_an_unreachable_gateway_leaves_the_bridge_installed_but_not_enrolled(machine: Machine) -> None:
     machine.enroll_codes.write_text("4")
 
-    output = machine.setup(f"-Enrollment '{STRING}'", input="\n\n")
+    output = machine.setup(f"-Enrollment '{STRING}'", input="\n\n", expect=1)
 
     assert r"Start-ScheduledTask \agent-bridge" in machine.calls()
     assert "Not enrolled: see" in output
@@ -493,7 +496,7 @@ def test_a_failed_enrollment_after_rotating_the_token_says_the_gateway_has_the_o
     machine.setup(f"-Enrollment '{STRING}'", input="\n\n")
     machine.enroll_codes.write_text("4")
 
-    output = machine.setup("-RotateToken", f"-Enrollment '{STRING}'")
+    output = machine.setup("-RotateToken", f"-Enrollment '{STRING}'", expect=1)
 
     assert "Not enrolled: see" in output
     assert "still has this host's old settings" in output
@@ -554,8 +557,9 @@ def test_an_error_after_stopping_the_bridge_enables_the_task_again(machine: Mach
     calls = machine.calls()
     assert calls.index(r"Disable-ScheduledTask \agent-bridge") < calls.index(r"Enable-ScheduledTask \agent-bridge")
     assert machine.fake()["enabled"] is True
-    # And started: Stop-Bridge ended the bridge, and enabling fires no trigger.
-    assert calls[-1] == r"Start-ScheduledTask \agent-bridge"
+    # And registered again, which starts it with its every-minute repeat: Stop-Bridge ended
+    # the bridge, and enabling fires no trigger.
+    assert calls[-1] == r"Register-ScheduledTask \agent-bridge"
 
 
 def test_a_declined_uac_prompt_prints_every_command_to_run(machine: Machine) -> None:
@@ -679,3 +683,26 @@ def test_a_reserved_port_passed_in_says_to_pass_another(machine: Machine) -> Non
 
     assert "error: pass another -Port" in output
     assert "stop that program" not in output
+
+
+def test_a_bracketed_ipv6_address_is_refused(machine: Machine) -> None:
+    output = machine.setup("-Address '[::1]'", "-Enrollment ''", input="\n\n", expect=1)
+
+    assert "must be an IP address" in output
+
+
+def test_a_failed_enrollment_is_setups_exit_code(machine: Machine) -> None:
+    machine.enroll_codes.write_text("4")
+
+    machine.setup(f"-Enrollment '{STRING}'", input="\n\n", expect=1)
+
+
+def test_a_rename_on_the_gateway_restarts_the_task_with_its_repeat(machine: Machine) -> None:
+    machine.enroll_codes.write_text("3 0")
+
+    machine.setup(f"-Enrollment '{STRING}'", input="\n\nwin-other\n")
+
+    # After the name is changed, the task is registered again rather than only started.
+    calls = machine.calls()
+    renamed = calls.index(r"Disable-ScheduledTask \agent-bridge")
+    assert r"Register-ScheduledTask \agent-bridge" in calls[renamed:]

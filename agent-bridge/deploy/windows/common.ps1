@@ -22,18 +22,22 @@ $script:LogFile = Join-Path $script:StateDir 'agent-bridge.log'
 $script:RunFile = Join-Path $script:StateDir 'run.cmd'
 # Set while Stop-Bridge has the task disabled, so leaving early enables it again.
 $script:TaskDisabled = $false
-# As run.cmd does for the service: agent-bridge reads the env file in the locale's code
-# page otherwise, and setup writes it as UTF-8.
-$env:PYTHONUTF8 = '1'
+
+function Resume-Task {
+    <# Enables the task and registers it again as it is, which fires its registration
+       trigger: that starts the bridge and the every-minute repeat. Enabling alone starts
+       nothing, and the repeat a disabled task had is gone. #>
+    Enable-ScheduledTask -TaskName $script:TaskName -TaskPath '\' | Out-Null
+    $xml = Export-ScheduledTask -TaskName $script:TaskName -TaskPath '\'
+    Register-ScheduledTask -TaskName $script:TaskName -TaskPath '\' -Xml $xml -Force | Out-Null
+    $script:TaskDisabled = $false
+}
 
 function Restore-Task {
-    <# Enables the task again if Stop-Bridge disabled it: a setup that stops halfway must not
-       leave the bridge off at the next logon. #>
+    <# Brings the task back if Stop-Bridge disabled it: a setup that stops halfway must not
+       leave the bridge off. #>
     if ($script:TaskDisabled) {
-        Enable-ScheduledTask -TaskName $script:TaskName -TaskPath '\' -ErrorAction SilentlyContinue | Out-Null
-        # Stop-Bridge ended the bridge too, and enabling fires no trigger.
-        Start-ScheduledTask -TaskName $script:TaskName -TaskPath '\' -ErrorAction SilentlyContinue
-        $script:TaskDisabled = $false
+        try { Resume-Task } catch { Write-Warn "couldn't start the agent-bridge task again ($($_.Exception.Message)); run setup again" }
     }
 }
 
@@ -95,8 +99,11 @@ function Find-Bridge([string]$Given, [switch]$Optional, [switch]$PreferInstalled
     $beside = Join-Path $PSScriptRoot 'agent-bridge.exe'
     if (Test-Path -LiteralPath $beside -PathType Leaf) { return @{ Exe = $beside; Checkout = $null } }
     $repo = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..\..'))
-    if (Test-Path -LiteralPath (Join-Path $repo 'agent-bridge\pyproject.toml')) {
-        return @{ Exe = (Join-Path $repo '.venv\Scripts\agent-bridge.exe'); Checkout = $repo }
+    $checkoutExe = Join-Path $repo '.venv\Scripts\agent-bridge.exe'
+    # Setup syncs a checkout whose .venv isn't there yet; uninstall looks further instead.
+    if ((Test-Path -LiteralPath (Join-Path $repo 'agent-bridge\pyproject.toml')) -and
+        (-not $Optional -or (Test-Path -LiteralPath $checkoutExe -PathType Leaf))) {
+        return @{ Exe = $checkoutExe; Checkout = $repo }
     }
     if ($installedFound) { return $installedFound }
     $onPath = Get-Command agent-bridge.exe -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
@@ -114,8 +121,13 @@ function Invoke-Native {
     param([Parameter(Mandatory)][string]$FilePath, [string[]]$ArgumentList = @(), [switch]$Quiet)
     $saved = $ErrorActionPreference
     $ErrorActionPreference = 'Continue'
-    # agent-bridge writes UTF-8 (PYTHONUTF8 above); Windows PowerShell decodes what a program
-    # prints with the console's code page.
+    # In UTF-8 mode, as run.cmd runs the service: agent-bridge reads the env file, which setup
+    # writes as UTF-8, in the locale's code page otherwise. Only for this call, not for the
+    # session setup may have been started from.
+    $savedUtf8 = $env:PYTHONUTF8
+    $env:PYTHONUTF8 = '1'
+    # It then writes UTF-8, and Windows PowerShell decodes what a program prints with the
+    # console's code page.
     $savedEncoding = $null
     try { $savedEncoding = [Console]::OutputEncoding; [Console]::OutputEncoding = New-Object Text.UTF8Encoding $false } catch { $savedEncoding = $null }
     try {
@@ -127,6 +139,7 @@ function Invoke-Native {
         return $LASTEXITCODE
     } finally {
         $ErrorActionPreference = $saved
+        $env:PYTHONUTF8 = $savedUtf8
         if ($savedEncoding) { try { [Console]::OutputEncoding = $savedEncoding } catch { $savedEncoding = $null } }
     }
 }
@@ -206,12 +219,16 @@ function Stop-Bridge([string]$Exe, [int]$Port) {
     # by their command lines: run.cmd's, and the ones that serve with this $Exe or the
     # installed one.
     $exes = @(@($Exe, (Get-InstalledExe)) | Where-Object { $_ })
-    Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {
+    # Narrowed by WMI first; the matching below decides.
+    $candidates = "Name='cmd.exe' OR CommandLine LIKE '%serve%' OR CommandLine LIKE '%agent_bridge%'"
+    $stopped = @(Get-CimInstance Win32_Process -Filter $candidates -ErrorAction SilentlyContinue | Where-Object {
         $line = [string]$_.CommandLine
         # cmd.exe only: an editor with run.cmd open names it too.
         $line -and (($_.Name -eq 'cmd.exe' -and $line.IndexOf($script:RunFile, [StringComparison]::OrdinalIgnoreCase) -ge 0) -or
             ((Test-IsBridge $line) -and @($exes | Where-Object { $line.IndexOf($_, [StringComparison]::OrdinalIgnoreCase) -ge 0 }).Count -gt 0))
-    } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+    } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue; $_.ProcessId })
+    # Until they are gone and have let go of the .venv's files and the log.
+    if ($stopped.Count -gt 0) { Wait-Process -Id $stopped -Timeout 10 -ErrorAction SilentlyContinue }
     if ($Port -le 0) { return }
     $holder = Get-PortHolder $Port
     if ($holder -and (Test-IsBridge $holder.CommandLine)) {
