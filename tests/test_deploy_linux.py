@@ -729,6 +729,25 @@ def test_settings_are_read_as_the_loader_reads_them(host: Host) -> None:
     assert host.env()["AGENT_BRIDGE_PORT"] == "8770"
 
 
+def test_a_setting_written_with_spaces_or_in_lower_case_is_replaced(host: Host) -> None:
+    from dotenv import dotenv_values
+
+    host.install()
+    first = host.env()["AGENT_BRIDGE_TOKEN"]
+    with host.env_file.open("a") as env:
+        env.write("  AGENT_BRIDGE_PORT = 9000\nagent_bridge_token=" + "o" * 40 + "\nAGENT_BRIDGE_MAX_AGENTS = 3\n")
+
+    host.setup(PORT="9100")
+
+    values = {key.upper(): value for key, value in dotenv_values(host.env_file).items()}
+    assert values["AGENT_BRIDGE_PORT"] == "9100"
+    # The lower-case token was the installed one (the last wins), and is kept, now written by the setup.
+    assert values["AGENT_BRIDGE_TOKEN"] == "o" * 40 != first
+    assert values["AGENT_BRIDGE_MAX_AGENTS"] == "3"
+    text = host.env_file.read_text()
+    assert "9000" not in text and "agent_bridge_token" not in text
+
+
 def test_a_double_quoted_escape_is_read_as_the_loader_reads_it(host: Host) -> None:
     from dotenv import dotenv_values
 
