@@ -267,17 +267,23 @@ ACCOUNTS="${AGENT_BRIDGE_ACCOUNTS-$(installed ACCOUNTS)}"
 # Kept, unless rotating. Nobody copies it: enrolling hands it to the gateway.
 TOKEN="$(installed TOKEN)"
 OLD_TOKEN=$TOKEN
+NEW_TOKEN=""
 if [[ -n ${ROTATE_TOKEN:-} || -z $TOKEN ]]; then
   TOKEN="$(openssl rand -hex 32)"
+  NEW_TOKEN=1
 fi
-bridge check --token-format "$TOKEN" || die "the installed token won't do; run again with ROTATE_TOKEN=1"
+# Checked here, not by agent-bridge: on its command line, ps would show the token.
+[[ ${#TOKEN} -ge 32 && $TOKEN =~ ^[A-Za-z0-9._~+/-]+=*$ ]] \
+  || die "the installed token won't do; run again with ROTATE_TOKEN=1"
 
 # Asked for until this host is enrolled, and again with a new token or name.
 ENROLLED_NAME="$(enrolled name)"
 RENAMED=""
 [[ -z $ENROLLED_NAME || $ENROLLED_NAME == "$NAME" ]] || RENAMED=1
-if [[ -z ${ENROLLMENT+x} ]] && [[ -z $ENROLLED_NAME || -n ${ROTATE_TOKEN:-} || -n $RENAMED ]]; then
+if [[ -z ${ENROLLMENT+x} ]] && [[ -z $ENROLLED_NAME || -n $NEW_TOKEN || -n $RENAMED ]]; then
   [[ -z $RENAMED ]] || printf '\nThe gateway knows this host as %s; enroll again to rename it %s.\n' "$ENROLLED_NAME" "$NAME"
+  [[ -z $ENROLLED_NAME || -z $NEW_TOKEN || -n ${ROTATE_TOKEN:-} ]] \
+    || printf '\nThe env file had no token, so this host has a new one; enroll again so the gateway learns it.\n'
   printf '\nTo enroll with the gateway, run on the gateway host: sudo mcp-gateway enroll\n'
   ask ENROLLMENT "Enrollment string it printed, crm1@…" "" "Enter to enroll later"
 fi
@@ -427,6 +433,8 @@ if [[ -n $(enrolled name) ]]; then
   echo "It is enrolled with the gateway at $(enrolled url) as $(enrolled name): Claude reaches its agents as $(enrolled name)/…"
   [[ $(enrolled name) == "$NAME" ]] \
     || echo "NAME is $NAME, but the gateway still knows it as $(enrolled name): to rename it, run sudo mcp-gateway enroll on the gateway host, then run this again with ENROLLMENT='<what it printed>'"
+  [[ -z $NEW_TOKEN || -n $ENROLLED ]] \
+    || echo "The gateway has this host's old token and its calls will be refused: run sudo mcp-gateway enroll on the gateway host, then run this again with ENROLLMENT='<what it printed>'"
 else
   echo "It is not enrolled with a gateway yet. Run sudo mcp-gateway enroll on the gateway host, then here:"
   echo "  $AGENT_BRIDGE enroll '<what it printed>'"
