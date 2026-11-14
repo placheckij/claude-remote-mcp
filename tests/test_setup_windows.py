@@ -48,6 +48,13 @@ function Stop-Process { param([int]$Id, [switch]$Force, $ErrorAction)
     Add-Call "Stop-Process $Id"
     $f = Get-Fake; $f.listen = @($f.listen | Where-Object { $_.pid -ne $Id }); Set-Fake $f }
 function Start-Sleep { param([int]$Seconds, [int]$Milliseconds) }
+# The user's and the machine's lasting environment variables, read from the registry.
+function Get-ItemProperty { param($LiteralPath, $ErrorAction)
+    if ($LiteralPath -eq 'HKCU:\Environment' -and $env:FAKE_USER_VARIABLE) {
+        $o = [pscustomobject]@{ Path = 'C:\Windows' }
+        $o | Add-Member -NotePropertyName $env:FAKE_USER_VARIABLE -NotePropertyValue 'x'
+        return $o }
+    [pscustomobject]@{ Path = 'C:\Windows' } }
 
 function Get-ScheduledTask { param($TaskName, $TaskPath, $ErrorAction)
     if ((Get-Fake).task) { [pscustomobject]@{ TaskName = $TaskName } } }
@@ -261,6 +268,7 @@ class Machine:
             "FAKE_BROKEN_UNENROLL": "",
             "FAKE_NO_START": "",
             "FAKE_BAD_SETTINGS": "",
+            "FAKE_USER_VARIABLE": "",
             "AGENT_BRIDGE_STATE_FILE": r"C:\leftover\state.json",
             "FAKE_ELEVATED_EXIT": "0",
             "FAKE_BLOCKED_PROGRAM": "",
@@ -740,13 +748,29 @@ def test_the_settings_are_checked_in_a_copy_without_a_gateway(machine: Machine) 
     assert calls.index("agent-bridge check") < calls.index(r"Register-ScheduledTask \agent-bridge")
 
 
-def test_the_settings_check_never_sends_the_real_token(machine: Machine) -> None:
+def test_the_settings_check_checks_the_kept_token_on_this_host(machine: Machine) -> None:
     machine.setup("-Enrollment ''", input="\n\n")
-    token = machine.env()["AGENT_BRIDGE_TOKEN"]
 
     machine.setup()
 
+    # The address is this host's, so the copy is checked as it is, its token included.
     tokens = [call for call in machine.calls() if call.startswith("token ")]
-    # The copy's check uses a throwaway token; the final check reads the env file's.
-    assert tokens[0] != f"token {token}" and tokens[0] != "token from the env file"
-    assert tokens[-1] == "token from the env file"
+    assert tokens == ["token from the env file", "token from the env file"]
+
+
+def test_agent_bridge_variables_in_the_user_environment_stop_setup(machine: Machine) -> None:
+    output = machine.setup("-Enrollment ''", input="\n\n", expect=1, FAKE_USER_VARIABLE="AGENT_BRIDGE_HOST")
+
+    assert "AGENT_BRIDGE_HOST set in your user environment would win over" in output
+    assert "[Environment]::SetEnvironmentVariable('AGENT_BRIDGE_HOST', $null, 'User')" in output
+    assert not machine.env_file.exists()
+
+
+def test_an_address_this_host_lacks_is_checked_without_sending_the_token_there(machine: Machine) -> None:
+    machine.setup("-Address '192.168.77.5'", "-Enrollment ''", input="\n\n")
+
+    # Two checks of the copy: the real token against 127.0.0.1, the address with a throwaway.
+    tokens = [call for call in machine.calls() if call.startswith("token ")]
+    token = machine.env()["AGENT_BRIDGE_TOKEN"]
+    assert tokens[0] == "token from the env file"
+    assert tokens[1] not in ("token from the env file", f"token {token}")
