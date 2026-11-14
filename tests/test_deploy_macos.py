@@ -546,6 +546,7 @@ def test_a_gateway_check_that_fails_otherwise_keeps_the_enrollment(mac: Mac, fai
 
     assert "Enrollment string" not in result.stderr
     assert "keeping the enrollment as mac" in result.stdout
+    assert "((" not in result.stdout
     assert "It is enrolled with the gateway at http://10.0.0.1:8766 as mac" in result.stdout
 
 
@@ -567,6 +568,28 @@ def test_a_host_or_port_the_bridge_would_refuse_stops_before_installing(mac: Mac
     assert "must be" in result.stderr
     assert not (mac.support / "env").exists()
     assert not mac.plist.exists()
+
+
+def test_settings_the_bridge_refuses_stop_setup_before_installing(mac: Mac) -> None:
+    # The default Claude config as the agents' own: the bridge refuses to start with it.
+    result = mac.install(check=False, AGENT_BRIDGE_CLAUDE_CONFIG_DIR=str(mac.home / ".claude"))
+
+    assert result.returncode != 0
+    assert "the bridge would refuse these settings" in result.stderr
+    assert "default Claude config" in result.stderr
+    assert not (mac.support / "env").exists()
+    assert not mac.plist.exists()
+
+
+def test_a_value_with_a_dollar_brace_is_refused(mac: Mac) -> None:
+    roots = mac.home / "p${x}"
+    roots.mkdir()
+
+    result = mac.install(check=False, ALLOWED_ROOTS=str(roots))
+
+    assert result.returncode != 0
+    assert "AGENT_BRIDGE_ALLOWED_ROOTS can't contain ${" in result.stderr
+    assert not (mac.support / "env").exists()
 
 
 def test_a_port_with_leading_zeros_is_written_without_them(mac: Mac) -> None:
