@@ -134,6 +134,9 @@ def mac(tmp_path: Path) -> Mac:
     bin_dir.mkdir(parents=True)
     (bin_dir / "agent-bridge").write_text(AGENT_BRIDGE)
     (bin_dir / "agent-bridge").chmod(0o755)
+    # The venv's python, which setup.sh reads the env file with: this one has python-dotenv.
+    (bin_dir / "python").write_text(f'#!/bin/sh\nexec "{sys.executable}" "$@"\n')
+    (bin_dir / "python").chmod(0o755)
     stubs = tmp_path / "stubs"
     stubs.mkdir()
     for name, body in STUBS.items():
@@ -287,6 +290,67 @@ def test_a_rerun_keeps_settings_the_setup_doesnt_manage(mac: Mac) -> None:
     mac.setup()
 
     assert mac.env()["AGENT_BRIDGE_MAX_AGENTS"] == "3"
+
+
+def test_a_hand_edited_env_file_is_read_as_the_bridge_reads_it(mac: Mac) -> None:
+    mac.install()
+    accounts = '{\n  "work": {"config_dir": null, "folders": ["/Users/me/work"]}\n}'
+    env = (mac.support / "env").read_text()
+    env = re.sub(r"(?m)^AGENT_BRIDGE_PORT=.*$", "export AGENT_BRIDGE_PORT=9000  # moved", env)
+    (mac.support / "env").write_text(env + f"AGENT_BRIDGE_ACCOUNTS='{accounts}'\nagent_bridge_max_agents=3\n")
+
+    mac.setup()
+
+    env = dotenv_values(mac.support / "env")
+    assert env["AGENT_BRIDGE_PORT"] == "9000"
+    assert env["AGENT_BRIDGE_ACCOUNTS"] == accounts
+    assert env["AGENT_BRIDGE_MAX_AGENTS"] == "3"
+    # One line per setting: none left over to override what setup wrote.
+    keys = [line.split("=")[0] for line in (mac.support / "env").read_text().splitlines() if "=" in line]
+    assert len(keys) == len(set(keys)), keys
+
+
+def test_rotate_token_replaces_a_hand_written_export_line(mac: Mac) -> None:
+    mac.install()
+    first = mac.env()["AGENT_BRIDGE_TOKEN"]
+    env = (mac.support / "env").read_text().replace("AGENT_BRIDGE_TOKEN=", "export AGENT_BRIDGE_TOKEN=")
+    (mac.support / "env").write_text(env)
+
+    mac.setup(ROTATE_TOKEN="1", ENROLLMENT=ENROLLMENT)
+
+    assert dotenv_values(mac.support / "env")["AGENT_BRIDGE_TOKEN"] not in (None, first)
+
+
+def test_a_token_passed_in_is_ignored_with_a_warning(mac: Mac) -> None:
+    result = mac.install(AGENT_BRIDGE_TOKEN="a" * 40)
+
+    assert "AGENT_BRIDGE_TOKEN is ignored" in result.stdout
+    assert mac.env()["AGENT_BRIDGE_TOKEN"] != "a" * 40
+
+
+def test_a_new_token_on_a_host_enrolled_before_asks_for_an_enrollment_string(mac: Mac) -> None:
+    # Enrolled from a foreground run: a state file, but no env file or plist with its token.
+    mac.support.mkdir(parents=True)
+    (mac.support / "state.json").write_text(json.dumps(
+        {"version": 1, "bridge_id": "b1", "gateway": {"url": "http://10.0.0.1:8766", "gateway_id": "g1", "name": "mac"}}))
+
+    result = mac.setup(HOST="127.0.0.1", ALLOWED_ROOTS=str(mac.home / "projects"), NAME="mac",
+                       AGENT_BRIDGE_CLAUDE_CONFIG_DIR="", TRUST_ROOT="")
+
+    assert "Enrollment string" in result.stderr
+    assert "older token" in result.stdout
+    assert "It is enrolled" not in result.stdout
+
+
+def test_an_installed_ipv6_address_the_mac_still_has_is_kept(mac: Mac) -> None:
+    (mac.stubs / "ifconfig").write_text("#!/bin/sh\necho '\tinet6 fd00::20 prefixlen 64'\n")
+    (mac.stubs / "ifconfig").chmod(0o755)
+    mac.install(HOST="fd00::20")
+
+    result = mac.setup()
+
+    assert mac.env()["AGENT_BRIDGE_HOST"] == "fd00::20"
+    assert "http://[fd00::20]:8765" in result.stdout
 
 
 def test_a_variable_passed_in_changes_an_installed_setting(mac: Mac) -> None:
@@ -528,7 +592,7 @@ def test_uninstall_without_the_venv_still_removes_the_service_and_files(mac: Mac
 
     result = mac.run("macos/uninstall.sh")
 
-    assert "bridges remove" in result.stdout
+    assert "sudo mcp-gateway bridges remove mac" in result.stdout
     assert not mac.plist.exists()
     assert not mac.support.exists()
 

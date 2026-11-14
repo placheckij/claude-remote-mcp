@@ -86,30 +86,28 @@ else
   SOURCE=none
 fi
 
-BS="\\"
-Q="'"
-unescape() { # \\ and \' back to \ and ', as python-dotenv reads a single-quoted value
-  local rest=$1 out="" c
-  while [[ -n $rest ]]; do
-    c=${rest:0:1}
-    if [[ $c == "$BS" && ( ${rest:1:1} == "$BS" || ${rest:1:1} == "$Q" ) ]]; then
-      out+=${rest:1:1}; rest=${rest:2}
-    else
-      out+=$c; rest=${rest:1}
-    fi
-  done
-  printf '%s' "$out"
+dotenv() { # dotenv get|has|others ARG: the env file as agent-bridge reads it (python-dotenv,
+  # keys in any case, the last one winning)
+  "$REPO_DIR/.venv/bin/python" -I - "$ENV_FILE" "$@" <<'EOF'
+import re, sys
+from dotenv import dotenv_values
+path, mode, arg = sys.argv[1:4]
+values = {key.upper(): value for key, value in dotenv_values(path).items()}
+if mode == "get":
+    sys.stdout.write(values.get(arg) or "")
+elif mode == "has":
+    sys.exit(0 if arg in values else 1)
+else:  # others: the settings not matching ARG, as NUL-separated names and values
+    for key, value in values.items():
+        if value is not None and not re.fullmatch(arg, key):
+            sys.stdout.write(f"{key}\0{value}\0")
+EOF
 }
 
 installed() { # installed KEY: the installed AGENT_BRIDGE_KEY, or nothing
   local value=""
   case $SOURCE in
-    env_file)
-      value="$(sed -n "s/^AGENT_BRIDGE_$1=//p" "$ENV_FILE" | tail -n 1)"
-      case $value in
-        \'*\') value=${value#\'}; value="$(unescape "${value%\'}")" ;;
-        \"*\") value=${value#\"}; value=${value%\"} ;;
-      esac ;;
+    env_file) value="$(dotenv get "AGENT_BRIDGE_$1")" ;;
     plist)
       # It ran uvicorn with --host HOST --port PORT, and had the rest in its environment.
       case $1 in
@@ -123,7 +121,7 @@ installed() { # installed KEY: the installed AGENT_BRIDGE_KEY, or nothing
 
 answered() { # answered KEY: whether an earlier run set KEY, even to nothing
   case $SOURCE in
-    env_file) grep -q "^AGENT_BRIDGE_$1=" "$ENV_FILE" ;;
+    env_file) dotenv has "AGENT_BRIDGE_$1" ;;
     plist) true ;; # the earlier version asked every question, and left empty answers out
     *) false ;;
   esac
@@ -134,7 +132,10 @@ pick() { # pick VAR KEY: VAR passed in, else the installed KEY; fails when that 
   [[ -n ${!1} ]]
 }
 
-has_address() { [[ $1 == 127.0.0.1 ]] || ifconfig | grep -q "inet $1 "; }
+has_address() { # has_address ADDRESS: whether an interface has it, IPv4 or IPv6
+  [[ $1 == 127.0.0.1 ]] && return 0
+  ifconfig | awk -v address="$1" '($1 == "inet" || $1 == "inet6") && ($2 == address || index($2, address "%") == 1) {found = 1} END {exit !found}'
+}
 
 lan_address() { # the address of the interface the default route goes through
   local iface
@@ -286,10 +287,14 @@ fi
 ACCOUNTS="${AGENT_BRIDGE_ACCOUNTS-$(installed ACCOUNTS)}"
 
 # Kept, unless rotating. Nobody copies it: enrolling hands it to the gateway.
+[[ -z ${AGENT_BRIDGE_TOKEN+x} ]] \
+  || echo "warning: AGENT_BRIDGE_TOKEN is ignored: setup keeps the installed token, and ROTATE_TOKEN=1 makes a new one"
 INSTALLED_TOKEN="$(installed TOKEN)"
 TOKEN=$INSTALLED_TOKEN
+NEW_TOKEN=""
 if [[ -n ${ROTATE_TOKEN:-} || -z $TOKEN ]]; then
   TOKEN="$(openssl rand -hex 32)"
+  NEW_TOKEN=1
 fi
 # What `agent-bridge check --token-format` checks, here so the token never shows in ps.
 [[ ${#TOKEN} -ge 32 && $TOKEN =~ ^[A-Za-z0-9._~+/-]+=*$ ]] \
@@ -299,7 +304,7 @@ fi
 ENROLLED_AS="$(enrolled name)"
 RENAMING=""
 [[ -z $NAME_GIVEN || -z $ENROLLED_AS || $NAME == "$ENROLLED_AS" ]] || RENAMING=1
-if [[ -z ${ENROLLMENT+x} ]] && [[ -z $ENROLLED_AS || -n ${ROTATE_TOKEN:-} || -n $RENAMING ]]; then
+if [[ -z ${ENROLLMENT+x} ]] && [[ -z $ENROLLED_AS || -n $NEW_TOKEN || -n $RENAMING ]]; then
   printf '\nTo enroll with the gateway, run on the gateway host: sudo mcp-gateway enroll\n'
   [[ -z $RENAMING ]] || echo "The gateway has this host as $ENROLLED_AS; enrolling again renames it $NAME."
   ask ENROLLMENT "Enrollment string it printed, crm1@…" "" "Enter to enroll later"
@@ -310,12 +315,16 @@ ENROLLMENT=${ENROLLMENT:-}
 
 # --- Install -------------------------------------------------------------------------
 
-line() { # line KEY VALUE: one env file line, single-quoted so nothing in it is expanded
-  [[ $2 != *$'\n'* ]] || die "AGENT_BRIDGE_$1 can't contain a line break"
+BS="\\"
+Q="'"
+env_line() { # env_line NAME VALUE: one env file line, single-quoted so nothing in it is
+  # expanded; \ and ' escaped as python-dotenv reads them
   local value=${2//"$BS"/"$BS$BS"}
   value=${value//"$Q"/"$BS$Q"}
-  printf "AGENT_BRIDGE_%s='%s'\n" "$1" "$value"
+  printf "%s='%s'\n" "$1" "$value"
 }
+
+line() { env_line "AGENT_BRIDGE_$1" "$2"; }
 
 plist_extras() { # the plist's other AGENT_BRIDGE_* settings, as env file lines
   local key
@@ -326,6 +335,7 @@ plist_extras() { # the plist's other AGENT_BRIDGE_* settings, as env file lines
 }
 
 write_env() {
+  local key value
   log "Writing $ENV_FILE"
   mkdir -p "$SUPPORT_DIR"
   chmod 700 "$SUPPORT_DIR"
@@ -342,7 +352,12 @@ write_env() {
     line CLAUDE_CONFIG_DIR "$AGENT_BRIDGE_CLAUDE_CONFIG_DIR"
     line TRUST_ROOT "$TRUST_ROOT"
     [[ -z $ACCOUNTS ]] || line ACCOUNTS "$ACCOUNTS"
-    [[ $SOURCE != env_file ]] || grep -Ev "^AGENT_BRIDGE_($MANAGED)=" "$ENV_FILE" || true
+    # The other settings, by value: comments and hand-written quoting don't carry over.
+    if [[ $SOURCE == env_file ]]; then
+      while IFS= read -r -d '' key && IFS= read -r -d '' value; do
+        env_line "$key" "$value"
+      done < <(dotenv others "AGENT_BRIDGE_($MANAGED)")
+    fi
     [[ $SOURCE != plist ]] || plist_extras
   } >"$TMP_ENV"
   mv "$TMP_ENV" "$ENV_FILE"
@@ -431,19 +446,25 @@ if [[ -n ${ROTATE_TOKEN:-} && -z $ENROLLED_NOW && -z $GATEWAY_TOOK && -n $INSTAL
 fi
 [[ -z $NAME_TAKEN ]] || die "the gateway has another host named $NAME_TAKEN; run again with another NAME"
 
+URL_HOST=$HOST
+[[ $HOST != *:* ]] || URL_HOST="[$HOST]"
 cat <<EOF
 
-Done. agent-bridge listens on http://$HOST:$PORT and starts at every login.
+Done. agent-bridge listens on http://$URL_HOST:$PORT and starts at every login.
 If a check failed: tail $LOG_FILE (herdr failing means its server isn't running).
 If the macOS firewall asks, allow incoming connections for Python.
 ${LOGIN_HINT:+
 $LOGIN_HINT
 }
 EOF
-if [[ -n $(enrolled name) ]]; then
-  echo "It is enrolled with the gateway at $(enrolled url) as $(enrolled name): Claude reaches its agents as $(enrolled name)/…"
+GATEWAY_NAME="$(enrolled name)"
+if [[ -n $GATEWAY_NAME && ( -z $NEW_TOKEN || -n $ENROLLED_NOW || -n $GATEWAY_TOOK ) ]]; then
+  echo "It is enrolled with the gateway at $(enrolled url) as $GATEWAY_NAME: Claude reaches its agents as $GATEWAY_NAME/…"
   [[ -z $RENAMING || -n $ENROLLED_NOW ]] \
-    || echo "The gateway still has it as $(enrolled name), not $NAME: run again with NAME=$NAME and an enrollment string to rename it."
+    || echo "The gateway still has it as $GATEWAY_NAME, not $NAME: run again with NAME=$NAME and an enrollment string to rename it."
+elif [[ -n $GATEWAY_NAME ]]; then
+  echo "The gateway has it as $GATEWAY_NAME, but with an older token, so it can't reach it. Run sudo mcp-gateway enroll on the gateway host, then here:"
+  echo "  $AGENT_BRIDGE enroll '<what it printed>'"
 else
   echo "It is not enrolled with a gateway yet. Run sudo mcp-gateway enroll on the gateway host, then here:"
   echo "  $AGENT_BRIDGE enroll '<what it printed>'"
