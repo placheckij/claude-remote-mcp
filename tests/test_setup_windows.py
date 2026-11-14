@@ -51,6 +51,11 @@ function Stop-Process { param([int]$Id, [switch]$Force, $ErrorAction)
     if ($env:FAKE_UNKILLABLE -and [string]$Id -eq $env:FAKE_UNKILLABLE -and (Get-Content -LiteralPath $env:FAKE_CALLS | Where-Object { $_ -like 'agent-bridge enroll*' })) { return }
     $f = Get-Fake; $f.listen = @($f.listen | Where-Object { $_.pid -ne $Id }); Set-Fake $f }
 function Start-Sleep { param([int]$Seconds, [int]$Milliseconds) }
+# WinForms' SystemInformation, faked before the real one loads, so whether this is a Remote
+# Desktop session is up to the test, not the machine running it.
+function Add-Type { param($AssemblyName)
+    Microsoft.PowerShell.Utility\Add-Type -TypeDefinition 'namespace System.Windows.Forms { public static class SystemInformation {
+        public static bool TerminalServerSession { get { return !string.IsNullOrEmpty(System.Environment.GetEnvironmentVariable("FAKE_REMOTE_SESSION")); } } } }' }
 # The user's and the machine's lasting environment variables, read from the registry.
 function Get-ItemProperty { param($LiteralPath, $ErrorAction)
     if ($LiteralPath -eq 'HKCU:\Environment' -and $env:FAKE_USER_VARIABLE) {
@@ -74,6 +79,7 @@ function Export-ScheduledTask { param($TaskName, $TaskPath)
 function Wait-Process { param($Id, $Timeout, $ErrorAction) }
 function Unregister-ScheduledTask { param($TaskName, $TaskPath, $Confirm)
     Add-Call "Unregister-ScheduledTask $TaskPath$TaskName"
+    if ($env:FAKE_UNREGISTER_FAILS) { throw 'Access is denied.' }
     $f = Get-Fake; $f.task = $false; Set-Fake $f }
 function Stop-ScheduledTask { param($TaskName, $TaskPath) Add-Call "Stop-ScheduledTask $TaskPath$TaskName" }
 function Disable-ScheduledTask { param($TaskName, $TaskPath)
@@ -275,6 +281,8 @@ class Machine:
             "FAKE_USER_VARIABLE": "",
             "FAKE_UNKILLABLE": "",
             "FAKE_CONSOLE_USER": "",
+            "FAKE_REMOTE_SESSION": "",
+            "FAKE_UNREGISTER_FAILS": "",
             "AGENT_BRIDGE_STATE_FILE": r"C:\leftover\state.json",
             "FAKE_ELEVATED_EXIT": "0",
             "FAKE_BLOCKED_PROGRAM": "",
@@ -1017,3 +1025,78 @@ def test_a_line_python_dotenv_skips_is_replaced(machine: Machine) -> None:
     text = machine.env_file.read_text(encoding="utf-8")
     assert "AGENT_BRIDGE_NAME='win-test" not in text
     assert machine.env()["AGENT_BRIDGE_NAME"] == "win-new"
+
+
+def test_a_quoted_value_ending_in_a_backslash_is_a_line_python_dotenv_skips(machine: Machine) -> None:
+    machine.setup("-Enrollment ''", input="\n\n")
+    roots = machine.profile / "Projects"
+    text = machine.env_file.read_text(encoding="utf-8")
+    text = text.replace(f"AGENT_BRIDGE_ALLOWED_ROOTS={roots}", f'AGENT_BRIDGE_ALLOWED_ROOTS="{roots}\\"')
+    machine.env_file.write_text(text, encoding="utf-8")
+    # \" is an escaped quote, so the quote is never closed.
+    assert "AGENT_BRIDGE_ALLOWED_ROOTS" not in machine.env()
+
+    # Not installed as far as agent-bridge goes: asked for again, and the line replaced.
+    machine.setup(input="\n")
+
+    assert machine.env()["AGENT_BRIDGE_ALLOWED_ROOTS"] == str(roots)
+
+
+def test_a_setup_that_stops_early_brings_back_a_task_a_killed_setup_left_disabled(machine: Machine) -> None:
+    machine.setup("-Enrollment ''", input="\n\n")
+    fake = machine.fake()
+    fake["enabled"] = False
+    machine.save(fake)
+    marker = machine.localappdata / "agent-bridge" / "task-disabled-by-setup"
+    marker.write_text("setup")
+
+    # Stops before it would stop the bridge.
+    machine.setup(expect=1, FAKE_USER_VARIABLE="AGENT_BRIDGE_PORT")
+
+    assert machine.fake()["enabled"] is True
+    assert not marker.exists()
+
+
+def test_a_program_handed_the_agent_bridge_path_is_not_stopped(machine: Machine) -> None:
+    machine.setup("-Enrollment ''", input="\n\n")
+    machine.listen(0, 78, "tail.exe", f'"C:\\Tools\\tail.exe" "{machine.bridge}" -f serve')
+
+    machine.setup()
+
+    assert "Stop-Process 78" not in machine.calls()
+
+
+def test_uninstall_that_cant_remove_the_task_brings_it_back(machine: Machine) -> None:
+    machine.setup("-Enrollment ''", input="\n\n")
+
+    output = machine.run("uninstall.ps1", expect=1, FAKE_UNREGISTER_FAILS="1")
+
+    assert "couldn't remove the scheduled task" in output
+    assert machine.fake()["task"] is True and machine.fake()["enabled"] is True
+    assert machine.env_file.exists()
+    assert not (machine.localappdata / "agent-bridge" / "task-disabled-by-setup").exists()
+
+
+def test_an_unreadable_desktop_owner_over_remote_desktop_only_warns(machine: Machine) -> None:
+    # The console's user is someone else's desktop then.
+    output = machine.setup("-Enrollment ''", input="\n\n", FAKE_DESKTOP_USER="\\",
+                           FAKE_CONSOLE_USER="SOMEPC\\other", FAKE_REMOTE_SESSION="1")
+
+    assert "couldn't tell who owns this desktop" in output
+    assert "Done." in output
+
+
+def test_references_to_names_set_above_or_in_comments_are_not_called_window_only(machine: Machine) -> None:
+    machine.setup("-Enrollment ''", input="\n\n")
+    text = machine.env_file.read_text(encoding="utf-8")
+    text = text.replace(
+        f"AGENT_BRIDGE_HERDR_BIN={machine.herdr}",
+        f"HERDR_HOME={machine.herdr.parent}\nAGENT_BRIDGE_HERDR_BIN=${{HERDR_HOME}}\\herdr.exe\n# AGENT_BRIDGE_X=${{OTHER_ONLY}}",
+    )
+    machine.env_file.write_text(text, encoding="utf-8")
+
+    # Both set in this window only; python-dotenv takes HERDR_HOME from the file first.
+    output = machine.setup(HERDR_HOME=str(machine.root), OTHER_ONLY="x")
+
+    assert "set only in this window" not in output
+    assert "Done." in output

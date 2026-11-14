@@ -49,12 +49,18 @@ if ($gateway -and -not $left) {
 }
 
 Write-Step "Removing the scheduled task $TaskName"
-Stop-Bridge $Exe (Get-InstalledPort)
-if (Get-ScheduledTask -TaskName $TaskName -TaskPath '\' -ErrorAction SilentlyContinue) {
-    Unregister-ScheduledTask -TaskName $TaskName -TaskPath '\' -Confirm:$false
-    Write-Host 'removed'
-} else {
-    Write-Host 'not there'
+try {
+    Stop-Bridge $Exe (Get-InstalledPort)
+    if (Get-ScheduledTask -TaskName $TaskName -TaskPath '\' -ErrorAction SilentlyContinue) {
+        Unregister-ScheduledTask -TaskName $TaskName -TaskPath '\' -Confirm:$false
+        Write-Host 'removed'
+    } else {
+        Write-Host 'not there'
+    }
+} catch {
+    # Stop-Setup brings back the task Stop-Bridge disabled, rather than leave it off with
+    # the settings still there.
+    Stop-Setup "couldn't remove the scheduled task ($($_.Exception.Message)); it is left as it was. Run uninstall.ps1 again."
 }
 
 Write-Step 'Removing the firewall rule'

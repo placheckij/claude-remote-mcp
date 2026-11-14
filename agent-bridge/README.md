@@ -502,8 +502,11 @@ re-runs keep them.
 Disable-ScheduledTask -TaskName agent-bridge
 Stop-ScheduledTask -TaskName agent-bridge
 $run = "$env:LOCALAPPDATA\agent-bridge\run.cmd"
+# The agent-bridge.exe run.cmd runs, whatever it is named (-Bridge).
+$exe = (Select-String -LiteralPath $run -Pattern '^"(.+)" serve').Matches[0].Groups[1].Value
 Get-CimInstance Win32_Process | Where-Object {
-  ($_.Name -eq 'cmd.exe' -and $_.CommandLine -like "*$run*") -or $_.CommandLine -match 'agent-bridge(\.exe)?"? serve'
+  ($_.Name -eq 'cmd.exe' -and $_.CommandLine -like "*$run*") -or
+    ($_.CommandLine -match ([regex]::Escape($exe) + '"? serve'))
 } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }
 
 # Start again (re-running setup does this too). Registering it again, rather than only
