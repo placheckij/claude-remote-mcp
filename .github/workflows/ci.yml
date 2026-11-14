@@ -61,6 +61,26 @@ jobs:
         run: uv sync --package agent-bridge --frozen
       - name: agent-bridge tests
         run: uv run --frozen --package agent-bridge pytest agent-bridge
+      - name: Windows setup and uninstall scripts
+        run: uv run --frozen --package agent-bridge pytest tests/test_setup_windows.py
+
+  psscriptanalyzer:
+    name: PSScriptAnalyzer
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Check the Windows deploy scripts
+        shell: pwsh
+        run: |
+          if (-not (Get-Module -ListAvailable PSScriptAnalyzer)) {
+            Install-Module PSScriptAnalyzer -Scope CurrentUser -Force
+          }
+          $results = Invoke-ScriptAnalyzer -Path agent-bridge/deploy/windows -Recurse `
+            -Settings agent-bridge/deploy/windows/PSScriptAnalyzerSettings.psd1
+          $results | Format-List RuleName, Severity, ScriptName, Line, Message
+          if ($results) { exit 1 }
 
   shellcheck:
     name: shellcheck
