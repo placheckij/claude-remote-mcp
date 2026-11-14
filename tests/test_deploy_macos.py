@@ -59,6 +59,7 @@ case $1 in
       *) echo "ok    agent-bridge answers"
          [ -f "$HOME/gateway-took-token" ] && echo "ok    the gateway at http://10.0.0.1:8766 has this host as mac"
          [ -f "$HOME/gateway-dropped" ] && echo "FAIL  the gateway at http://10.0.0.1:8766 has this host (not enrolled)"
+         [ -f "$HOME/gateway-down" ] && echo "FAIL  the gateway at http://10.0.0.1:8766 has this host (no answer from the gateway at http://10.0.0.1:8766 (ConnectError))"
          # As cli.py saves a name the gateway answers with, e.g. after `bridges rename`.
          [ -f "$HOME/gateway-name" ] && sed -i '' "s/\\"name\\": \\"[^\\"]*\\"/\\"name\\": \\"$(cat "$HOME/gateway-name")\\"/" "$dir/state.json" ;;
     esac ;;
@@ -112,9 +113,9 @@ class Mac:
     def setup(self, input: str | None = None, check: bool = True, **env: str) -> subprocess.CompletedProcess:
         return self.run("macos/setup.sh", input, check, **env)
 
-    def install(self, **env: str) -> subprocess.CompletedProcess:
+    def install(self, check: bool = True, **env: str) -> subprocess.CompletedProcess:
         """A fresh install with every answer given, folder trust off."""
-        return self.setup(**{
+        return self.setup(check=check, **{
             "HOST": "127.0.0.1", "ALLOWED_ROOTS": str(self.home / "projects"), "NAME": "mac",
             "AGENT_BRIDGE_CLAUDE_CONFIG_DIR": "", "TRUST_ROOT": "", "ENROLLMENT": ENROLLMENT, **env,
         })
@@ -485,6 +486,33 @@ def test_a_host_the_gateway_dropped_enrolls_again_with_a_string(mac: Mac) -> Non
 
     assert f"enroll {ENROLLMENT}" in mac.log("agent-bridge.log")
     assert "It is enrolled with the gateway at http://10.0.0.1:8766 as mac" in result.stdout
+
+
+def test_a_gateway_that_doesnt_answer_keeps_the_enrollment(mac: Mac) -> None:
+    mac.install()
+    (mac.home / "gateway-down").touch()
+
+    result = mac.setup()
+
+    assert "Enrollment string" not in result.stderr
+    assert "no answer from the gateway" in result.stdout
+    assert "It is enrolled with the gateway at http://10.0.0.1:8766 as mac" in result.stdout
+
+
+@pytest.mark.parametrize("env", [{"HOST": "mac.local"}, {"HOST": "::"}, {"PORT": "70000"}, {"PORT": "0"}])
+def test_a_host_or_port_the_bridge_would_refuse_stops_before_installing(mac: Mac, env: dict) -> None:
+    result = mac.install(check=False, **env)
+
+    assert result.returncode != 0
+    assert "must be" in result.stderr
+    assert not (mac.support / "env").exists()
+    assert not mac.plist.exists()
+
+
+def test_a_port_with_leading_zeros_is_written_without_them(mac: Mac) -> None:
+    mac.install(PORT="08765")
+
+    assert mac.env()["AGENT_BRIDGE_PORT"] == "8765"
 
 
 def test_a_failed_state_write_on_an_enrolled_host_shows_the_fix(mac: Mac) -> None:
