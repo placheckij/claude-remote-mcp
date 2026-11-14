@@ -183,6 +183,7 @@ for ROOT in "${ROOT_LIST[@]}"; do
 done
 [[ -n $ROOTS ]] || die "ALLOWED_ROOTS needs at least one folder"
 
+NAME_GIVEN=${NAME+x}
 DEFAULT_NAME="$(hostname -s | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9]+/-/g; s/^-+//; s/-+$//')"
 pick NAME NAME || ask NAME "This host's name in agent ids, like $DEFAULT_NAME/w1:p1" "${DEFAULT_NAME:-agent-host}"
 until bridge check --name-format "$NAME"; do
@@ -267,15 +268,22 @@ fi
 ACCOUNTS="${AGENT_BRIDGE_ACCOUNTS-$(installed ACCOUNTS)}"
 
 # Kept, unless rotating. Nobody copies it: enrolling hands it to the gateway.
-TOKEN="$(installed TOKEN)"
+INSTALLED_TOKEN="$(installed TOKEN)"
+TOKEN=$INSTALLED_TOKEN
 if [[ -n ${ROTATE_TOKEN:-} || -z $TOKEN ]]; then
   TOKEN="$(openssl rand -hex 32)"
 fi
-bridge check --token-format "$TOKEN" || die "the installed token won't do; run again with ROTATE_TOKEN=1"
+# What `agent-bridge check --token-format` checks, here so the token never shows in ps.
+[[ ${#TOKEN} -ge 32 && $TOKEN =~ ^[A-Za-z0-9._~+/-]+=*$ ]] \
+  || die "the installed token won't do; run again with ROTATE_TOKEN=1"
 
-# Asked for until this host is enrolled, and again with a new token.
-if [[ -z ${ENROLLMENT+x} ]] && [[ -z $(enrolled name) || -n ${ROTATE_TOKEN:-} ]]; then
+# Asked for until this host is enrolled, and again with a new token or a new name.
+ENROLLED_AS="$(enrolled name)"
+RENAMING=""
+[[ -z $NAME_GIVEN || -z $ENROLLED_AS || $NAME == "$ENROLLED_AS" ]] || RENAMING=1
+if [[ -z ${ENROLLMENT+x} ]] && [[ -z $ENROLLED_AS || -n ${ROTATE_TOKEN:-} || -n $RENAMING ]]; then
   printf '\nTo enroll with the gateway, run on the gateway host: sudo mcp-gateway enroll\n'
+  [[ -z $RENAMING ]] || echo "The gateway has this host as $ENROLLED_AS; enrolling again renames it $NAME."
   ask ENROLLMENT "Enrollment string it printed, crm1@…" "" "Enter to enroll later"
 fi
 ENROLLMENT=${ENROLLMENT:-}
@@ -287,6 +295,14 @@ ENROLLMENT=${ENROLLMENT:-}
 line() { # line KEY VALUE: one env file line, single-quoted so nothing in it is expanded
   [[ $2 != *"'"* && $2 != *$'\n'* ]] || die "AGENT_BRIDGE_$1 can't contain ' or a line break"
   printf "AGENT_BRIDGE_%s='%s'\n" "$1" "$2"
+}
+
+plist_extras() { # the plist's other AGENT_BRIDGE_* settings, as env file lines
+  local key
+  for key in $(plist_value EnvironmentVariables | awk '$2 == "=" {print $1}'); do
+    [[ $key == AGENT_BRIDGE_* && ! $key =~ ^AGENT_BRIDGE_($MANAGED)$ ]] || continue
+    line "${key#AGENT_BRIDGE_}" "$(plist_value "EnvironmentVariables:$key")"
+  done
 }
 
 write_env() {
@@ -307,6 +323,7 @@ write_env() {
     line TRUST_ROOT "$TRUST_ROOT"
     [[ -z $ACCOUNTS ]] || line ACCOUNTS "$ACCOUNTS"
     [[ $SOURCE != env_file ]] || grep -Ev "^AGENT_BRIDGE_($MANAGED)=" "$ENV_FILE" || true
+    [[ $SOURCE != plist ]] || plist_extras
   } >"$TMP_ENV"
   mv "$TMP_ENV" "$ENV_FILE"
   SOURCE=env_file
@@ -353,12 +370,13 @@ start_service
 
 # --- Enroll --------------------------------------------------------------------------
 
+ENROLLED_NOW=""
 while [[ -n $ENROLLMENT ]]; do
   log "Enrolling with the gateway"
   status=0
   bridge enroll "$ENROLLMENT" || status=$?
   case $status in
-    0) break ;;
+    0) ENROLLED_NOW=1; break ;;
     3) # The gateway has another host by that name.
       NAME=""
       until [[ -n $NAME ]] && bridge check --name-format "$NAME"; do
@@ -373,6 +391,14 @@ while [[ -n $ENROLLMENT ]]; do
   esac
 done
 
+# The gateway still has the installed token: a new one would leave it locked out.
+if [[ -n ${ROTATE_TOKEN:-} && -z $ENROLLED_NOW && -n $INSTALLED_TOKEN ]]; then
+  TOKEN=$INSTALLED_TOKEN
+  write_env
+  start_service
+  die "the gateway didn't take the new token, so the installed one is back; run again with ROTATE_TOKEN=1 and a new enrollment string"
+fi
+
 cat <<EOF
 
 Done. agent-bridge listens on http://$HOST:$PORT and starts at every login.
@@ -384,6 +410,8 @@ $LOGIN_HINT
 EOF
 if [[ -n $(enrolled name) ]]; then
   echo "It is enrolled with the gateway at $(enrolled url) as $(enrolled name): Claude reaches its agents as $(enrolled name)/…"
+  [[ -z $RENAMING || -n $ENROLLED_NOW ]] \
+    || echo "The gateway still has it as $(enrolled name), not $NAME: run again with NAME=$NAME and an enrollment string to rename it."
 else
   echo "It is not enrolled with a gateway yet. Run sudo mcp-gateway enroll on the gateway host, then here:"
   echo "  $AGENT_BRIDGE enroll '<what it printed>'"
