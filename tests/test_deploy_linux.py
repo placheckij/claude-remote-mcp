@@ -764,6 +764,18 @@ def test_a_new_name_the_gateway_cant_take_is_renamed_by_enrolling_with_a_string(
     assert "didn't rename" not in result.stdout
 
 
+def test_a_new_name_whose_enrollment_fails_after_the_rename_did_says_so(host: Host) -> None:
+    # The gateway doesn't answer the rename, nor the enrollment after it.
+    host.install()
+    (host.home / "rename-code").write_text("4")
+    (host.home / "enroll-codes").write_text("4\n")
+
+    result = host.setup(NAME="newbox", ENROLLMENT=ENROLLMENT)
+
+    assert "still has this host as linux-box, not newbox" in result.stdout
+    assert "NAME=newbox" in result.stdout
+
+
 def test_a_new_name_isnt_renamed_when_setup_stops_before_installing(host: Host) -> None:
     host.install()
 

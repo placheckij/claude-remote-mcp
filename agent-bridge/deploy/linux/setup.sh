@@ -569,8 +569,10 @@ if [[ -n $(enrolled name) ]]; then
       echo "The gateway names this host $GATEWAY_NAME, so NAME stays that. To rename it $WANTED_NAME, run on the gateway host: sudo mcp-gateway bridges rename $GATEWAY_NAME $WANTED_NAME"
     fi
   fi
+  [[ -z $RENAME_BY_ENROLLING || $RENAME_BY_ENROLLING == "$GATEWAY_NAME" ]] \
+    || echo "The gateway still has this host as $GATEWAY_NAME, not $RENAME_BY_ENROLLING, as enrolling didn't go through (see above): to rename it, run sudo mcp-gateway enroll on the gateway host, then this again with NAME=$RENAME_BY_ENROLLING ENROLLMENT='<what it printed>'"
   [[ -z $NEW_TOKEN || -n $ENROLLED ]] \
-    || echo "The gateway has this host's old token and its calls will be refused: run sudo mcp-gateway enroll on the gateway host, then run this again with ${RENAME_BY_ENROLLING:+NAME=$RENAME_BY_ENROLLING }ENROLLMENT='<what it printed>'"
+    || echo "The gateway has this host's old token and its calls will be refused: run sudo mcp-gateway enroll on the gateway host, then run this again with ENROLLMENT='<what it printed>'"
 else
   echo "It is not enrolled with a gateway yet. Run sudo mcp-gateway enroll on the gateway host, then here:"
   echo "  $AGENT_BRIDGE enroll '<what it printed>'"
