@@ -555,6 +555,7 @@ try {
     $Gateway = Get-EnrolledGateway
     $NameChanged = $Gateway -and -not $NameInstalled -and $Name -ne $Gateway.name
     $NameTaken = $false
+    $UnsavedName = ''
     if ($NameChanged -and -not $NewToken) {
         Write-Step "Renaming this host to $Name on the gateway"
         $RenameCode = Invoke-Native $Exe @('rename', $Name)
@@ -564,7 +565,8 @@ try {
             Write-EnvFile $EnvFile (Read-EnvFile $EnvFile).Lines $Settings
             $NameChanged = $false
         } elseif ($RenameCode -eq 0 -or $RenameCode -eq 5) {
-            # 5: renamed, but the state file couldn't be saved (agent-bridge said how to fix that).
+            # 5: renamed, but the state file still has the old name (agent-bridge said how to fix that).
+            if ($RenameCode -eq 5) { $UnsavedName = $Name }
             $Gateway = Get-EnrolledGateway
             $NameChanged = $false
         }
@@ -692,6 +694,8 @@ try {
 
     $UrlHost = if ($Address.Contains(':')) { "[$Address]" } else { $Address }
     $Gateway = Get-EnrolledGateway
+    # The gateway's name, not the old one the state file still has.
+    if ($Gateway -and $UnsavedName) { $Gateway.name = $UnsavedName }
     Write-Host ''
     if ($Started) {
         Write-Host "Done. agent-bridge listens on http://${UrlHost}:$Port and starts at every logon."

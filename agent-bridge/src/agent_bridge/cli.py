@@ -36,6 +36,8 @@ from agent_bridge.host import API_VERSION
 from agent_bridge.state import Gateway, State, StateError, env_file, load, load_or_create, rename, save, state_file
 
 OK, FAILED, INVALID, NAME_TAKEN, UNREACHABLE, SAVE_FAILED, OUTDATED = 0, 1, 2, 3, 4, 5, 6
+# The gateway's codes for a host it has no record of with this token (enrollment.py).
+NOT_KNOWN = ("not_enrolled", "unauthorized")
 
 
 class _Refused(Exception):
@@ -157,6 +159,11 @@ def _rename(name: str) -> int:
             print(f"The gateway at {gateway.url} is too old to rename hosts: update the gateway.\n{by_hand}",
                   file=sys.stderr)
             return OUTDATED
+        if error.code in NOT_KNOWN:
+            # It has no host by the old name to rename by hand.
+            print(f"The gateway refused: {error} Enroll again under the new name: run `sudo mcp-gateway enroll` "
+                  "on the gateway host for a string.", file=sys.stderr)
+            return FAILED
         print(f"The gateway refused: {error}\n{by_hand}", file=sys.stderr)
         return FAILED
     try:
@@ -171,12 +178,14 @@ def _rename(name: str) -> int:
 
 
 def _knows_this_host(gateway_url: str, state: State, settings: Settings) -> bool:
-    """Whether the gateway answers this host's address report, which every gateway has: a
-    404 from it to a rename then means it has no such route, not that it refused."""
+    """Whether the gateway takes this host's token for its address report, which every
+    gateway has: a 404 from it to a rename then means it has no such route, not that it
+    refused. Refusing the address itself (e.g. one it can't reach while agent-bridge is
+    stopped) comes after the token, so it counts."""
     try:
         asyncio.run(report_address(gateway_url, state, settings))
-    except GatewayError:
-        return False
+    except GatewayError as error:
+        return error.code is not None and error.code not in NOT_KNOWN
     return True
 
 

@@ -608,6 +608,8 @@ def test_a_new_name_the_gateway_took_without_a_saved_state_isnt_asked_to_enroll(
     assert "knows this host as" not in output
     assert not [call for call in machine.calls() if call.startswith("agent-bridge enroll")]
     assert machine.env()["AGENT_BRIDGE_NAME"] == "win-new"
+    # The gateway's name, not the old one the state file still has.
+    assert "Enrolled as win-new" in output
 
 
 def test_a_new_name_taken_on_the_gateway_keeps_the_old_one(machine: Machine) -> None:

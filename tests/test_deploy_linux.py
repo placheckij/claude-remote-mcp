@@ -666,9 +666,9 @@ def test_a_new_name_taken_on_the_gateway_changes_nothing(host: Host) -> None:
     assert f"--user restart {UNIT}" not in host.log("systemctl.log")
 
 
-@pytest.mark.parametrize("code", ["6", "4", "1"])
+@pytest.mark.parametrize("code", ["6", "4"])
 def test_a_new_name_the_gateway_cant_take_says_how_to_rename_it_there(host: Host, code: str) -> None:
-    # 6: a gateway too old to rename hosts; 4: unreachable; 1: any other refusal.
+    # 6: a gateway too old to rename hosts; 4: unreachable.
     host.install()
     (host.home / "rename-code").write_text(code)
 
@@ -687,6 +687,20 @@ def test_a_new_name_the_gateway_took_without_a_saved_state_is_kept(host: Host) -
     result = host.setup(NAME="newbox")
 
     assert host.env()["AGENT_BRIDGE_NAME"] == "newbox"
+    assert "bridges rename" not in result.stdout
+    # The gateway's name, not the old one the state file still has.
+    assert "as newbox" in result.stdout
+
+
+def test_a_new_name_the_gateway_refused_doesnt_print_its_rename_command(host: Host) -> None:
+    # rename exits 1, e.g. the gateway no longer has this host: there is nothing to rename there.
+    host.install()
+    (host.home / "rename-code").write_text("1")
+
+    result = host.setup(NAME="newbox")
+
+    assert host.env()["AGENT_BRIDGE_NAME"] == "linux-box"
+    assert "didn't rename this host newbox" in result.stdout
     assert "bridges rename" not in result.stdout
 
 

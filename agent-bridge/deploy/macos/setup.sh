@@ -358,14 +358,16 @@ fi
 # which needs enrolling again, and that renames it too; nor when the gateway can't take it
 # that way (too old, or no answer): an enrollment string is asked for below.
 RENAMED=""
+UNSAVED_NAME=""
 if [[ -n $NAME_GIVEN && -z $NEW_TOKEN && $SOURCE == env_file && -z $GATEWAY_GONE && -n $(enrolled name) \
   && $NAME != "$(enrolled name)" ]]; then
   log "Renaming this host to $NAME on the gateway"
   status=0
   bridge rename "$NAME" || status=$?
   [[ $status != 3 ]] || die "the gateway has another host named $NAME; nothing was changed, run again with another NAME"
-  # 5: renamed, but the state file couldn't be saved (agent-bridge said how to fix that).
   [[ $status != 0 && $status != 5 ]] || RENAMED=$NAME
+  # 5: renamed, but the state file still has the old name (agent-bridge said how to fix that).
+  [[ $status != 5 ]] || UNSAVED_NAME=$NAME
 fi
 
 # Asked for until this host is enrolled, and again with a new token or a new name.
@@ -551,6 +553,7 @@ $LOGIN_HINT
 }
 EOF
 GATEWAY_NAME="$(enrolled name)"
+[[ -z $GATEWAY_NAME || -z $UNSAVED_NAME ]] || GATEWAY_NAME=$UNSAVED_NAME
 if [[ -n $GATEWAY_TOOK ]]; then
   echo "The gateway enrolled it, but its state file couldn't be written (see above). Fix that, then enroll again with a new string from sudo mcp-gateway enroll:"
   echo "  $AGENT_BRIDGE enroll '<what it printed>'"

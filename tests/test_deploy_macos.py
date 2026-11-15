@@ -672,6 +672,8 @@ def test_a_new_name_the_gateway_took_without_a_saved_state_isnt_asked_to_enroll(
     assert "Enrollment string" not in result.stderr
     assert mac.env()["AGENT_BRIDGE_NAME"] == "studio"
     assert "still has it as" not in result.stdout
+    # The gateway's name, not the old one the state file still has.
+    assert "as studio" in result.stdout
 
 
 def test_setup_stopping_after_a_rename_says_the_gateway_has_the_new_name(mac: Mac) -> None:
