@@ -47,7 +47,9 @@ exit 0""",
 }
 
 # The venv's agent-bridge: enroll exits with the next code in $HOME/enroll-codes (0 when
-# there is none) and on 0 writes the state file with the name from the env file.
+# there is none) and on 0 writes the state file with the name from the env file. rename
+# exits with the code in $HOME/rename-code (0 when there is none) and on 0 writes its name
+# to the state file.
 AGENT_BRIDGE = """#!/bin/sh
 echo "$*" >> "$HOME/agent-bridge.log"
 dir="$HOME/Library/Application Support/agent-bridge"
@@ -76,6 +78,11 @@ case $1 in
     printf '{"version": 1, "bridge_id": "b1", "gateway": {"url": "http://10.0.0.1:8766", "gateway_id": "g1", "name": "%s"}}' \\
       "$name" > "$dir/state.json"
     echo "Enrolled as $name." ;;
+  rename)
+    code=$(cat "$HOME/rename-code" 2>/dev/null)
+    [ "${code:-0}" = 0 ] || { echo "Couldn't rename (stub exit $code)." >&2; exit "$code"; }
+    sed -i '' "s/\\"name\\": \\"[^\\"]*\\"/\\"name\\": \\"$2\\"/" "$dir/state.json"
+    echo "The gateway has this host as $2." ;;
   unenroll)
     [ -f "$HOME/unenroll-fails" ] && { echo "$dir/state.json isn't agent-bridge state." >&2; exit 1; }
     rm -f "$dir/state.json"; echo "Left the gateway." ;;
@@ -608,8 +615,46 @@ def test_a_failed_state_write_on_an_enrolled_host_shows_the_fix(mac: Mac) -> Non
     assert "It is enrolled" not in result.stdout
 
 
-def test_a_new_name_on_an_enrolled_host_enrolls_again(mac: Mac) -> None:
+def test_a_new_name_on_an_enrolled_host_renames_it_on_the_gateway(mac: Mac) -> None:
     mac.install()
+
+    result = mac.setup(NAME="studio")
+
+    assert "rename studio" in mac.log("agent-bridge.log")
+    assert "Enrollment string" not in result.stderr
+    assert "enroll " not in mac.log("agent-bridge.log")
+    assert mac.env()["AGENT_BRIDGE_NAME"] == "studio"
+    assert "as studio" in result.stdout
+
+
+def test_a_new_name_with_an_enrollment_string_is_renamed_before_enrolling(mac: Mac) -> None:
+    mac.install()
+
+    result = mac.setup(NAME="studio", ENROLLMENT=ENROLLMENT)
+
+    calls = [line.split()[0] for line in mac.log("agent-bridge.log").splitlines() if line.startswith(("rename", "enroll"))]
+    assert calls == ["rename", "enroll"]
+    assert "as studio" in result.stdout
+
+
+def test_a_new_name_taken_on_the_gateway_changes_nothing(mac: Mac) -> None:
+    mac.install()
+    before = mac.env()
+    (mac.home / "rename-code").write_text("3")
+
+    result = mac.setup(NAME="studio", check=False)
+
+    assert result.returncode != 0
+    assert "another host named studio" in result.stderr
+    assert mac.env() == before
+    assert "bootstrap" not in mac.log("launchctl.log")
+
+
+@pytest.mark.parametrize("code", ["5", "4", "1"])
+def test_a_new_name_the_gateway_cant_take_is_renamed_by_enrolling_again(mac: Mac, code: str) -> None:
+    # 5: a gateway too old to rename hosts; 4: unreachable; 1: any other refusal.
+    mac.install()
+    (mac.home / "rename-code").write_text(code)
 
     result = mac.setup(NAME="studio", ENROLLMENT=ENROLLMENT)
 
@@ -617,8 +662,9 @@ def test_a_new_name_on_an_enrolled_host_enrolls_again(mac: Mac) -> None:
     assert "as studio" in result.stdout
 
 
-def test_a_new_name_without_enrolling_says_the_gateway_kept_the_old_one(mac: Mac) -> None:
+def test_a_new_name_the_gateway_cant_take_without_enrolling_says_the_gateway_kept_the_old_one(mac: Mac) -> None:
     mac.install()
+    (mac.home / "rename-code").write_text("5")
 
     result = mac.setup(NAME="studio")
 
