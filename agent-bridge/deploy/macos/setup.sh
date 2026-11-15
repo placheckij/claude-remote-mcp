@@ -249,15 +249,6 @@ until bridge check --name-format "$NAME"; do
   ask NAME "This host's name" "" "required"
   [[ -n $NAME ]] || die "NAME is required"
 done
-# A new name is renamed on the gateway first, with the installed token. One it can't take
-# that way (too old, or no answer) is asked for an enrollment string below: enrolling again
-# renames it too.
-if [[ -n $NAME_GIVEN && $SOURCE == env_file && -z $GATEWAY_GONE && -n $(enrolled name) && $NAME != "$(enrolled name)" ]]; then
-  log "Renaming this host to $NAME on the gateway"
-  status=0
-  bridge rename "$NAME" || status=$?
-  [[ $status != 3 ]] || die "the gateway has another host named $NAME; nothing was changed, run again with another NAME"
-fi
 
 # The installed address while this Mac still has it; otherwise its current one.
 if [[ -z ${HOST+x} ]]; then
@@ -358,11 +349,25 @@ fi
 [[ ${#TOKEN} -ge 32 && $TOKEN =~ ^[A-Za-z0-9._~+/-]+=*$ ]] \
   || die "the installed token won't do; run again with ROTATE_TOKEN=1"
 
+# A new name is renamed on the gateway, with the installed token. Not with a new token,
+# which needs enrolling again, and that renames it too; nor when the gateway can't take it
+# that way (too old, or no answer): an enrollment string is asked for below.
+RENAMED=""
+if [[ -n $NAME_GIVEN && -z $NEW_TOKEN && $SOURCE == env_file && -z $GATEWAY_GONE && -n $(enrolled name) \
+  && $NAME != "$(enrolled name)" ]]; then
+  log "Renaming this host to $NAME on the gateway"
+  status=0
+  bridge rename "$NAME" || status=$?
+  [[ $status != 3 ]] || die "the gateway has another host named $NAME; nothing was changed, run again with another NAME"
+  # 5: renamed, but the state file couldn't be saved (agent-bridge said how to fix that).
+  [[ $status != 0 && $status != 5 ]] || RENAMED=$NAME
+fi
+
 # Asked for until this host is enrolled, and again with a new token or a new name.
 ENROLLED_AS="$(enrolled name)"
 [[ -z $GATEWAY_GONE ]] || ENROLLED_AS=""
 RENAMING=""
-[[ -z $NAME_GIVEN || -z $ENROLLED_AS || $NAME == "$ENROLLED_AS" ]] || RENAMING=1
+[[ -z $NAME_GIVEN || -z $ENROLLED_AS || $NAME == "$ENROLLED_AS" || -n $RENAMED ]] || RENAMING=1
 if [[ -z ${ENROLLMENT+x} ]] && [[ -z $ENROLLED_AS || -n $NEW_TOKEN || -n $RENAMING ]]; then
   printf '\nTo enroll with the gateway, run on the gateway host: sudo mcp-gateway enroll\n'
   [[ -z $RENAMING ]] || echo "The gateway has this host as $ENROLLED_AS; enrolling again renames it $NAME."
@@ -435,7 +440,7 @@ except RuntimeError as error:
     sys.exit(str(error))
 if missing:
     sys.exit("Missing " + ", ".join(missing))' 2>&1
-  )" || die "the bridge would refuse these settings: $problem"
+  )" || die "the bridge would refuse these settings: $problem${RENAMED:+ (the gateway has this host as $RENAMED now)}"
   mv "$TMP_ENV" "$ENV_FILE"
   SOURCE=env_file
 }

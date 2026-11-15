@@ -662,6 +662,29 @@ def test_a_new_name_the_gateway_cant_take_is_renamed_by_enrolling_again(mac: Mac
     assert "as studio" in result.stdout
 
 
+def test_a_new_name_the_gateway_took_without_a_saved_state_isnt_asked_to_enroll(mac: Mac) -> None:
+    # rename exits 5: the gateway has studio, but the state file couldn't be written.
+    mac.install()
+    (mac.home / "rename-code").write_text("5")
+
+    result = mac.setup(NAME="studio")
+
+    assert "Enrollment string" not in result.stderr
+    assert mac.env()["AGENT_BRIDGE_NAME"] == "studio"
+    assert "still has it as" not in result.stdout
+
+
+def test_a_new_name_with_a_new_token_is_renamed_by_enrolling(mac: Mac) -> None:
+    # The gateway learns the new token only by enrolling, which renames it too.
+    mac.install()
+
+    result = mac.setup(NAME="studio", ROTATE_TOKEN="1", ENROLLMENT=ENROLLMENT)
+
+    assert "rename studio" not in mac.log("agent-bridge.log")
+    assert f"enroll {ENROLLMENT}" in mac.log("agent-bridge.log")
+    assert "as studio" in result.stdout
+
+
 def test_a_new_name_the_gateway_cant_take_without_enrolling_says_the_gateway_kept_the_old_one(mac: Mac) -> None:
     mac.install()
     (mac.home / "rename-code").write_text("6")

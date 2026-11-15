@@ -234,21 +234,11 @@ until bridge check --name-format "$NAME"; do
   ask NAME "This host's name" "" "required"
   [[ -n $NAME ]] || die "NAME is required"
 done
-# Once enrolled, the gateway's name is this host's name: a new one is renamed there first,
-# with the installed token, and the installed NAME follows.
-WANTED_NAME=""
+# Once enrolled, the gateway's name is this host's name: a new one is renamed there (below,
+# once nothing else can stop setup), and the installed NAME follows.
+RENAME_TO=""
 if [[ -n $ENROLLED_NAME && $ENROLLED_NAME != "$NAME" ]]; then
-  status=0
-  if [[ -n $NAME_GIVEN ]]; then
-    log "Renaming this host to $NAME on the gateway"
-    bridge rename "$NAME" || status=$?
-  fi
-  case $status in
-    0) [[ -z $NAME_GIVEN ]] || ENROLLED_NAME=$NAME ;;
-    3) die "the gateway has another host named $NAME; nothing was changed, run again with another NAME" ;;
-    # A gateway too old to rename hosts, or one that can't be asked: renamed there by hand.
-    *) WANTED_NAME=$NAME ;;
-  esac
+  [[ -z $NAME_GIVEN ]] || RENAME_TO=$NAME
   NAME=$ENROLLED_NAME
 fi
 
@@ -372,6 +362,22 @@ ENROLLMENT=${ENROLLMENT:-}
 [[ -z ${ROTATE_TOKEN:-} || -n $ENROLLMENT ]] \
   || die "ROTATE_TOKEN needs an enrollment string, so the gateway learns the new token: run sudo mcp-gateway enroll on the gateway host and pass what it prints as ENROLLMENT"
 
+# With the installed token, which the gateway has.
+WANTED_NAME=""
+RENAMED=""
+if [[ -n $RENAME_TO ]]; then
+  log "Renaming this host to $RENAME_TO on the gateway"
+  status=0
+  bridge rename "$RENAME_TO" || status=$?
+  case $status in
+    # 5: renamed, but the state file couldn't be saved (agent-bridge said how to fix that).
+    0 | 5) NAME=$RENAME_TO; ENROLLED_NAME=$NAME; RENAMED=$NAME ;;
+    3) die "the gateway has another host named $RENAME_TO; nothing was changed, run again with another NAME" ;;
+    # A gateway too old to rename hosts, or one that can't be asked: renamed there by hand.
+    *) WANTED_NAME=$RENAME_TO ;;
+  esac
+fi
+
 # --- Install -------------------------------------------------------------------------
 
 line() { # line KEY VALUE: one env file line, single-quoted
@@ -401,7 +407,8 @@ write_env() {
     [[ ! -f $ENV_FILE ]] || env_file others "AGENT_BRIDGE_($MANAGED)" || die "couldn't read $ENV_FILE"
   } >"$TMP_ENV"
   # Before it replaces the working settings, or the service would fail at every start.
-  check_env "$TMP_ENV" || die "agent-bridge won't start with these settings (above); nothing was changed"
+  check_env "$TMP_ENV" \
+    || die "agent-bridge won't start with these settings (above); nothing was changed${RENAMED:+ here, but the gateway has this host as $RENAMED now}"
   mv "$TMP_ENV" "$ENV_FILE"
 }
 

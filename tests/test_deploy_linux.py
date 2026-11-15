@@ -679,6 +679,27 @@ def test_a_new_name_the_gateway_cant_take_says_how_to_rename_it_there(host: Host
     assert "sudo mcp-gateway bridges rename linux-box newbox" in result.stdout
 
 
+def test_a_new_name_the_gateway_took_without_a_saved_state_is_kept(host: Host) -> None:
+    # rename exits 5: the gateway has newbox, but the state file couldn't be written.
+    host.install()
+    (host.home / "rename-code").write_text("5")
+
+    result = host.setup(NAME="newbox")
+
+    assert host.env()["AGENT_BRIDGE_NAME"] == "newbox"
+    assert "bridges rename" not in result.stdout
+
+
+def test_a_new_name_isnt_renamed_when_setup_stops_before_installing(host: Host) -> None:
+    host.install()
+
+    result = host.setup(NAME="newbox", ROTATE_TOKEN="1", ENROLLMENT="", check=False)
+
+    assert result.returncode != 0
+    assert "ROTATE_TOKEN needs an enrollment string" in result.stderr
+    assert "rename newbox" not in host.log("agent-bridge.log")
+
+
 def test_a_new_name_with_an_enrollment_string_is_renamed_before_enrolling(host: Host) -> None:
     host.install()
 

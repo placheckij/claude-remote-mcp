@@ -2,8 +2,8 @@
 
 Exit codes are part of the deploy contract the setups are built against: `enroll` and
 `rename` exit 3 when the name is taken (ask for another) and 4 when the gateway can't be
-reached; `enroll` exits 5 when the gateway enrolled this host but the state file couldn't
-be saved (the gateway has the new token and name, so keep them); `rename` exits 6 when the
+reached; both exit 5 when the gateway took it but the state file couldn't be saved (the
+gateway has the new token and name, so keep them); `rename` exits 6 when the
 gateway is too old to rename hosts (rename it there); `rename`, `check --token-format` and
 `--name-format` exit 2 for a value that won't do.
 """
@@ -159,7 +159,13 @@ def _rename(name: str) -> int:
             return OUTDATED
         print(f"The gateway refused: {error}\n{by_hand}", file=sys.stderr)
         return FAILED
-    rename(path, gateway, reply["name"])
+    try:
+        rename(path, gateway, reply["name"])
+    except StateError as error:
+        # The gateway has the new name already, so its command for the old one would fail.
+        print(f"The gateway at {gateway.url} has this host as {reply['name']} now, but {error} Fix that, then run "
+              "`agent-bridge check`, which saves the gateway's name.", file=sys.stderr)
+        return SAVE_FAILED
     print(f"The gateway at {gateway.url} has this host as {reply['name']}.")
     return OK
 

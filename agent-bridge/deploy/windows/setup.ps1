@@ -563,7 +563,8 @@ try {
             $Settings['AGENT_BRIDGE_NAME'] = $Gateway.name
             Write-EnvFile $EnvFile (Read-EnvFile $EnvFile).Lines $Settings
             $NameChanged = $false
-        } elseif ($RenameCode -eq 0) {
+        } elseif ($RenameCode -eq 0 -or $RenameCode -eq 5) {
+            # 5: renamed, but the state file couldn't be saved (agent-bridge said how to fix that).
             $Gateway = Get-EnrolledGateway
             $NameChanged = $false
         }

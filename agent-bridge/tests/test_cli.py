@@ -334,6 +334,27 @@ def test_rename_exits_6_with_the_gateway_command_when_the_gateway_is_too_old(
     assert load(state_path()) == state
 
 
+def test_rename_exits_5_when_the_gateway_renamed_it_but_the_state_cant_be_saved(
+    capsys, settings: Path, fake: FakeGateway, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    state = enrolled()
+    fake.answers[("PUT", "bridges")] = httpx.Response(200, json={"name": "studio", **JOINED})
+
+    def full(path: Path, gateway: Gateway, name: str) -> None:
+        raise cli.StateError(f"Can't write {path} (No space left on device).")
+
+    monkeypatch.setattr(cli, "rename", full)
+
+    code, _, err = run(capsys, "rename", "studio")
+
+    assert code == cli.SAVE_FAILED == 5
+    assert "has this host as studio now, but Can't write" in err
+    assert "agent-bridge check" in err
+    # The gateway has no host named mac any more.
+    assert "bridges rename" not in err
+    assert load(state_path()) == state
+
+
 def test_rename_exits_1_on_any_other_404(capsys, settings: Path, fake: FakeGateway) -> None:
     # E.g. the gateway refusing a caller off the LAN: the address report is refused too.
     state = enrolled()

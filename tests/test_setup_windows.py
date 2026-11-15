@@ -599,6 +599,17 @@ def test_a_new_name_the_gateway_cant_take_asks_to_enroll_again(machine: Machine,
     assert "Enrolled as win-new" in output
 
 
+def test_a_new_name_the_gateway_took_without_a_saved_state_isnt_asked_to_enroll(machine: Machine) -> None:
+    # rename exits 5: the gateway has win-new, but the state file couldn't be written.
+    machine.setup(f"-Enrollment '{STRING}'", input="\n\n")
+
+    output = machine.setup("-Name 'win-new'", FAKE_RENAME_CODE="5")
+
+    assert "knows this host as" not in output
+    assert not [call for call in machine.calls() if call.startswith("agent-bridge enroll")]
+    assert machine.env()["AGENT_BRIDGE_NAME"] == "win-new"
+
+
 def test_a_new_name_taken_on_the_gateway_keeps_the_old_one(machine: Machine) -> None:
     machine.setup(f"-Enrollment '{STRING}'", input="\n\n")
 
