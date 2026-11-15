@@ -21,7 +21,7 @@ requirements, configuration, deployment and tests.
 | Directory | Runs on | Role |
 |---|---|---|
 | [`mcp-gateway/`](mcp-gateway/) | an always-on host: a small home server, a VPS, or the agent host itself (Linux, macOS; the setup script needs Debian-based Linux with systemd) | MCP server exposed to claude.ai through a Cloudflare Tunnel; signs the connector in with OAuth (a passphrase) and forwards tool calls to `agent-bridge`. Includes a setup script. |
-| [`agent-bridge/`](agent-bridge/) | the machine where herdr and Claude Code run (macOS, Linux or Windows) | Narrow LAN-only HTTP API translating requests into `herdr` CLI calls; keeps only its id and its gateway. Enrolls itself with the gateway. Runs as a launchd or systemd user service. |
+| [`agent-bridge/`](agent-bridge/) | the machine where herdr and Claude Code run (macOS, Linux or Windows) | Narrow LAN-only HTTP API translating requests into `herdr` CLI calls; keeps only its id and its gateway. Enrolls itself with the gateway. Runs as a launchd or systemd user service, or a Windows scheduled task. |
 
 You need:
 
@@ -51,7 +51,10 @@ The gateway and the agent host can be one machine.
    [`agent-bridge/deploy/macos/setup.sh`](agent-bridge/README.md#with-the-setup-script)
    and paste that string when asked; it installs the service and enrolls it. On Linux,
    [`agent-bridge/deploy/linux/setup.sh`](agent-bridge/README.md#as-a-service-on-linux-systemd-user-unit)
-   does the same with a systemd user service. Elsewhere,
+   does the same with a systemd user service. On Windows, run
+   [`powershell -ExecutionPolicy Bypass -File agent-bridge\deploy\windows\setup.ps1`](agent-bridge/README.md#as-a-service-on-windows-task-scheduler)
+   and paste that string when asked; it installs a logon task, adds a firewall rule for
+   the port (Private networks only) and enrolls it. Elsewhere,
    start [agent-bridge](agent-bridge/README.md#run), then
    [enroll](agent-bridge/README.md#enroll-with-the-gateway) it with that string.
 4. **claude.ai:** [add the custom connector](mcp-gateway/README.md#add-the-connector-in-claudeai)
