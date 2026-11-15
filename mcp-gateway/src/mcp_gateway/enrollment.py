@@ -189,7 +189,7 @@ def enrollment_routes(
         return _joined(record.name)
 
     async def rename(request: Request) -> Response:
-        # It chose its name at enrollment already, so this gives it nothing new.
+        # As at enrollment, only to a name no other host has; logged, as hosts are named by it.
         bridge_id = _authorized(request)
         name = (await _body(request, _NameRequest)).name
         _check(check_name_format, name, "name")
