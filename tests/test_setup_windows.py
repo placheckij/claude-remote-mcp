@@ -195,7 +195,7 @@ if args[0] == "enroll":
     print(f"Enrolled as {name} with the gateway at http://127.0.0.1:8766.")
     sys.exit(0)
 if args[0] == "rename":
-    # As the real one: 3 for a taken name, 4 unreachable, 5 a gateway too old to rename.
+    # As the real one: 3 for a taken name, 4 unreachable, 6 a gateway too old to rename.
     code = int(os.environ.get("FAKE_RENAME_CODE") or 0)
     if code:
         print(f"Couldn't rename (fake exit code {code}).", file=sys.stderr)
@@ -563,6 +563,18 @@ def test_a_failed_enrollment_after_rotating_the_token_says_the_gateway_has_the_o
     assert "Enrolled as win-test" not in output
 
 
+def test_an_enrollment_the_gateway_took_but_couldnt_save_doesnt_say_it_has_the_old_token(machine: Machine) -> None:
+    machine.setup(f"-Enrollment '{STRING}'", input="\n\n")
+    # enroll exits 5: the gateway has the new token, but the state file couldn't be written.
+    machine.enroll_codes.write_text("5")
+
+    output = machine.setup("-RotateToken", f"-Enrollment '{STRING}'", expect=1)
+
+    assert "state file couldn't be saved" in output
+    assert "Not enrolled: see" not in output
+    assert "still has this host's old settings" not in output
+
+
 def test_a_new_name_on_an_enrolled_host_renames_it_on_the_gateway(machine: Machine) -> None:
     machine.setup(f"-Enrollment '{STRING}'", input="\n\n")
 
@@ -575,9 +587,9 @@ def test_a_new_name_on_an_enrolled_host_renames_it_on_the_gateway(machine: Machi
     assert "Enrolled as win-new" in output
 
 
-@pytest.mark.parametrize("code", ["5", "4", "1"])
+@pytest.mark.parametrize("code", ["6", "4", "1"])
 def test_a_new_name_the_gateway_cant_take_asks_to_enroll_again(machine: Machine, code: str) -> None:
-    # 5: a gateway too old to rename hosts; 4: unreachable; 1: any other refusal.
+    # 6: a gateway too old to rename hosts; 4: unreachable; 1: any other refusal.
     machine.setup(f"-Enrollment '{STRING}'", input="\n\n")
 
     output = machine.setup("-Name 'win-new'", input=f"{STRING}\n", FAKE_RENAME_CODE=code)

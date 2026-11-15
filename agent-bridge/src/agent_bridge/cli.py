@@ -2,8 +2,10 @@
 
 Exit codes are part of the deploy contract the setups are built against: `enroll` and
 `rename` exit 3 when the name is taken (ask for another) and 4 when the gateway can't be
-reached; `rename` exits 5 when the gateway is too old to rename hosts (rename it there);
-`rename`, `check --token-format` and `--name-format` exit 2 for a value that won't do.
+reached; `enroll` exits 5 when the gateway enrolled this host but the state file couldn't
+be saved (the gateway has the new token and name, so keep them); `rename` exits 6 when the
+gateway is too old to rename hosts (rename it there); `rename`, `check --token-format` and
+`--name-format` exit 2 for a value that won't do.
 """
 
 import argparse
@@ -33,7 +35,7 @@ from agent_bridge.herdr import Herdr, HerdrError
 from agent_bridge.host import API_VERSION
 from agent_bridge.state import Gateway, State, StateError, env_file, load, load_or_create, rename, save, state_file
 
-OK, FAILED, INVALID, NAME_TAKEN, UNREACHABLE, OUTDATED = 0, 1, 2, 3, 4, 5
+OK, FAILED, INVALID, NAME_TAKEN, UNREACHABLE, SAVE_FAILED, OUTDATED = 0, 1, 2, 3, 4, 5, 6
 
 
 class _Refused(Exception):
@@ -122,7 +124,7 @@ def _enroll(string: str) -> int:
         print(f"The gateway enrolled this host as {reply['name']}, but {error} Fix that, then run again "
               "(with a new string from `sudo mcp-gateway enroll` once this one expires):", file=sys.stderr)
         print(f"  agent-bridge enroll '{string.strip()}'", file=sys.stderr)
-        return FAILED
+        return SAVE_FAILED
     print(f"Enrolled as {reply['name']} with the gateway at {gateway_url}.")
     if reply.get("api_version", API_VERSION) < API_VERSION:
         print("The gateway is older than this agent-bridge and may not call it: update the gateway.", file=sys.stderr)

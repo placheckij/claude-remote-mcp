@@ -195,7 +195,7 @@ def test_enroll_warns_when_the_gateway_is_older(capsys, settings: Path, fake: Fa
     assert "The gateway is older" in err
 
 
-def test_enroll_says_how_to_retry_when_the_state_cant_be_saved(
+def test_enroll_exits_5_with_how_to_retry_when_the_state_cant_be_saved(
     capsys, settings: Path, fake: FakeGateway, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     fake.answers[("POST", "enroll")] = httpx.Response(200, json={"name": "mac", "gateway_id": "g" * 32, "api_version": 2})
@@ -209,7 +209,7 @@ def test_enroll_says_how_to_retry_when_the_state_cant_be_saved(
 
     code, _, err = run(capsys, "enroll", STRING)
 
-    assert code == 1
+    assert code == cli.SAVE_FAILED == 5
     assert "enrolled this host as mac, but Can't write" in err
     assert f"agent-bridge enroll '{STRING}'" in err
 
@@ -318,7 +318,7 @@ def test_rename_exits_4_with_the_gateway_command_when_unreachable(capsys, settin
     assert load(state_path()) == state
 
 
-def test_rename_exits_5_with_the_gateway_command_when_the_gateway_is_too_old(
+def test_rename_exits_6_with_the_gateway_command_when_the_gateway_is_too_old(
     capsys, settings: Path, fake: FakeGateway
 ) -> None:
     state = enrolled()
@@ -327,7 +327,7 @@ def test_rename_exits_5_with_the_gateway_command_when_the_gateway_is_too_old(
 
     code, _, err = run(capsys, "rename", "studio")
 
-    assert code == 5
+    assert code == cli.OUTDATED == 6
     assert fake.requests[-1].url.path == f"/bridges/{state.bridge_id}/address"
     assert "update the gateway" in err
     assert "sudo mcp-gateway bridges rename mac studio" in err

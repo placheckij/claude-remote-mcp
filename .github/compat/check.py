@@ -240,7 +240,7 @@ class Run:
 
     def check_rename(self) -> None:
         """Enrolls the bridge, then renames it from the bridge: this branch's gateway must
-        take it; an older one may lack the route, and the bridge must then exit 5 with the
+        take it; an older one may lack the route, and the bridge must then exit 6 with the
         command to run on the gateway host, renaming nothing."""
         port = self.gateway_url.rsplit(":", 1)[1]
         opened = self.command(self.gateway_dir, "mcp-gateway", ["enroll", "--address", "127.0.0.1", "--port", port],
@@ -264,7 +264,7 @@ class Run:
             self.expect("agent-bridge rename saves the name", name == "studio", name)
             self.expect("the gateway has the new name", "studio" in hosts and "compat" not in hosts, hosts)
         else:
-            self.expect("agent-bridge rename says the gateway is too old", renamed.returncode == 5, output)
+            self.expect("agent-bridge rename says the gateway is too old", renamed.returncode == 6, output)
             self.expect("agent-bridge rename prints the gateway's command",
                         "sudo mcp-gateway bridges rename compat studio" in output, output)
             self.expect("agent-bridge rename keeps the name", name == "compat", name)

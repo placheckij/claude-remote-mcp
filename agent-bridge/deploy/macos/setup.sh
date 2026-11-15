@@ -487,10 +487,9 @@ NAME_TAKEN=""
 while [[ -n $ENROLLMENT ]]; do
   log "Enrolling with the gateway"
   status=0
-  output="$(bridge enroll "$ENROLLMENT" 2>&1)" || status=$?
-  printf '%s\n' "$output"
-  # It exits 1 too when the gateway took it but the state file couldn't be written.
-  [[ $output != *"The gateway enrolled this host as"* ]] || GATEWAY_TOOK=1
+  bridge enroll "$ENROLLMENT" || status=$?
+  # 5: the gateway took it, but the state file couldn't be written.
+  [[ $status != 5 ]] || GATEWAY_TOOK=1
   case $status in
     0) ENROLLED_NOW=1; break ;;
     3) # The gateway has another host by that name.
@@ -516,7 +515,7 @@ done
 
 # Unless the gateway took the new token, it still has the installed one, and the new one
 # would lock it out. `enroll` can fail after the gateway took it (a state file it can't
-# write, or a lost answer), so its output is read, and the gateway asked when the state file
+# write, or a lost answer), so its exit code is read, and the gateway asked when the state file
 # names it. Without that, the installed token goes back on the chance the gateway has it.
 if [[ -n ${ROTATE_TOKEN:-} && -z $ENROLLED_NOW && -z $GATEWAY_TOOK && -n $INSTALLED_TOKEN ]]; then
   if [[ $(bridge check 2>&1 || true) == *"ok    the gateway at"* ]]; then

@@ -71,8 +71,8 @@ case $1 in
   enroll)
     code=$(head -n 1 "$HOME/enroll-codes" 2>/dev/null)
     sed -i '' 1d "$HOME/enroll-codes" 2>/dev/null
-    # As cli.py words it when the gateway took it but the state file couldn't be written.
-    [ "$code" = state ] && { echo "The gateway enrolled this host as mac, but can't write the state." >&2; exit 1; }
+    # As cli.py exits when the gateway took it but the state file couldn't be written.
+    [ "$code" = 5 ] && { echo "The gateway enrolled this host as mac, but can't write the state." >&2; exit 5; }
     [ "${code:-0}" = 0 ] || { echo "Couldn't enroll (stub exit $code)." >&2; exit "$code"; }
     name=$(sed -n "s/^AGENT_BRIDGE_NAME='\\(.*\\)'$/\\1/p" "$dir/env")
     printf '{"version": 1, "bridge_id": "b1", "gateway": {"url": "http://10.0.0.1:8766", "gateway_id": "g1", "name": "%s"}}' \\
@@ -378,7 +378,7 @@ def test_an_ipv6_address_written_another_way_is_kept_in_ifconfigs_form(mac: Mac)
 
 
 def test_enrolled_but_with_no_state_file_written_doesnt_ask_again(mac: Mac) -> None:
-    (mac.home / "enroll-codes").write_text("state\n")
+    (mac.home / "enroll-codes").write_text("5\n")
 
     result = mac.install()
 
@@ -493,7 +493,7 @@ def test_rotate_token_keeps_the_new_token_when_enroll_says_the_gateway_took_it(m
     # Not enrolled before (added by hand with `bridges add`), so check can't ask the gateway.
     mac.install(ENROLLMENT="")
     first = mac.env()["AGENT_BRIDGE_TOKEN"]
-    (mac.home / "enroll-codes").write_text("state\n")
+    (mac.home / "enroll-codes").write_text("5\n")
 
     mac.setup(ROTATE_TOKEN="1", ENROLLMENT=ENROLLMENT)
 
@@ -607,7 +607,7 @@ def test_a_port_with_leading_zeros_is_written_without_them(mac: Mac) -> None:
 
 def test_a_failed_state_write_on_an_enrolled_host_shows_the_fix(mac: Mac) -> None:
     mac.install()
-    (mac.home / "enroll-codes").write_text("state\n")
+    (mac.home / "enroll-codes").write_text("5\n")
 
     result = mac.setup(NAME="studio", ENROLLMENT=ENROLLMENT)
 
@@ -650,9 +650,9 @@ def test_a_new_name_taken_on_the_gateway_changes_nothing(mac: Mac) -> None:
     assert "bootstrap" not in mac.log("launchctl.log")
 
 
-@pytest.mark.parametrize("code", ["5", "4", "1"])
+@pytest.mark.parametrize("code", ["6", "4", "1"])
 def test_a_new_name_the_gateway_cant_take_is_renamed_by_enrolling_again(mac: Mac, code: str) -> None:
-    # 5: a gateway too old to rename hosts; 4: unreachable; 1: any other refusal.
+    # 6: a gateway too old to rename hosts; 4: unreachable; 1: any other refusal.
     mac.install()
     (mac.home / "rename-code").write_text(code)
 
@@ -664,7 +664,7 @@ def test_a_new_name_the_gateway_cant_take_is_renamed_by_enrolling_again(mac: Mac
 
 def test_a_new_name_the_gateway_cant_take_without_enrolling_says_the_gateway_kept_the_old_one(mac: Mac) -> None:
     mac.install()
-    (mac.home / "rename-code").write_text("5")
+    (mac.home / "rename-code").write_text("6")
 
     result = mac.setup(NAME="studio")
 
