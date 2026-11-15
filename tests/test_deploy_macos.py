@@ -69,8 +69,8 @@ case $1 in
   enroll)
     code=$(head -n 1 "$HOME/enroll-codes" 2>/dev/null)
     sed -i '' 1d "$HOME/enroll-codes" 2>/dev/null
-    # As cli.py words it when the gateway took it but the state file couldn't be written.
-    [ "$code" = state ] && { echo "The gateway enrolled this host as mac, but can't write the state." >&2; exit 1; }
+    # As cli.py exits when the gateway took it but the state file couldn't be written.
+    [ "$code" = 5 ] && { echo "The gateway enrolled this host as mac, but can't write the state." >&2; exit 5; }
     [ "${code:-0}" = 0 ] || { echo "Couldn't enroll (stub exit $code)." >&2; exit "$code"; }
     name=$(sed -n "s/^AGENT_BRIDGE_NAME='\\(.*\\)'$/\\1/p" "$dir/env")
     printf '{"version": 1, "bridge_id": "b1", "gateway": {"url": "http://10.0.0.1:8766", "gateway_id": "g1", "name": "%s"}}' \\
@@ -371,7 +371,7 @@ def test_an_ipv6_address_written_another_way_is_kept_in_ifconfigs_form(mac: Mac)
 
 
 def test_enrolled_but_with_no_state_file_written_doesnt_ask_again(mac: Mac) -> None:
-    (mac.home / "enroll-codes").write_text("state\n")
+    (mac.home / "enroll-codes").write_text("5\n")
 
     result = mac.install()
 
@@ -486,7 +486,7 @@ def test_rotate_token_keeps_the_new_token_when_enroll_says_the_gateway_took_it(m
     # Not enrolled before (added by hand with `bridges add`), so check can't ask the gateway.
     mac.install(ENROLLMENT="")
     first = mac.env()["AGENT_BRIDGE_TOKEN"]
-    (mac.home / "enroll-codes").write_text("state\n")
+    (mac.home / "enroll-codes").write_text("5\n")
 
     mac.setup(ROTATE_TOKEN="1", ENROLLMENT=ENROLLMENT)
 
@@ -600,7 +600,7 @@ def test_a_port_with_leading_zeros_is_written_without_them(mac: Mac) -> None:
 
 def test_a_failed_state_write_on_an_enrolled_host_shows_the_fix(mac: Mac) -> None:
     mac.install()
-    (mac.home / "enroll-codes").write_text("state\n")
+    (mac.home / "enroll-codes").write_text("5\n")
 
     result = mac.setup(NAME="studio", ENROLLMENT=ENROLLMENT)
 
