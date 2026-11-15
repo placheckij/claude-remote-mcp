@@ -6,6 +6,8 @@ MCP_GATEWAY_PROJECTS_ROOT set and unset. The bridge runs against a stand-in herd
 (fake_herdr.py); the gateway takes a static token. Each run calls the MCP tools over
 JSON-RPC and checks the replies and the herdr commands they led to. What a reply should
 say follows from the bridge under test: one without /info can't look up project names.
+With this branch's bridge, it then enrolls and renames itself (`agent-bridge rename`): an
+older gateway may lack that route, and the bridge must then say how to rename it there.
 
     python3 .github/compat/check.py --new . --old ../old
 
@@ -44,7 +46,8 @@ def main() -> int:
         for root_set in (True, False):
             name = f"gateway {gateway} / bridge {bridge}, projects root {'set' if root_set else 'unset'}"
             print(f"\n== {name}", flush=True)
-            if not Run(sides[gateway], sides[bridge], root_set, old_gateway=gateway == "old").check():
+            run = Run(sides[gateway], sides[bridge], root_set, old_gateway=gateway == "old", new_bridge=bridge == "new")
+            if not run.check():
                 failed.append(name)
     print()
     for name in failed:
@@ -58,12 +61,13 @@ class Skip(Exception):
 
 
 class Run:
-    def __init__(self, gateway: Path, bridge: Path, root_set: bool, old_gateway: bool):
+    def __init__(self, gateway: Path, bridge: Path, root_set: bool, old_gateway: bool, new_bridge: bool):
         self.gateway_dir = gateway
         self.bridge_dir = bridge
         self.root_set = root_set
         # Only the old gateway may skip: this branch's must run in every setup.
         self.old_gateway = old_gateway
+        self.new_bridge = new_bridge
         self.failures = 0
 
     def check(self) -> bool:
@@ -125,6 +129,7 @@ class Run:
             "AGENT_BRIDGE_ENV_FILE": str(self.tmp / "bridge-env"),
             "AGENT_BRIDGE_STATE_FILE": str(self.tmp / "bridge-state.json"),
         }
+        self.bridge_env = env
         process = self.serve("bridge", self.bridge_dir, "agent_bridge.app:main", self.bridge_url, env)
         self.wait_until_up("bridge", process, f"{self.bridge_url}/info", BRIDGE_TOKEN)
 
@@ -138,6 +143,7 @@ class Run:
             "MCP_GATEWAY_BRIDGE_TOKEN": BRIDGE_TOKEN,
             "MCP_GATEWAY_PUBLIC_HOST": "compat.invalid",
         }
+        self.gateway_env = env
         if self.root_set:
             env["MCP_GATEWAY_PROJECTS_ROOT"] = str(self.root)
         process = self.serve("gateway", self.gateway_dir, "mcp_gateway.server:main", self.gateway_url, env)
@@ -150,26 +156,35 @@ class Run:
             raise
 
     def serve(self, name: str, checkout: Path, factory: str, url: str, env: dict) -> subprocess.Popen:
-        # Run from the temporary folder, so neither side reads a .env from its checkout,
-        # and with no AGENT_BRIDGE_* or MCP_GATEWAY_* from the caller's environment.
-        inherited = {
-            key: value
-            for key, value in os.environ.items()
-            if not key.startswith(("AGENT_BRIDGE_", "MCP_GATEWAY_"))
-        }
         uvicorn = checkout / ".venv" / "bin" / "uvicorn"
         port = url.rsplit(":", 1)[1]
         with open(self.tmp / f"{name}.out", "w") as output:
             process = subprocess.Popen(
                 [str(uvicorn), factory, "--factory", "--host", "127.0.0.1", "--port", port],
                 cwd=self.tmp,
-                env={**inherited, **env},
+                env=self.environment(env),
                 stdout=output,
                 stderr=subprocess.STDOUT,
             )
         # Stopped at the end of the run, even if it never came up.
         self.processes.append(process)
         return process
+
+    def environment(self, env: dict) -> dict:
+        """Run from the temporary folder, so neither side reads a .env from its checkout,
+        and with no AGENT_BRIDGE_* or MCP_GATEWAY_* from the caller's environment."""
+        inherited = {
+            key: value
+            for key, value in os.environ.items()
+            if not key.startswith(("AGENT_BRIDGE_", "MCP_GATEWAY_"))
+        }
+        return {**inherited, **env}
+
+    def command(self, checkout: Path, program: str, args: list[str], env: dict) -> subprocess.CompletedProcess:
+        return subprocess.run(
+            [str(checkout / ".venv" / "bin" / program), *args],
+            cwd=self.tmp, env=self.environment(env), capture_output=True, text=True, timeout=60,
+        )
 
     def wait_until_up(self, name: str, process: subprocess.Popen, url: str, token: str | None) -> None:
         deadline = time.monotonic() + START_TIMEOUT_S
@@ -219,6 +234,41 @@ class Run:
         (error, text), commands = self.call_logged("start_agent", project="nope")
         self.expect("start_agent with a bad name is refused", error, text)
         self.expect("start_agent with a bad name starts nothing", started_in(commands) == [], commands)
+
+        if self.new_bridge:
+            self.check_rename()
+
+    def check_rename(self) -> None:
+        """Enrolls the bridge, then renames it from the bridge: this branch's gateway must
+        take it; an older one may lack the route, and the bridge must then exit 6 with the
+        command to run on the gateway host, renaming nothing."""
+        port = self.gateway_url.rsplit(":", 1)[1]
+        opened = self.command(self.gateway_dir, "mcp-gateway", ["enroll", "--address", "127.0.0.1", "--port", port],
+                              self.gateway_env)
+        string = next((word.strip("'") for word in opened.stdout.split() if word.startswith("'crm1@")), None)
+        if string is None:
+            self.fail(f"mcp-gateway enroll printed no enrollment string\n      got: {opened.stdout}{opened.stderr}")
+            return
+        bridge_port = self.bridge_url.rsplit(":", 1)[1]
+        env = {**self.bridge_env, "AGENT_BRIDGE_HOST": "127.0.0.1", "AGENT_BRIDGE_PORT": bridge_port,
+               "AGENT_BRIDGE_NAME": "compat"}
+        enrolled = self.command(self.bridge_dir, "agent-bridge", ["enroll", string], env)
+        self.expect("agent-bridge enroll enrolls", enrolled.returncode == 0, enrolled.stdout + enrolled.stderr)
+
+        renamed = self.command(self.bridge_dir, "agent-bridge", ["rename", "studio"], env)
+        output = renamed.stdout + renamed.stderr
+        name = json.loads((self.tmp / "bridge-state.json").read_text())["gateway"]["name"]
+        hosts = self.command(self.gateway_dir, "mcp-gateway", ["bridges", "list"], self.gateway_env).stdout
+        if renamed.returncode == 0 or not self.old_gateway:
+            self.expect("agent-bridge rename renames", renamed.returncode == 0, output)
+            self.expect("agent-bridge rename saves the name", name == "studio", name)
+            self.expect("the gateway has the new name", "studio" in hosts and "compat" not in hosts, hosts)
+        else:
+            self.expect("agent-bridge rename says the gateway is too old", renamed.returncode == 6, output)
+            self.expect("agent-bridge rename prints the gateway's command",
+                        "sudo mcp-gateway bridges rename compat studio" in output, output)
+            self.expect("agent-bridge rename keeps the name", name == "compat", name)
+            self.expect("the gateway keeps the name", "compat" in hosts and "studio" not in hosts, hosts)
 
     def call(self, tool: str, **arguments) -> tuple[bool, str]:
         body = {"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": tool, "arguments": arguments}}

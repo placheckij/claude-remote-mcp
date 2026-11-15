@@ -225,6 +225,19 @@ class Registry:
 
         self._change(rename)
 
+    def rename_id(self, bridge_id: str, new_name: str) -> Bridge:
+        """Renames a bridge by its id, as it does itself (`agent-bridge rename`)."""
+        _check_name(new_name)
+
+        def rename(bridges: list[Bridge]) -> list[Bridge]:
+            _find_id(bridges, bridge_id)
+            if any(b.name == new_name and b.bridge_id != bridge_id for b in bridges):
+                raise NameTaken(f"There is already a host named {new_name}.")
+            return [b.model_copy(update={"name": new_name}) if b.bridge_id == bridge_id else b for b in bridges]
+
+        self._change(rename)
+        return _find_id(self.bridges, bridge_id)
+
     def remove(self, name: str) -> None:
         def remove(bridges: list[Bridge]) -> list[Bridge]:
             _find(bridges, name)

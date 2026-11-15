@@ -296,6 +296,45 @@ def test_address_updates_are_refused_without_the_token_or_off_the_lan(gateway: G
     assert gateway.hosts()[0]["url"] == URL
 
 
+def rename(gateway: Gateway, name: str, token: str = TOKEN, bridge_id: str = BRIDGE_ID, peer=LAN) -> httpx.Response:
+    return gateway.client(peer).put(f"/bridges/{bridge_id}/name", json={"name": name},
+                                    headers={"Authorization": f"Bearer {token}"})
+
+
+def test_a_bridge_renames_itself_with_its_token(gateway: Gateway) -> None:
+    gateway.enroll(gateway.open())
+
+    response = rename(gateway, "studio")
+
+    assert response.status_code == 200, response.text
+    assert response.json() == {"name": "studio", "gateway_id": gateway.enrollment.gateway_id(), "api_version": 2}
+    assert [(h["name"], h["url"], h["token"]) for h in gateway.hosts()] == [("studio", URL, TOKEN)]
+    # Its own name again is no change.
+    assert rename(gateway, "studio").status_code == 200
+
+
+def test_a_rename_to_a_name_another_bridge_has_is_refused(gateway: Gateway) -> None:
+    gateway.enroll(gateway.open())
+    Registry(gateway.state_dir / "bridges.json").add("studio", "http://192.168.1.50:8765", "a" * 32, None)
+
+    response = rename(gateway, "studio")
+
+    assert (response.status_code, response.json()["error"]["code"]) == (409, "name_taken")
+    assert [h["name"] for h in gateway.hosts()] == ["mac", "studio"]
+
+
+def test_renames_are_refused_without_the_token_off_the_lan_or_for_a_name_that_wont_do(gateway: Gateway) -> None:
+    gateway.enroll(gateway.open())
+
+    assert rename(gateway, "studio", token="x" * 32).status_code == 401
+    assert rename(gateway, "studio", bridge_id="9" * 32).json()["error"]["code"] == "not_enrolled"
+    assert rename(gateway, "studio", peer=("8.8.8.8", 1)).status_code == 404
+    assert (rename(gateway, "Studio Mac").status_code, rename(gateway, "Studio Mac").json()["error"]["code"]) == (
+        422, "invalid_request",
+    )
+    assert [h["name"] for h in gateway.hosts()] == ["mac"]
+
+
 def test_a_bridge_removes_itself_with_its_token(gateway: Gateway) -> None:
     gateway.enroll(gateway.open())
     client = gateway.client()

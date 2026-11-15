@@ -75,8 +75,9 @@ esac""",
 }
 
 # The venv's agent-bridge: enroll exits with the next code in $HOME/enroll-codes (0 when
-# there is none) and on 0 writes the state file with the name from the env file. unenroll
-# fails when $HOME/unenroll-fails exists.
+# there is none) and on 0 writes the state file with the name from the env file. rename
+# exits with the code in $HOME/rename-code (0 when there is none) and on 0 writes its name
+# to the state file. unenroll fails when $HOME/unenroll-fails exists.
 AGENT_BRIDGE = """#!/bin/sh
 echo "$*" >> "$HOME/agent-bridge.log"
 env="$HOME/.config/agent-bridge/env"
@@ -104,6 +105,11 @@ case $1 in
     printf '{\\n  "version": 1,\\n  "bridge_id": "b1",\\n  "gateway": {\\n    "url": "http://10.0.0.1:8766",\\n    "gateway_id": "g1",\\n    "name": "%s"\\n  }\\n}' \\
       "$name" > "$state"
     echo "Enrolled as $name." ;;
+  rename)
+    code=$(cat "$HOME/rename-code" 2>/dev/null)
+    [ "${code:-0}" = 0 ] || { echo "Couldn't rename (stub exit $code)." >&2; exit "$code"; }
+    sed -i "s/\\"name\\": \\"[^\\"]*\\"/\\"name\\": \\"$2\\"/" "$state"
+    echo "The gateway has this host as $2." ;;
   unenroll)
     [ ! -f "$HOME/unenroll-fails" ] || { echo "$state isn't agent-bridge state." >&2; exit 1; }
     rm -f "$state"; echo "Left the gateway." ;;
@@ -635,25 +641,160 @@ def test_a_failed_rotation_puts_the_old_token_back(host: Host) -> None:
     assert host.log("systemctl.log").count(f"--user restart {UNIT}") == 2
 
 
-def test_a_new_name_on_an_enrolled_host_says_how_to_rename_it_on_the_gateway(host: Host) -> None:
+def test_a_new_name_on_an_enrolled_host_renames_it_on_the_gateway(host: Host) -> None:
     host.install()
 
     result = host.setup(NAME="newbox")
 
     assert not PROMPT.search(result.stderr), result.stderr
+    assert "rename newbox" in host.log("agent-bridge.log")
     assert not [line for line in host.log("agent-bridge.log") if line.startswith("enroll")]
-    assert "sudo mcp-gateway bridges rename linux-box newbox" in result.stdout
+    assert host.env()["AGENT_BRIDGE_NAME"] == "newbox"
+    assert "as newbox" in result.stdout
+    assert "bridges rename" not in result.stdout
+
+
+def test_a_new_name_taken_on_the_gateway_changes_nothing(host: Host) -> None:
+    host.install()
+    (host.home / "rename-code").write_text("3")
+
+    result = host.setup(NAME="newbox", check=False)
+
+    assert result.returncode != 0
+    assert "another host named newbox" in result.stderr
     assert host.env()["AGENT_BRIDGE_NAME"] == "linux-box"
+    assert f"--user restart {UNIT}" not in host.log("systemctl.log")
 
 
-def test_an_enrollment_string_doesnt_rename_an_enrolled_host(host: Host) -> None:
+@pytest.mark.parametrize("code", ["6", "4"])
+def test_a_new_name_the_gateway_cant_take_says_how_to_rename_it_there(host: Host, code: str) -> None:
+    # 6: a gateway too old to rename hosts; 4: unreachable.
+    host.install()
+    (host.home / "rename-code").write_text(code)
+
+    result = host.setup(NAME="newbox")
+
+    assert host.env()["AGENT_BRIDGE_NAME"] == "linux-box"
+    assert "as linux-box" in result.stdout
+    assert "sudo mcp-gateway bridges rename linux-box newbox" in result.stdout
+
+
+def test_a_new_name_the_gateway_took_without_a_saved_state_is_kept(host: Host) -> None:
+    # rename exits 5: the gateway has newbox, but the state file couldn't be written.
+    host.install()
+    (host.home / "rename-code").write_text("5")
+
+    result = host.setup(NAME="newbox")
+
+    assert host.env()["AGENT_BRIDGE_NAME"] == "newbox"
+    assert "bridges rename" not in result.stdout
+    # The gateway's name, not the old one the state file still has.
+    assert "as newbox" in result.stdout
+
+
+def test_a_new_name_the_gateway_refused_doesnt_print_its_rename_command(host: Host) -> None:
+    # rename exits 1, e.g. the gateway no longer has this host: there is nothing to rename there.
+    host.install()
+    (host.home / "rename-code").write_text("1")
+
+    result = host.setup(NAME="newbox")
+
+    assert host.env()["AGENT_BRIDGE_NAME"] == "linux-box"
+    assert "didn't rename this host newbox" in result.stdout
+    assert "bridges rename" not in result.stdout
+
+
+def test_setup_stopping_after_a_rename_says_the_gateway_has_the_new_name(host: Host) -> None:
+    host.install()
+    root = str(host.home / "projects") + "/it's"
+
+    result = host.setup(NAME="newbox", ALLOWED_ROOTS=root, check=False)
+
+    assert result.returncode != 0
+    assert "can't contain '" in result.stderr
+    assert "the gateway has this host as newbox now" in result.stderr
+
+
+@pytest.mark.parametrize("new_token", ["rotated", "lost"])
+def test_a_new_name_with_a_new_token_is_renamed_by_enrolling(host: Host, new_token: str) -> None:
+    # The gateway doesn't know a new token yet, so only enrolling, with the new name, renames it.
+    host.install()
+    env = {"ROTATE_TOKEN": "1"}
+    if new_token == "lost":
+        lines = host.env_file.read_text().splitlines()
+        host.env_file.write_text("".join(f"{line}\n" for line in lines if not line.startswith("AGENT_BRIDGE_TOKEN=")))
+        env = {}
+
+    result = host.setup(NAME="newbox", ENROLLMENT=ENROLLMENT, **env)
+
+    assert not [line for line in host.log("agent-bridge.log") if line.startswith("rename")]
+    assert f"enroll {ENROLLMENT}" in host.log("agent-bridge.log")
+    assert host.env()["AGENT_BRIDGE_NAME"] == "newbox"
+    assert "as newbox" in result.stdout
+    assert "didn't rename" not in result.stdout
+
+
+@pytest.mark.parametrize("new_token", ["rotated", "lost"])
+def test_a_new_name_waiting_on_a_failed_enrollment_is_named_in_the_retry(host: Host, new_token: str) -> None:
+    host.install()
+    env = {"ROTATE_TOKEN": "1"}
+    if new_token == "lost":
+        lines = host.env_file.read_text().splitlines()
+        host.env_file.write_text("".join(f"{line}\n" for line in lines if not line.startswith("AGENT_BRIDGE_TOKEN=")))
+        env = {}
+    (host.home / "enroll-codes").write_text("4\n")
+
+    result = host.setup(NAME="newbox", ENROLLMENT=ENROLLMENT, check=False, **env)
+
+    assert "NAME=newbox" in result.stdout + result.stderr
+
+
+@pytest.mark.parametrize("code", ["1", "4", "6"])
+def test_a_new_name_the_gateway_cant_take_is_renamed_by_enrolling_with_a_string(host: Host, code: str) -> None:
+    # E.g. 1: the gateway no longer has this host; 6: too old to rename. Enrolling renames it.
+    host.install()
+    (host.home / "rename-code").write_text(code)
+
+    result = host.setup(NAME="newbox", ENROLLMENT=ENROLLMENT)
+
+    assert f"enroll {ENROLLMENT}" in host.log("agent-bridge.log")
+    assert host.env()["AGENT_BRIDGE_NAME"] == "newbox"
+    assert "as newbox" in result.stdout
+    assert "bridges rename" not in result.stdout
+    assert "didn't rename" not in result.stdout
+
+
+def test_a_new_name_whose_enrollment_fails_after_the_rename_did_says_so(host: Host) -> None:
+    # The gateway doesn't answer the rename, nor the enrollment after it.
+    host.install()
+    (host.home / "rename-code").write_text("4")
+    (host.home / "enroll-codes").write_text("4\n")
+
+    result = host.setup(NAME="newbox", ENROLLMENT=ENROLLMENT)
+
+    assert "still has this host as linux-box, not newbox" in result.stdout
+    assert "NAME=newbox" in result.stdout
+
+
+def test_a_new_name_isnt_renamed_when_setup_stops_before_installing(host: Host) -> None:
+    host.install()
+
+    result = host.setup(NAME="newbox", ROTATE_TOKEN="1", ENROLLMENT="", check=False)
+
+    assert result.returncode != 0
+    assert "ROTATE_TOKEN needs an enrollment string" in result.stderr
+    assert "rename newbox" not in host.log("agent-bridge.log")
+
+
+def test_a_new_name_with_an_enrollment_string_is_renamed_before_enrolling(host: Host) -> None:
     host.install()
 
     result = host.setup(NAME="newbox", ENROLLMENT=ENROLLMENT)
 
-    assert "as linux-box" in result.stdout
-    assert "sudo mcp-gateway bridges rename linux-box newbox" in result.stdout
-    assert host.env()["AGENT_BRIDGE_NAME"] == "linux-box"
+    calls = [line.split()[0] for line in host.log("agent-bridge.log") if line.startswith(("rename", "enroll"))]
+    assert calls == ["rename", "enroll"]
+    assert host.env()["AGENT_BRIDGE_NAME"] == "newbox"
+    assert "as newbox" in result.stdout
 
 
 def test_a_rename_done_on_the_gateway_is_followed(host: Host) -> None:

@@ -227,6 +227,7 @@ uv run --package agent-bridge agent-bridge serve
 |---|---|---|
 | `agent-bridge serve` | runs the service from the env and state files, and tells the gateway its address | |
 | `agent-bridge enroll <string>` | joins the gateway that printed the string (below) | 0 enrolled, 3 name taken, 4 gateway unreachable (prints the command to retry), 1 otherwise |
+| `agent-bridge rename <name>` | renames this host on that gateway | 0 renamed, 2 name won't do, 3 name taken, 4 gateway unreachable, 5 renamed but the state file couldn't be saved, 6 gateway too old to rename hosts, 1 otherwise (e.g. not enrolled); 4, 6 and a refusal from the gateway print the gateway's command, but a gateway without this host says to enroll again |
 | `agent-bridge unenroll` | leaves that gateway | 0; prints the gateway's command when it can't be reached |
 | `agent-bridge check` | checks the settings, the files' modes, herdr, the running service and the gateway, one line each | 0 all passed, 1 one failed |
 | `agent-bridge check --token-format <token>`, `--name-format <name>` | checks a value before it goes in the env file | 0 fine, 2 not (why, on stderr) |
@@ -296,7 +297,9 @@ The others are `HOST`, `PORT`, `HERDR_BIN`, `AGENT_BRIDGE_CLAUDE_CONFIG_DIR` and
 `TRUST_ROOT` (pass these two empty for no folder trust), `AGENT_BRIDGE_ACCOUNTS` (never
 asked for; an empty one removes it), and `ROTATE_TOKEN=1`, which replaces the token and
 needs `ENROLLMENT` (if enrolling fails, the old token is put back). A new `NAME` on an
-enrolled host asks for an enrollment string, to rename it on the gateway. For any other
+enrolled host renames it on the gateway (`agent-bridge rename`); a gateway too old for that,
+or one that can't be reached, is asked for an enrollment string instead, as enrolling again
+renames it too. For any other
 setting, edit the env file and re-run the script.
 
 Re-run it after pulling new code. If the plist still holds the settings, the script moves
@@ -424,8 +427,10 @@ asked for; the installed value is kept unless you pass one, and an empty one rem
 
 Re-run it after pulling new code. It asks nothing it already knows; to change a setting,
 pass it as a variable or edit the env file. The name is the exception: once the host is
-enrolled, it is the gateway's. Rename the host on the gateway host with
-`sudo mcp-gateway bridges rename <old> <new>`, and the next run takes the new name.
+enrolled, it is the gateway's. Run again with `NAME=<new>` to rename it there
+(`agent-bridge rename`); a gateway too old for that prints the command to run on the
+gateway host instead, `sudo mcp-gateway bridges rename <old> <new>`, after which the next
+run takes the new name.
 
 #### Restart, stop, uninstall
 

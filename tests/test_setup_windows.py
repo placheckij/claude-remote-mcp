@@ -194,6 +194,17 @@ if args[0] == "enroll":
         "url": "http://127.0.0.1:8766", "gateway_id": "g1", "name": name}}))
     print(f"Enrolled as {name} with the gateway at http://127.0.0.1:8766.")
     sys.exit(0)
+if args[0] == "rename":
+    # As the real one: 3 for a taken name, 4 unreachable, 6 a gateway too old to rename.
+    code = int(os.environ.get("FAKE_RENAME_CODE") or 0)
+    if code:
+        print(f"Couldn't rename (fake exit code {code}).", file=sys.stderr)
+        sys.exit(code)
+    data = json.loads(state.read_text())
+    data["gateway"]["name"] = args[1]
+    state.write_text(json.dumps(data))
+    print(f"The gateway at http://127.0.0.1:8766 has this host as {args[1]}.")
+    sys.exit(0)
 if args[0] == "unenroll":
     if os.environ.get("FAKE_BROKEN_UNENROLL"):
         print("Traceback: ImportError", file=sys.stderr)
@@ -290,6 +301,7 @@ class Machine:
             "FAKE_UNREGISTER_FAILS": "",
             "FAKE_KILLED_AT_DISABLE": "",
             "FAKE_ENABLE_FAILS": "",
+            "FAKE_RENAME_CODE": "",
             "AGENT_BRIDGE_STATE_FILE": r"C:\leftover\state.json",
             "FAKE_ELEVATED_EXIT": "0",
             "FAKE_BLOCKED_PROGRAM": "",
@@ -563,13 +575,61 @@ def test_an_enrollment_the_gateway_took_but_couldnt_save_doesnt_say_it_has_the_o
     assert "still has this host's old settings" not in output
 
 
-def test_a_new_name_on_an_enrolled_host_asks_to_enroll_again(machine: Machine) -> None:
+def test_a_new_name_on_an_enrolled_host_renames_it_on_the_gateway(machine: Machine) -> None:
     machine.setup(f"-Enrollment '{STRING}'", input="\n\n")
 
-    output = machine.setup("-Name 'win-new'", input=f"{STRING}\n")
+    output = machine.setup("-Name 'win-new'")
+
+    assert "agent-bridge rename win-new" in machine.calls()
+    assert not [call for call in machine.calls() if call.startswith("agent-bridge enroll")]
+    assert "knows this host as" not in output
+    assert machine.env()["AGENT_BRIDGE_NAME"] == "win-new"
+    assert "Enrolled as win-new" in output
+
+
+@pytest.mark.parametrize("code", ["6", "4", "1"])
+def test_a_new_name_the_gateway_cant_take_asks_to_enroll_again(machine: Machine, code: str) -> None:
+    # 6: a gateway too old to rename hosts; 4: unreachable; 1: any other refusal.
+    machine.setup(f"-Enrollment '{STRING}'", input="\n\n")
+
+    output = machine.setup("-Name 'win-new'", input=f"{STRING}\n", FAKE_RENAME_CODE=code)
 
     assert "knows this host as win-test" in output
     assert f"agent-bridge enroll {STRING}" in machine.calls()
+    assert "Enrolled as win-new" in output
+
+
+def test_a_new_name_the_gateway_took_without_a_saved_state_isnt_asked_to_enroll(machine: Machine) -> None:
+    # rename exits 5: the gateway has win-new, but the state file couldn't be written.
+    machine.setup(f"-Enrollment '{STRING}'", input="\n\n")
+
+    output = machine.setup("-Name 'win-new'", FAKE_RENAME_CODE="5")
+
+    assert "knows this host as" not in output
+    assert not [call for call in machine.calls() if call.startswith("agent-bridge enroll")]
+    assert machine.env()["AGENT_BRIDGE_NAME"] == "win-new"
+    # The gateway's name, not the old one the state file still has.
+    assert "Enrolled as win-new" in output
+
+
+def test_a_new_name_taken_on_the_gateway_keeps_the_old_one(machine: Machine) -> None:
+    machine.setup(f"-Enrollment '{STRING}'", input="\n\n")
+
+    output = machine.setup("-Name 'win-new'", expect=1, FAKE_RENAME_CODE="3")
+
+    assert "another host named win-new, so this host keeps win-test" in output
+    assert not [call for call in machine.calls() if call.startswith("agent-bridge enroll")]
+    assert machine.env()["AGENT_BRIDGE_NAME"] == "win-test"
+    assert "Enrolled as win-test" in output
+
+
+def test_a_new_name_with_a_new_token_is_renamed_by_enrolling(machine: Machine) -> None:
+    # The gateway doesn't know the new token yet, so only enrolling can rename it.
+    machine.setup(f"-Enrollment '{STRING}'", input="\n\n")
+
+    output = machine.setup("-Name 'win-new'", "-RotateToken", f"-Enrollment '{STRING}'")
+
+    assert not [call for call in machine.calls() if call.startswith("agent-bridge rename")]
     assert "Enrolled as win-new" in output
 
 
@@ -696,6 +756,7 @@ def test_a_name_answered_while_enrolled_under_another_asks_to_enroll_again(machi
 
     output = machine.setup(input=f"\nwin-new\n{STRING}\n")
 
+    # A new token, too, which the gateway doesn't know: only enrolling renames it.
     assert "knows this host as win-test" in output
     assert "Enrolled as win-new" in output
 

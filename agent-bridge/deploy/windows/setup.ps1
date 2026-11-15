@@ -21,6 +21,7 @@ settings, and asks only for what's missing. Pass a parameter to change a setting
 Folders agents may start in, separated by ;. Default: %USERPROFILE%\Projects.
 .PARAMETER Name
 This host's name in agent ids, as Claude will say it, e.g. win-pc. Default: the computer name.
+Once enrolled, a new name renames the host on the gateway.
 .PARAMETER Enrollment
 The string `sudo mcp-gateway enroll` printed (crm1@...). An empty string skips enrolling.
 .PARAMETER Address
@@ -547,6 +548,30 @@ try {
             "where agent-bridge starts. Set it with setx and open a new window, or write the value there instead.")
     }
 
+    # The gateway knows this host by the name it enrolled with; a new -Name is renamed there,
+    # with the token it has. Now, while agent-bridge is stopped: its address report at start
+    # writes the state file too, and a taken name goes back before its /info shows it. One
+    # the gateway can't take that way (too old, or no answer) needs enrolling again.
+    $Gateway = Get-EnrolledGateway
+    $NameChanged = $Gateway -and -not $NameInstalled -and $Name -ne $Gateway.name
+    $NameTaken = $false
+    $UnsavedName = ''
+    if ($NameChanged -and -not $NewToken) {
+        Write-Step "Renaming this host to $Name on the gateway"
+        $RenameCode = Invoke-Native $Exe @('rename', $Name)
+        if ($RenameCode -eq 3) {
+            $NameTaken = $true
+            $Settings['AGENT_BRIDGE_NAME'] = $Gateway.name
+            Write-EnvFile $EnvFile (Read-EnvFile $EnvFile).Lines $Settings
+            $NameChanged = $false
+        } elseif ($RenameCode -eq 0 -or $RenameCode -eq 5) {
+            # 5: renamed, but the state file still has the old name (agent-bridge said how to fix that).
+            if ($RenameCode -eq 5) { $UnsavedName = $Name }
+            $Gateway = Get-EnrolledGateway
+            $NameChanged = $false
+        }
+    }
+
     # The firewall now, not before the steps above: setup stopping there leaves the old
     # bridge's rule and settings as they were. And before registering, which starts
     # agent-bridge at once: Windows may ask about Python as soon as it listens on the LAN.
@@ -613,9 +638,6 @@ try {
 
     # --- Enroll ----------------------------------------------------------------------------
 
-    $Gateway = Get-EnrolledGateway
-    # The gateway knows this host by the name it enrolled with; a new -Name needs enrolling again.
-    $NameChanged = $Gateway -and -not $NameInstalled -and $Name -ne $Gateway.name
     # Asked for the enrollment string unless -Enrollment is passed.
     $WantsEnroll = -not $Gateway -or $NewToken -or $NameChanged
     $String = ''
@@ -672,6 +694,8 @@ try {
 
     $UrlHost = if ($Address.Contains(':')) { "[$Address]" } else { $Address }
     $Gateway = Get-EnrolledGateway
+    # The gateway's name, not the old one the state file still has.
+    if ($Gateway -and $UnsavedName) { $Gateway.name = $UnsavedName }
     Write-Host ''
     if ($Started) {
         Write-Host "Done. agent-bridge listens on http://${UrlHost}:$Port and starts at every logon."
@@ -691,6 +715,7 @@ try {
         Write-Host "  `$env:CLAUDE_CONFIG_DIR = $(Format-Quoted $ConfigDir); claude"
     }
     Write-Host ''
+    if ($NameTaken) { Write-Warn "the gateway has another host named $Name, so this host keeps $($Gateway.name): run setup again with another -Name" }
     if ($EnrollCode -eq 5) {
         # The gateway took the new token and name, which stay; only the state file is missing.
         Write-Host 'The gateway enrolled this host, but its state file couldn''t be saved: see "Enrolling with the gateway"'
@@ -714,8 +739,8 @@ try {
         Write-Host 'Not enrolled with a gateway yet. Run `sudo mcp-gateway enroll` on the gateway host, then here:'
         Write-EnrollCommand
     }
-    # A failed check, start or enrollment is setup's exit code; otherwise the last program's would be.
-    if ($CheckFailed -or -not $Started -or ($null -ne $EnrollCode -and $EnrollCode -ne 0)) { exit 1 }
+    # A failed check, start, rename or enrollment is setup's exit code; otherwise the last program's would be.
+    if ($CheckFailed -or -not $Started -or $NameTaken -or ($null -ne $EnrollCode -and $EnrollCode -ne 0)) { exit 1 }
     exit 0
 } finally {
     Restore-Task

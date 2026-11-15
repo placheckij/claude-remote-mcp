@@ -276,6 +276,171 @@ def test_unenroll_keeps_the_gateway_on_any_other_404(capsys, settings: Path, fak
     assert load(state_path()) == state
 
 
+JOINED = {"gateway_id": "g", "api_version": 2}
+# What a gateway from before PUT /bridges/{id}/name answers: Starlette's own 404.
+NO_ROUTE = httpx.Response(404, text="Not Found")
+
+
+def test_rename_renames_this_host_on_the_gateway(capsys, settings: Path, fake: FakeGateway) -> None:
+    state = enrolled()
+    fake.answers[("PUT", "bridges")] = httpx.Response(200, json={"name": "studio", **JOINED})
+
+    code, out, _ = run(capsys, "rename", "studio")
+
+    assert code == 0
+    assert fake.requests[-1].url.path == f"/bridges/{state.bridge_id}/name"
+    assert fake.requests[-1].headers["authorization"] == f"Bearer {TOKEN}"
+    assert fake.body() == {"name": "studio"}
+    assert load(state_path()).gateway.name == "studio"
+    assert "as studio" in out
+
+
+def test_rename_exits_3_when_the_name_is_taken(capsys, settings: Path, fake: FakeGateway) -> None:
+    state = enrolled()
+    fake.answers[("PUT", "bridges")] = httpx.Response(
+        409, json={"error": {"code": "name_taken", "message": "There is already a host named studio."}}
+    )
+
+    code, _, err = run(capsys, "rename", "studio")
+
+    assert code == 3
+    assert "already a host named studio" in err
+    assert load(state_path()) == state
+
+
+def test_rename_exits_4_with_the_gateway_command_when_unreachable(capsys, settings: Path, fake: FakeGateway) -> None:
+    state = enrolled()
+
+    code, _, err = run(capsys, "rename", "studio")
+
+    assert code == 4
+    assert "sudo mcp-gateway bridges rename mac studio" in err
+    assert load(state_path()) == state
+
+
+def test_rename_exits_6_with_the_gateway_command_when_the_gateway_is_too_old(
+    capsys, settings: Path, fake: FakeGateway
+) -> None:
+    state = enrolled()
+    # No such route, but the address report every gateway has answers.
+    fake.answers[("PUT", "bridges")] = [NO_ROUTE, httpx.Response(200, json={"name": "mac", **JOINED})]
+
+    code, _, err = run(capsys, "rename", "studio")
+
+    assert code == cli.OUTDATED == 6
+    assert fake.requests[-1].url.path == f"/bridges/{state.bridge_id}/address"
+    assert "update the gateway" in err
+    assert "sudo mcp-gateway bridges rename mac studio" in err
+    assert load(state_path()) == state
+
+
+def test_rename_names_the_gateways_current_name_in_its_command(capsys, settings: Path, fake: FakeGateway) -> None:
+    # Renamed there with `bridges rename mac studio` since the bridge last asked.
+    enrolled()
+    fake.answers[("PUT", "bridges")] = [NO_ROUTE, httpx.Response(200, json={"name": "studio", **JOINED})]
+
+    code, _, err = run(capsys, "rename", "office")
+
+    assert code == cli.OUTDATED
+    assert "sudo mcp-gateway bridges rename studio office" in err
+
+
+def test_rename_exits_6_too_when_the_gateway_cant_reach_a_new_address(capsys, settings: Path, fake: FakeGateway) -> None:
+    # E.g. Windows setup renaming while agent-bridge is stopped, with a new address in the env
+    # file: the gateway knows this host's token, but can't ask the new address about itself.
+    enrolled()
+    unreachable = httpx.Response(502, json={"error": {"code": "bridge_unreachable", "message": "x"}})
+    fake.answers[("PUT", "bridges")] = [NO_ROUTE, unreachable]
+
+    code, _, err = run(capsys, "rename", "studio")
+
+    assert code == cli.OUTDATED
+    assert "sudo mcp-gateway bridges rename mac studio" in err
+
+
+@pytest.mark.parametrize(("status", "code"), [(404, "not_enrolled"), (401, "unauthorized")])
+def test_rename_says_to_enroll_again_when_the_gateway_doesnt_have_this_host(
+    capsys, settings: Path, fake: FakeGateway, status: int, code: str
+) -> None:
+    state = enrolled()
+    fake.answers[("PUT", "bridges")] = httpx.Response(status, json={"error": {"code": code, "message": "x"}})
+
+    result, _, err = run(capsys, "rename", "studio")
+
+    assert result == 1
+    # It has no host named mac to rename.
+    assert "bridges rename" not in err
+    assert "sudo mcp-gateway enroll" in err
+    assert load(state_path()) == state
+
+
+def test_rename_says_to_enroll_again_when_a_gateway_too_old_doesnt_have_this_host(
+    capsys, settings: Path, fake: FakeGateway
+) -> None:
+    # No rename route, and the address report says it has no such host (`bridges remove`d).
+    enrolled()
+    gone = httpx.Response(404, json={"error": {"code": "not_enrolled", "message": "x"}})
+    fake.answers[("PUT", "bridges")] = [NO_ROUTE, gone]
+
+    code, _, err = run(capsys, "rename", "studio")
+
+    assert code == 1
+    assert "bridges rename" not in err
+    assert "sudo mcp-gateway enroll" in err
+
+
+def test_rename_exits_5_when_the_gateway_renamed_it_but_the_state_cant_be_saved(
+    capsys, settings: Path, fake: FakeGateway, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    state = enrolled()
+    fake.answers[("PUT", "bridges")] = httpx.Response(200, json={"name": "studio", **JOINED})
+
+    def full(path: Path, gateway: Gateway, name: str) -> None:
+        raise cli.StateError(f"Can't write {path} (No space left on device).")
+
+    monkeypatch.setattr(cli, "rename", full)
+
+    code, _, err = run(capsys, "rename", "studio")
+
+    assert code == cli.SAVE_FAILED == 5
+    assert "has this host as studio now, but Can't write" in err
+    assert "agent-bridge check" in err
+    # The gateway has no host named mac any more.
+    assert "bridges rename" not in err
+    assert load(state_path()) == state
+
+
+def test_rename_exits_1_on_any_other_404(capsys, settings: Path, fake: FakeGateway) -> None:
+    # E.g. the gateway refusing a caller off the LAN: the address report is refused too.
+    state = enrolled()
+    off_lan = httpx.Response(404, json={"error": "not found"})
+    fake.answers[("PUT", "bridges")] = [off_lan, off_lan]
+
+    code, _, err = run(capsys, "rename", "studio")
+
+    assert code == 1
+    assert "sudo mcp-gateway bridges rename mac studio" in err
+    assert load(state_path()) == state
+
+
+def test_rename_exits_1_when_not_enrolled(capsys, settings: Path, fake: FakeGateway) -> None:
+    code, _, err = run(capsys, "rename", "studio")
+
+    assert code == 1
+    assert "Not enrolled" in err
+    assert fake.requests == []
+
+
+def test_rename_exits_2_for_a_name_that_wont_do(capsys, settings: Path, fake: FakeGateway) -> None:
+    enrolled()
+
+    code, _, err = run(capsys, "rename", "Studio Mac")
+
+    assert code == 2
+    assert "lowercase letter" in err
+    assert fake.requests == []
+
+
 def test_unenroll_without_a_gateway(capsys) -> None:
     code, out, _ = run(capsys, "unenroll")
 

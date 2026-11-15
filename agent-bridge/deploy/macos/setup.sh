@@ -9,7 +9,8 @@
 # Missing values are asked for; pass them in to skip the questions or to change one:
 #   ALLOWED_ROOTS=/Users/me/projects NAME=mac ENROLLMENT='crm1@…' agent-bridge/deploy/macos/setup.sh
 # ALLOWED_ROOTS: the `:`-separated folders agents may start in. NAME: this host's name in
-# agent ids (the hostname by default). ENROLLMENT: what `sudo mcp-gateway enroll` printed,
+# agent ids (the hostname by default; once enrolled, a new NAME renames it on the
+# gateway). ENROLLMENT: what `sudo mcp-gateway enroll` printed,
 # empty to enroll later. Optional: HOST (found: the LAN address), PORT (8765), HERDR_BIN
 # (found), AGENT_BRIDGE_CLAUDE_CONFIG_DIR and TRUST_ROOT (folder trust, see
 # agent-bridge/README.md; empty for none), AGENT_BRIDGE_ACCOUNTS (named Claude logins as
@@ -34,7 +35,12 @@ DOMAIN="gui/$(id -u)"
 MANAGED="TOKEN|ALLOWED_ROOTS|HOST|PORT|NAME|HERDR_BIN|CLAUDE_CONFIG_DIR|TRUST_ROOT|ACCOUNTS"
 
 log() { printf '\n==> %s\n' "$*"; }
-die() { printf 'error: %s\n' "$*" >&2; exit 1; }
+die() {
+  printf 'error: %s\n' "$*" >&2
+  # However setup stops after renaming this host on the gateway, say that it did.
+  [[ -z ${RENAMED:-} ]] || printf 'note: the gateway has this host as %s now; the next run takes that name.\n' "$RENAMED" >&2
+  exit 1
+}
 trap 'rm -f "${TMP_ENV:-}" "${TMP_PLIST:-}"' EXIT
 
 ask() { # ask VAR "question" [default] [hint]: Enter, or no input left, takes the default
@@ -348,11 +354,27 @@ fi
 [[ ${#TOKEN} -ge 32 && $TOKEN =~ ^[A-Za-z0-9._~+/-]+=*$ ]] \
   || die "the installed token won't do; run again with ROTATE_TOKEN=1"
 
+# A new name is renamed on the gateway, with the installed token. Not with a new token,
+# which needs enrolling again, and that renames it too; nor when the gateway can't take it
+# that way (too old, or no answer): an enrollment string is asked for below.
+RENAMED=""
+UNSAVED_NAME=""
+if [[ -n $NAME_GIVEN && -z $NEW_TOKEN && $SOURCE == env_file && -z $GATEWAY_GONE && -n $(enrolled name) \
+  && $NAME != "$(enrolled name)" ]]; then
+  log "Renaming this host to $NAME on the gateway"
+  status=0
+  bridge rename "$NAME" || status=$?
+  [[ $status != 3 ]] || die "the gateway has another host named $NAME; nothing was changed, run again with another NAME"
+  [[ $status != 0 && $status != 5 ]] || RENAMED=$NAME
+  # 5: renamed, but the state file still has the old name (agent-bridge said how to fix that).
+  [[ $status != 5 ]] || UNSAVED_NAME=$NAME
+fi
+
 # Asked for until this host is enrolled, and again with a new token or a new name.
 ENROLLED_AS="$(enrolled name)"
 [[ -z $GATEWAY_GONE ]] || ENROLLED_AS=""
 RENAMING=""
-[[ -z $NAME_GIVEN || -z $ENROLLED_AS || $NAME == "$ENROLLED_AS" ]] || RENAMING=1
+[[ -z $NAME_GIVEN || -z $ENROLLED_AS || $NAME == "$ENROLLED_AS" || -n $RENAMED ]] || RENAMING=1
 if [[ -z ${ENROLLMENT+x} ]] && [[ -z $ENROLLED_AS || -n $NEW_TOKEN || -n $RENAMING ]]; then
   printf '\nTo enroll with the gateway, run on the gateway host: sudo mcp-gateway enroll\n'
   [[ -z $RENAMING ]] || echo "The gateway has this host as $ENROLLED_AS; enrolling again renames it $NAME."
@@ -531,6 +553,7 @@ $LOGIN_HINT
 }
 EOF
 GATEWAY_NAME="$(enrolled name)"
+[[ -z $GATEWAY_NAME || -z $UNSAVED_NAME ]] || GATEWAY_NAME=$UNSAVED_NAME
 if [[ -n $GATEWAY_TOOK ]]; then
   echo "The gateway enrolled it, but its state file couldn't be written (see above). Fix that, then enroll again with a new string from sudo mcp-gateway enroll:"
   echo "  $AGENT_BRIDGE enroll '<what it printed>'"

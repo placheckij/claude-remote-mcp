@@ -67,6 +67,11 @@ def _joined(base: str, reply) -> dict:
     return reply
 
 
+async def rename_host(gateway_url: str, state: State, token: str, name: str) -> dict:
+    reply = await _request("PUT", gateway_url, f"/bridges/{state.bridge_id}/name", token=token, json={"name": name})
+    return _joined(gateway_url, reply)
+
+
 async def unenroll(gateway_url: str, state: State, token: str) -> None:
     await _request("DELETE", gateway_url, f"/bridges/{state.bridge_id}", token=token)
 
