@@ -691,7 +691,12 @@ try {
         Write-Host "  `$env:CLAUDE_CONFIG_DIR = $(Format-Quoted $ConfigDir); claude"
     }
     Write-Host ''
-    if ($null -ne $EnrollCode -and $EnrollCode -ne 0) {
+    if ($EnrollCode -eq 5) {
+        # The gateway took the new token and name, which stay; only the state file is missing.
+        Write-Host 'The gateway enrolled this host, but its state file couldn''t be saved: see "Enrolling with the gateway"'
+        Write-Host 'above. Fix that, then run here with a new string from `sudo mcp-gateway enroll`:'
+        Write-EnrollCommand
+    } elseif ($null -ne $EnrollCode -and $EnrollCode -ne 0) {
         Write-Host 'Not enrolled: see "Enrolling with the gateway" above. Once that is fixed, run here'
         Write-Host '(with a new string from `sudo mcp-gateway enroll` if this one has expired):'
         Write-EnrollCommand

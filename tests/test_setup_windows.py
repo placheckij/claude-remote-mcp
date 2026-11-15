@@ -551,6 +551,18 @@ def test_a_failed_enrollment_after_rotating_the_token_says_the_gateway_has_the_o
     assert "Enrolled as win-test" not in output
 
 
+def test_an_enrollment_the_gateway_took_but_couldnt_save_doesnt_say_it_has_the_old_token(machine: Machine) -> None:
+    machine.setup(f"-Enrollment '{STRING}'", input="\n\n")
+    # enroll exits 5: the gateway has the new token, but the state file couldn't be written.
+    machine.enroll_codes.write_text("5")
+
+    output = machine.setup("-RotateToken", f"-Enrollment '{STRING}'", expect=1)
+
+    assert "state file couldn't be saved" in output
+    assert "Not enrolled: see" not in output
+    assert "still has this host's old settings" not in output
+
+
 def test_a_new_name_on_an_enrolled_host_asks_to_enroll_again(machine: Machine) -> None:
     machine.setup(f"-Enrollment '{STRING}'", input="\n\n")
 
