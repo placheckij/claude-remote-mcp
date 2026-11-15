@@ -8,7 +8,9 @@ on:
     paths:
       - agent-bridge/src/**
       - mcp-gateway/src/mcp_gateway/bridge.py
+      - mcp-gateway/src/mcp_gateway/cli.py
       - mcp-gateway/src/mcp_gateway/config.py
+      - mcp-gateway/src/mcp_gateway/enrollment.py
       - mcp-gateway/src/mcp_gateway/hosts.py
       - mcp-gateway/src/mcp_gateway/registry.py
       - mcp-gateway/src/mcp_gateway/server.py
