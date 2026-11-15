@@ -155,12 +155,20 @@ def _rename(name: str) -> int:
         if error.code == "name_taken":
             print(f"Couldn't rename: {error}", file=sys.stderr)
             return NAME_TAKEN
-        if error.status == 404 and error.code is None and (now := _name_there(gateway.url, state, settings)):
-            by_hand = f"Rename it on the gateway host with: sudo mcp-gateway bridges rename {now} {name}"
-            print(f"The gateway at {gateway.url} is too old to rename hosts: update the gateway.\n{by_hand}",
-                  file=sys.stderr)
-            return OUTDATED
-        if error.code in NOT_KNOWN:
+        refusal = error.code
+        if error.status == 404 and refusal is None:
+            # No such route, or the gateway refusing a caller off the LAN: the address report,
+            # which every gateway has, tells them apart.
+            now, refusal = _address_report(gateway.url, state, settings)
+            # A refused address (e.g. one it can't reach while agent-bridge is stopped) still
+            # took the token, which it checks first.
+            if now is not None or (refusal is not None and refusal not in NOT_KNOWN):
+                by_hand = ("Rename it on the gateway host with: "
+                           f"sudo mcp-gateway bridges rename {now or gateway.name} {name}")
+                print(f"The gateway at {gateway.url} is too old to rename hosts: update the gateway.\n{by_hand}",
+                      file=sys.stderr)
+                return OUTDATED
+        if refusal in NOT_KNOWN:
             # It has no host by the old name to rename by hand.
             print(f"The gateway refused: {error} Enroll again under the new name: run `sudo mcp-gateway enroll` "
                   "on the gateway host for a string.", file=sys.stderr)
@@ -178,16 +186,13 @@ def _rename(name: str) -> int:
     return OK
 
 
-def _name_there(gateway_url: str, state: State, settings: Settings) -> str | None:
-    """The gateway's name for this host, if it takes this host's token for its address
-    report, which every gateway has: a 404 from it to a rename then means it has no such
-    route, not that it refused. Refusing the address itself (e.g. one it can't reach while
-    agent-bridge is stopped) comes after the token, so it counts, with the saved name."""
-    assert state.gateway is not None
+def _address_report(gateway_url: str, state: State, settings: Settings) -> tuple[str | None, str | None]:
+    """The gateway's name for this host from its answer to the address report, or the code
+    it refused it with (None for no answer, or not the gateway's own)."""
     try:
-        return asyncio.run(report_address(gateway_url, state, settings))["name"]
+        return asyncio.run(report_address(gateway_url, state, settings))["name"], None
     except GatewayError as error:
-        return state.gateway.name if error.code is not None and error.code not in NOT_KNOWN else None
+        return None, error.code
 
 
 def _unenroll() -> int:

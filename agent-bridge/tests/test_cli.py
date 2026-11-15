@@ -374,6 +374,21 @@ def test_rename_says_to_enroll_again_when_the_gateway_doesnt_have_this_host(
     assert load(state_path()) == state
 
 
+def test_rename_says_to_enroll_again_when_a_gateway_too_old_doesnt_have_this_host(
+    capsys, settings: Path, fake: FakeGateway
+) -> None:
+    # No rename route, and the address report says it has no such host (`bridges remove`d).
+    enrolled()
+    gone = httpx.Response(404, json={"error": {"code": "not_enrolled", "message": "x"}})
+    fake.answers[("PUT", "bridges")] = [NO_ROUTE, gone]
+
+    code, _, err = run(capsys, "rename", "studio")
+
+    assert code == 1
+    assert "bridges rename" not in err
+    assert "sudo mcp-gateway enroll" in err
+
+
 def test_rename_exits_5_when_the_gateway_renamed_it_but_the_state_cant_be_saved(
     capsys, settings: Path, fake: FakeGateway, monkeypatch: pytest.MonkeyPatch
 ) -> None:
