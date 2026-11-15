@@ -227,6 +227,7 @@ uv run --package agent-bridge agent-bridge serve
 |---|---|---|
 | `agent-bridge serve` | runs the service from the env and state files, and tells the gateway its address | |
 | `agent-bridge enroll <string>` | joins the gateway that printed the string (below) | 0 enrolled, 3 name taken, 4 gateway unreachable (prints the command to retry), 1 otherwise |
+| `agent-bridge rename <name>` | renames this host on that gateway | 0 renamed, 2 name won't do, 3 name taken, 4 gateway unreachable, 5 gateway too old to rename hosts, 1 otherwise; all but 0, 2 and 3 print the gateway's command |
 | `agent-bridge unenroll` | leaves that gateway | 0; prints the gateway's command when it can't be reached |
 | `agent-bridge check` | checks the settings, the files' modes, herdr, the running service and the gateway, one line each | 0 all passed, 1 one failed |
 | `agent-bridge check --token-format <token>`, `--name-format <name>` | checks a value before it goes in the env file | 0 fine, 2 not (why, on stderr) |
@@ -424,8 +425,10 @@ asked for; the installed value is kept unless you pass one, and an empty one rem
 
 Re-run it after pulling new code. It asks nothing it already knows; to change a setting,
 pass it as a variable or edit the env file. The name is the exception: once the host is
-enrolled, it is the gateway's. Rename the host on the gateway host with
-`sudo mcp-gateway bridges rename <old> <new>`, and the next run takes the new name.
+enrolled, it is the gateway's. Run again with `NAME=<new>` to rename it there
+(`agent-bridge rename`); a gateway too old for that prints the command to run on the
+gateway host instead, `sudo mcp-gateway bridges rename <old> <new>`, after which the next
+run takes the new name.
 
 #### Restart, stop, uninstall
 

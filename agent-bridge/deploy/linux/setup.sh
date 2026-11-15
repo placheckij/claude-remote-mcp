@@ -11,7 +11,7 @@
 # Missing values are asked for; pass them in to skip the questions or to change one:
 #   ALLOWED_ROOTS=/home/me/projects NAME=linux-box ENROLLMENT='crm1@…' agent-bridge/deploy/linux/setup.sh
 # ALLOWED_ROOTS: the `:`-separated folders agents may start in. NAME: this host's name in
-# agent ids (the hostname by default; once enrolled, the gateway's name, which a NAME passed
+# agent ids (the hostname by default; once enrolled, the gateway's name, which a new NAME
 # in renames there). ENROLLMENT: what `sudo mcp-gateway enroll` printed,
 # empty to enroll later. Optional: HOST (found: the LAN address), PORT (8765), HERDR_BIN
 # (found), AGENT_BRIDGE_CLAUDE_CONFIG_DIR and TRUST_ROOT (folder trust, see
@@ -240,7 +240,7 @@ WANTED_NAME=""
 if [[ -n $ENROLLED_NAME && $ENROLLED_NAME != "$NAME" ]]; then
   status=0
   if [[ -n $NAME_GIVEN ]]; then
-    log "Renaming this host $NAME on the gateway"
+    log "Renaming this host to $NAME on the gateway"
     bridge rename "$NAME" || status=$?
   fi
   case $status in

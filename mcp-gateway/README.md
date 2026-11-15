@@ -126,8 +126,9 @@ as a warning.
   refused (`409`), and `agent-bridge enroll` exits with 3: set another
   `AGENT_BRIDGE_NAME` and run it again.
 - **Afterwards** each agent-bridge sends its address on every start
-  (`PUT /bridges/{id}/address`) and removes itself on uninstall (`DELETE /bridges/{id}`),
-  both with its own token. A new address is kept only once its `/info` answers with the
+  (`PUT /bridges/{id}/address`), renames itself when its setup is given a new name
+  (`PUT /bridges/{id}/name`, `409` for a taken name) and removes itself on uninstall
+  (`DELETE /bridges/{id}`), all with its own token. A new address is kept only once its `/info` answers with the
   same id.
 - **Who may call these routes:** only callers on a private, loopback or link-local
   address, with no `CF-Connecting-IP` or `CF-Ray` header (anything the tunnel forwards

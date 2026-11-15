@@ -9,7 +9,7 @@
 # Missing values are asked for; pass them in to skip the questions or to change one:
 #   ALLOWED_ROOTS=/Users/me/projects NAME=mac ENROLLMENT='crm1@…' agent-bridge/deploy/macos/setup.sh
 # ALLOWED_ROOTS: the `:`-separated folders agents may start in. NAME: this host's name in
-# agent ids (the hostname by default; once enrolled, a NAME passed in renames it on the
+# agent ids (the hostname by default; once enrolled, a new NAME renames it on the
 # gateway). ENROLLMENT: what `sudo mcp-gateway enroll` printed,
 # empty to enroll later. Optional: HOST (found: the LAN address), PORT (8765), HERDR_BIN
 # (found), AGENT_BRIDGE_CLAUDE_CONFIG_DIR and TRUST_ROOT (folder trust, see
@@ -253,7 +253,7 @@ done
 # that way (too old, or no answer) is asked for an enrollment string below: enrolling again
 # renames it too.
 if [[ -n $NAME_GIVEN && $SOURCE == env_file && -z $GATEWAY_GONE && -n $(enrolled name) && $NAME != "$(enrolled name)" ]]; then
-  log "Renaming this host $NAME on the gateway"
+  log "Renaming this host to $NAME on the gateway"
   status=0
   bridge rename "$NAME" || status=$?
   [[ $status != 3 ]] || die "the gateway has another host named $NAME; nothing was changed, run again with another NAME"

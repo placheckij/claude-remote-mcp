@@ -21,6 +21,7 @@ settings, and asks only for what's missing. Pass a parameter to change a setting
 Folders agents may start in, separated by ;. Default: %USERPROFILE%\Projects.
 .PARAMETER Name
 This host's name in agent ids, as Claude will say it, e.g. win-pc. Default: the computer name.
+Once enrolled, a new name renames the host on the gateway.
 .PARAMETER Enrollment
 The string `sudo mcp-gateway enroll` printed (crm1@...). An empty string skips enrolling.
 .PARAMETER Address
@@ -614,8 +615,25 @@ try {
     # --- Enroll ----------------------------------------------------------------------------
 
     $Gateway = Get-EnrolledGateway
-    # The gateway knows this host by the name it enrolled with; a new -Name needs enrolling again.
+    # The gateway knows this host by the name it enrolled with; a new -Name is renamed there,
+    # with the token it has. One it can't take that way (too old, or no answer) needs
+    # enrolling again.
     $NameChanged = $Gateway -and -not $NameInstalled -and $Name -ne $Gateway.name
+    $NameTaken = $false
+    if ($NameChanged -and -not $NewToken) {
+        Write-Step "Renaming this host to $Name on the gateway"
+        $RenameCode = Invoke-Native $Exe @('rename', $Name)
+        if ($RenameCode -eq 3) {
+            # Back to the gateway's name; the running bridge's /info has the other until it restarts.
+            $NameTaken = $true
+            $Settings['AGENT_BRIDGE_NAME'] = $Gateway.name
+            Write-EnvFile $EnvFile (Read-EnvFile $EnvFile).Lines $Settings
+            $NameChanged = $false
+        } elseif ($RenameCode -eq 0) {
+            $Gateway = Get-EnrolledGateway
+            $NameChanged = $false
+        }
+    }
     # Asked for the enrollment string unless -Enrollment is passed.
     $WantsEnroll = -not $Gateway -or $NewToken -or $NameChanged
     $String = ''
@@ -691,6 +709,7 @@ try {
         Write-Host "  `$env:CLAUDE_CONFIG_DIR = $(Format-Quoted $ConfigDir); claude"
     }
     Write-Host ''
+    if ($NameTaken) { Write-Warn "the gateway has another host named $Name, so this host keeps $($Gateway.name): run setup again with another -Name" }
     if ($null -ne $EnrollCode -and $EnrollCode -ne 0) {
         Write-Host 'Not enrolled: see "Enrolling with the gateway" above. Once that is fixed, run here'
         Write-Host '(with a new string from `sudo mcp-gateway enroll` if this one has expired):'
@@ -709,8 +728,8 @@ try {
         Write-Host 'Not enrolled with a gateway yet. Run `sudo mcp-gateway enroll` on the gateway host, then here:'
         Write-EnrollCommand
     }
-    # A failed check, start or enrollment is setup's exit code; otherwise the last program's would be.
-    if ($CheckFailed -or -not $Started -or ($null -ne $EnrollCode -and $EnrollCode -ne 0)) { exit 1 }
+    # A failed check, start, rename or enrollment is setup's exit code; otherwise the last program's would be.
+    if ($CheckFailed -or -not $Started -or $NameTaken -or ($null -ne $EnrollCode -and $EnrollCode -ne 0)) { exit 1 }
     exit 0
 } finally {
     Restore-Task
