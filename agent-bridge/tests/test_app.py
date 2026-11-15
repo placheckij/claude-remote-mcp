@@ -869,6 +869,21 @@ def test_allowed_but_outside_trust_root_is_never_trusted(layout: dict[str, Path]
     assert projects_in(layout["config_dir"]) == {}
 
 
+def test_trust_dialog_despite_written_trust_names_the_config(layout: dict[str, Path]) -> None:
+    # It said "outside the trust root" for a folder inside it (#80).
+    runner = FakeRunner(start_responses(trust_dialog=True))
+    response = strict_client(runner, layout).post(
+        "/agents", headers=AUTH, json={"cwd": str(layout["projects_dir"] / "app"), "name": "x"}
+    )
+    assert response.status_code == 409
+    message = response.json()["error"]["message"]
+    assert "outside the trust root" not in message
+    assert f"It is trusted in {layout['config_dir'] / '.claude.json'}" in message
+    assert projects_in(layout["config_dir"]) == {
+        (layout["projects_dir"] / "app").resolve().as_posix(): {"hasTrustDialogAccepted": True}
+    }
+
+
 def test_rejects_empty_and_absurdly_long_names(layout: dict[str, Path]) -> None:
     # Anything else is turned into a name herdr accepts (see the tests below).
     runner = FakeRunner({})
