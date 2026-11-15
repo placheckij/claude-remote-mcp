@@ -484,6 +484,9 @@ while [[ -n $ENROLLMENT ]]; do
       write_env
       start_service ;;
     4) break ;; # agent-bridge printed the command to run once the gateway is up
+    5) # The gateway took the new token and name, but the state file couldn't be saved:
+      # keep them (putting the old token back would lock the gateway out) and stop.
+      die "the gateway enrolled this host as $NAME, but its state file couldn't be saved (see above); fix that, then enroll again with a new string from sudo mcp-gateway enroll: $AGENT_BRIDGE enroll '<what it printed>'" ;;
     *)
       ask ENROLLMENT "Enrollment string, crm1@…" "" "Enter to enroll later" ;;
   esac

@@ -869,6 +869,35 @@ def test_a_rotation_the_gateway_cant_be_reached_for_puts_the_old_token_back(host
     assert host.env()["AGENT_BRIDGE_TOKEN"] == first
 
 
+def test_a_rotation_the_gateway_took_but_couldnt_be_saved_keeps_the_new_token(host: Host) -> None:
+    host.install()
+    first = host.env()["AGENT_BRIDGE_TOKEN"]
+    # enroll exits 5: the gateway has the new token, but the state file couldn't be written.
+    (host.home / "enroll-codes").write_text("5\n")
+
+    result = host.setup(ROTATE_TOKEN="1", ENROLLMENT=ENROLLMENT, check=False)
+
+    assert result.returncode != 0
+    assert "state file couldn't be saved" in result.stderr
+    assert "not rotated" not in result.stderr
+    assert host.env()["AGENT_BRIDGE_TOKEN"] != first
+    assert host.env()["AGENT_BRIDGE_NAME"] == "linux-box"
+    assert host.log("systemctl.log").count(f"--user restart {UNIT}") == 1
+    # No second string asked for: another wouldn't fix the state file.
+    assert [line for line in host.log("agent-bridge.log") if line.startswith("enroll")] == [f"enroll {ENROLLMENT}"]
+
+
+def test_a_taken_name_then_a_save_failure_keeps_the_new_name(host: Host) -> None:
+    host.install()
+    (host.home / "enroll-codes").write_text("3\n5\n")
+
+    result = host.setup(ROTATE_TOKEN="1", ENROLLMENT=ENROLLMENT, input="box2\n", check=False)
+
+    assert result.returncode != 0
+    assert "enrolled this host as box2" in result.stderr
+    assert host.env()["AGENT_BRIDGE_NAME"] == "box2"
+
+
 def test_a_rotation_stopped_by_a_taken_name_puts_the_old_token_and_name_back(host: Host) -> None:
     host.install()
     first = host.env()["AGENT_BRIDGE_TOKEN"]
