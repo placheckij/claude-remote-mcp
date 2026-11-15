@@ -50,11 +50,27 @@ def test_trusts_exactly_the_folder_and_keeps_other_settings(
         assert (config_dir / ".claude.json").stat().st_mode & 0o777 == 0o600
 
 
-def test_skips_when_a_parent_is_already_trusted(config_dir: Path, trust_root: Path) -> None:
+def test_skips_when_the_folder_is_already_trusted(config_dir: Path, trust_root: Path) -> None:
     trust_folder(config_dir, trust_root / "app", trust_root)
+    before = (config_dir / ".claude.json").read_text()
+    assert trust_folder(config_dir, trust_root / "app", trust_root) is False
+    assert (config_dir / ".claude.json").read_text() == before
+
+
+def test_trusts_the_folder_even_when_a_parent_is_trusted(config_dir: Path, trust_root: Path) -> None:
+    # Claude Code still showed the trust dialog in a subfolder of a trusted folder (#80).
+    trusted = {key(trust_root / "app"): {"hasTrustDialogAccepted": True, "allowedTools": []}}
+    (config_dir / ".claude.json").write_text(json.dumps({"projects": trusted}))
     (trust_root / "app" / "sub").mkdir()
-    assert trust_folder(config_dir, trust_root / "app" / "sub", trust_root) is False
-    assert key(trust_root / "app" / "sub") not in projects(config_dir)
+    assert trust_folder(config_dir, trust_root / "app" / "sub", trust_root) is True
+    assert projects(config_dir) == {**trusted, key(trust_root / "app" / "sub"): {"hasTrustDialogAccepted": True}}
+
+
+def test_keeps_the_folders_other_settings(config_dir: Path, trust_root: Path) -> None:
+    untrusted = {key(trust_root / "app"): {"hasTrustDialogAccepted": False, "allowedTools": ["Bash"]}}
+    (config_dir / ".claude.json").write_text(json.dumps({"projects": untrusted}))
+    assert trust_folder(config_dir, trust_root / "app", trust_root) is True
+    assert projects(config_dir) == {key(trust_root / "app"): {"hasTrustDialogAccepted": True, "allowedTools": ["Bash"]}}
 
 
 @pytest.mark.parametrize("folder", ["", "other", "projects-evil"])
@@ -185,19 +201,12 @@ def test_writes_the_key_claude_code_reads_on_windows(config_dir: Path, trust_roo
 
 @windows_only
 @pytest.mark.parametrize("spell", [str, lambda path: path.as_posix().lower(), lambda path: path.as_posix().upper()])
-def test_a_parent_trusted_under_a_key_claude_code_ignores_is_not_trusted(
+def test_a_folder_trusted_under_a_key_claude_code_ignores_is_not_trusted(
     config_dir: Path, trust_root: Path, spell: Callable[[Path], str]
 ) -> None:
     # `C:\…` (older bridges), `c:/…` (a session started from VS Code) or another casing:
     # Claude Code would still show the trust dialog, so the exact key is written beside it.
-    other = {spell(trust_root.resolve()): {"hasTrustDialogAccepted": True}}
+    other = {spell((trust_root / "app").resolve()): {"hasTrustDialogAccepted": True}}
     (config_dir / ".claude.json").write_text(json.dumps({"projects": other}))
     assert trust_folder(config_dir, trust_root / "app", trust_root) is True
     assert projects(config_dir) == {**other, key(trust_root / "app"): {"hasTrustDialogAccepted": True}}
-
-
-def test_a_parent_trusted_under_the_exact_key_is_enough(config_dir: Path, trust_root: Path) -> None:
-    trusted = {key(trust_root): {"hasTrustDialogAccepted": True}}
-    (config_dir / ".claude.json").write_text(json.dumps({"projects": trusted}))
-    assert trust_folder(config_dir, trust_root / "app", trust_root) is False
-    assert projects(config_dir) == trusted

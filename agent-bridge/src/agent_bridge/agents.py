@@ -24,7 +24,7 @@ from agent_bridge.schemas import (
     summarize,
 )
 from agent_bridge.screen import SNAPSHOT_LINES, last_lines, last_question
-from agent_bridge.trust import TrustError, trust_folder
+from agent_bridge.trust import CONFIG_FILE, TrustError, trust_folder
 
 BUSY_MESSAGE = (
     "The agent is still working on an earlier request, so the prompt was not sent. Wait for "
@@ -341,9 +341,13 @@ class AgentService:
             )
         return running
 
+    def _in_trust_root(self, folder: Path) -> bool:
+        trust_root = self.settings.trust_root
+        return trust_root is not None and folder.is_relative_to(trust_root.expanduser().resolve())
+
     async def _trust(self, folder: Path, config_dir: Path | None) -> None:
         trust_root = self.settings.trust_root
-        if not trust_root or not folder.is_relative_to(trust_root.expanduser().resolve()):
+        if not trust_root or not self._in_trust_root(folder):
             return
         # An account on Claude Code's default config (e.g. the user's own work login) is
         # never edited: its folders must be trusted by hand, and if one isn't, the start
@@ -368,9 +372,15 @@ class AgentService:
                 f"{head} Automatic trust is off: trust the folder once by opening Claude Code "
                 "there, or set AGENT_BRIDGE_TRUST_ROOT and AGENT_BRIDGE_CLAUDE_CONFIG_DIR."
             )
+        if not self._in_trust_root(folder):
+            return (
+                f"{head} It is outside the trust root {self.settings.trust_root}: trust it once "
+                "by opening Claude Code there."
+            )
         return (
-            f"{head} It is outside the trust root {self.settings.trust_root}: trust it once by "
-            "opening Claude Code there."
+            f"{head} It is trusted in {config_dir / CONFIG_FILE}, yet Claude Code still showed "
+            "the trust dialog: check the folder's entry there, or trust it once by opening "
+            "Claude Code there."
         )
 
 

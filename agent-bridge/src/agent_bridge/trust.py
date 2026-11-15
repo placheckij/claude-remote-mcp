@@ -1,9 +1,9 @@
 """Mark a project folder as trusted in Claude Code's config before starting an agent.
 
 Claude Code keeps folder trust in `<config dir>/.claude.json` under
-`projects[<path>].hasTrustDialogAccepted`, and trust of a folder covers everything
-inside it. Without it, a new agent sits on the trust dialog whose default answer is
-"No, exit".
+`projects[<path>].hasTrustDialogAccepted`. Without it, a new agent sits on the trust
+dialog whose default answer is "No, exit". A trusted parent is not enough: Claude Code
+still showed the dialog in a subfolder of one, so the folder's own key is always written.
 
 Claude Code looks a folder up by the exact string of its working folder with "/"
 separators: `/Users/me/app` on macOS, `C:/Users/me/app` on Windows, where a
@@ -58,7 +58,7 @@ def _same_file(a: Path, b: Path) -> bool:
 
 
 def trust_folder(config_dir: Path, folder: Path, trust_root: Path) -> bool:
-    """Trust `folder` unless it (or a parent) already is. Returns True if it wrote."""
+    """Trust `folder` unless it already is. Returns True if it wrote."""
     config_dir = config_dir.expanduser().resolve()
     folder = folder.expanduser().resolve()
     trust_root = trust_root.expanduser().resolve()
@@ -84,11 +84,15 @@ def trust_folder(config_dir: Path, folder: Path, trust_root: Path) -> bool:
     # Claude Code may leave null where an object is expected; treat it as empty.
     projects = config.get("projects") or {}
     config["projects"] = projects
-    if _is_trusted(projects, folder):
+    # Only the exact key counts. On Windows a `c:/…` key (from a session started in VS
+    # Code) or a `C:\…` one (from older bridges) is ignored by Claude Code, so the exact
+    # key is written next to it.
+    key = project_key(folder)
+    entry = projects.get(key)
+    if isinstance(entry, dict) and entry.get("hasTrustDialogAccepted"):
         return False
 
-    key = project_key(folder)
-    projects[key] = {**(projects.get(key) or {}), "hasTrustDialogAccepted": True}
+    projects[key] = {**(entry or {}), "hasTrustDialogAccepted": True}
     _replace_atomically(path, json.dumps(config, indent=2))
     return True
 
@@ -96,17 +100,6 @@ def trust_folder(config_dir: Path, folder: Path, trust_root: Path) -> bool:
 def project_key(folder: Path) -> str:
     """The key Claude Code reads a resolved `folder`'s settings from."""
     return folder.as_posix()
-
-
-def _is_trusted(projects: dict, folder: Path) -> bool:
-    """True if `folder` or a parent is trusted under the exact key Claude Code reads. On
-    Windows a `c:/…` key (from a session started in VS Code) or a `C:\\…` one (from older
-    bridges) doesn't count: Claude ignores those, so the exact key is written next to them."""
-    return any(
-        isinstance(entry := projects.get(project_key(candidate)), dict)
-        and entry.get("hasTrustDialogAccepted")
-        for candidate in (folder, *folder.parents)
-    )
 
 
 def _replace_atomically(path: Path, content: str) -> None:
