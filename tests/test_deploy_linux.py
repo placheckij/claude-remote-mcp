@@ -734,6 +734,21 @@ def test_a_new_name_with_a_new_token_is_renamed_by_enrolling(host: Host, new_tok
     assert "didn't rename" not in result.stdout
 
 
+@pytest.mark.parametrize("new_token", ["rotated", "lost"])
+def test_a_new_name_waiting_on_a_failed_enrollment_is_named_in_the_retry(host: Host, new_token: str) -> None:
+    host.install()
+    env = {"ROTATE_TOKEN": "1"}
+    if new_token == "lost":
+        lines = host.env_file.read_text().splitlines()
+        host.env_file.write_text("".join(f"{line}\n" for line in lines if not line.startswith("AGENT_BRIDGE_TOKEN=")))
+        env = {}
+    (host.home / "enroll-codes").write_text("4\n")
+
+    result = host.setup(NAME="newbox", ENROLLMENT=ENROLLMENT, check=False, **env)
+
+    assert "NAME=newbox" in result.stdout + result.stderr
+
+
 def test_a_new_name_isnt_renamed_when_setup_stops_before_installing(host: Host) -> None:
     host.install()
 

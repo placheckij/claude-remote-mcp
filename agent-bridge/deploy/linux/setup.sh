@@ -371,9 +371,10 @@ WANTED_NAME=""
 RENAME_REFUSED=""
 RENAMED=""
 UNSAVED_NAME=""
+RENAME_BY_ENROLLING=""
 if [[ -n $RENAME_TO && -n $NEW_TOKEN ]]; then
   # The gateway doesn't know a new token yet: enrolling again, with the new name, renames it.
-  if [[ -n $ENROLLMENT ]]; then NAME=$RENAME_TO; else WANTED_NAME=$RENAME_TO; fi
+  if [[ -n $ENROLLMENT ]]; then NAME=$RENAME_TO; RENAME_BY_ENROLLING=$NAME; else WANTED_NAME=$RENAME_TO; fi
 elif [[ -n $RENAME_TO ]]; then
   # With the installed token, which the gateway has.
   log "Renaming this host to $RENAME_TO on the gateway"
@@ -530,7 +531,10 @@ if [[ -n ${ROTATE_TOKEN:-} && -z $ENROLLED && -z $SAVE_FAILED && -n $OLD_TOKEN &
   NAME="$(enrolled name)"
   write_env
   start_service
-  die "the token was not rotated${TAKEN:+, as the gateway has another host named $TAKEN}; run again with ROTATE_TOKEN=1 and a new string from sudo mcp-gateway enroll"
+  # And the new name it would have taken, unless that was the one taken.
+  AGAIN=""
+  [[ -n $TAKEN || -z $RENAME_BY_ENROLLING ]] || AGAIN=" and NAME=$RENAME_BY_ENROLLING"
+  die "the token was not rotated${TAKEN:+, as the gateway has another host named $TAKEN}; run again with ROTATE_TOKEN=1$AGAIN and a new string from sudo mcp-gateway enroll"
 fi
 [[ -z $TAKEN ]] || die "the gateway has another host by that name; run again with another NAME"
 
@@ -560,7 +564,7 @@ if [[ -n $(enrolled name) ]]; then
     fi
   fi
   [[ -z $NEW_TOKEN || -n $ENROLLED ]] \
-    || echo "The gateway has this host's old token and its calls will be refused: run sudo mcp-gateway enroll on the gateway host, then run this again with ENROLLMENT='<what it printed>'"
+    || echo "The gateway has this host's old token and its calls will be refused: run sudo mcp-gateway enroll on the gateway host, then run this again with ${RENAME_BY_ENROLLING:+NAME=$RENAME_BY_ENROLLING }ENROLLMENT='<what it printed>'"
 else
   echo "It is not enrolled with a gateway yet. Run sudo mcp-gateway enroll on the gateway host, then here:"
   echo "  $AGENT_BRIDGE enroll '<what it printed>'"
