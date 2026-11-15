@@ -11,8 +11,8 @@
 # Missing values are asked for; pass them in to skip the questions or to change one:
 #   ALLOWED_ROOTS=/home/me/projects NAME=linux-box ENROLLMENT='crm1@…' agent-bridge/deploy/linux/setup.sh
 # ALLOWED_ROOTS: the `:`-separated folders agents may start in. NAME: this host's name in
-# agent ids (the hostname by default; once enrolled, the gateway's name, renamed with
-# `sudo mcp-gateway bridges rename` on the gateway host). ENROLLMENT: what `sudo mcp-gateway enroll` printed,
+# agent ids (the hostname by default; once enrolled, the gateway's name, which a NAME passed
+# in renames there). ENROLLMENT: what `sudo mcp-gateway enroll` printed,
 # empty to enroll later. Optional: HOST (found: the LAN address), PORT (8765), HERDR_BIN
 # (found), AGENT_BRIDGE_CLAUDE_CONFIG_DIR and TRUST_ROOT (folder trust, see
 # agent-bridge/README.md; empty for none), AGENT_BRIDGE_ACCOUNTS (named Claude logins as
@@ -234,11 +234,21 @@ until bridge check --name-format "$NAME"; do
   ask NAME "This host's name" "" "required"
   [[ -n $NAME ]] || die "NAME is required"
 done
-# Once enrolled, the gateway's name is this host's name: hosts are renamed there, and the
-# installed NAME follows.
+# Once enrolled, the gateway's name is this host's name: a new one is renamed there first,
+# with the installed token, and the installed NAME follows.
 WANTED_NAME=""
 if [[ -n $ENROLLED_NAME && $ENROLLED_NAME != "$NAME" ]]; then
-  [[ -z $NAME_GIVEN ]] || WANTED_NAME=$NAME
+  status=0
+  if [[ -n $NAME_GIVEN ]]; then
+    log "Renaming this host $NAME on the gateway"
+    bridge rename "$NAME" || status=$?
+  fi
+  case $status in
+    0) [[ -z $NAME_GIVEN ]] || ENROLLED_NAME=$NAME ;;
+    3) die "the gateway has another host named $NAME; nothing was changed, run again with another NAME" ;;
+    # A gateway too old to rename hosts, or one that can't be asked: renamed there by hand.
+    *) WANTED_NAME=$NAME ;;
+  esac
   NAME=$ENROLLED_NAME
 fi
 

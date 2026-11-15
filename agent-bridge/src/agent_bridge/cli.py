@@ -1,8 +1,9 @@
-"""`agent-bridge serve | enroll | unenroll | check`: what the platform setups run.
+"""`agent-bridge serve | enroll | rename | unenroll | check`: what the platform setups run.
 
-Exit codes are part of the deploy contract the setups are built against: `enroll` exits 3
-when the name is taken (ask for another) and 4 when the gateway can't be reached;
-`check --token-format` and `--name-format` exit 2 for a value that won't do.
+Exit codes are part of the deploy contract the setups are built against: `enroll` and
+`rename` exit 3 when the name is taken (ask for another) and 4 when the gateway can't be
+reached; `rename` exits 5 when the gateway is too old to rename hosts (rename it there);
+`rename`, `check --token-format` and `--name-format` exit 2 for a value that won't do.
 """
 
 import argparse
@@ -19,12 +20,20 @@ import uvicorn
 
 from agent_bridge.app import create_app
 from agent_bridge.config import Settings, check_name_format, check_token_format
-from agent_bridge.gateway import GatewayError, GatewayUnreachable, enroll, parse_enrollment, report_address, unenroll
+from agent_bridge.gateway import (
+    GatewayError,
+    GatewayUnreachable,
+    enroll,
+    parse_enrollment,
+    rename_host,
+    report_address,
+    unenroll,
+)
 from agent_bridge.herdr import Herdr, HerdrError
 from agent_bridge.host import API_VERSION
-from agent_bridge.state import Gateway, StateError, env_file, load, load_or_create, rename, save, state_file
+from agent_bridge.state import Gateway, State, StateError, env_file, load, load_or_create, rename, save, state_file
 
-OK, FAILED, INVALID, NAME_TAKEN, UNREACHABLE = 0, 1, 2, 3, 4
+OK, FAILED, INVALID, NAME_TAKEN, UNREACHABLE, OUTDATED = 0, 1, 2, 3, 4, 5
 
 
 class _Refused(Exception):
@@ -39,6 +48,8 @@ def main(argv: list[str] | None = None, *, run: Callable[..., None] = uvicorn.ru
             return _serve(run)
         if args.command == "enroll":
             return _enroll(args.string)
+        if args.command == "rename":
+            return _rename(args.name)
         if args.command == "unenroll":
             return _unenroll()
         if args.token_format is not None:
@@ -57,6 +68,8 @@ def _parser() -> argparse.ArgumentParser:
     commands.add_parser("serve", help="run the service, from the env file and state file")
     enroll_command = commands.add_parser("enroll", help="join the gateway that printed the string")
     enroll_command.add_argument("string", help="what `sudo mcp-gateway enroll` printed, crm1@…")
+    rename_command = commands.add_parser("rename", help="rename this host on the gateway")
+    rename_command.add_argument("name", help="the new name, like linux-box")
     commands.add_parser("unenroll", help="leave the gateway")
     check = commands.add_parser("check", help="check the running service; or check a value's format")
     formats = check.add_mutually_exclusive_group()
@@ -114,6 +127,49 @@ def _enroll(string: str) -> int:
     if reply.get("api_version", API_VERSION) < API_VERSION:
         print("The gateway is older than this agent-bridge and may not call it: update the gateway.", file=sys.stderr)
     return OK
+
+
+def _rename(name: str) -> int:
+    """Renames this host on the gateway and saves the name to the state file; the env
+    file's AGENT_BRIDGE_NAME is the setups' to write."""
+    if _format(check_name_format, name, "The name") != OK:
+        return INVALID
+    path = state_file()
+    state = load(path)
+    gateway = state.gateway if state else None
+    if state is None or gateway is None:
+        print("Not enrolled with a gateway, so there is nothing to rename: enroll with the new name.", file=sys.stderr)
+        return FAILED
+    settings = _settings()
+    by_hand = f"Rename it on the gateway host with: sudo mcp-gateway bridges rename {gateway.name} {name}"
+    try:
+        reply = asyncio.run(rename_host(gateway.url, state, settings.token, name))
+    except GatewayUnreachable as error:
+        print(f"Couldn't rename: {error}.\n{by_hand}", file=sys.stderr)
+        return UNREACHABLE
+    except GatewayError as error:
+        if error.code == "name_taken":
+            print(f"Couldn't rename: {error}", file=sys.stderr)
+            return NAME_TAKEN
+        if error.status == 404 and error.code is None and _knows_this_host(gateway.url, state, settings):
+            print(f"The gateway at {gateway.url} is too old to rename hosts: update the gateway.\n{by_hand}",
+                  file=sys.stderr)
+            return OUTDATED
+        print(f"The gateway refused: {error}\n{by_hand}", file=sys.stderr)
+        return FAILED
+    rename(path, gateway, reply["name"])
+    print(f"The gateway at {gateway.url} has this host as {reply['name']}.")
+    return OK
+
+
+def _knows_this_host(gateway_url: str, state: State, settings: Settings) -> bool:
+    """Whether the gateway answers this host's address report, which every gateway has: a
+    404 from it to a rename then means it has no such route, not that it refused."""
+    try:
+        asyncio.run(report_address(gateway_url, state, settings))
+    except GatewayError:
+        return False
+    return True
 
 
 def _unenroll() -> int:

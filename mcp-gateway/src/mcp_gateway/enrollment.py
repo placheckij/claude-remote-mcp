@@ -4,8 +4,9 @@
 good for 30 minutes and any number of bridges. A bridge sends it to POST /enroll with its
 id, address, token and name; the gateway asks that address's /info whether it is that
 bridge, and adds it. The bridge reports its address on every start (PUT
-/bridges/{id}/address; a new one is checked the same way) and removes itself on uninstall
-(DELETE /bridges/{id}), both with its own token.
+/bridges/{id}/address; a new one is checked the same way), renames itself (PUT
+/bridges/{id}/name) and removes itself on uninstall (DELETE /bridges/{id}), all with its
+own token.
 
 The routes share the listener with /mcp but serve the LAN only: the tunnel doesn't
 publish them, and they answer 404 to anything it forwarded or that comes from elsewhere.
@@ -145,6 +146,10 @@ class _AddressRequest(BaseModel):
     url: str
 
 
+class _NameRequest(BaseModel):
+    name: str
+
+
 def enrollment_routes(
     app: ASGIApp,
     registry: Registry,
@@ -181,6 +186,20 @@ def enrollment_routes(
         record = registry.move(bridge_id, url)
         if before is not None and before.url != record.url:
             log.info("%s moved from %s to %s.", record.name, before.url, record.url)
+        return _joined(record.name)
+
+    async def rename(request: Request) -> Response:
+        # It chose its name at enrollment already, so this gives it nothing new.
+        bridge_id = _authorized(request)
+        name = (await _body(request, _NameRequest)).name
+        _check(check_name_format, name, "name")
+        before = registry.find_id(bridge_id)
+        try:
+            record = registry.rename_id(bridge_id, name)
+        except NameTaken as error:
+            raise Refused(409, "name_taken", f"{error} Choose another name.") from None
+        if before is not None and before.name != record.name:
+            log.warning("%s renamed itself %s.", before.name, record.name)
         return _joined(record.name)
 
     async def _info_of(bridge_id: str, url: str, token: str) -> dict:
@@ -245,6 +264,7 @@ def enrollment_routes(
         routes=[
             Route("/enroll", handled(enroll), methods=["POST"]),
             Route("/bridges/{bridge_id}/address", handled(update_address), methods=["PUT"]),
+            Route("/bridges/{bridge_id}/name", handled(rename), methods=["PUT"]),
             Route("/bridges/{bridge_id}", handled(unenroll), methods=["DELETE"]),
         ]
     )
