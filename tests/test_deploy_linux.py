@@ -715,6 +715,25 @@ def test_setup_stopping_after_a_rename_says_the_gateway_has_the_new_name(host: H
     assert "the gateway has this host as newbox now" in result.stderr
 
 
+@pytest.mark.parametrize("new_token", ["rotated", "lost"])
+def test_a_new_name_with_a_new_token_is_renamed_by_enrolling(host: Host, new_token: str) -> None:
+    # The gateway doesn't know a new token yet, so only enrolling, with the new name, renames it.
+    host.install()
+    env = {"ROTATE_TOKEN": "1"}
+    if new_token == "lost":
+        lines = host.env_file.read_text().splitlines()
+        host.env_file.write_text("".join(f"{line}\n" for line in lines if not line.startswith("AGENT_BRIDGE_TOKEN=")))
+        env = {}
+
+    result = host.setup(NAME="newbox", ENROLLMENT=ENROLLMENT, **env)
+
+    assert not [line for line in host.log("agent-bridge.log") if line.startswith("rename")]
+    assert f"enroll {ENROLLMENT}" in host.log("agent-bridge.log")
+    assert host.env()["AGENT_BRIDGE_NAME"] == "newbox"
+    assert "as newbox" in result.stdout
+    assert "didn't rename" not in result.stdout
+
+
 def test_a_new_name_isnt_renamed_when_setup_stops_before_installing(host: Host) -> None:
     host.install()
 

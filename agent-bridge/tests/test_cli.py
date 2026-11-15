@@ -334,6 +334,17 @@ def test_rename_exits_6_with_the_gateway_command_when_the_gateway_is_too_old(
     assert load(state_path()) == state
 
 
+def test_rename_names_the_gateways_current_name_in_its_command(capsys, settings: Path, fake: FakeGateway) -> None:
+    # Renamed there with `bridges rename mac studio` since the bridge last asked.
+    enrolled()
+    fake.answers[("PUT", "bridges")] = [NO_ROUTE, httpx.Response(200, json={"name": "studio", **JOINED})]
+
+    code, _, err = run(capsys, "rename", "office")
+
+    assert code == cli.OUTDATED
+    assert "sudo mcp-gateway bridges rename studio office" in err
+
+
 def test_rename_exits_6_too_when_the_gateway_cant_reach_a_new_address(capsys, settings: Path, fake: FakeGateway) -> None:
     # E.g. Windows setup renaming while agent-bridge is stopped, with a new address in the env
     # file: the gateway knows this host's token, but can't ask the new address about itself.

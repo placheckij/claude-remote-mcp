@@ -155,7 +155,8 @@ def _rename(name: str) -> int:
         if error.code == "name_taken":
             print(f"Couldn't rename: {error}", file=sys.stderr)
             return NAME_TAKEN
-        if error.status == 404 and error.code is None and _knows_this_host(gateway.url, state, settings):
+        if error.status == 404 and error.code is None and (now := _name_there(gateway.url, state, settings)):
+            by_hand = f"Rename it on the gateway host with: sudo mcp-gateway bridges rename {now} {name}"
             print(f"The gateway at {gateway.url} is too old to rename hosts: update the gateway.\n{by_hand}",
                   file=sys.stderr)
             return OUTDATED
@@ -177,16 +178,16 @@ def _rename(name: str) -> int:
     return OK
 
 
-def _knows_this_host(gateway_url: str, state: State, settings: Settings) -> bool:
-    """Whether the gateway takes this host's token for its address report, which every
-    gateway has: a 404 from it to a rename then means it has no such route, not that it
-    refused. Refusing the address itself (e.g. one it can't reach while agent-bridge is
-    stopped) comes after the token, so it counts."""
+def _name_there(gateway_url: str, state: State, settings: Settings) -> str | None:
+    """The gateway's name for this host, if it takes this host's token for its address
+    report, which every gateway has: a 404 from it to a rename then means it has no such
+    route, not that it refused. Refusing the address itself (e.g. one it can't reach while
+    agent-bridge is stopped) comes after the token, so it counts, with the saved name."""
+    assert state.gateway is not None
     try:
-        asyncio.run(report_address(gateway_url, state, settings))
+        return asyncio.run(report_address(gateway_url, state, settings))["name"]
     except GatewayError as error:
-        return error.code is not None and error.code not in NOT_KNOWN
-    return True
+        return state.gateway.name if error.code is not None and error.code not in NOT_KNOWN else None
 
 
 def _unenroll() -> int:

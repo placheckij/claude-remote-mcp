@@ -367,12 +367,15 @@ ENROLLMENT=${ENROLLMENT:-}
 [[ -z ${ROTATE_TOKEN:-} || -n $ENROLLMENT ]] \
   || die "ROTATE_TOKEN needs an enrollment string, so the gateway learns the new token: run sudo mcp-gateway enroll on the gateway host and pass what it prints as ENROLLMENT"
 
-# With the installed token, which the gateway has.
 WANTED_NAME=""
 RENAME_REFUSED=""
 RENAMED=""
 UNSAVED_NAME=""
-if [[ -n $RENAME_TO ]]; then
+if [[ -n $RENAME_TO && -n $NEW_TOKEN ]]; then
+  # The gateway doesn't know a new token yet: enrolling again, with the new name, renames it.
+  if [[ -n $ENROLLMENT ]]; then NAME=$RENAME_TO; else WANTED_NAME=$RENAME_TO; fi
+elif [[ -n $RENAME_TO ]]; then
+  # With the installed token, which the gateway has.
   log "Renaming this host to $RENAME_TO on the gateway"
   status=0
   bridge rename "$RENAME_TO" || status=$?
