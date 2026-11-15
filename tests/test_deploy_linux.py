@@ -749,6 +749,21 @@ def test_a_new_name_waiting_on_a_failed_enrollment_is_named_in_the_retry(host: H
     assert "NAME=newbox" in result.stdout + result.stderr
 
 
+@pytest.mark.parametrize("code", ["1", "4", "6"])
+def test_a_new_name_the_gateway_cant_take_is_renamed_by_enrolling_with_a_string(host: Host, code: str) -> None:
+    # E.g. 1: the gateway no longer has this host; 6: too old to rename. Enrolling renames it.
+    host.install()
+    (host.home / "rename-code").write_text(code)
+
+    result = host.setup(NAME="newbox", ENROLLMENT=ENROLLMENT)
+
+    assert f"enroll {ENROLLMENT}" in host.log("agent-bridge.log")
+    assert host.env()["AGENT_BRIDGE_NAME"] == "newbox"
+    assert "as newbox" in result.stdout
+    assert "bridges rename" not in result.stdout
+    assert "didn't rename" not in result.stdout
+
+
 def test_a_new_name_isnt_renamed_when_setup_stops_before_installing(host: Host) -> None:
     host.install()
 

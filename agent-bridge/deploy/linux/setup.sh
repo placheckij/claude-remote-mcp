@@ -385,10 +385,16 @@ elif [[ -n $RENAME_TO ]]; then
     # Renamed, but the state file still has the old name (agent-bridge said how to fix that).
     5) NAME=$RENAME_TO; ENROLLED_NAME=$NAME; RENAMED=$NAME; UNSAVED_NAME=$NAME ;;
     3) die "the gateway has another host named $RENAME_TO; nothing was changed, run again with another NAME" ;;
-    # A gateway too old to rename hosts, or one that can't be asked: renamed there by hand.
-    4 | 6) WANTED_NAME=$RENAME_TO ;;
-    # Refused (agent-bridge said why), e.g. it no longer has this host.
-    *) WANTED_NAME=$RENAME_TO; RENAME_REFUSED=1 ;;
+    # Too old to rename hosts (6), no answer (4) or refused (agent-bridge said why), e.g. it no
+    # longer has this host: enrolling again, with the new name, renames it; else by hand.
+    *)
+      if [[ -n $ENROLLMENT ]]; then
+        NAME=$RENAME_TO
+        RENAME_BY_ENROLLING=$NAME
+      else
+        WANTED_NAME=$RENAME_TO
+        [[ $status == 4 || $status == 6 ]] || RENAME_REFUSED=1
+      fi ;;
   esac
 fi
 
