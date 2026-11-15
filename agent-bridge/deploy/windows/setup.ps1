@@ -548,6 +548,27 @@ try {
             "where agent-bridge starts. Set it with setx and open a new window, or write the value there instead.")
     }
 
+    # The gateway knows this host by the name it enrolled with; a new -Name is renamed there,
+    # with the token it has. Now, while agent-bridge is stopped: its address report at start
+    # writes the state file too, and a taken name goes back before its /info shows it. One
+    # the gateway can't take that way (too old, or no answer) needs enrolling again.
+    $Gateway = Get-EnrolledGateway
+    $NameChanged = $Gateway -and -not $NameInstalled -and $Name -ne $Gateway.name
+    $NameTaken = $false
+    if ($NameChanged -and -not $NewToken) {
+        Write-Step "Renaming this host to $Name on the gateway"
+        $RenameCode = Invoke-Native $Exe @('rename', $Name)
+        if ($RenameCode -eq 3) {
+            $NameTaken = $true
+            $Settings['AGENT_BRIDGE_NAME'] = $Gateway.name
+            Write-EnvFile $EnvFile (Read-EnvFile $EnvFile).Lines $Settings
+            $NameChanged = $false
+        } elseif ($RenameCode -eq 0) {
+            $Gateway = Get-EnrolledGateway
+            $NameChanged = $false
+        }
+    }
+
     # The firewall now, not before the steps above: setup stopping there leaves the old
     # bridge's rule and settings as they were. And before registering, which starts
     # agent-bridge at once: Windows may ask about Python as soon as it listens on the LAN.
@@ -614,26 +635,6 @@ try {
 
     # --- Enroll ----------------------------------------------------------------------------
 
-    $Gateway = Get-EnrolledGateway
-    # The gateway knows this host by the name it enrolled with; a new -Name is renamed there,
-    # with the token it has. One it can't take that way (too old, or no answer) needs
-    # enrolling again.
-    $NameChanged = $Gateway -and -not $NameInstalled -and $Name -ne $Gateway.name
-    $NameTaken = $false
-    if ($NameChanged -and -not $NewToken) {
-        Write-Step "Renaming this host to $Name on the gateway"
-        $RenameCode = Invoke-Native $Exe @('rename', $Name)
-        if ($RenameCode -eq 3) {
-            # Back to the gateway's name; the running bridge's /info has the other until it restarts.
-            $NameTaken = $true
-            $Settings['AGENT_BRIDGE_NAME'] = $Gateway.name
-            Write-EnvFile $EnvFile (Read-EnvFile $EnvFile).Lines $Settings
-            $NameChanged = $false
-        } elseif ($RenameCode -eq 0) {
-            $Gateway = Get-EnrolledGateway
-            $NameChanged = $false
-        }
-    }
     # Asked for the enrollment string unless -Enrollment is passed.
     $WantsEnroll = -not $Gateway -or $NewToken -or $NameChanged
     $String = ''
