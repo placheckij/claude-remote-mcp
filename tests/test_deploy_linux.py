@@ -878,13 +878,26 @@ def test_a_rotation_the_gateway_took_but_couldnt_be_saved_keeps_the_new_token(ho
     result = host.setup(ROTATE_TOKEN="1", ENROLLMENT=ENROLLMENT, check=False)
 
     assert result.returncode != 0
-    assert "state file couldn't be saved" in result.stderr
+    assert "state file couldn't be saved" in result.stdout
     assert "not rotated" not in result.stderr
+    assert "not enrolled" not in result.stdout
+    assert "old token" not in result.stdout
     assert host.env()["AGENT_BRIDGE_TOKEN"] != first
     assert host.env()["AGENT_BRIDGE_NAME"] == "linux-box"
     assert host.log("systemctl.log").count(f"--user restart {UNIT}") == 1
     # No second string asked for: another wouldn't fix the state file.
     assert [line for line in host.log("agent-bridge.log") if line.startswith("enroll")] == [f"enroll {ENROLLMENT}"]
+
+
+def test_a_save_failure_still_prints_the_lingering_hint(host: Host) -> None:
+    (host.home / "linger-denied").touch()
+    (host.home / "enroll-codes").write_text("5\n")
+
+    result = host.setup(ENROLLMENT=ENROLLMENT, check=False)
+
+    assert result.returncode != 0
+    assert "sudo loginctl enable-linger" in result.stdout
+    assert "state file couldn't be saved" in result.stdout
 
 
 def test_a_taken_name_then_a_save_failure_keeps_the_new_name(host: Host) -> None:
@@ -894,7 +907,7 @@ def test_a_taken_name_then_a_save_failure_keeps_the_new_name(host: Host) -> None
     result = host.setup(ROTATE_TOKEN="1", ENROLLMENT=ENROLLMENT, input="box2\n", check=False)
 
     assert result.returncode != 0
-    assert "enrolled this host as box2" in result.stderr
+    assert "enrolled this host as box2" in result.stdout
     assert host.env()["AGENT_BRIDGE_NAME"] == "box2"
 
 

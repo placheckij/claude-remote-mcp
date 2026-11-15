@@ -465,6 +465,7 @@ start_service
 
 ENROLLED=""
 TAKEN=""
+SAVE_FAILED=""
 while [[ -n $ENROLLMENT ]]; do
   log "Enrolling with the gateway"
   status=0
@@ -485,15 +486,15 @@ while [[ -n $ENROLLMENT ]]; do
       start_service ;;
     4) break ;; # agent-bridge printed the command to run once the gateway is up
     5) # The gateway took the new token and name, but the state file couldn't be saved:
-      # keep them (putting the old token back would lock the gateway out) and stop.
-      die "the gateway enrolled this host as $NAME, but its state file couldn't be saved (see above); fix that, then enroll again with a new string from sudo mcp-gateway enroll: $AGENT_BRIDGE enroll '<what it printed>'" ;;
+      # keep them (putting the old token back would lock the gateway out), and say so below.
+      SAVE_FAILED=1; break ;;
     *)
       ask ENROLLMENT "Enrollment string, crm1@…" "" "Enter to enroll later" ;;
   esac
 done
 
 # The gateway still has the old token: put it back, or the gateway's calls are refused.
-if [[ -n ${ROTATE_TOKEN:-} && -z $ENROLLED && -n $OLD_TOKEN && -n $(enrolled name) ]]; then
+if [[ -n ${ROTATE_TOKEN:-} && -z $ENROLLED && -z $SAVE_FAILED && -n $OLD_TOKEN && -n $(enrolled name) ]]; then
   log "Putting the old token back: the gateway didn't learn the new one"
   TOKEN=$OLD_TOKEN
   # And its name for this host, should another one have been given for a taken name.
@@ -514,6 +515,11 @@ $LINGER_HINT
 $LOGIN_HINT
 }
 EOF
+if [[ -n $SAVE_FAILED ]]; then
+  echo "The gateway enrolled this host as $NAME, but its state file couldn't be saved (see above). Fix that, then enroll again with a new string from sudo mcp-gateway enroll:"
+  echo "  $AGENT_BRIDGE enroll '<what it printed>'"
+  exit 1
+fi
 if [[ -n $(enrolled name) ]]; then
   echo "It is enrolled with the gateway at $(enrolled url) as $(enrolled name): Claude reaches its agents as $(enrolled name)/…"
   [[ -z $WANTED_NAME || $WANTED_NAME == "$(enrolled name)" ]] \
