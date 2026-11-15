@@ -674,6 +674,17 @@ def test_a_new_name_the_gateway_took_without_a_saved_state_isnt_asked_to_enroll(
     assert "still has it as" not in result.stdout
 
 
+def test_setup_stopping_after_a_rename_says_the_gateway_has_the_new_name(mac: Mac) -> None:
+    mac.install()
+    root = str(mac.home / "projects") + "/${HOME}"
+
+    result = mac.setup(NAME="studio", ALLOWED_ROOTS=root, check=False)
+
+    assert result.returncode != 0
+    assert "can't contain ${" in result.stderr
+    assert "the gateway has this host as studio now" in result.stderr
+
+
 def test_a_new_name_with_a_new_token_is_renamed_by_enrolling(mac: Mac) -> None:
     # The gateway learns the new token only by enrolling, which renames it too.
     mac.install()

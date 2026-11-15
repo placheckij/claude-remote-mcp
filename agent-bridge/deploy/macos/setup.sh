@@ -35,7 +35,12 @@ DOMAIN="gui/$(id -u)"
 MANAGED="TOKEN|ALLOWED_ROOTS|HOST|PORT|NAME|HERDR_BIN|CLAUDE_CONFIG_DIR|TRUST_ROOT|ACCOUNTS"
 
 log() { printf '\n==> %s\n' "$*"; }
-die() { printf 'error: %s\n' "$*" >&2; exit 1; }
+die() {
+  printf 'error: %s\n' "$*" >&2
+  # However setup stops after renaming this host on the gateway, say that it did.
+  [[ -z ${RENAMED:-} ]] || printf 'note: the gateway has this host as %s now; the next run takes that name.\n' "$RENAMED" >&2
+  exit 1
+}
 trap 'rm -f "${TMP_ENV:-}" "${TMP_PLIST:-}"' EXIT
 
 ask() { # ask VAR "question" [default] [hint]: Enter, or no input left, takes the default
@@ -440,7 +445,7 @@ except RuntimeError as error:
     sys.exit(str(error))
 if missing:
     sys.exit("Missing " + ", ".join(missing))' 2>&1
-  )" || die "the bridge would refuse these settings: $problem${RENAMED:+ (the gateway has this host as $RENAMED now)}"
+  )" || die "the bridge would refuse these settings: $problem"
   mv "$TMP_ENV" "$ENV_FILE"
   SOURCE=env_file
 }

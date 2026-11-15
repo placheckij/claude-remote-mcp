@@ -35,7 +35,12 @@ STATE_FILE="$HOME/.local/state/agent-bridge/state.json"
 MANAGED="TOKEN|ALLOWED_ROOTS|HOST|PORT|NAME|HERDR_BIN|CLAUDE_CONFIG_DIR|TRUST_ROOT|ACCOUNTS"
 
 log() { printf '\n==> %s\n' "$*"; }
-die() { printf 'error: %s\n' "$*" >&2; exit 1; }
+die() {
+  printf 'error: %s\n' "$*" >&2
+  # However setup stops after renaming this host on the gateway, say that it did.
+  [[ -z ${RENAMED:-} ]] || printf 'note: the gateway has this host as %s now; the next run takes that name.\n' "$RENAMED" >&2
+  exit 1
+}
 trap 'rm -f "${TMP_ENV:-}" "${TMP_UNIT:-}"' EXIT
 
 ask() { # ask VAR "question" [default] [hint]: Enter, or no input left, takes the default
@@ -235,7 +240,7 @@ until bridge check --name-format "$NAME"; do
   [[ -n $NAME ]] || die "NAME is required"
 done
 # Once enrolled, the gateway's name is this host's name: a new one is renamed there (below,
-# once nothing else can stop setup), and the installed NAME follows.
+# once its questions and checks have passed), and the installed NAME follows.
 RENAME_TO=""
 if [[ -n $ENROLLED_NAME && $ENROLLED_NAME != "$NAME" ]]; then
   [[ -z $NAME_GIVEN ]] || RENAME_TO=$NAME
@@ -407,8 +412,7 @@ write_env() {
     [[ ! -f $ENV_FILE ]] || env_file others "AGENT_BRIDGE_($MANAGED)" || die "couldn't read $ENV_FILE"
   } >"$TMP_ENV"
   # Before it replaces the working settings, or the service would fail at every start.
-  check_env "$TMP_ENV" \
-    || die "agent-bridge won't start with these settings (above); nothing was changed${RENAMED:+ here, but the gateway has this host as $RENAMED now}"
+  check_env "$TMP_ENV" || die "agent-bridge won't start with these settings (above); nothing was changed here"
   mv "$TMP_ENV" "$ENV_FILE"
 }
 

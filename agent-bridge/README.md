@@ -297,7 +297,9 @@ The others are `HOST`, `PORT`, `HERDR_BIN`, `AGENT_BRIDGE_CLAUDE_CONFIG_DIR` and
 `TRUST_ROOT` (pass these two empty for no folder trust), `AGENT_BRIDGE_ACCOUNTS` (never
 asked for; an empty one removes it), and `ROTATE_TOKEN=1`, which replaces the token and
 needs `ENROLLMENT` (if enrolling fails, the old token is put back). A new `NAME` on an
-enrolled host asks for an enrollment string, to rename it on the gateway. For any other
+enrolled host renames it on the gateway (`agent-bridge rename`); a gateway too old for that,
+or one that can't be reached, is asked for an enrollment string instead, as enrolling again
+renames it too. For any other
 setting, edit the env file and re-run the script.
 
 Re-run it after pulling new code. If the plist still holds the settings, the script moves

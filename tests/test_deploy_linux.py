@@ -690,6 +690,17 @@ def test_a_new_name_the_gateway_took_without_a_saved_state_is_kept(host: Host) -
     assert "bridges rename" not in result.stdout
 
 
+def test_setup_stopping_after_a_rename_says_the_gateway_has_the_new_name(host: Host) -> None:
+    host.install()
+    root = str(host.home / "projects") + "/it's"
+
+    result = host.setup(NAME="newbox", ALLOWED_ROOTS=root, check=False)
+
+    assert result.returncode != 0
+    assert "can't contain '" in result.stderr
+    assert "the gateway has this host as newbox now" in result.stderr
+
+
 def test_a_new_name_isnt_renamed_when_setup_stops_before_installing(host: Host) -> None:
     host.install()
 
