@@ -278,6 +278,23 @@ def test_list_agents_by_an_absolute_folder(client: TestClient, fake: FakeAgentBr
     )
 
 
+def test_list_agents_by_a_windows_folder(client: TestClient, fake: FakeAgentBridge) -> None:
+    below = {**AGENT, "id": "w5:p1", "name": "tool", "cwd": "C:\\srv\\tool\\sub", "project": None}
+    fake.routes[("GET", "/agents")] = httpx.Response(200, json=[AGENT, below])
+    assert call_tool(client, "list_agents", project="c:\\SRV\\tool\\") == (
+        False, "1 agent in c:\\SRV\\tool\\:\nw5:p1 · tool · idle · C:\\srv\\tool\\sub",
+    )
+
+
+def test_send_prompt_says_the_agents_account(client: TestClient, fake: FakeAgentBridge) -> None:
+    fake.routes[("POST", "/agents/w1:p1/prompt")] = httpx.Response(
+        200, json={"agent": {**AGENT, "status": "done", "account": "work"},
+                   "output": {"text": "⏺ PONG", "truncated": False}, "timed_out": False},
+    )
+    text = call_tool(client, "send_prompt", agent_id="w1:p1", text="say pong")[1]
+    assert text.startswith("Agent is done.\nw1:p1 · grafik · done · grafik · work account\n---\n")
+
+
 def test_list_agents_by_account_says_an_old_host_cant_tell(client: TestClient, fake: FakeAgentBridge) -> None:
     fake.routes[("GET", "/agents")] = httpx.Response(200, json=[AGENT])
     assert call_tool(client, "list_agents", account="work") == (

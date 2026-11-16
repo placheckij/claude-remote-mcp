@@ -524,6 +524,10 @@ def test_agent_details_carry_the_account(root: Path, claude_process) -> None:
         err("unknown_command"),  # a herdr without process-info
         ok({"process_info": {"foreground_processes": [{"argv0": "zsh", "name": "zsh", "pid": 1}]}}),
         process_info(2**22 + 12345),  # gone by now
+        ok({}),
+        ok({"process_info": {"foreground_processes": None}}),
+        # No pid: psutil would read this bridge's own process instead.
+        ok({"process_info": {"foreground_processes": [{"name": "claude"}, {"name": "claude", "pid": None}]}}),
     ],
 )
 def test_an_account_that_cant_be_read_is_none(root: Path, answer) -> None:
@@ -548,6 +552,33 @@ def test_a_claude_the_agents_tools_run_doesnt_name_its_account(root: Path, claud
         }),
     })
     assert accounts_client(runner, root).get("/agents/w1:p1", headers=AUTH).json()["account"] == "personal"
+
+
+def test_without_a_claude_group_leader_the_oldest_claude_names_the_account(root: Path, claude_process) -> None:
+    # E.g. a wrapper script that started claude leads the group.
+    agent_pid, nested_pid = claude_process(root / ".claude-personal"), claude_process(root / ".claude-other")
+    processes = [{"name": "claude", "pid": nested_pid}, {"name": "claude", "pid": agent_pid}]
+    runner = FakeRunner({
+        ("agent", "get"): ok({"agent": agent()}),
+        ("agent", "read"): (0, "", ""),
+        ("pane", "process-info"): ok({
+            "process_info": {"foreground_process_group_id": 1, "foreground_processes": processes}
+        }),
+    })
+    assert accounts_client(runner, root).get("/agents/w1:p1", headers=AUTH).json()["account"] == "personal"
+
+
+def test_prompt_and_rename_replies_carry_the_account(root: Path, claude_process) -> None:
+    runner = FakeRunner({
+        **rename_responses(root),
+        ("agent", "prompt"): ok({"agent": agent(status="done")}),
+        ("agent", "read"): (0, "⏺ Done.\n", ""),
+        ("pane", "process-info"): process_info(claude_process(root / ".claude-personal")),
+    })
+    c = accounts_client(runner, root)
+    prompted = c.post("/agents/w1:p1/prompt", headers=AUTH, json={"text": "go"}).json()
+    assert prompted["agent"]["account"] == "personal"
+    assert c.patch("/agents/w1:p1", headers=AUTH, json={"name": "x"}).json()["account"] == "personal"
 
 
 def test_a_config_inside_the_default_one_is_another_account(
@@ -755,6 +786,7 @@ def rename_responses(root: Path, others: list[dict] = ()) -> dict:
         ("agent", "list"): ok({"agents": [mine, *others]}),
         ("agent", "rename"): ok({"agent": {**mine, "name": "renamed"}}),
         ("workspace", "rename"): ok({"workspace": {"workspace_id": "w1"}}),
+        ("agent", "read"): (0, "", ""),
     }
 
 

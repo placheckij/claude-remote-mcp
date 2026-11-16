@@ -110,8 +110,9 @@ class Herdr:
         return (await self._json("agent", "get", target))["agent"]
 
     async def process_info(self, pane_id: str) -> dict:
-        """The pane's foreground processes, each with its pid, name and argv0."""
-        return (await self._json("pane", "process-info", "--pane", pane_id))["process_info"]
+        """The pane's foreground processes, each with its pid, name and argv0; {} if herdr
+        doesn't say."""
+        return (await self._json("pane", "process-info", "--pane", pane_id)).get("process_info") or {}
 
     async def read(self, target: str, lines: int, source: str = "recent") -> str:
         """Read terminal text. While the agent is working or blocked herdr can only capture

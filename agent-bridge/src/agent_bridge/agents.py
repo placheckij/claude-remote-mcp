@@ -278,7 +278,7 @@ class AgentService:
             name = herdr_name(name, {a.get("name") for a in running if a["pane_id"] != agent_id})
             renamed = await self.herdr.rename_agent(agent_id, name)
             await self.herdr.rename_workspace(agent.workspace_id, name)
-        return self._summarize(renamed)
+        return await self._detailed(self._summarize(renamed))
 
     async def stop_agent(self, agent_id: str) -> None:
         # Looking the agent up first also refuses panes that aren't agents (a shell, a dev
@@ -408,22 +408,25 @@ class AgentService:
 def claude_environ(process_info: dict) -> dict[str, str] | None:
     """The environment of the pane's Claude Code, from herdr's process info, if it has one
     and the OS lets it be read. Found by name: its MCP servers run in the pane too."""
+    processes = process_info.get("foreground_processes")
     claudes = [
         process
-        for process in process_info.get("foreground_processes", [])
-        if any(
-            PureWindowsPath(name).name.lower().removesuffix(".exe") == "claude"
+        for process in (processes if isinstance(processes, list) else [])
+        # An int pid only: psutil.Process(None) would be this bridge itself.
+        if isinstance(process, dict) and type(process.get("pid")) is int
+        and any(
+            isinstance(name, str) and PureWindowsPath(name).name.lower().removesuffix(".exe") == "claude"
             for name in (process.get("name"), process.get("argv0"))
-            if name
         )
     ]
     if not claudes:
         return None
-    # The agent's own Claude Code leads the group; one its tools run is listed before it.
+    # herdr lists newer processes first, so a claude the agent's tools run comes before the
+    # agent's own: that one is the group leader, else the oldest.
     leader = process_info.get("foreground_process_group_id")
-    claudes.sort(key=lambda process: process.get("pid") != leader)
+    agent = next((process for process in claudes if process["pid"] == leader), claudes[-1])
     try:
-        return psutil.Process(claudes[0]["pid"]).environ()
+        return psutil.Process(agent["pid"]).environ()
     except (psutil.Error, OSError):
         return None
 

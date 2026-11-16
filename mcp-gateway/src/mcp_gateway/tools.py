@@ -456,8 +456,10 @@ class _Wanted:
 
     def __init__(self, project: str | None, account: str | None):
         project, account = (project or "").strip(), (account or "").strip()
-        # "grafik/" is grafik; "/" stays, as an absolute path outside every project starts with it.
-        self.project = (project.rstrip("/") or project).lower() or None
+        # "grafik/" is grafik; "/" stays, as an absolute path outside every project starts with
+        # it. Windows paths are compared with "/" too.
+        slashed = project.replace("\\", "/")
+        self.project = (slashed.rstrip("/") or slashed).lower() or None
         self.account = account.lower() or None
         words = [f"in {project}"] if project else []
         words += [f"on the {account} account"] if account else []
@@ -465,7 +467,7 @@ class _Wanted:
 
     def matches(self, agent: dict, projects_root: str | None) -> bool:
         if self.project is not None:
-            where = folder(agent, projects_root).lower()
+            where = folder(agent, projects_root).replace("\\", "/").lower()
             below = self.project if self.project.endswith("/") else f"{self.project}/"
             if where != self.project and not where.startswith(below):
                 return False
