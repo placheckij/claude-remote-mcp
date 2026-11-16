@@ -187,7 +187,8 @@ def build_server(settings: Settings, hosts: Hosts, oauth: GatewayOAuth) -> MCPSe
                 return runs_none
         wanted = _Wanted(project, account)
         # One host waits as long as before there were several: there is nothing else to list.
-        only_one = len(asked) == 1
+        # Named, or the only host set up; one a platform filter left among several is not.
+        only_one = host is not None or len(everywhere) == 1
         answers = await gather_hosts(asked, agents_on(wanted), None if only_one else LIST_TIMEOUT_S)
         unsure: list[str] = []
         if platform is not None:

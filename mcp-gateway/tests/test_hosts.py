@@ -227,6 +227,17 @@ def test_list_agents_by_platform_with_only_a_down_host_left_doesnt_fail(make) ->
     ))
 
 
+def test_list_agents_by_platform_names_the_one_host_left_when_it_is_down(make, monkeypatch: pytest.MonkeyPatch) -> None:
+    # Not named by the user: it's waited for as among several, and named as down.
+    monkeypatch.setattr(tools, "LIST_TIMEOUT_S", 0.5)
+    gateway = make(["mac", "linux"])
+    says(gateway, "linux", {**info("linux"), "platform": "linux"})
+    gateway.route("linux", "GET", "/info", too_slow)
+    assert gateway.call("list_agents", platform="linux") == (
+        False, "0 agents on 1 host.\nlinux didn't answer: It didn't answer within 0.5 s.",
+    )
+
+
 def test_list_agents_by_platform_on_a_host_that_cant_say(make) -> None:
     gateway = make(["mac", "old"])
     says(gateway, "old", {"api_version": 1})
