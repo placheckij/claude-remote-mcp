@@ -173,6 +173,22 @@ def test_list_agents_on_one_host_asks_only_it(make) -> None:
     assert gateway.paths("mac") == []
 
 
+def test_list_agents_on_one_host_that_is_down_fails(make, monkeypatch: pytest.MonkeyPatch) -> None:
+    # Named by the user: waited for past the several-host limit, and an error if it's down.
+    monkeypatch.setattr(tools, "LIST_TIMEOUT_S", 0.1)
+
+    async def slow(request: httpx.Request) -> httpx.Response:
+        await asyncio.sleep(0.3)
+        return agents("w1:p1")
+
+    gateway = make(["mac", "linux"])
+    gateway.route("linux", "GET", "/agents", slow)
+    assert gateway.call("list_agents", host="linux") == (False, "1 agent on linux:\nlinux/w1:p1 · grafik · idle · grafik")
+    gateway.fakes["linux"].down = True
+    is_error, text = gateway.call("list_agents", host="linux")
+    assert is_error and "not reachable" in text
+
+
 def test_list_agents_on_a_host_with_none_names_it(make) -> None:
     # Not "No agents are running.": the other hosts weren't asked.
     gateway = make(["mac", "linux"])
