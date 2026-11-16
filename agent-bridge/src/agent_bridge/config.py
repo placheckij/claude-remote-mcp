@@ -237,11 +237,11 @@ def _same_config(one: Path | None, other: Path | None) -> bool:
     CLAUDE_CONFIG_DIR, even ~/.claude, uses the .claude.json inside it."""
     if one is None or other is None:
         return one is other
-    one, other = one.expanduser().resolve(), other.expanduser().resolve()
+    one, other = one.expanduser(), other.expanduser()
     try:
-        return one == other or os.path.samefile(one, other)
-    except OSError:  # either one missing
-        return False
+        return one.resolve() == other.resolve() or os.path.samefile(one, other)
+    except (OSError, RuntimeError):  # one missing, or a link loop (RuntimeError before 3.13)
+        return one == other
 
 
 def _has_settings(path: Path) -> bool:

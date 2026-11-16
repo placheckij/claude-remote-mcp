@@ -601,6 +601,20 @@ def test_a_config_is_matched_however_it_is_spelled(
     assert settings.account_using(None) is None
 
 
+def test_a_config_dir_in_a_link_loop_matches_only_as_written(root: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # Python before 3.13 raises RuntimeError resolving a link loop; it must not fail a listing.
+    settings = Settings(token=TOKEN, allowed_roots=(root.resolve(),), accounts={
+        "loop": {"config_dir": root / "loop"}, "personal": {"config_dir": root / ".claude-personal"},
+    })
+
+    def loops(self: Path, strict: bool = False) -> Path:
+        raise RuntimeError(f"Symlink loop from {self}")
+
+    monkeypatch.setattr(Path, "resolve", loops)
+    assert settings.account_using(root / "loop") == "loop"
+    assert settings.account_using(root / "elsewhere") is None
+
+
 def test_a_relative_config_dir_names_no_account(root: Path, claude_process) -> None:
     runner = FakeRunner({
         ("agent", "get"): ok({"agent": agent()}),
