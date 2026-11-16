@@ -11,6 +11,8 @@ def describe(agent: dict, projects_root: str | None) -> str:
     question = agent.get("question")
     status = "waiting for an answer" if question else agent["status"]
     line = f"{agent['id']} · {label} · {status} · {folder(agent, projects_root)}"
+    if agent.get("account"):
+        line += f" · {agent['account']} account"
     return f"{line}\n  Asked: {question}" if question else line
 
 

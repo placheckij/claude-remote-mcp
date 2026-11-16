@@ -166,6 +166,59 @@ def test_list_agents_groups_by_host_and_names_the_ones_that_failed(
     ))
 
 
+def test_list_agents_on_one_host_asks_only_it(make) -> None:
+    gateway = make(["mac", "linux"])
+    gateway.route("linux", "GET", "/agents", agents("w1:p1"))
+    assert gateway.call("list_agents", host="linux") == (False, "1 agent:\nlinux/w1:p1 · grafik · idle · grafik")
+    assert gateway.paths("mac") == []
+
+
+def test_list_agents_on_an_unknown_host_names_the_hosts(make) -> None:
+    is_error, text = make(["mac", "linux"]).call("list_agents", host="pc")
+    assert is_error and text.endswith("No host named pc; hosts: mac, linux.")
+
+
+def says(gateway: Gateway, name: str, answer: dict) -> None:
+    """The host recorded as having said `answer` about itself, and saying it again."""
+    bridge_id = next(record.bridge_id for record in gateway.registry.bridges if record.name == name)
+    gateway.registry.seen(bridge_id, answer)
+    gateway.route(name, "GET", "/info", httpx.Response(200, json=answer) if answer["api_version"] > 1 else NO_INFO)
+
+
+def test_list_agents_by_platform_asks_only_hosts_that_run_it(make) -> None:
+    gateway = make(["mac", "linux", "box", "old"])
+    for name in ("linux", "box"):
+        says(gateway, name, {**info(name), "platform": "linux"})
+    gateway.route("linux", "GET", "/agents", agents("w1:p1"))
+    gateway.route("box", "GET", "/agents", agents())
+    # A bridge from before /info can't say its platform: it's asked, and left out.
+    says(gateway, "old", {"api_version": 1})
+    gateway.route("old", "GET", "/agents", agents("w1:p1"))
+    assert gateway.call("list_agents", platform="linux") == (False, (
+        "1 agent on 2 hosts.\n"
+        "linux, 1 agent:\n"
+        "linux/w1:p1 · grafik · idle · grafik\n"
+        "No agents on box."
+    ))
+    assert gateway.paths("mac") == []
+
+
+def test_list_agents_by_platform_no_host_runs(make) -> None:
+    assert make(["mac"]).call("list_agents", platform="windows") == (False, "No agent host runs Windows.")
+
+
+def test_list_agents_by_project_on_several_hosts(make) -> None:
+    gateway = make(["mac", "linux"])
+    gateway.route("mac", "GET", "/agents", httpx.Response(200, json=[AGENT, {**AGENT, "id": "w2:p1", "project": "notes"}]))
+    gateway.route("linux", "GET", "/agents", httpx.Response(200, json=[{**AGENT, "project": "notes"}]))
+    assert gateway.call("list_agents", project="grafik") == (False, (
+        "1 agent in grafik on 2 hosts.\n"
+        "mac, 1 agent:\n"
+        "mac/w1:p1 · grafik · idle · grafik\n"
+        "No agents in grafik on linux."
+    ))
+
+
 @pytest.mark.parametrize(
     ("api_version", "says"),
     [(0, "old needs an update: its agent-bridge is too old for this gateway."),

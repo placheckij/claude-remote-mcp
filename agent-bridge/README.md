@@ -64,8 +64,8 @@ All routes require `Authorization: Bearer $AGENT_BRIDGE_TOKEN`.
 |---|---|---|
 | `GET /info` | `--version` | the host: `api_version` (2; a bridge without `/info` is 1), `bridge_id` (from the state file), `name` (`AGENT_BRIDGE_NAME`, or the hostname as a slug), `platform` (`darwin`, `linux` or `windows`), `bridge_version`, `herdr_version` (`null` if herdr can't be run), `roots`, `projects_root` (the first root), the `accounts`' names and `max_agents` |
 | `GET /projects/{name}` | | `{"cwd": …}` of the folder `name` under the first allowed root that has one; `404 project_not_found` otherwise, also for anything but one folder name (`..`, `.`, `~`, `/`, `\`, `:`) |
-| `GET /agents` | `agent list` | every herdr agent, in any folder. `project` is the agent's folder under the closest allowed root, joined with `/` on every platform (`grafik/api` for `<root>/grafik/api`), `null` at a root or outside them. An `idle` or `done` agent whose last message ends with a question has it in `question` (read from its screen with `agent read`, so it is a guess; herdr itself can't tell that agent from one that simply finished) |
-| `GET /agents/{id}` | `agent get` | the same, including `question` |
+| `GET /agents` | `agent list` | every herdr agent, in any folder. `project` is the agent's folder under the closest allowed root, joined with `/` on every platform (`grafik/api` for `<root>/grafik/api`), `null` at a root or outside them. An `idle` or `done` agent whose last message ends with a question has it in `question` (read from its screen with `agent read`, so it is a guess; herdr itself can't tell that agent from one that simply finished). `account` is the account its Claude Code runs on (see [Claude accounts](#claude-accounts)) |
+| `GET /agents/{id}` | `agent get` | the same, including `question` and `account` |
 | `GET /agents/{id}/output?lines=40` | `agent read` | last N meaningful lines: padding, input box (also when it shows the session's name) and status bar dropped; the visible screen only while the agent is working or blocked (herdr can't scroll its history then) |
 | `POST /agents/{id}/prompt` `{text, timeout_s?, lines?}` | `agent prompt --wait` | waits until idle/done/blocked (the agent includes `question`); on timeout returns `timed_out: true` with current status, and `unconfirmed: true` if the text was typed but the agent didn't react within 5 s (don't resend). Refused with `409 agent_blocked` while the agent is `blocked` (the Enter would answer its question), and with `409 agent_busy` while it is `working` or another prompt to it is running |
 | `POST /agents/{id}/wait` `{timeout_s?, lines?, expect_change?}` | `agent wait` | same result as `/prompt`, without sending anything; `expect_change` (after `/keys`) first gives the agent 5 s to leave its old `blocked` state |
@@ -146,6 +146,10 @@ case; in the Claude app, e.g. "start grafik on my personal account"), else the a
 whose folder holds its folder most closely, else `AGENT_BRIDGE_CLAUDE_CONFIG_DIR`, which
 counts as the account with the same `config_dir` if there is one. The reply names the
 account. An unknown name is refused with `422 unknown_account`, listing the accounts.
+A listed agent's `account`, also for one started by hand, is the account whose
+`config_dir` is the `CLAUDE_CONFIG_DIR` of its `claude` process (found with `herdr pane
+process-info`; none set is the default config). It is `null` when no account or several
+have that config, when the process can't be read, or without `AGENT_BRIDGE_ACCOUNTS`.
 Folder trust (below) is written to the account's own config, and never to the default
 one.
 

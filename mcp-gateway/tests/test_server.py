@@ -235,6 +235,47 @@ def test_list_agents_is_one_line_per_agent(client: TestClient, fake: FakeAgentBr
     )
 
 
+def test_list_agents_says_each_agents_account(client: TestClient, fake: FakeAgentBridge) -> None:
+    fake.routes[("GET", "/agents")] = httpx.Response(200, json=[{**AGENT, "account": "work"}, {**AGENT, "id": "w2:p1", "account": None}])
+    assert call_tool(client, "list_agents") == (
+        False,
+        "2 agents:\nw1:p1 · grafik · idle · grafik · work account\nw2:p1 · grafik · idle · grafik",
+    )
+
+
+LISTED = [
+    {**AGENT, "account": "work"},
+    {**AGENT, "id": "w2:p1", "name": "api", "project": "Grafik/api", "account": "personal"},
+    {**AGENT, "id": "w3:p1", "name": "notes", "project": "notes", "account": "work"},
+    {**AGENT, "id": "w4:p1", "name": "grafika", "project": "grafika", "account": None},
+]
+
+
+@pytest.mark.parametrize(
+    ("filters", "expected"),
+    [
+        ({"project": "grafik"}, "2 agents in grafik:\nw1:p1 · grafik · idle · grafik · work account\n"
+                                "w2:p1 · api · idle · Grafik/api · personal account"),
+        ({"account": "Work"}, "2 agents on the Work account:\nw1:p1 · grafik · idle · grafik · work account\n"
+                              "w3:p1 · notes · idle · notes · work account"),
+        ({"project": "notes", "account": "personal"}, "No agents in notes on the personal account."),
+    ],
+)
+def test_list_agents_filters_by_project_and_account(
+    client: TestClient, fake: FakeAgentBridge, filters: dict, expected: str
+) -> None:
+    fake.routes[("GET", "/agents")] = httpx.Response(200, json=LISTED)
+    assert call_tool(client, "list_agents", **filters) == (False, expected)
+
+
+def test_list_agents_by_account_says_an_old_host_cant_tell(client: TestClient, fake: FakeAgentBridge) -> None:
+    fake.routes[("GET", "/agents")] = httpx.Response(200, json=[AGENT])
+    assert call_tool(client, "list_agents", account="work") == (
+        False,
+        "No agents on the work account.\nmac can't tell agents' accounts: update its agent-bridge.",
+    )
+
+
 ASKING = {**AGENT, "status": "done", "question": "Do you want me to commit it?"}
 
 
