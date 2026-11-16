@@ -278,6 +278,22 @@ def test_list_agents_by_an_absolute_folder(client: TestClient, fake: FakeAgentBr
     )
 
 
+def test_list_agents_by_a_projects_full_path(client: TestClient, fake: FakeAgentBridge) -> None:
+    # Listed as "grafik"; its path names it too, and the projects root every agent under it.
+    fake.routes[("GET", "/agents")] = httpx.Response(200, json=[AGENT, {**AGENT, "id": "w2:p1", "cwd": "/srv/x", "project": None}])
+    assert call_tool(client, "list_agents", project="/home/me/projects/grafik") == (
+        False, "1 agent in /home/me/projects/grafik:\nw1:p1 · grafik · idle · grafik",
+    )
+    assert call_tool(client, "list_agents", project="/home/me/projects")[1].startswith("1 agent in /home/me/projects:\nw1:p1")
+
+
+@pytest.mark.parametrize("filters", [{"project": "  "}, {"account": " "}])
+def test_list_agents_refuses_a_blank_filter(client: TestClient, fake: FakeAgentBridge, filters: dict) -> None:
+    fake.routes[("GET", "/agents")] = httpx.Response(200, json=[AGENT])
+    is_error, text = call_tool(client, "list_agents", **filters)
+    assert is_error and text.endswith(f"{next(iter(filters))} has the wrong form.")
+
+
 def test_list_agents_by_a_windows_folder(client: TestClient, fake: FakeAgentBridge) -> None:
     below = {**AGENT, "id": "w5:p1", "name": "tool", "cwd": "C:\\srv\\tool\\sub", "project": None}
     fake.routes[("GET", "/agents")] = httpx.Response(200, json=[AGENT, below])

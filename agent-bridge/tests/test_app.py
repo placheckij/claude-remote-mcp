@@ -592,11 +592,22 @@ def test_a_config_is_matched_however_it_is_spelled(
     (root / ".claude-personal").mkdir()
     symlink(root / "personal-link", root / ".claude-personal")
     settings = Settings(token=TOKEN, allowed_roots=(root.resolve(),), accounts={
-        "work": {"config_dir": home / ".claude"}, "personal": {"config_dir": root / "personal-link"},
+        "alt": {"config_dir": home / ".claude"}, "personal": {"config_dir": root / "personal-link"},
     })
-    # No CLAUDE_CONFIG_DIR is Claude Code's default, ~/.claude.
-    assert settings.account_using(None) == "work"
     assert settings.account_using(root / ".claude-personal") == "personal"
+    assert settings.account_using(home / ".." / home.name / ".claude") == "alt"
+    # No CLAUDE_CONFIG_DIR logs in with ~/.claude.json; CLAUDE_CONFIG_DIR=~/.claude with the
+    # .claude.json inside it: two logins.
+    assert settings.account_using(None) is None
+
+
+def test_a_relative_config_dir_names_no_account(root: Path, claude_process) -> None:
+    runner = FakeRunner({
+        ("agent", "get"): ok({"agent": agent()}),
+        ("agent", "read"): (0, "", ""),
+        ("pane", "process-info"): process_info(claude_process(Path(".claude-personal"))),
+    })
+    assert accounts_client(runner, root).get("/agents/w1:p1", headers=AUTH).json()["account"] is None
 
 
 def test_a_config_inside_the_default_one_is_another_account(

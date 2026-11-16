@@ -232,9 +232,12 @@ def claude_env(config_dir: Path | None) -> dict[str, str]:
 
 
 def _same_config(one: Path | None, other: Path | None) -> bool:
-    """Whether two config dirs are the same folder, however spelled (case, links); None is
-    Claude Code's default, ~/.claude."""
-    one, other = ((path or Path.home() / ".claude").expanduser().resolve() for path in (one, other))
+    """Whether two config dirs are the same folder, however spelled (case, links). None,
+    Claude Code's default config, is only itself: it logs in with ~/.claude.json, while a
+    CLAUDE_CONFIG_DIR, even ~/.claude, uses the .claude.json inside it."""
+    if one is None or other is None:
+        return one is other
+    one, other = one.expanduser().resolve(), other.expanduser().resolve()
     try:
         return one == other or os.path.samefile(one, other)
     except OSError:  # either one missing

@@ -157,11 +157,12 @@ def build_server(settings: Settings, hosts: Hosts, oauth: GatewayOAuth) -> MCPSe
         ] = None,
         project: Annotated[
             str | None,
-            Field(min_length=1, max_length=200, description='Only agents in this project folder, e.g. "grafik".'),
+            # Not blank: a filter that strips to nothing would quietly list everything.
+            Field(min_length=1, max_length=200, pattern=r"\S", description='Only agents in this project folder, e.g. "grafik".'),
         ] = None,
         account: Annotated[
             str | None,
-            Field(min_length=1, max_length=64, description='Only agents on this Claude account, e.g. "work".'),
+            Field(min_length=1, max_length=64, pattern=r"\S", description='Only agents on this Claude account, e.g. "work".'),
         ] = None,
     ) -> str:
         """List the Claude Code agents on every agent host with id, name, status, folder and
@@ -476,9 +477,11 @@ class _Wanted:
 
     def matches(self, agent: dict, projects_root: str | None) -> bool:
         if self.project is not None:
-            where = folder(agent, projects_root).replace("\\", "/").lower()
+            # As listed (the project, e.g. "grafik") or as its full path.
             below = self.project if self.project.endswith("/") else f"{self.project}/"
-            if where != self.project and not where.startswith(below):
+            places = [folder(agent, projects_root), agent.get("cwd") or ""]
+            places = [place.replace("\\", "/").lower() for place in places]
+            if not any(place == self.project or place.startswith(below) for place in places):
                 return False
         return self.account is None or (agent.get("account") or "").lower() == self.account
 

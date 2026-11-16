@@ -132,7 +132,10 @@ class AgentService:
         if environ is None:
             return None
         config_dir = environ.get("CLAUDE_CONFIG_DIR")
-        return self.settings.account_using(Path(config_dir) if config_dir else None)
+        if not config_dir:
+            return self.settings.account_using(None)
+        # A relative one is relative to wherever that claude was started, unknown here.
+        return self.settings.account_using(Path(config_dir)) if Path(config_dir).is_absolute() else None
 
     async def read_output(self, agent_id: str, lines: int, source: str) -> Output:
         return cap(await self._tail(agent_id, lines, source), self.settings.max_output_chars)
