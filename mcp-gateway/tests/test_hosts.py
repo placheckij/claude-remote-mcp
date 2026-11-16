@@ -236,6 +236,21 @@ def test_list_agents_by_platform_on_a_host_that_cant_say(make) -> None:
     )
 
 
+@pytest.mark.parametrize(
+    ("platform", "expected"),
+    [("linux", "1 agent on box:\nbox/w1:p1 · grafik · idle · grafik"), ("macos", "No agents on mac.")],
+)
+def test_list_agents_by_platform_goes_by_what_a_host_says_when_asked(make, platform: str, expected: str) -> None:
+    # Recorded before it could say (updated since): asked, then kept or left out by its answer.
+    gateway = make(["mac", "box"])
+    gateway.registry.seen(next(r.bridge_id for r in gateway.registry.bridges if r.name == "box"), {"api_version": 1})
+    gateway.route("mac", "GET", "/agents", agents())
+    gateway.route("box", "GET", "/info", httpx.Response(200, json={**info("box"), "platform": "linux"}))
+    gateway.route("box", "GET", "/agents", agents("w1:p1"))
+    assert gateway.call("list_agents", platform=platform) == (False, expected)
+    assert "/agents" in gateway.paths("box")
+
+
 def test_list_agents_by_platform_no_host_runs(make) -> None:
     assert make(["mac"]).call("list_agents", platform="windows") == (False, "No agent host runs Windows.")
 
