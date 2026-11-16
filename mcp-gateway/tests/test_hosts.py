@@ -204,6 +204,20 @@ def test_list_agents_by_platform_asks_only_hosts_that_run_it(make) -> None:
     assert gateway.paths("mac") == []
 
 
+def test_list_agents_by_platform_with_only_a_down_host_left_doesnt_fail(make) -> None:
+    # Two were asked; the one that may run it is down, which never fails the call.
+    gateway = make(["old", "pc"])
+    says(gateway, "old", {"api_version": 1})
+    gateway.route("old", "GET", "/agents", agents("w1:p1"))
+    says(gateway, "pc", {key: value for key, value in info("pc").items() if key != "platform"})
+    gateway.fakes["pc"].down = True
+    assert gateway.call("list_agents", platform="linux") == (False, (
+        "0 agents on 1 host.\n"
+        "pc didn't answer: The agent host is not reachable (ConnectError). It may be asleep or offline.\n"
+        "old can't say which system it runs: update its agent-bridge."
+    ))
+
+
 def test_list_agents_by_platform_on_a_host_that_cant_say(make) -> None:
     gateway = make(["mac", "old"])
     says(gateway, "old", {"api_version": 1})

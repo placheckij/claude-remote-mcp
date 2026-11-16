@@ -182,7 +182,8 @@ def build_server(settings: Settings, hosts: Hosts, oauth: GatewayOAuth) -> MCPSe
                 return runs_none
         wanted = _Wanted(project, account)
         # One host waits as long as before there were several: there is nothing else to list.
-        answers = await gather_hosts(asked, agents_on(wanted), LIST_TIMEOUT_S if len(asked) > 1 else None)
+        only_one = len(asked) == 1
+        answers = await gather_hosts(asked, agents_on(wanted), None if only_one else LIST_TIMEOUT_S)
         unsure: list[str] = []
         if platform is not None:
             # Answered without saying (a bridge before /info): left out, and named.
@@ -199,7 +200,8 @@ def build_server(settings: Settings, hosts: Hosts, oauth: GatewayOAuth) -> MCPSe
             if not kept:
                 return "\n".join(unsure) if unsure else runs_none
             asked, answers = [one for one, _ in kept], [answer for _, answer in kept]
-        if len(asked) == 1:
+        # A host down fails the call only when it was the one asked; among several it is named.
+        if len(asked) == 1 and (only_one or not isinstance(answers[0], BaseException)):
             (listed,) = answers
             if isinstance(listed, BaseException):
                 raise ToolError(str(listed)) from listed
