@@ -207,6 +207,40 @@ def test_list_agents_by_platform_no_host_runs(make) -> None:
     assert make(["mac"]).call("list_agents", platform="windows") == (False, "No agent host runs Windows.")
 
 
+def test_list_agents_on_a_host_that_doesnt_run_the_platform(make) -> None:
+    gateway = make(["mac", "linux"])
+    says(gateway, "linux", {**info("linux"), "platform": "linux"})
+    assert gateway.call("list_agents", host="mac", platform="linux") == (False, "mac doesn't run Linux.")
+
+
+def test_list_agents_by_platform_names_a_host_that_never_said_and_is_down(make) -> None:
+    # It may run the platform, so it isn't left out silently.
+    gateway = make(["mac", "pc"])
+    gateway.route("mac", "GET", "/agents", agents("w1:p1"))
+    says(gateway, "pc", {key: value for key, value in info("pc").items() if key != "platform"})
+    gateway.fakes["pc"].down = True
+    is_error, text = gateway.call("list_agents", platform="macos")
+    assert not is_error
+    assert text.startswith("1 agent on 2 hosts.\nmac, 1 agent:\nmac/w1:p1 · grafik · idle · grafik\n")
+    assert text.endswith("pc didn't answer: The agent host is not reachable (ConnectError). It may be asleep or offline.")
+
+
+def test_list_agents_by_account_on_several_hosts_says_why_some_cant_have_it(make) -> None:
+    gateway = make(["mac", "linux", "pc"])
+    says(gateway, "linux", {**info("linux"), "accounts": ["work"]})
+    gateway.route("mac", "GET", "/agents", agents("w1:p1"))  # an agent-bridge before accounts
+    gateway.route("linux", "GET", "/agents", httpx.Response(200, json=[{**AGENT, "account": "work"}]))
+    gateway.route("pc", "GET", "/agents", httpx.Response(200, json=[{**AGENT, "account": None}]))
+    assert gateway.call("list_agents", account="work") == (False, (
+        "1 agent on the work account on 3 hosts.\n"
+        "linux, 1 agent:\n"
+        "linux/w1:p1 · grafik · idle · grafik · work account\n"
+        "No agents on the work account on mac and pc.\n"
+        "mac can't tell agents' accounts: update its agent-bridge.\n"
+        "pc has no work account."
+    ))
+
+
 def test_list_agents_by_project_on_several_hosts(make) -> None:
     gateway = make(["mac", "linux"])
     gateway.route("mac", "GET", "/agents", httpx.Response(200, json=[AGENT, {**AGENT, "id": "w2:p1", "project": "notes"}]))

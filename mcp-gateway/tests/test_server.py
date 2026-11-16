@@ -264,8 +264,18 @@ LISTED = [
 def test_list_agents_filters_by_project_and_account(
     client: TestClient, fake: FakeAgentBridge, filters: dict, expected: str
 ) -> None:
+    fake.routes[("GET", "/info")] = httpx.Response(200, json={**INFO, "accounts": ["personal", "work"]})
     fake.routes[("GET", "/agents")] = httpx.Response(200, json=LISTED)
     assert call_tool(client, "list_agents", **filters) == (False, expected)
+
+
+def test_list_agents_by_an_absolute_folder(client: TestClient, fake: FakeAgentBridge) -> None:
+    # Outside every project an agent's folder is its path, and the filter takes it as shown.
+    outside = {**AGENT, "id": "w5:p1", "name": "tool", "cwd": "/srv/tool", "project": None}
+    fake.routes[("GET", "/agents")] = httpx.Response(200, json=[AGENT, outside])
+    assert call_tool(client, "list_agents", project="/srv/tool/") == (
+        False, "1 agent in /srv/tool/:\nw5:p1 · tool · idle · /srv/tool",
+    )
 
 
 def test_list_agents_by_account_says_an_old_host_cant_tell(client: TestClient, fake: FakeAgentBridge) -> None:
@@ -273,6 +283,14 @@ def test_list_agents_by_account_says_an_old_host_cant_tell(client: TestClient, f
     assert call_tool(client, "list_agents", account="work") == (
         False,
         "No agents on the work account.\nmac can't tell agents' accounts: update its agent-bridge.",
+    )
+
+
+def test_list_agents_by_account_says_the_host_has_no_such_account(client: TestClient, fake: FakeAgentBridge) -> None:
+    # Without that account every agent there is on none: "no agents" alone would mislead.
+    fake.routes[("GET", "/agents")] = httpx.Response(200, json=[{**AGENT, "account": None}])
+    assert call_tool(client, "list_agents", account="Work") == (
+        False, "No agents on the Work account.\nmac has no work account.",
     )
 
 

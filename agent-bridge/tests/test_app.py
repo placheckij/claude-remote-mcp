@@ -536,6 +536,34 @@ def test_an_account_that_cant_be_read_is_none(root: Path, answer) -> None:
     assert response.status_code == 200 and response.json()[0]["account"] is None
 
 
+def test_a_claude_the_agents_tools_run_doesnt_name_its_account(root: Path, claude_process) -> None:
+    # herdr lists the group's newer processes first; the agent's own Claude Code leads it.
+    agent_pid, nested_pid = claude_process(root / ".claude-personal"), claude_process(root / ".claude-other")
+    processes = [{"name": "claude", "pid": nested_pid}, {"name": "claude", "pid": agent_pid}]
+    runner = FakeRunner({
+        ("agent", "get"): ok({"agent": agent()}),
+        ("agent", "read"): (0, "", ""),
+        ("pane", "process-info"): ok({
+            "process_info": {"foreground_process_group_id": agent_pid, "foreground_processes": processes}
+        }),
+    })
+    assert accounts_client(runner, root).get("/agents/w1:p1", headers=AUTH).json()["account"] == "personal"
+
+
+def test_a_config_inside_the_default_one_is_another_account(
+    root: Path, set_home, tmp_path_factory: pytest.TempPathFactory
+) -> None:
+    # Only ~/.claude itself is the default config, not a folder in it.
+    home = tmp_path_factory.mktemp("home")
+    set_home(home)
+    runner = FakeRunner(start_responses(trust_dialog=False))
+    c = client(runner, root, accounts={
+        "work": {"config_dir": None}, "alt": {"config_dir": home / ".claude" / "alt"},
+    })
+    response = c.post("/agents", headers=AUTH, json={"cwd": str(root / "project"), "name": "x"})
+    assert response.json()["account"] == "work"
+
+
 def test_without_accounts_no_process_is_looked_at(root: Path) -> None:
     runner = FakeRunner({("agent", "list"): ok({"agents": [agent()]}), ("agent", "read"): (0, "", "")})
     assert client(runner, root).get("/agents", headers=AUTH).json()[0]["account"] is None

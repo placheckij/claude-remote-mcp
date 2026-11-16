@@ -126,16 +126,22 @@ def build_server(settings: Settings, hosts: Hosts, oauth: GatewayOAuth) -> MCPSe
         async def agents_on(host: Host) -> _Listed:
             """The host's wanted agents, one line each. Described here, inside gather_hosts,
             so one host's odd answer fails that host only, not the whole list."""
-            problem = version_problem(host.name, (await hosts.info(host))["api_version"])
+            info = await hosts.info(host)
+            problem = version_problem(host.name, info["api_version"])
             if problem:
                 raise _Outdated(problem)
             agents = await host.bridge.list_agents()
             if not isinstance(agents, list):
                 raise BridgeError("The agent host answered /agents with something other than a list of agents.")
-            # A bridge before accounts leaves the key out; None is an agent on no account.
-            unknown = wanted.account is not None and any("account" not in agent for agent in agents)
+            note = None
+            if wanted.account is not None:
+                # A bridge before accounts leaves the key out; None is an agent on no account.
+                if any("account" not in agent for agent in agents):
+                    note = f"{host.name} can't tell agents' accounts: update its agent-bridge."
+                elif wanted.account not in [name.lower() for name in info.get("accounts", [])]:
+                    note = f"{host.name} has no {wanted.account} account."
             lines = [shown(host, agent) for agent in agents if wanted.matches(agent, root)]
-            return _Listed(lines, accounts_unknown=unknown)
+            return _Listed(lines, note)
 
         return agents_on
 
@@ -166,10 +172,14 @@ def build_server(settings: Settings, hosts: Hosts, oauth: GatewayOAuth) -> MCPSe
             raise ToolError(NO_HOSTS)
         asked = everywhere if host is None else [hosts.named(host)]
         if platform is not None:
+            runs_none = (
+                f"No agent host runs {PLATFORM_NAMES[platform]}." if host is None
+                else f"{host} doesn't run {PLATFORM_NAMES[platform]}."
+            )
             # Hosts that never said are asked; after answering, only those that run it count.
             asked = [one for one in asked if _platform(one) in (None, PLATFORMS[platform])]
             if not asked:
-                return f"No agent host runs {PLATFORM_NAMES[platform]}."
+                return runs_none
         wanted = _Wanted(project, account)
         # One host waits as long as before there were several: there is nothing else to list.
         answers = await gather_hosts(asked, agents_on(wanted), LIST_TIMEOUT_S if len(asked) > 1 else None)
@@ -180,7 +190,7 @@ def build_server(settings: Settings, hosts: Hosts, oauth: GatewayOAuth) -> MCPSe
                 or (_platform(one) is None and isinstance(answer, BaseException))
             ]
             if not kept:
-                return f"No agent host runs {PLATFORM_NAMES[platform]}."
+                return runs_none
             asked, answers = [one for one, _ in kept], [answer for _, answer in kept]
         if len(asked) == 1:
             (listed,) = answers
@@ -190,7 +200,7 @@ def build_server(settings: Settings, hosts: Hosts, oauth: GatewayOAuth) -> MCPSe
                 head = f"No agents{wanted}." if wanted else "No agents are running."
             else:
                 head = f"{count(len(listed.lines), 'agent')}{wanted}:"
-            return "\n".join([head, *listed.lines, *_unknown_accounts(asked, answers)])
+            return "\n".join([head, *listed.lines, *_notes(answers)])
         return _by_host(asked, answers, wanted)
 
     @mcp.tool(annotations=READ_ONLY)
@@ -445,16 +455,19 @@ class _Wanted:
     """list_agents' project and account filters; reads as their words, e.g. " in grafik"."""
 
     def __init__(self, project: str | None, account: str | None):
-        self.project = project.strip().strip("/").lower() if project else None
-        self.account = account.strip().lower() if account else None
-        words = [f"in {project.strip()}"] if project else []
-        words += [f"on the {account.strip()} account"] if account else []
+        project, account = (project or "").strip(), (account or "").strip()
+        # "grafik/" is grafik; "/" stays, as an absolute path outside every project starts with it.
+        self.project = (project.rstrip("/") or project).lower() or None
+        self.account = account.lower() or None
+        words = [f"in {project}"] if project else []
+        words += [f"on the {account} account"] if account else []
         self.words = " ".join(words)
 
     def matches(self, agent: dict, projects_root: str | None) -> bool:
         if self.project is not None:
             where = folder(agent, projects_root).lower()
-            if where != self.project and not where.startswith(f"{self.project}/"):
+            below = self.project if self.project.endswith("/") else f"{self.project}/"
+            if where != self.project and not where.startswith(below):
                 return False
         return self.account is None or (agent.get("account") or "").lower() == self.account
 
@@ -468,18 +481,14 @@ class _Wanted:
 class _Listed:
     """One host's agent lines for list_agents."""
 
-    def __init__(self, lines: list[str], accounts_unknown: bool):
+    def __init__(self, lines: list[str], note: str | None):
         self.lines = lines
-        # Filtered by account, but its agent-bridge doesn't say agents' accounts.
-        self.accounts_unknown = accounts_unknown
+        # Why an account filter can't find agents there, e.g. the host has no such account.
+        self.note = note
 
 
-def _unknown_accounts(hosts: list[Host], answers: list) -> list[str]:
-    return [
-        f"{host.name} can't tell agents' accounts: update its agent-bridge."
-        for host, answer in zip(hosts, answers)
-        if isinstance(answer, _Listed) and answer.accounts_unknown
-    ]
+def _notes(answers: list) -> list[str]:
+    return [answer.note for answer in answers if isinstance(answer, _Listed) and answer.note]
 
 
 def _by_host(everywhere: list[Host], answers: list, wanted: _Wanted) -> str:
@@ -500,7 +509,7 @@ def _by_host(everywhere: list[Host], answers: list, wanted: _Wanted) -> str:
             lines += answer.lines
     if empty:
         lines.append(f"No agents{wanted} on {_and(empty)}.")
-    return "\n".join(lines + failed + _unknown_accounts(everywhere, answers))
+    return "\n".join(lines + failed + _notes(answers))
 
 
 def _and(names: list[str]) -> str:

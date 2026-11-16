@@ -232,11 +232,13 @@ def claude_env(config_dir: Path | None) -> dict[str, str]:
 
 
 def _same_config(one: Path | None, other: Path | None) -> bool:
-    """Whether two config dirs are the same folder; None and ~/.claude are both the default."""
-    def folder(path: Path | None) -> Path | None:
-        return None if path is None or is_default_config(path) else path.expanduser().resolve()
-
-    return folder(one) == folder(other)
+    """Whether two config dirs are the same folder, however spelled (case, links); None is
+    Claude Code's default, ~/.claude."""
+    one, other = ((path or Path.home() / ".claude").expanduser().resolve() for path in (one, other))
+    try:
+        return one == other or os.path.samefile(one, other)
+    except OSError:  # either one missing
+        return False
 
 
 def _has_settings(path: Path) -> bool:

@@ -124,9 +124,11 @@ class AgentService:
         if not self.settings.accounts:
             return None
         try:
-            environ = claude_environ(await self.herdr.process_info(agent.id))
+            info = await self.herdr.process_info(agent.id)
         except HerdrError:
             return None
+        # Off the event loop: reading another process's memory may block, on Windows above all.
+        environ = await asyncio.to_thread(claude_environ, info)
         if environ is None:
             return None
         config_dir = environ.get("CLAUDE_CONFIG_DIR")
@@ -406,14 +408,24 @@ class AgentService:
 def claude_environ(process_info: dict) -> dict[str, str] | None:
     """The environment of the pane's Claude Code, from herdr's process info, if it has one
     and the OS lets it be read. Found by name: its MCP servers run in the pane too."""
-    for process in process_info.get("foreground_processes", []):
-        names = (process.get("name"), process.get("argv0"))
-        if any(PureWindowsPath(name).name.lower().removesuffix(".exe") == "claude" for name in names if name):
-            try:
-                return psutil.Process(process["pid"]).environ()
-            except (psutil.Error, OSError):
-                return None
-    return None
+    claudes = [
+        process
+        for process in process_info.get("foreground_processes", [])
+        if any(
+            PureWindowsPath(name).name.lower().removesuffix(".exe") == "claude"
+            for name in (process.get("name"), process.get("argv0"))
+            if name
+        )
+    ]
+    if not claudes:
+        return None
+    # The agent's own Claude Code leads the group; one its tools run is listed before it.
+    leader = process_info.get("foreground_process_group_id")
+    claudes.sort(key=lambda process: process.get("pid") != leader)
+    try:
+        return psutil.Process(claudes[0]["pid"]).environ()
+    except (psutil.Error, OSError):
+        return None
 
 
 def is_project_name(name: str) -> bool:
