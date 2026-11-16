@@ -528,6 +528,8 @@ def test_agent_details_carry_the_account(root: Path, claude_process) -> None:
         ok({"process_info": {"foreground_processes": None}}),
         # No pid: psutil would read this bridge's own process instead.
         ok({"process_info": {"foreground_processes": [{"name": "claude"}, {"name": "claude", "pid": None}]}}),
+        ok({"process_info": {"foreground_processes": [{"name": "claude", "pid": -1}]}}),
+        ok({"process_info": [{"name": "claude", "pid": 1}]}),
     ],
 )
 def test_an_account_that_cant_be_read_is_none(root: Path, answer) -> None:
@@ -579,6 +581,22 @@ def test_prompt_and_rename_replies_carry_the_account(root: Path, claude_process)
     prompted = c.post("/agents/w1:p1/prompt", headers=AUTH, json={"text": "go"}).json()
     assert prompted["agent"]["account"] == "personal"
     assert c.patch("/agents/w1:p1", headers=AUTH, json={"name": "x"}).json()["account"] == "personal"
+
+
+def test_a_config_is_matched_however_it_is_spelled(
+    root: Path, set_home, symlink, tmp_path_factory: pytest.TempPathFactory
+) -> None:
+    home = tmp_path_factory.mktemp("home")
+    set_home(home)
+    (home / ".claude").mkdir()
+    (root / ".claude-personal").mkdir()
+    symlink(root / "personal-link", root / ".claude-personal")
+    settings = Settings(token=TOKEN, allowed_roots=(root.resolve(),), accounts={
+        "work": {"config_dir": home / ".claude"}, "personal": {"config_dir": root / "personal-link"},
+    })
+    # No CLAUDE_CONFIG_DIR is Claude Code's default, ~/.claude.
+    assert settings.account_using(None) == "work"
+    assert settings.account_using(root / ".claude-personal") == "personal"
 
 
 def test_a_config_inside_the_default_one_is_another_account(

@@ -408,12 +408,12 @@ class AgentService:
 def claude_environ(process_info: dict) -> dict[str, str] | None:
     """The environment of the pane's Claude Code, from herdr's process info, if it has one
     and the OS lets it be read. Found by name: its MCP servers run in the pane too."""
-    processes = process_info.get("foreground_processes")
+    processes = process_info.get("foreground_processes") if isinstance(process_info, dict) else None
     claudes = [
         process
         for process in (processes if isinstance(processes, list) else [])
-        # An int pid only: psutil.Process(None) would be this bridge itself.
-        if isinstance(process, dict) and type(process.get("pid")) is int
+        # A positive int pid only: psutil.Process(None) would be this bridge itself.
+        if isinstance(process, dict) and type(process.get("pid")) is int and process["pid"] > 0
         and any(
             isinstance(name, str) and PureWindowsPath(name).name.lower().removesuffix(".exe") == "claude"
             for name in (process.get("name"), process.get("argv0"))

@@ -183,14 +183,21 @@ def build_server(settings: Settings, hosts: Hosts, oauth: GatewayOAuth) -> MCPSe
         wanted = _Wanted(project, account)
         # One host waits as long as before there were several: there is nothing else to list.
         answers = await gather_hosts(asked, agents_on(wanted), LIST_TIMEOUT_S if len(asked) > 1 else None)
+        unsure: list[str] = []
         if platform is not None:
+            # Answered without saying (a bridge before /info): left out, and named.
+            unsure = [
+                f"{one.name} can't say which system it runs: update its agent-bridge."
+                for one, answer in zip(asked, answers)
+                if _platform(one) is None and not isinstance(answer, BaseException)
+            ]
             kept = [
                 (one, answer) for one, answer in zip(asked, answers)
                 if _platform(one) == PLATFORMS[platform]
                 or (_platform(one) is None and isinstance(answer, BaseException))
             ]
             if not kept:
-                return runs_none
+                return "\n".join(unsure) if unsure else runs_none
             asked, answers = [one for one, _ in kept], [answer for _, answer in kept]
         if len(asked) == 1:
             (listed,) = answers
@@ -200,8 +207,8 @@ def build_server(settings: Settings, hosts: Hosts, oauth: GatewayOAuth) -> MCPSe
                 head = f"No agents{wanted}." if wanted else "No agents are running."
             else:
                 head = f"{count(len(listed.lines), 'agent')}{wanted}:"
-            return "\n".join([head, *listed.lines, *_notes(answers)])
-        return _by_host(asked, answers, wanted)
+            return "\n".join([head, *listed.lines, *_notes(answers), *unsure])
+        return "\n".join([_by_host(asked, answers, wanted), *unsure])
 
     @mcp.tool(annotations=READ_ONLY)
     async def agent_details(agent_id: AgentId) -> str:

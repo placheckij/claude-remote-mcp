@@ -191,16 +191,26 @@ def test_list_agents_by_platform_asks_only_hosts_that_run_it(make) -> None:
         says(gateway, name, {**info(name), "platform": "linux"})
     gateway.route("linux", "GET", "/agents", agents("w1:p1"))
     gateway.route("box", "GET", "/agents", agents())
-    # A bridge from before /info can't say its platform: it's asked, and left out.
+    # A bridge from before /info can't say its platform: it's asked, left out and named.
     says(gateway, "old", {"api_version": 1})
     gateway.route("old", "GET", "/agents", agents("w1:p1"))
     assert gateway.call("list_agents", platform="linux") == (False, (
         "1 agent on 2 hosts.\n"
         "linux, 1 agent:\n"
         "linux/w1:p1 · grafik · idle · grafik\n"
-        "No agents on box."
+        "No agents on box.\n"
+        "old can't say which system it runs: update its agent-bridge."
     ))
     assert gateway.paths("mac") == []
+
+
+def test_list_agents_by_platform_on_a_host_that_cant_say(make) -> None:
+    gateway = make(["mac", "old"])
+    says(gateway, "old", {"api_version": 1})
+    gateway.route("old", "GET", "/agents", agents("w1:p1"))
+    assert gateway.call("list_agents", host="old", platform="linux") == (
+        False, "old can't say which system it runs: update its agent-bridge.",
+    )
 
 
 def test_list_agents_by_platform_no_host_runs(make) -> None:
