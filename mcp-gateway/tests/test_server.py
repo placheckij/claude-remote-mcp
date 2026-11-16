@@ -258,7 +258,7 @@ LISTED = [
                                 "w2:p1 · api · idle · Grafik/api · personal account"),
         ({"account": "Work"}, "2 agents on the Work account:\nw1:p1 · grafik · idle · grafik · work account\n"
                               "w3:p1 · notes · idle · notes · work account\n"
-                              "mac has 1 agent whose account it can't tell."),
+                              "mac has 1 agent not known to be on any account."),
         ({"project": "notes", "account": "personal"}, "No agents in notes on the personal account."),
     ],
 )
@@ -287,7 +287,7 @@ def test_list_agents_by_account_counts_agents_whose_account_is_unknown(client: T
         {**AGENT, "account": None}, {**AGENT, "id": "w2:p1", "account": None}, {**AGENT, "id": "w3:p1", "project": "notes", "account": None},
     ])
     assert call_tool(client, "list_agents", account="work", project="grafik") == (
-        False, "No agents in grafik on the work account.\nmac has 2 agents whose account it can't tell.",
+        False, "No agents in grafik on the work account.\nmac has 2 agents not known to be on any account.",
     )
 
 

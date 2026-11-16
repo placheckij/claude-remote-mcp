@@ -140,9 +140,10 @@ def build_server(settings: Settings, hosts: Hosts, oauth: GatewayOAuth) -> MCPSe
                     note = f"{host.name} can't tell agents' accounts: update its agent-bridge."
                 elif wanted.account not in [name.lower() for name in info.get("accounts", [])]:
                     note = f"{host.name} has no {wanted.account} account."
-                # None is also an agent whose account couldn't be read: it may be on this one.
+                # None is an unnamed config or one that couldn't be read: such an agent may be
+                # on this account, so it is counted rather than left out without a word.
                 elif unknown := sum(1 for a in agents if a.get("account") is None and wanted.in_project(a, root)):
-                    note = f"{host.name} has {count(unknown, 'agent')} whose account it can't tell."
+                    note = f"{host.name} has {count(unknown, 'agent')} not known to be on any account."
             lines = [shown(host, agent) for agent in agents if wanted.matches(agent, root)]
             return _Listed(lines, note)
 
