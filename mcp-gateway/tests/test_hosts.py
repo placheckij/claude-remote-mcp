@@ -169,8 +169,17 @@ def test_list_agents_groups_by_host_and_names_the_ones_that_failed(
 def test_list_agents_on_one_host_asks_only_it(make) -> None:
     gateway = make(["mac", "linux"])
     gateway.route("linux", "GET", "/agents", agents("w1:p1"))
-    assert gateway.call("list_agents", host="linux") == (False, "1 agent:\nlinux/w1:p1 · grafik · idle · grafik")
+    assert gateway.call("list_agents", host="linux") == (False, "1 agent on linux:\nlinux/w1:p1 · grafik · idle · grafik")
     assert gateway.paths("mac") == []
+
+
+def test_list_agents_on_a_host_with_none_names_it(make) -> None:
+    # Not "No agents are running.": the other hosts weren't asked.
+    gateway = make(["mac", "linux"])
+    gateway.route("linux", "GET", "/agents", agents())
+    says(gateway, "linux", {**info("linux"), "platform": "linux"})
+    assert gateway.call("list_agents", host="linux") == (False, "No agents on linux.")
+    assert gateway.call("list_agents", platform="linux", project="grafik") == (False, "No agents in grafik on linux.")
 
 
 def test_list_agents_on_an_unknown_host_names_the_hosts(make) -> None:

@@ -257,7 +257,8 @@ LISTED = [
         ({"project": "grafik"}, "2 agents in grafik:\nw1:p1 · grafik · idle · grafik · work account\n"
                                 "w2:p1 · api · idle · Grafik/api · personal account"),
         ({"account": "Work"}, "2 agents on the Work account:\nw1:p1 · grafik · idle · grafik · work account\n"
-                              "w3:p1 · notes · idle · notes · work account"),
+                              "w3:p1 · notes · idle · notes · work account\n"
+                              "mac has 1 agent whose account it can't tell."),
         ({"project": "notes", "account": "personal"}, "No agents in notes on the personal account."),
     ],
 )
@@ -275,6 +276,18 @@ def test_list_agents_by_an_absolute_folder(client: TestClient, fake: FakeAgentBr
     fake.routes[("GET", "/agents")] = httpx.Response(200, json=[AGENT, outside])
     assert call_tool(client, "list_agents", project="/srv/tool/") == (
         False, "1 agent in /srv/tool/:\nw5:p1 · tool · idle · /srv/tool",
+    )
+
+
+def test_list_agents_by_account_counts_agents_whose_account_is_unknown(client: TestClient, fake: FakeAgentBridge) -> None:
+    # The host has the account, but couldn't read these agents' (e.g. a herdr without
+    # process-info): they may be on it, so "no agents" alone would mislead.
+    fake.routes[("GET", "/info")] = httpx.Response(200, json={**INFO, "accounts": ["work"]})
+    fake.routes[("GET", "/agents")] = httpx.Response(200, json=[
+        {**AGENT, "account": None}, {**AGENT, "id": "w2:p1", "account": None}, {**AGENT, "id": "w3:p1", "project": "notes", "account": None},
+    ])
+    assert call_tool(client, "list_agents", account="work", project="grafik") == (
+        False, "No agents in grafik on the work account.\nmac has 2 agents whose account it can't tell.",
     )
 
 

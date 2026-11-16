@@ -140,6 +140,9 @@ def build_server(settings: Settings, hosts: Hosts, oauth: GatewayOAuth) -> MCPSe
                     note = f"{host.name} can't tell agents' accounts: update its agent-bridge."
                 elif wanted.account not in [name.lower() for name in info.get("accounts", [])]:
                     note = f"{host.name} has no {wanted.account} account."
+                # None is also an agent whose account couldn't be read: it may be on this one.
+                elif unknown := sum(1 for a in agents if a.get("account") is None and wanted.in_project(a, root)):
+                    note = f"{host.name} has {count(unknown, 'agent')} whose account it can't tell."
             lines = [shown(host, agent) for agent in agents if wanted.matches(agent, root)]
             return _Listed(lines, note)
 
@@ -206,10 +209,12 @@ def build_server(settings: Settings, hosts: Hosts, oauth: GatewayOAuth) -> MCPSe
             (listed,) = answers
             if isinstance(listed, BaseException):
                 raise ToolError(str(listed)) from listed
+            # Picked by host or platform: say which, as other hosts may have agents.
+            where = f"{wanted} on {asked[0].name}" if host is not None or platform is not None else str(wanted)
             if not listed.lines:
-                head = f"No agents{wanted}." if wanted else "No agents are running."
+                head = f"No agents{where}." if where else "No agents are running."
             else:
-                head = f"{count(len(listed.lines), 'agent')}{wanted}:"
+                head = f"{count(len(listed.lines), 'agent')}{where}:"
             return "\n".join([head, *listed.lines, *_notes(answers), *unsure])
         return "\n".join([_by_host(asked, answers, wanted), *unsure])
 
@@ -476,14 +481,18 @@ class _Wanted:
         self.words = " ".join(words)
 
     def matches(self, agent: dict, projects_root: str | None) -> bool:
-        if self.project is not None:
-            # As listed (the project, e.g. "grafik") or as its full path.
-            below = self.project if self.project.endswith("/") else f"{self.project}/"
-            places = [folder(agent, projects_root), agent.get("cwd") or ""]
-            places = [place.replace("\\", "/").lower() for place in places]
-            if not any(place == self.project or place.startswith(below) for place in places):
-                return False
+        if not self.in_project(agent, projects_root):
+            return False
         return self.account is None or (agent.get("account") or "").lower() == self.account
+
+    def in_project(self, agent: dict, projects_root: str | None) -> bool:
+        if self.project is None:
+            return True
+        # As listed (the project, e.g. "grafik") or as its full path.
+        below = self.project if self.project.endswith("/") else f"{self.project}/"
+        places = [folder(agent, projects_root), agent.get("cwd") or ""]
+        places = [place.replace("\\", "/").lower() for place in places]
+        return any(place == self.project or place.startswith(below) for place in places)
 
     def __bool__(self) -> bool:
         return bool(self.words)
