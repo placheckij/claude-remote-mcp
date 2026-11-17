@@ -14,13 +14,14 @@ import psutil
 
 from agent_bridge.config import Settings, claude_env
 from agent_bridge.errors import BridgeError
-from agent_bridge.herdr import Herdr, HerdrError
+from agent_bridge.herdr import REMOTE_CONTROL_BLOCKED_TEXT, Herdr, HerdrError
 from agent_bridge.host import API_VERSION, bridge_version, host_name, platform_name
 from agent_bridge.schemas import (
     AgentSummary,
     HostInfo,
     Output,
     PromptResult,
+    StartedAgent,
     cap,
     summarize,
 )
@@ -195,7 +196,8 @@ class AgentService:
         *,
         project: str | None = None,
         cwd: str | None = None,
-    ) -> AgentSummary:
+        remote_control: bool = False,
+    ) -> StartedAgent:
         folder = self._allowed_folder(cwd) if cwd is not None else self._project_folder(project)
         account, config_dir = self._account(folder, account)
         # Named after the folder as given, not where a link to it leads.
@@ -205,8 +207,18 @@ class AgentService:
             running = await self._check_agent_limit()
             name = herdr_name(name or default_name, {agent.get("name") for agent in running})
             await self._trust(folder, config_dir)
-            agent = await self._start_with_one_retry(name, folder, config_dir)
-        return self._summarize(agent).model_copy(update={"account": account})
+            args = list(self.settings.claude_args)
+            # AGENT_BRIDGE_CLAUDE_ARGS may turn it on for every agent already.
+            on = has_remote_control(args)
+            if remote_control and not on:
+                # Named like the agent, so the Claude app lists the session by that name.
+                args += ["--remote-control", name]
+                on = True
+            notice = REMOTE_CONTROL_BLOCKED_TEXT if on else None
+            agent, blocked = await self._start_with_one_retry(name, folder, config_dir, args, notice)
+        state = "blocked" if blocked else "on" if on else "off"
+        summary = self._summarize(agent).model_dump()
+        return StartedAgent(**{**summary, "account": account, "remote_control": state})
 
     def _project_folder(self, project: str) -> Path:
         """The folder `project` names: an absolute path as given, or a folder name under
@@ -248,14 +260,16 @@ class AgentService:
         config_dir = self.settings.claude_config_dir
         return self.settings.account_using(config_dir), config_dir
 
-    async def _start_with_one_retry(self, name: str, folder: Path, config_dir: Path | None) -> dict:
+    async def _start_with_one_retry(
+        self, name: str, folder: Path, config_dir: Path | None, args: list[str], notice: str | None
+    ) -> tuple[dict, bool]:
         # herdr 0.8.0 once failed a start with "expected claude, detected " (no agent seen
         # in the pane yet); 20 later tries all worked. The failed attempt's workspace is
         # already closed, so one more try in a fresh workspace is safe.
         for attempt in (1, 2):
             try:
                 return await self.herdr.start_agent(
-                    name, str(folder), claude_env(config_dir), self.settings.claude_args
+                    name, str(folder), claude_env(config_dir), args, notice=notice
                 )
             except HerdrError as error:
                 if error.code == "folder_not_trusted":
@@ -455,6 +469,11 @@ def project_of(cwd: str | None, roots: Sequence[PurePath]) -> str | None:
         return None
     inside = [path.relative_to(root).parts for root in roots if path.is_relative_to(root)]
     return "/".join(min(inside, key=len)) if inside else None
+
+
+def has_remote_control(args: Sequence[str]) -> bool:
+    """Whether these claude arguments turn on Remote Control, named or not."""
+    return any(arg == "--remote-control" or arg.startswith("--remote-control=") for arg in args)
 
 
 # herdr's rule for agent names: lower-case ASCII, starting with a letter, at most 32 long.

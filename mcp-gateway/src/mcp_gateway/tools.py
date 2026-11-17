@@ -346,11 +346,19 @@ def build_server(settings: Settings, hosts: Hosts, oauth: GatewayOAuth) -> MCPSe
                 "the user names one; by default the agent host picks the account set up for the folder.",
             ),
         ] = None,
+        remote_control: Annotated[
+            bool,
+            Field(
+                description="Turn on Claude Code's Remote Control, so the session shows up in the "
+                "Claude app under the name the agent starts with. On by default; false only when the user asks "
+                "for it off.",
+            ),
+        ] = True,
     ) -> str:
-        """Start a new Claude Code agent in a project folder on an agent host. Without host it
-        starts on the one host that has the project, and asks which host when several do.
-        Refused when too many agents are already running, the folder is not allowed or the
-        account is unknown."""
+        """Start a new Claude Code agent in a project folder on an agent host, with Remote
+        Control on unless the user asks otherwise. Without host it starts on the one host that
+        has the project, and asks which host when several do. Refused when too many agents are
+        already running, the folder is not allowed or the account is unknown."""
         # The start's time also covers these questions (bridge.START_TIMEOUT_S).
         asked = monotonic()
         everywhere = hosts.all()
@@ -381,7 +389,9 @@ def build_server(settings: Settings, hosts: Hosts, oauth: GatewayOAuth) -> MCPSe
             agent_name = _safe_name(name or posixpath.basename(where["cwd"]))
         timeout = max(START_TIMEOUT_S - (monotonic() - asked), 1)
         try:
-            agent = await target.bridge.start_agent(**where, name=agent_name, account=account, timeout=timeout)
+            agent = await target.bridge.start_agent(
+                **where, name=agent_name, account=account, remote_control=remote_control, timeout=timeout
+            )
         except BridgeTimeout as error:
             # Not a tool error: the agent may still come up, and starting it again would
             # make a second one.
@@ -394,8 +404,9 @@ def build_server(settings: Settings, hosts: Hosts, oauth: GatewayOAuth) -> MCPSe
         started = f"Started on the {agent['account']} account:" if agent.get("account") else "Started"
         # Started on the one host found; one not asked may have the project too.
         unchecked = f"\nCouldn't ask {_and(unasked)}, which may have {project} too." if unasked else ""
+        remote = _remote_control_note(target.name, remote_control, agent.get("remote_control"))
         # The account is said up front, not again in the agent's line.
-        return f"{started} {shown(target, {**agent, 'account': None})}{unchecked}"
+        return f"{started} {shown(target, {**agent, 'account': None})}{remote}{unchecked}"
 
     async def host_with(everywhere: list[Host], project: str) -> tuple[Host, list[str]] | str:
         """The one host that has the project, and the hosts that couldn't be asked;
@@ -545,6 +556,18 @@ def _and(names: list[str]) -> str:
 def _is_absolute(project: str) -> bool:
     """An absolute path on any host: /srv/app, C:\\work\\app or \\\\server\\share."""
     return posixpath.isabs(project) or PureWindowsPath(project).is_absolute()
+
+
+def _remote_control_note(host: str, asked: bool, state: str | None) -> str:
+    """What start_agent says about Remote Control, only when it isn't as asked: `state` is
+    the agent-bridge's, None from one before Remote Control."""
+    if state == "blocked":
+        return "\nRemote Control is off: the account's organization doesn't allow it."
+    if state == "on" and not asked:
+        return "\nRemote Control is still on: the host turns it on for every agent."
+    if asked and state is None:
+        return f"\nRemote Control is off: update {host}'s agent-bridge to turn it on."
+    return ""
 
 
 def _project_folder(projects_root: str | None, project: str) -> str:

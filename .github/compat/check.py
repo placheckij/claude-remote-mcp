@@ -230,6 +230,13 @@ class Run:
         self.expect("start_agent by path starts", not error and text.startswith("Started"), text)
         self.expect("start_agent by path starts in it", started_in(commands) == [str(beta)], commands)
         self.expect("start_agent by path takes the name", started_as(commands) == ["beta-test"], commands)
+        # Remote Control needs both sides: an older gateway doesn't ask, an older bridge ignores it.
+        both_new = self.new_bridge and not self.old_gateway
+        self.expect("start_agent by path turns on Remote Control only when both know it",
+                    remote_controlled(commands) == [both_new], commands)
+        if not self.old_gateway and not self.new_bridge:
+            self.expect("start_agent by path says the old bridge can't do Remote Control",
+                        "Remote Control is off: update" in text, text)
 
         (error, text), commands = self.call_logged("start_agent", project="nope")
         self.expect("start_agent with a bad name is refused", error, text)
@@ -316,6 +323,11 @@ def started_in(commands: list[list[str]]) -> list[str]:
 def started_as(commands: list[list[str]]) -> list[str]:
     """The names herdr was asked to start agents with."""
     return [c[2] for c in commands if c[:2] == ["agent", "start"]]
+
+
+def remote_controlled(commands: list[list[str]]) -> list[bool]:
+    """Whether each agent herdr was asked to start has Remote Control."""
+    return ["--remote-control" in c for c in commands if c[:2] == ["agent", "start"]]
 
 
 def http(method: str, url: str, token: str | None, body: dict | None = None) -> tuple[int, str]:
