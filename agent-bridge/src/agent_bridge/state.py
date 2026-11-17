@@ -97,7 +97,7 @@ def save(path: Path, state: State) -> None:
         path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
         # A leftover temporary file is removed first so its old mode can't stay.
         temporary.unlink(missing_ok=True)
-        with os.fdopen(os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "w") as file:
+        with os.fdopen(os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "w", encoding="utf-8") as file:
             file.write(state.model_dump_json(indent=2))
             file.flush()
             os.fsync(file.fileno())

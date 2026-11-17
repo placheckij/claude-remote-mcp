@@ -82,6 +82,8 @@ function Unregister-ScheduledTask { param($TaskName, $TaskPath, $Confirm)
     Add-Call "Unregister-ScheduledTask $TaskPath$TaskName"
     if ($env:FAKE_UNREGISTER_FAILS) { throw 'Access is denied.' }
     $f = Get-Fake; $f.task = $false; Set-Fake $f }
+# Ends nothing, unlike Task Scheduler: what the tests see stopped, setup stopped itself, as it
+# must for a bridge an older setup's task or a person started.
 function Stop-ScheduledTask { param($TaskName, $TaskPath) Add-Call "Stop-ScheduledTask $TaskPath$TaskName" }
 function Disable-ScheduledTask { param($TaskName, $TaskPath)
     Add-Call "Disable-ScheduledTask $TaskPath$TaskName"
@@ -101,18 +103,17 @@ function Start-ScheduledTask { param($TaskName, $TaskPath)
     $port = 8765
     foreach ($line in Get-Content -LiteralPath (Join-Path $env:APPDATA 'agent-bridge\env')) {
         if ($line -match '^AGENT_BRIDGE_PORT=(\d+)') { $port = [int]$Matches[1] } }
-    # What Task Scheduler starts: cmd.exe on run.cmd, the agent-bridge.exe launcher, and
-    # python.exe running it, which is the one that listens. Port 0: not listening.
+    # What the task runs: the agent-bridgew.exe launcher, and python.exe running it, which is
+    # the one that listens. Port 0: not listening.
     if ($env:FAKE_NO_START) { return }
-    $run = Join-Path $env:LOCALAPPDATA 'agent-bridge\run.cmd'
+    $xml = [xml](Get-Content -LiteralPath $env:FAKE_TASK_XML -Raw -Encoding Unicode)
+    $program = $xml.GetElementsByTagName('Command')[0].InnerText
+    $command = "`"$program`" " + $xml.GetElementsByTagName('Arguments')[0].InnerText
     $f = Get-Fake
     $f.listen = @($f.listen) + @(
-        [pscustomobject]@{ port = 0; pid = 4240; name = 'cmd.exe'; path = 'C:\Windows\System32\cmd.exe';
-            cmd = "C:\Windows\System32\cmd.exe /d /c call `"$run`"" },
-        [pscustomobject]@{ port = 0; pid = 4241; name = 'agent-bridge.exe'; path = $env:FAKE_BRIDGE;
-            cmd = "`"$env:FAKE_BRIDGE`" serve" },
+        [pscustomobject]@{ port = 0; pid = 4241; name = 'agent-bridgew.exe'; path = $program; cmd = $command },
         [pscustomobject]@{ port = $port; pid = 4242; name = 'python.exe'; path = 'C:\Python\python.exe';
-            cmd = "`"C:\Python\python.exe`" `"$env:FAKE_BRIDGE`" serve" })
+            cmd = "`"C:\Python\python.exe`" $command" })
     Set-Fake $f }
 
 function Get-NetFirewallRule { param($Name, $ErrorAction)
@@ -240,6 +241,9 @@ class Machine:
         self.bridge = root / "bin" / "agent-bridge.cmd"
         self.bridge.parent.mkdir()
         self.bridge.write_text(f'@"{sys.executable}" "{root / "fake_bridge.py"}" %*\r\n@exit /b %ERRORLEVEL%\r\n')
+        # The windowless one beside it, which only the task runs.
+        self.service = self.bridge.parent / "agent-bridgew.exe"
+        self.service.write_bytes(b"")
         self.save({"task": False, "enabled": False, "rule": None, "listen": []})
 
     def save(self, fake: dict) -> None:
@@ -363,26 +367,50 @@ def test_the_task_runs_agent_bridge_serve_hidden_at_logon_as_this_user(machine: 
     assert task.find("t:Settings/t:Hidden", ns).text == "true"
     assert task.find("t:Settings/t:ExecutionTimeLimit", ns).text == "PT0S"
     exec_ = task.find("t:Actions/t:Exec", ns)
-    assert exec_.find("t:Command", ns).text == rf"{SYSTEM_ROOT}\System32\conhost.exe"
-    # One quoted path only: conhost.exe quotes each argument again, which breaks quotes inside.
-    run = machine.localappdata / "agent-bridge" / "run.cmd"
-    assert exec_.find("t:Arguments", ns).text == rf'--headless "{SYSTEM_ROOT}\System32\cmd.exe" /d /c call "{run}"'
-    assert exec_.find("t:WorkingDirectory", ns).text == str(machine.localappdata / "agent-bridge")
-
-
-def test_the_task_runs_a_wrapper_that_logs_agent_bridge_serve(machine: Machine) -> None:
-    machine.setup("-Enrollment ''", input="\n\n")
-
-    run = (machine.localappdata / "agent-bridge" / "run.cmd").read_bytes()
-    # cmd misreads a batch file with LF line endings after chcp.
-    assert b"\r\n" in run and b"\n" not in run.replace(b"\r\n", b"")
-    text = run.decode("utf-8")
+    # The windowless agent-bridge itself, not conhost.exe or cmd.exe on a script, which ending
+    # the task leaves running.
+    assert exec_.find("t:Command", ns).text == str(machine.service)
     log = machine.localappdata / "agent-bridge" / "agent-bridge.log"
-    assert "{{" not in text
-    assert f'"{machine.bridge}" serve >> "{log}" 2>&1' in text
-    # Not set for agent-bridge to inherit.
-    assert "set \"LOG=" not in text
-    assert 'set "PYTHONUTF8=1"' in text
+    assert exec_.find("t:Arguments", ns).text == f'serve --log-file "{log}"'
+    assert exec_.find("t:WorkingDirectory", ns).text == str(machine.localappdata / "agent-bridge")
+    assert not (machine.localappdata / "agent-bridge" / "run.cmd").exists()
+
+
+def test_an_agent_bridge_without_its_windowless_one_is_refused(machine: Machine) -> None:
+    machine.service.unlink()
+
+    output = machine.setup("-Enrollment ''", input="\n\n", expect=1)
+
+    assert f"{machine.service}, the windowless agent-bridge the task runs, doesn't exist" in output
+    assert "Register-ScheduledTask \\agent-bridge" not in machine.calls()
+
+
+def test_a_rerun_moves_a_task_that_ran_run_cmd_to_agent_bridgew(machine: Machine) -> None:
+    # As an older setup left it: the task runs conhost.exe on cmd.exe on run.cmd, which names
+    # agent-bridge, and ending the task left cmd.exe and all below it running.
+    machine.setup("-Enrollment ''", input="\n\n")
+    state = machine.localappdata / "agent-bridge"
+    run = state / "run.cmd"
+    run.write_text(f'@echo off\r\n"{machine.bridge}" serve >> "{state / "agent-bridge.log"}" 2>&1\r\n', encoding="utf-8")
+    xml = machine.task_xml.read_text(encoding="utf-16")
+    xml = re.sub(r"<Command>[^<]*</Command>", lambda _: rf"<Command>{SYSTEM_ROOT}\System32\conhost.exe</Command>", xml)
+    old = rf'--headless "{SYSTEM_ROOT}\System32\cmd.exe" /d /c call "{run}"'
+    xml = re.sub(r"<Arguments>[^<]*</Arguments>", lambda _: f"<Arguments>{old}</Arguments>", xml)
+    machine.task_xml.write_text(xml, encoding="utf-16")
+    fake = machine.fake()
+    fake["listen"] = []
+    machine.save(fake)
+    machine.listen(0, 4240, "cmd.exe", rf'C:\Windows\System32\cmd.exe /d /c call "{run}"')
+    machine.listen(0, 4241, "agent-bridge.exe", f'"{machine.bridge}" serve')
+    machine.listen(8765, 4242, "python.exe", rf'"C:\Python\python.exe" "{machine.bridge}" serve')
+
+    output = machine.setup()
+
+    assert {"Stop-Process 4240", "Stop-Process 4241", "Stop-Process 4242"} <= set(machine.calls())
+    # run.cmd named the same agent-bridge.
+    assert "The task ran" not in output
+    assert not run.exists()
+    assert f"<Command>{machine.service}</Command>" in machine.task_xml.read_text(encoding="utf-16")
 
 
 def test_a_rerun_keeps_the_token_and_other_settings_and_asks_nothing(machine: Machine) -> None:
@@ -406,9 +434,9 @@ def test_a_rerun_keeps_the_token_and_other_settings_and_asks_nothing(machine: Ma
     assert env["AGENT_BRIDGE_PORT"] == "8765"
     assert added in machine.env_file.read_text(encoding="utf-8").replace("\r\n", "\n")
     assert not any(call.startswith("agent-bridge enroll") for call in machine.calls())
-    # The first run's bridge, including the cmd.exe and launcher that hold no port.
+    # The first run's bridge, including the launcher that holds no port.
     calls = machine.calls()
-    assert {"Stop-Process 4240", "Stop-Process 4241", "Stop-Process 4242"} <= set(calls)
+    assert {"Stop-Process 4241", "Stop-Process 4242"} <= set(calls)
     assert not {"Stop-Process 5000", "Stop-Process 5001", "Stop-Process 5002"} & set(calls)
     # The installed token never goes on a command line.
     assert not any("token-format" in call or token in call for call in calls)
@@ -735,7 +763,7 @@ def test_uninstall_says_how_to_remove_the_host_when_unenroll_fails(machine: Mach
 
 
 def test_uninstall_uses_the_installed_agent_bridge(machine: Machine) -> None:
-    # Installed with -Bridge, uninstalled without: run.cmd says which agent-bridge it runs.
+    # Installed with -Bridge, uninstalled without: the task says which agent-bridge it runs.
     machine.setup(f"-Enrollment '{STRING}'", input="\n\n")
 
     machine.run("uninstall.ps1")
@@ -805,6 +833,7 @@ def test_switching_from_an_agent_bridge_installed_elsewhere_is_said(machine: Mac
     other = machine.root / "other" / "agent-bridge.cmd"
     other.parent.mkdir()
     other.write_text(machine.bridge.read_text())
+    (other.parent / "agent-bridgew.exe").write_bytes(b"")
 
     output = machine.run("setup.ps1", f"-Bridge '{other}'")
 
@@ -1048,11 +1077,38 @@ def test_an_agent_bridge_under_another_name_is_recognised(machine: Machine) -> N
     other = machine.root / "tools" / "ab-1.4.cmd"
     other.parent.mkdir()
     other.write_text(machine.bridge.read_text())
+    (other.parent / "agent-bridgew.exe").write_bytes(b"")
 
     output = machine.run("setup.ps1", f"-Bridge '{other}'", "-Enrollment ''", input="\n\n",
                          FAKE_BRIDGE=str(other))
 
     assert "Done. agent-bridge listens" in output
+
+
+def test_an_agent_bridge_under_another_name_is_found_again(machine: Machine) -> None:
+    other = machine.root / "tools" / "ab-1.4.cmd"
+    other.parent.mkdir()
+    other.write_text(machine.bridge.read_text())
+    (other.parent / "agent-bridgew.exe").write_bytes(b"")
+    machine.run("setup.ps1", f"-Bridge '{other}'", f"-Enrollment '{STRING}'", input="\n\n", FAKE_BRIDGE=str(other))
+
+    rerun = machine.run("setup.ps1", f"-Bridge '{other}'", "-Enrollment ''", FAKE_BRIDGE=str(other))
+    assert "The task ran" not in rerun
+
+    # Only the installed one is left to find.
+    machine.bridge.unlink()
+    machine.run("uninstall.ps1", FAKE_BRIDGE=str(other))
+    assert machine.calls()[0] == "agent-bridge unenroll"
+
+
+def test_without_bridge_txt_the_agent_bridge_beside_the_task_is_found(machine: Machine) -> None:
+    # bridge.txt deleted: bin\agent-bridge.cmd is found beside the agent-bridgew.exe the task runs.
+    machine.setup("-Enrollment ''", input="\n\n")
+    (machine.localappdata / "agent-bridge" / "bridge.txt").unlink()
+
+    rerun = machine.setup("-Enrollment ''")
+
+    assert "The task ran" not in rerun
 
 
 def test_a_skipped_check_isnt_called_failed(machine: Machine) -> None:

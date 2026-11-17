@@ -340,7 +340,7 @@ function Test-EnvCopy($Settings) {
 }
 
 function Write-EnrollCommand {
-    <# How to enroll by hand, in UTF-8 mode as setup and the task run agent-bridge. #>
+    <# How to enroll by hand, in UTF-8 mode as setup runs agent-bridge. #>
     Write-Host "  `$env:PYTHONUTF8 = '1'; & $(Format-Quoted $Exe) enroll '<the string it printed>'"
 }
 
@@ -359,6 +359,12 @@ function Sync-Checkout {
     if ((Invoke-Native uv @('sync', '--all-packages', '--frozen', '--directory', $Checkout)) -ne 0) { Stop-Setup "uv sync failed; $(Get-Unchanged)" }
 }
 
+function Assert-ServiceExe {
+    if (-not (Test-Path -LiteralPath $ServiceExe -PathType Leaf)) {
+        Stop-Setup "$ServiceExe, the windowless agent-bridge the task runs, doesn't exist: $Exe is older than this setup.ps1"
+    }
+}
+
 function Get-BlockRule([string]$Program) {
     <# Inbound rules that block $Program, e.g. python.exe after a Cancel at Windows' firewall
        prompt; they win over the rule setup adds. #>
@@ -374,8 +380,6 @@ try {
     # --- Checks and questions --------------------------------------------------------------
 
     Assert-RunAsYou 'setup.ps1'
-    # conhost.exe --headless, which hides the task's window, came with Windows 10 1809.
-    if ([Environment]::OSVersion.Version.Build -lt 17763) { Stop-Setup 'agent-bridge needs Windows 10 version 1809 or later' }
 
     $found = Find-Bridge $Bridge
     $Exe = $found.Exe
@@ -396,6 +400,9 @@ try {
         if (-not (Test-Path -LiteralPath $Exe)) { Sync-Checkout }
     }
     if (-not (Test-Path -LiteralPath $Exe)) { Stop-Setup "$Exe doesn't exist" }
+    # What the task runs. A checkout's sync, further on, may make it yet.
+    $ServiceExe = Get-ServiceExe $Exe
+    if (-not $Checkout) { Assert-ServiceExe }
 
     # The task gets your environment, where these win over the env file.
     foreach ($scope in 'User', 'Machine') {
@@ -487,9 +494,9 @@ try {
     # logs process starts. agent-bridge check (below) checks the settings it is in.
     if ($NewToken) { $Token = New-Token }
 
-    # cmd.exe would expand %...% in these, inside quotes too, and `call` doubles a ^.
-    foreach ($path in @($Exe, $LogFile, $RunFile)) {
-        if ($path -match '[%^]') { Stop-Setup "agent-bridge can't run from a path with % or ^ in it: $path" }
+    # Task Scheduler would expand %...% in the task's program and arguments, inside quotes too.
+    foreach ($path in @($ServiceExe, $LogFile)) {
+        if ($path.Contains('%')) { Stop-Setup "agent-bridge can't run from a path with % in it: $path" }
     }
 
     # --- Port ------------------------------------------------------------------------------
@@ -538,6 +545,7 @@ try {
         # The new code is what will run: it may refuse what the old one accepted.
         if (-not (Test-EnvCopy $Settings)) { Stop-Setup "agent-bridge's new code wouldn't start with these settings (above); $(Get-Unchanged)" }
     }
+    Assert-ServiceExe
 
     Write-Step "Writing $EnvFile"
     Write-EnvFile $EnvFile $Installed.Lines $Settings
@@ -615,16 +623,12 @@ try {
 
     Write-Step "Registering the scheduled task $TaskName, which starts agent-bridge"
     New-Item -ItemType Directory -Force -Path $StateDir | Out-Null
-    # conhost.exe splits the task's arguments and quotes each again, so everything that needs
-    # quotes inside goes in run.cmd: CRLF (cmd misreads LF after chcp) and UTF-8, as it says.
-    $wrapper = (Get-Content -LiteralPath (Join-Path $PSScriptRoot 'run.cmd') -Raw) -replace "`r?`n", "`r`n"
-    $wrapper = $wrapper.Replace('{{LOG}}', $LogFile).Replace('{{EXE}}', $Exe)
-    [IO.File]::WriteAllText($RunFile, $wrapper, (New-Object Text.UTF8Encoding $false))
     $fields = @{
         '{{USER}}'              = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
-        '{{COMMAND}}'           = Join-Path $env:SystemRoot 'System32\conhost.exe'
-        # `call` first: cmd /c drops the quotes around a path with ( or & in it otherwise.
-        '{{ARGUMENTS}}'         = "--headless `"$(Join-Path $env:SystemRoot 'System32\cmd.exe')`" /d /c call `"$RunFile`""
+        # The windowless agent-bridge itself, with nothing in between: ending the task ends
+        # it, and it takes the python.exe it runs along.
+        '{{COMMAND}}'           = $ServiceExe
+        '{{ARGUMENTS}}'         = "serve --log-file `"$LogFile`""
         '{{WORKING_DIRECTORY}}' = $StateDir
     }
     $xml = Get-Content -LiteralPath (Join-Path $PSScriptRoot 'agent-bridge.task.xml') -Raw
@@ -634,6 +638,10 @@ try {
     Register-ScheduledTask -TaskName $TaskName -TaskPath '\' -Xml $xml -Force | Out-Null
     # Registered enabled.
     Remove-Item -LiteralPath $DisabledMarker -Force -ErrorAction SilentlyContinue
+    # What an older setup had the task run.
+    Remove-Item -LiteralPath $RunFile -Force -ErrorAction SilentlyContinue
+    # So a rerun and uninstall find $Exe, whatever its name.
+    [IO.File]::WriteAllText($BridgeFile, "$Exe`r`n", (New-Object Text.UTF8Encoding $false))
     $Started = Start-Bridge $Port -Registered
 
     # --- Enroll ----------------------------------------------------------------------------

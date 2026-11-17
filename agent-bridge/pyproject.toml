@@ -38,6 +38,9 @@ Releases = "https://github.com/placheckij/claude-remote-mcp/releases"
 [project.scripts]
 agent-bridge = "agent_bridge.cli:main"
 
+[project.gui-scripts]
+agent-bridgew = "agent_bridge.cli:main"
+
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
