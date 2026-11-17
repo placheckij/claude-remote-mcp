@@ -20,6 +20,8 @@ $script:StateFile = Join-Path $script:StateDir 'state.json'
 $script:LogFile = Join-Path $script:StateDir 'agent-bridge.log'
 # What the task ran before it ran agent-bridgew.exe itself; setup and uninstall remove it.
 $script:RunFile = Join-Path $script:StateDir 'run.cmd'
+# The agent-bridge setup was given, which the task can't name: it runs agent-bridgew.exe beside it.
+$script:BridgeFile = Join-Path $script:StateDir 'bridge.txt'
 # Where setup checks a copy of the settings; uninstall removes what a killed setup left.
 $script:CheckDir = Join-Path $script:StateDir 'setup-check'
 # There while setup has the task disabled, the one record of it: a setup that stops early,
@@ -110,13 +112,18 @@ function Get-ServiceExe([string]$Exe) {
 }
 
 function Get-InstalledExe {
-    <# The agent-bridge beside the agent-bridgew.exe the task runs (an .exe, or a .cmd or .bat
-       of that name), or ''. Older setups had it run run.cmd, which names it. #>
+    <# The agent-bridge beside the agent-bridgew.exe the task runs: the one bridge.txt names
+       if it is there, else an .exe, .cmd or .bat named agent-bridge; or ''. Older setups had
+       the task run run.cmd, which names it. #>
     if (Get-ScheduledTask -TaskName $script:TaskName -TaskPath '\' -ErrorAction SilentlyContinue) {
         $xml = [string](Export-ScheduledTask -TaskName $script:TaskName -TaskPath '\' -ErrorAction SilentlyContinue)
         $command = if ($xml) { @(([xml]$xml).GetElementsByTagName('Command')) | Select-Object -First 1 } else { $null }
         if ($command -and (Split-Path -Leaf $command.InnerText) -eq 'agent-bridgew.exe') {
             $folder = Split-Path -Parent $command.InnerText
+            $named = if (Test-Path -LiteralPath $script:BridgeFile -PathType Leaf) {
+                [string](@(Get-Content -LiteralPath $script:BridgeFile -Encoding UTF8) | Select-Object -First 1)
+            } else { '' }
+            if ($named -and (Split-Path -Parent $named) -eq $folder) { return $named }
             $found = @('agent-bridge.exe', 'agent-bridge.cmd', 'agent-bridge.bat' | ForEach-Object { Join-Path $folder $_ } |
                 Where-Object { Test-Path -LiteralPath $_ -PathType Leaf })
             if ($found.Count -gt 0) { return $found[0] }
@@ -133,7 +140,7 @@ function Get-InstalledExe {
 function Find-Bridge([string]$Given, [switch]$Optional, [switch]$PreferInstalled) {
     <# agent-bridge.exe: the one given; the one a package ships beside this folder, or this
        checkout's .venv (Checkout is then the repo, which needs `uv sync`); the installed one
-       (which run.cmd names); else the one on PATH. So setup run from a newer package or
+       (the one the task runs); else the one on PATH. So setup run from a newer package or
        checkout moves the task to it. -PreferInstalled (for uninstall) takes the installed
        one first. Not found, it stops setup, or with -Optional returns $null. #>
     if ($Given) {

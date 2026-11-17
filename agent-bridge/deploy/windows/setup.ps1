@@ -340,7 +340,7 @@ function Test-EnvCopy($Settings) {
 }
 
 function Write-EnrollCommand {
-    <# How to enroll by hand, in UTF-8 mode as setup and the task run agent-bridge. #>
+    <# How to enroll by hand, in UTF-8 mode as setup runs agent-bridge. #>
     Write-Host "  `$env:PYTHONUTF8 = '1'; & $(Format-Quoted $Exe) enroll '<the string it printed>'"
 }
 
@@ -640,6 +640,8 @@ try {
     Remove-Item -LiteralPath $DisabledMarker -Force -ErrorAction SilentlyContinue
     # What an older setup had the task run.
     Remove-Item -LiteralPath $RunFile -Force -ErrorAction SilentlyContinue
+    # So a rerun and uninstall find $Exe, whatever its name.
+    [IO.File]::WriteAllText($BridgeFile, "$Exe`r`n", (New-Object Text.UTF8Encoding $false))
     $Started = Start-Bridge $Port -Registered
 
     # --- Enroll ----------------------------------------------------------------------------

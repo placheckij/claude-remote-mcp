@@ -522,9 +522,10 @@ it doesn't manage, such as `AGENT_BRIDGE_ACCOUNTS`, can be added to the env file
 re-runs keep them.
 
 ```powershell
-# Restart it, e.g. after pulling and `uv sync --all-packages --frozen`. The log gets a new
-# "starting agent-bridge" line. (A task an older setup registered runs conhost.exe on
-# run.cmd, and ending it leaves agent-bridge running: re-run setup once first.)
+# Restart it. The log gets a new "starting agent-bridge" line. (After pulling, re-run setup
+# instead: it stops agent-bridge before `uv sync`, which can't replace files a running one
+# has open. A task an older setup registered runs conhost.exe on run.cmd, and ending it
+# leaves agent-bridge running: re-run setup once first.)
 Stop-ScheduledTask -TaskName agent-bridge
 Start-ScheduledTask -TaskName agent-bridge
 

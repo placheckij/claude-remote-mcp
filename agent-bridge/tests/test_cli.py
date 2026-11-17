@@ -187,15 +187,25 @@ def test_serve_keeps_logging_while_the_log_cant_be_moved(capsys, settings: Path,
     # On Windows, while another process has it open, e.g. Get-Content -Wait.
     monkeypatch.setattr(cli, "LOG_LIMIT", 500)
     log_file = tmp_path / "agent-bridge.log"
+    backup = tmp_path / "agent-bridge.log.1"
+    backup.write_text("an older line\n", encoding="utf-8")
+    replace = os.replace
+    holding = True
 
     def held(source, dest) -> None:
-        raise PermissionError(13, "The process cannot access the file")
+        if holding and Path(source) == log_file:
+            raise PermissionError(13, "The process cannot access the file")
+        replace(source, dest)
 
     def serve(app, **options) -> None:
+        nonlocal holding
+        monkeypatch.setattr(os, "replace", held)
         monkeypatch.setattr(os, "rename", held)
         for number in range(30):
             logging.getLogger("uvicorn.access").info("request %d", number)
-        monkeypatch.undo()
+        # The last move is kept until this one can be made.
+        assert backup.read_text(encoding="utf-8") == "an older line\n"
+        holding = False
         logging.getLogger("uvicorn.access").info("after it was let go")
 
     assert run(capsys, "serve", "--log-file", str(log_file), run=serve)[0] == 0

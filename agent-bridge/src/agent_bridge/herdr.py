@@ -24,6 +24,9 @@ WINDOWS = sys.platform == "win32"
 WINDOWS_COMMAND_LINE_MAX = 32_766
 # What Windows reports for a longer one, as a FileNotFoundError.
 ERROR_FILENAME_EXCED_RANGE = 206
+# Run without a console of its own (agent-bridgew), agent-bridge would otherwise give each
+# herdr a new console window on the desktop.
+NO_WINDOW = {"creationflags": subprocess.CREATE_NO_WINDOW} if WINDOWS else {}
 
 
 def command_line_length(argv: Sequence[str]) -> int:
@@ -43,6 +46,7 @@ async def subprocess_runner(argv: Sequence[str]) -> tuple[int, str, str]:
         *argv,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
+        **NO_WINDOW,
     )
     try:
         stdout, stderr = await proc.communicate()
