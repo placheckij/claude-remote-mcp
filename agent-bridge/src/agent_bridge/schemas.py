@@ -3,7 +3,7 @@
 Responses are trimmed to what a voice-driven caller needs; raw terminal output is capped.
 """
 
-from typing import Annotated
+from typing import Annotated, Literal
 
 from pydantic import AfterValidator, BaseModel, Field, model_validator
 
@@ -39,6 +39,12 @@ class AgentSummary(BaseModel):
     # was started with, or for a listed agent the one with its CLAUDE_CONFIG_DIR. None for
     # an unnamed config, or one that can't be read.
     account: str | None = None
+
+
+class StartedAgent(AgentSummary):
+    # Whether the session has Claude Code's Remote Control. "blocked": it was asked for, but
+    # Claude Code said the account's organization turns it off.
+    remote_control: Literal["on", "off", "blocked"]
 
 
 class Output(BaseModel):
@@ -86,6 +92,9 @@ class StartRequest(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=200)
     # One of AGENT_BRIDGE_ACCOUNTS, any case; by default the one for the folder.
     account: str | None = Field(default=None, min_length=1, max_length=64)
+    # Start with Claude Code's Remote Control, named like the agent. Off when left out, as
+    # gateways from before it expect.
+    remote_control: bool = False
 
     @model_validator(mode="after")
     def _one_folder(self) -> "StartRequest":

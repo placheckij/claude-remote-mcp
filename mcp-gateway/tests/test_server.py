@@ -537,7 +537,7 @@ def test_start_agent_leaves_the_project_to_the_agent_host(
     fake.routes[("POST", "/agents")] = httpx.Response(201, json={**AGENT, "id": "w9:p1"})
     is_error, text = call_tool(client, "start_agent", project=project)
     assert not is_error and text.startswith("Started w9:p1")
-    assert start_body(fake) == {"project": project}
+    assert start_body(fake) == {"project": project, "remote_control": True}
 
 
 def test_start_agent_passes_a_bad_project_refusal_through(client: TestClient, fake: FakeAgentBridge) -> None:
@@ -598,10 +598,42 @@ def test_a_slow_start_is_not_started_again(client: TestClient, fake: FakeAgentBr
 
 
 def test_start_agent_passes_the_account_and_says_which_it_got(client: TestClient, fake: FakeAgentBridge) -> None:
-    fake.routes[("POST", "/agents")] = httpx.Response(201, json={**AGENT, "id": "w9:p1", "account": "work"})
+    fake.routes[("POST", "/agents")] = httpx.Response(
+        201, json={**AGENT, "id": "w9:p1", "account": "work", "remote_control": "on"}
+    )
     is_error, text = call_tool(client, "start_agent", project="grafik", account="work")
     assert (is_error, text) == (False, "Started on the work account: w9:p1 · grafik · idle · grafik")
     assert start_body(fake)["account"] == "work"
+
+
+def test_start_agent_turns_on_remote_control_without_a_word(client: TestClient, fake: FakeAgentBridge) -> None:
+    fake.routes[("POST", "/agents")] = httpx.Response(201, json={**AGENT, "id": "w9:p1", "remote_control": "on"})
+    assert call_tool(client, "start_agent", project="grafik") == (False, "Started w9:p1 · grafik · idle · grafik")
+    assert start_body(fake)["remote_control"] is True
+
+
+def test_start_agent_leaves_remote_control_off_when_asked(client: TestClient, fake: FakeAgentBridge) -> None:
+    fake.routes[("POST", "/agents")] = httpx.Response(201, json={**AGENT, "id": "w9:p1", "remote_control": "off"})
+    text = call_tool(client, "start_agent", project="grafik", remote_control=False)[1]
+    assert text == "Started w9:p1 · grafik · idle · grafik"
+    assert "remote_control" not in start_body(fake)
+
+
+@pytest.mark.parametrize(
+    ("asked", "state", "note"),
+    [
+        (True, "blocked", "Remote Control is off: the account's organization doesn't allow it."),
+        (True, None, "Remote Control is off: update mac's agent-bridge to turn it on."),
+        (False, "on", "Remote Control is still on: the host turns it on for every agent."),
+    ],
+)
+def test_start_agent_says_when_remote_control_is_not_as_asked(
+    client: TestClient, fake: FakeAgentBridge, asked: bool, state: str | None, note: str
+) -> None:
+    answer = {**AGENT, "id": "w9:p1"} if state is None else {**AGENT, "id": "w9:p1", "remote_control": state}
+    fake.routes[("POST", "/agents")] = httpx.Response(201, json=answer)
+    is_error, text = call_tool(client, "start_agent", project="grafik", remote_control=asked)
+    assert (is_error, text) == (False, f"Started w9:p1 · grafik · idle · grafik\n{note}")
 
 
 def test_start_agent_leaves_the_account_to_the_agent_host(client: TestClient, fake: FakeAgentBridge) -> None:
@@ -931,7 +963,7 @@ def test_start_agent_passes_absolute_paths_and_plain_names(
     fake.routes[("GET", "/info")] = NO_INFO
     fake.routes[("POST", "/agents")] = httpx.Response(201, json={**AGENT, "id": "w9:p1"})
     assert not call_tool(client, "start_agent", project=project)[0]
-    assert start_body(fake) == {"cwd": cwd, "name": name}
+    assert start_body(fake) == {"cwd": cwd, "name": name, "remote_control": True}
 
 
 def test_without_a_projects_root_only_absolute_paths_start(fake: FakeAgentBridge, tmp_path: Path) -> None:
@@ -944,7 +976,7 @@ def test_without_a_projects_root_only_absolute_paths_start(fake: FakeAgentBridge
             "This agent host can't look up project names; give the project as an absolute path."
         )
         assert not call_tool(c, "start_agent", project="/srv/grafik")[0]
-    assert start_body(fake) == {"cwd": "/srv/grafik", "name": "grafik"}
+    assert start_body(fake) == {"cwd": "/srv/grafik", "name": "grafik", "remote_control": True}
 
 
 def test_folders_are_named_relative_to_the_projects_root(client: TestClient, fake: FakeAgentBridge) -> None:

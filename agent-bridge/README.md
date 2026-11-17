@@ -104,6 +104,14 @@ Agents start with `AGENT_BRIDGE_CLAUDE_ARGS` (default `--permission-mode auto`) 
 `AGENT_BRIDGE_CLAUDE_CONFIG_DIR` is set, with `CLAUDE_CONFIG_DIR` pointing there. Each
 one gets its own herdr workspace, labelled with the name.
 
+With `"remote_control": true` in the request (the gateway sends it unless the user asks
+otherwise), the agent also gets `--remote-control <name>`, so the session shows up in the
+Claude app under the agent's name; left out, it is off. If `AGENT_BRIDGE_CLAUDE_ARGS`
+already has `--remote-control`, it isn't passed again, and every agent has it. The answer
+says which in `remote_control`: `on`, `off`, or `blocked` when Claude Code showed
+*"Remote Control is disabled by your organization's policy"* within the 5 s the start
+looks for the trust dialog (e.g. on a Claude Team account); the agent then runs without it.
+
 ### Claude accounts
 
 agent-bridge can start agents on more than one Claude login, e.g. a work subscription for

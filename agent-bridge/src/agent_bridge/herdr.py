@@ -10,12 +10,16 @@ import subprocess
 import sys
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
+from typing import NamedTuple
 
 Runner = Callable[[Sequence[str]], Awaitable[tuple[int, str, str]]]
 
 SHELL_READY_TIMEOUT_S = 15
 SHELL_READY_POLL_S = 0.5
 TRUST_DIALOG_TEXT = "Yes, I trust this folder"
+# What Claude Code shows at startup when the account's organization turns Remote Control
+# off; the session then runs without it. Short, so a narrow pane doesn't wrap it.
+REMOTE_CONTROL_BLOCKED_TEXT = "Remote Control is disabled"
 
 WINDOWS = sys.platform == "win32"
 # Windows hands a program its arguments as one command line of at most 32,767 UTF-16
@@ -29,6 +33,12 @@ ERROR_FILENAME_EXCED_RANGE = 206
 def command_line_length(argv: Sequence[str]) -> int:
     """How many of Windows' command-line units `argv` takes once quoted."""
     return len(subprocess.list2cmdline(argv).encode("utf-16-le")) // 2
+
+
+class Started(NamedTuple):
+    agent: dict
+    # Whether the notice start_agent was asked to watch for was on screen.
+    notice_shown: bool = False
 
 
 class HerdrError(Exception):
@@ -167,8 +177,10 @@ class Herdr:
         env: dict[str, str],
         agent_args: Sequence[str],
         timeout_ms: int = 60_000,
-    ) -> dict:
-        """Create a workspace in `cwd` and start Claude Code in its root pane."""
+        notice: str | None = None,
+    ) -> Started:
+        """Create a workspace in `cwd` and start Claude Code in its root pane. With `notice`,
+        also say whether Claude Code showed that text while the trust dialog was looked for."""
         env_args = [arg for key, value in env.items() for arg in ("--env", f"{key}={value}")]
         created = await self._json(
             "workspace", "create", "--cwd", cwd, "--label", name, "--no-focus", *env_args
@@ -185,16 +197,18 @@ class Herdr:
                 if error.code != "agent_not_ready":
                     raise
                 try:
-                    shows_dialog = await self._shows_trust_dialog(pane_id)
+                    shown = await self._on_screen(pane_id, TRUST_DIALOG_TEXT)
                 except HerdrError:
                     raise error from None  # the start's failure, not the probe's
-                if shows_dialog:
+                if shown == TRUST_DIALOG_TEXT:
                     raise untrusted from error
                 raise
             # On macOS herdr reports the agent ready while Claude's folder-trust dialog is
             # on screen, and that dialog defaults to "No, exit": a prompt sent now would
-            # quit Claude. Refuse instead of leaving a trap.
-            if await self._shows_trust_dialog(pane_id):
+            # quit Claude. Refuse instead of leaving a trap. The notice is looked for in the
+            # same wait, so it costs no extra time.
+            shown = await self._on_screen(pane_id, TRUST_DIALOG_TEXT, notice)
+            if shown == TRUST_DIALOG_TEXT:
                 raise untrusted
         except BaseException:
             # Also on cancellation; shielded so the close itself isn't cancelled, and a
@@ -204,7 +218,7 @@ class Herdr:
             except Exception:
                 pass
             raise
-        return started["agent"]
+        return Started(started["agent"], notice is not None and shown == notice)
 
     async def _start_when_shell_ready(
         self, name: str, pane_id: str, timeout_ms: int, agent_args: Sequence[str]
@@ -225,17 +239,23 @@ class Herdr:
                     raise
             await asyncio.sleep(SHELL_READY_POLL_S)
 
-    async def _shows_trust_dialog(self, pane_id: str) -> bool:
+    async def _on_screen(self, pane_id: str, *texts: str | None) -> str | None:
+        """The first of `texts` that shows up on the pane's screen within 5 s, else None.
+        The trust dialog comes first, so it wins when both are on screen. Each text must be
+        plain words: several are matched as one regular expression."""
+        wanted = [text for text in texts if text]
+        match = ("--match", wanted[0]) if len(wanted) == 1 else ("--regex", "|".join(wanted))
         try:
-            await self._json(
-                "pane", "wait-output", pane_id, "--source", "visible",
-                "--match", TRUST_DIALOG_TEXT, "--timeout", "5000",
+            result = await self._json(
+                "pane", "wait-output", pane_id, "--source", "visible", *match, "--timeout", "5000",
             )
         except HerdrError as error:
             if error.code == "timeout":
-                return False
+                return None
             raise
-        return True
+        screen = f"{result.get('matched_line') or ''}\n{(result.get('read') or {}).get('text') or ''}"
+        # A match herdr doesn't describe is taken as the first text, as before notices.
+        return next((text for text in wanted if text in screen), wanted[0])
 
     async def close_pane(self, pane_id: str) -> None:
         await self._json("pane", "close", pane_id)
