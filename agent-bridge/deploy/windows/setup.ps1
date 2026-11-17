@@ -417,8 +417,11 @@ function Sync-Checkout {
         $failure = 'uv sync failed'
     } elseif (Test-ConsolePythonw) {
         $version = Get-UvVersion
-        $failure = ("$(if ($version) { "uv $version" } else { 'uv' }) made $VenvPythonw a console program, so agent-bridge " +
-            "would open a terminal window at every start: $(Get-UvAdvice)")
+        $failure = "$(if ($version) { "uv $version" } else { 'uv' }) made $VenvPythonw a console program, so agent-bridge would open a terminal window at every start"
+        # Updating to a uv as new as this one changes nothing.
+        $failure += if ($version -and $version -ge $WindowlessUv) {
+            ", although uv $WindowlessUv and later are meant to make it windowless. Try another uv version, then run setup again"
+        } else { ": $(Get-UvAdvice)" }
     }
     if ($failure) {
         Restore-Venv

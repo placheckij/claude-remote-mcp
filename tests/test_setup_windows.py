@@ -1577,7 +1577,8 @@ def installed_with_a_console_pythonw(machine: Machine, launcher: Path) -> Path:
     ("fakes", "said"),
     [
         ({"FAKE_UV_SYNC_FAILS": "1"}, "uv sync failed"),
-        ({"FAKE_UV_PYTHONW": "console"}, "uv 0.13.9 made"),
+        # A uv that should make it windowless isn't said to be too old.
+        ({"FAKE_UV_PYTHONW": "console"}, "a terminal window at every start, although uv 0.12.4 and later are meant to make it windowless."),
     ],
 )
 def test_a_venv_that_cant_be_made_anew_is_put_back(machine: Machine, launcher: Path, fakes: dict, said: str) -> None:
@@ -1586,6 +1587,7 @@ def test_a_venv_that_cant_be_made_anew_is_put_back(machine: Machine, launcher: P
     output = machine.run("setup.ps1", expect=1, **fakes)
 
     assert said in output
+    assert "update uv" not in output
     # As it was: the bridge runs from it as before, only with a window.
     assert "the installed ones are as they were" in output
     assert (repo / ".venv" / "marker").exists()
