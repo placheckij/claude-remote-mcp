@@ -13,7 +13,7 @@ import pytest
 from dotenv import dotenv_values
 
 from agent_bridge import cli
-from agent_bridge.install import macos
+from agent_bridge.install import common, macos
 
 # POSIX paths and file modes; the Windows setup is its own.
 pytestmark = pytest.mark.skipif(sys.platform == "win32", reason="the macOS setup uses POSIX paths")
@@ -439,7 +439,7 @@ def test_undoes_the_install_when_the_plist_cant_be_written(mac: FakeMac, capsys)
     assert nothing_left(mac)
 
 
-def test_keeps_the_state_of_an_enrollment_when_undoing(mac: FakeMac, capsys) -> None:
+def test_keeps_an_install_the_gateway_enrolled(mac: FakeMac, capsys) -> None:
     def interrupted() -> str:
         raise KeyboardInterrupt
 
@@ -458,8 +458,9 @@ def test_keeps_the_state_of_an_enrollment_when_undoing(mac: FakeMac, capsys) -> 
     with pytest.raises(KeyboardInterrupt):
         macos.setup(options, mac, interrupted)
 
-    assert not mac.env_file.exists() and not mac.plist.exists()
+    assert mac.env_file.exists() and mac.plist.exists()
     assert "gateway" in json.loads(mac.state_file.read_text())
+    assert mac.ran("launchctl")[-1][0] == "bootstrap"
 
 
 def test_undoes_the_install_when_launchd_wont_start_it(mac: FakeMac, capsys) -> None:
@@ -515,6 +516,25 @@ def test_refuses_a_value_the_bridge_would_refuse(mac: FakeMac, capsys, change: d
 
     assert run.code == 1
     assert reason in run.out
+    assert nothing_changed(mac)
+
+
+def test_writes_quotes_and_backslashes_as_the_bridge_reads_them(mac: FakeMac, capsys) -> None:
+    roots = f"{mac.home}/O'Brien\\"
+
+    run = setup(mac, capsys, *every_flag(mac, roots=roots))
+
+    assert run.code == 0, run.out
+    assert env(mac)["AGENT_BRIDGE_ALLOWED_ROOTS"] == roots
+
+
+def test_refuses_settings_that_wouldnt_read_back(mac: FakeMac, capsys, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(common, "dotenv_values", lambda path: {})
+
+    run = setup(mac, capsys, *every_flag(mac))
+
+    assert run.code == 1
+    assert "wouldn't read back as written" in run.out
     assert nothing_changed(mac)
 
 
@@ -719,6 +739,8 @@ def test_runs_the_bridge_without_its_settings_in_the_environment(monkeypatch: py
 
     assert macos.MacSystem().bridge("check", capture=True) == (0, "ok\n")
     assert ran["argv"] == [COMMAND, "check"]
+    # Its errors come back with its output.
+    assert ran["stderr"] == macos.subprocess.STDOUT
     assert "AGENT_BRIDGE_PORT" not in ran["env"]
     assert ran["env"]["HOME"] == "/Users/me"
 

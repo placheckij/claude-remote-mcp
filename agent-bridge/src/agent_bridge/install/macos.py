@@ -95,7 +95,7 @@ class System(Protocol):
     def find_herdr(self) -> str | None: ...
     def launchctl(self, *args: str) -> int: ...
     # Runs the installed agent-bridge with no AGENT_BRIDGE_* in its environment, as launchd
-    # would; its output is returned when captured, else shown.
+    # would; its output, stderr included, is returned when captured, else shown.
     def bridge(self, *args: str, capture: bool = False) -> tuple[int, str]: ...
     def sleep(self, seconds: float) -> None: ...
 
@@ -154,8 +154,10 @@ def setup(options: Options, system: System, read: Read) -> int:
         _start(system, paths)
         gateway_took, name_taken = _enroll(plan, system, read, paths)
     except Refused as error:
-        _undo(system, paths)
-        print(f"error: {error}\nSetup removed what it wrote; run it again once that is fixed.", file=sys.stderr)
+        undone = _undo(system, paths)
+        print(f"error: {error}", file=sys.stderr)
+        print("Setup removed what it wrote; run it again once that is fixed." if undone else
+              "It is enrolled with the gateway, so the install is kept.", file=sys.stderr)
         return FAILED
     except KeyboardInterrupt:
         _undo(system, paths)
@@ -424,18 +426,21 @@ def _enroll(plan: Plan, system: System, read: Read, paths: Paths) -> tuple[bool,
     return False, ""
 
 
-def _undo(system: System, paths: Paths) -> None:
+def _undo(system: System, paths: Paths) -> bool:
     """Stops the launch agent and removes the plist, the env file and the state file the
-    service made when it started, so setup can run again. A state file that records an
-    enrollment is kept, so the gateway's record of it isn't lost."""
-    system.launchctl("bootout", f"{system.domain()}/{LABEL}")
+    service made when it started, so setup can run again. An install the gateway enrolled
+    (setup stopped right after) is kept whole: it works, and the gateway has a record of it.
+    False when kept."""
     try:
-        enrolled = (state := load(paths.state_file)) is not None and state.gateway is not None
+        if (state := load(paths.state_file)) is not None and state.gateway is not None:
+            return False
     except StateError:
-        enrolled = False
-    for path in (paths.plist, paths.env_file, *(() if enrolled else (paths.state_file,))):
+        pass
+    system.launchctl("bootout", f"{system.domain()}/{LABEL}")
+    for path in (paths.plist, paths.env_file, paths.state_file):
         with contextlib.suppress(OSError):
             path.unlink(missing_ok=True)
+    return True
 
 
 def _another_name(read: Read) -> str:
@@ -546,8 +551,9 @@ class MacSystem:
         sys.stdout.flush()
         sys.stderr.flush()
         try:
-            result = subprocess.run([self.command(), *args], env=environment, cwd="/", text=True,
-                                    capture_output=capture)
+            # Captured, its errors (e.g. an unreadable state file) stay in what is shown.
+            captured = {"stdout": subprocess.PIPE, "stderr": subprocess.STDOUT} if capture else {}
+            result = subprocess.run([self.command(), *args], env=environment, cwd="/", text=True, **captured)
         except OSError as error:
             raise Refused(f"can't run {self.command()} ({error.strerror})") from None
         return result.returncode, result.stdout or ""

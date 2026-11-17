@@ -305,7 +305,8 @@ values to skip the questions: `--roots`, `--name`, `--host`, `--port`, `--herdr-
 
 It refuses on a Mac that has an install already, and when run from a checkout: to change
 an install, re-run the setup script. It refuses under `uvx` too, whose copy uv cleans away.
-If it fails after writing the env file, it removes what it wrote, so it can run again.
+If it fails after writing the env file and before the gateway enrolls it, it removes what
+it wrote, so it can run again.
 
 #### With the setup script
 
