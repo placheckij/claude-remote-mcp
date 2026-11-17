@@ -151,6 +151,7 @@ def setup(options: Options, system: System, read: Read) -> int:
     try:
         write_file(paths.env_file, env_text(plan.values).encode(), 0o600, folder_mode=0o700)
         write_file(paths.plist, plistlib.dumps(launch_agent(system.command(), paths.log)), 0o644)
+        _log_folder(paths)
         _start(system, paths)
         gateway_took, name_taken = _enroll(plan, system, read, paths)
     except Refused as error:
@@ -377,6 +378,14 @@ def _ask_enrollment(read: Read, question: str) -> str:
 
 
 # --- Installing and enrolling ------------------------------------------------------
+
+
+def _log_folder(paths: Paths) -> None:
+    # launchd opens the log but doesn't make its folder.
+    try:
+        paths.log.parent.mkdir(parents=True, exist_ok=True)
+    except OSError as error:
+        raise Refused(f"can't make {paths.log.parent} ({error.strerror})") from None
 
 
 def _start(system: System, paths: Paths) -> None:

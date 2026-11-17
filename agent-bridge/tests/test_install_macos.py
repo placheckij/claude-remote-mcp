@@ -225,6 +225,8 @@ def test_starts_the_launch_agent(mac: FakeMac, capsys) -> None:
         ("enable", f"gui/501/{LABEL}"),
         ("bootstrap", "gui/501", str(mac.plist)),
     ]
+    # launchd doesn't make the log's folder.
+    assert (mac.home / "Library" / "Logs").is_dir()
 
 
 def test_retries_the_bootstrap_while_the_old_job_goes(mac: FakeMac, capsys) -> None:
@@ -426,6 +428,17 @@ def test_stops_when_the_gateway_took_it_but_the_state_isnt_saved(mac: FakeMac, c
 def nothing_left(mac: FakeMac) -> bool:
     return not any(path.exists() for path in (mac.env_file, mac.state_file, mac.plist)) and (
         mac.ran("launchctl")[-1] == ("bootout", f"gui/501/{LABEL}"))
+
+
+def test_undoes_the_install_when_the_log_folder_cant_be_made(mac: FakeMac, capsys) -> None:
+    (mac.home / "Library").mkdir()
+    (mac.home / "Library" / "Logs").write_text("not a folder")
+
+    run = setup(mac, capsys, *every_flag(mac))
+
+    assert run.code == 1
+    assert f"can't make {mac.home / 'Library' / 'Logs'}" in run.out
+    assert nothing_left(mac)
 
 
 def test_undoes_the_install_when_the_plist_cant_be_written(mac: FakeMac, capsys) -> None:
