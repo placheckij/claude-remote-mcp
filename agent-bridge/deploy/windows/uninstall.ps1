@@ -78,7 +78,7 @@ if (Get-NetFirewallRule -Name $RuleName -ErrorAction SilentlyContinue) {
 }
 
 Write-Step 'Removing the settings and state'
-foreach ($file in @($EnvFile, "$EnvFile.tmp", $StateFile, "$StateFile.tmp", $LogFile, "$LogFile.1", $RunFile, $DisabledMarker)) {
+foreach ($file in @($EnvFile, "$EnvFile.tmp", $StateFile, "$StateFile.tmp", $LogFile, "$LogFile.1", $RunFile, $BridgeFile, $DisabledMarker)) {
     if (Test-Path -LiteralPath $file) {
         # A process that hasn't quite exited may still hold the log for a moment.
         for ($try = 1; ; $try++) {

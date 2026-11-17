@@ -150,11 +150,13 @@ class _RotatingLog(logging.handlers.RotatingFileHandler):
     line, where RotatingFileHandler would drop each line until it can."""
 
     def doRollover(self) -> None:
-        try:
-            super().doRollover()
-        except OSError:
-            if self.stream is None:
-                self.stream = self._open()
+        # Not RotatingFileHandler's: it deletes the old `.1` before it tries the move.
+        if self.stream:
+            self.stream.close()
+            self.stream = None
+        with contextlib.suppress(OSError):
+            os.replace(self.baseFilename, f"{self.baseFilename}.1")
+        self.stream = self._open()
 
 
 def _open_log(path: Path) -> logging.Handler:

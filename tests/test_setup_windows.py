@@ -1085,6 +1085,22 @@ def test_an_agent_bridge_under_another_name_is_recognised(machine: Machine) -> N
     assert "Done. agent-bridge listens" in output
 
 
+def test_an_agent_bridge_under_another_name_is_found_again(machine: Machine) -> None:
+    other = machine.root / "tools" / "ab-1.4.cmd"
+    other.parent.mkdir()
+    other.write_text(machine.bridge.read_text())
+    (other.parent / "agent-bridgew.exe").write_bytes(b"")
+    machine.run("setup.ps1", f"-Bridge '{other}'", f"-Enrollment '{STRING}'", input="\n\n", FAKE_BRIDGE=str(other))
+
+    rerun = machine.run("setup.ps1", f"-Bridge '{other}'", "-Enrollment ''", FAKE_BRIDGE=str(other))
+    assert "The task ran" not in rerun
+
+    # Only the installed one is left to find.
+    machine.bridge.unlink()
+    machine.run("uninstall.ps1", FAKE_BRIDGE=str(other))
+    assert machine.calls()[0] == "agent-bridge unenroll"
+
+
 def test_a_skipped_check_isnt_called_failed(machine: Machine) -> None:
     output = machine.setup("-Enrollment ''", input="\n\n", expect=1, FAKE_NO_START="1")
 
