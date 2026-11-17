@@ -134,12 +134,16 @@ class AgentBridge:
         cwd: str | None = None,
         name: str | None = None,
         account: str | None = None,
+        remote_control: bool = False,
         timeout: float = START_TIMEOUT_S,
     ) -> dict:
         """Start in `project` (agent-bridge resolves it), or in `cwd` on an agent-bridge
-        before /info. Without a name the agent is named after its folder."""
+        before /info. Without a name the agent is named after its folder. An agent-bridge
+        before Remote Control ignores `remote_control` and leaves it out of its answer."""
         fields = {"project": project, "cwd": cwd, "name": name, "account": account}
         body = {key: value for key, value in fields.items() if value}
+        if remote_control:
+            body["remote_control"] = True
         # Starting waits for Claude to boot and for the trust check.
         return await self._request("POST", "/agents", json=body, timeout=timeout)
 

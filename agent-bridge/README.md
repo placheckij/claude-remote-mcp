@@ -115,6 +115,15 @@ Agents start with `AGENT_BRIDGE_CLAUDE_ARGS` (default `--permission-mode auto`) 
 or else to `AGENT_BRIDGE_CLAUDE_CONFIG_DIR` if set. Each
 one gets its own herdr workspace, labelled with the name.
 
+With `"remote_control": true` in the request (the gateway sends it unless the user asks
+otherwise), the agent also gets `--remote-control <name>`, so the session shows up in the
+Claude app under the agent's name (renaming the agent later doesn't rename the session);
+left out, it is off. If `AGENT_BRIDGE_CLAUDE_ARGS` already has `--remote-control`, it
+isn't passed again, and every agent has it. The answer says which in `remote_control`:
+`on`, `off`, or `blocked` when Claude Code showed *"Remote Control is disabled by your
+organization's policy"* within the 5 s the start looks for the trust dialog (e.g. on a
+Claude Team account); the agent then runs without it.
+
 ### Claude accounts
 
 agent-bridge can start agents on more than one Claude login, e.g. a work subscription for
@@ -469,8 +478,12 @@ until you stop it (`herdr server stop`) or reboot. Lingering stays on;
 ### As a service on Windows (Task Scheduler)
 
 A scheduled task starts agent-bridge when you log on. It runs as you, in your session
-(where the herdr server runs), with no window. Run the setup script from the checkout in
-an ordinary PowerShell window:
+(where the herdr server runs), with no window. It needs uv 0.12.4 or later: older ones
+write the `.venv`'s `pythonw.exe` as a console program, which opens a terminal window at
+every start of agent-bridge (astral-sh/uv#19235). When the `.venv`'s `pythonw.exe` is a
+console program, setup stops with such a uv; with a newer one, it makes the `.venv` again,
+because `uv sync` keeps the old `pythonw.exe` (the old `.venv` is put back if that fails).
+Run the setup script from the checkout in an ordinary PowerShell window:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File agent-bridge\deploy\windows\setup.ps1

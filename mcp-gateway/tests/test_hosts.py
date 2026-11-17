@@ -448,7 +448,7 @@ def test_an_outdated_host_that_is_down_says_so(make) -> None:
 
 
 def started(name: str = "grafik") -> httpx.Response:
-    return httpx.Response(201, json={**AGENT, "id": "w9:p1", "name": name})
+    return httpx.Response(201, json={**AGENT, "id": "w9:p1", "name": name, "remote_control": "on"})
 
 
 def project(cwd: str | None) -> httpx.Response:
