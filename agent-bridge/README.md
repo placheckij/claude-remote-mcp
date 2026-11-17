@@ -138,8 +138,9 @@ what a plain `claude` uses), or another named by `CLAUDE_CONFIG_DIR`.
    it, e.g. `AGENT_BRIDGE_ACCOUNTS (work.config): Extra inputs are not permitted`.
 4. **Trust the default config's folders by hand.** agent-bridge never edits Claude Code's
    default config, so it can't mark folders trusted for an account with
-   `"config_dir": null`. Open `claude` once in each of those projects (or a folder above
-   them) and accept. Until then, starts there stop with `409 folder_not_trusted`.
+   `"config_dir": null`. Open `claude` once in each of those projects and accept (see
+   [folder trust](#folder-trust) for why a folder above them isn't enough). Until then,
+   starts there stop with `409 folder_not_trusted`.
 
 A new agent gets the account named in the request (`"account"` in `POST /agents`, any
 case; in the Claude app, e.g. "start grafik on my personal account"), else the account
@@ -159,8 +160,10 @@ Claude's "Do you trust this folder?" dialog defaults to "No, exit", so a prompt 
 into it would quit Claude. If the dialog shows after a start, the start fails with
 `409 folder_not_trusted` and the new workspace is closed.
 
-So either trust your project folders once by hand (open `claude` in them, or in a
-parent folder, and accept), or let agent-bridge do it. To turn that on, set both:
+So either trust each project folder once by hand (open `claude` in it and accept), or
+let agent-bridge do it. In a git repository Claude Code checks the repository's own
+folder: trusting a folder above it, such as the one holding all your projects, doesn't
+count, so the dialog still shows. To let agent-bridge do it, set both:
 
 - `AGENT_BRIDGE_CLAUDE_CONFIG_DIR`: a separate Claude config for the agents, e.g.
   `~/.claude-agents` (run `CLAUDE_CONFIG_DIR=~/.claude-agents claude` once to log in;
@@ -179,8 +182,7 @@ Hard limits:
   Folders are compared on disk, not by spelling, so another letter case (macOS disks
   ignore case), a symlink, or a `.claude.json` linked to `~/.claude.json` is caught too.
 
-The file is written atomically and left alone if the folder (or a parent) is already
-trusted.
+The file is written atomically and left alone if the folder itself is already trusted.
 
 ## Configuration
 

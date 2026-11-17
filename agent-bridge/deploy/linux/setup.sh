@@ -307,7 +307,7 @@ Folder trust (optional). The first time Claude opens in a folder it asks "Do you
 this folder?", and an agent started remotely would quit there. agent-bridge can mark
 folders under a trust root as trusted beforehand, but only in a separate Claude config
 for the agents, never in your own. Answer - to skip this if you have already trusted your
-project folders (or a folder above them) by opening claude there.
+project folders by opening claude in each one.
 EOF
 fi
 [[ -n ${AGENT_BRIDGE_CLAUDE_CONFIG_DIR+x} ]] \
