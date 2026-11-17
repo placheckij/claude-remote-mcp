@@ -397,6 +397,11 @@ function Restore-Venv {
     <# Puts back the .venv Move-VenvAside moved, in place of a new one that failed (or of what
        a setup stopped halfway made), so agent-bridge runs as it did. #>
     if (-not $script:VenvAside) { return }
+    # Already back (a Ctrl+C right after the move below): .venv is then the only one.
+    if (-not (Test-Path -LiteralPath $OldVenv)) {
+        $script:VenvAside = $false
+        return
+    }
     # The flag stays set until the old one is back, or can't be: setup's finally tries again
     # after a Ctrl+C during the delete, which can take a while.
     Remove-Item -LiteralPath $Venv -Recurse -Force -ErrorAction SilentlyContinue
