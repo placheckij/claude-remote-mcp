@@ -6,6 +6,7 @@ agent-bridge/deploy/macos/setup.sh still handles re-runs from a checkout.
 """
 
 import argparse
+import contextlib
 import ipaddress
 import os
 import plistlib
@@ -80,6 +81,8 @@ class System(Protocol):
 
     def is_root(self) -> bool: ...
     def in_checkout(self) -> bool: ...
+    # Runs from an environment uv cleans away, as uvx's.
+    def in_uv_cache(self) -> bool: ...
     def hostname(self) -> str: ...
     # The agent-bridge the launch agent runs.
     def command(self) -> str: ...
@@ -141,18 +144,28 @@ def setup(options: Options, system: System, read: Read) -> int:
     paths = Paths(system.home)
     try:
         plan = _decide(options, system, read, paths)
+    except Refused as error:
+        print(f"error: {error}", file=sys.stderr)
+        return FAILED
+    # From here on a failure undoes what was written: a second run refuses an install.
+    try:
         write_file(paths.env_file, env_text(plan.values).encode(), 0o600, folder_mode=0o700)
         write_file(paths.plist, plistlib.dumps(launch_agent(system.command(), paths.log)), 0o644)
         _start(system, paths)
         gateway_took, name_taken = _enroll(plan, system, read, paths)
     except Refused as error:
-        print(f"error: {error}", file=sys.stderr)
+        _undo(system, paths)
+        print(f"error: {error}\nSetup removed what it wrote; run it again once that is fixed.", file=sys.stderr)
+        return FAILED
+    except KeyboardInterrupt:
+        _undo(system, paths)
+        raise
+    if name_taken:
+        _undo(system, paths)
+        print(f"error: the gateway has another host named {name_taken}. Setup removed what it wrote; "
+              "run it again with another --name", file=sys.stderr)
         return FAILED
     _summary(plan, system, paths, gateway_took)
-    if name_taken:
-        print(f"error: the gateway has another host named {name_taken}; run again with another --name",
-              file=sys.stderr)
-        return FAILED
     return OK
 
 
@@ -199,6 +212,11 @@ def _decide(options: Options, system: System, read: Read, paths: Paths) -> Plan:
         raise Refused(
             "this agent-bridge runs from a checkout of claude-remote-mcp: from a checkout, run "
             "agent-bridge/deploy/macos/setup.sh; or install the package "
+            "(uv tool install claude-remote-mcp-agent-bridge) and run its agent-bridge setup"
+        )
+    if system.in_uv_cache():
+        raise Refused(
+            "this agent-bridge runs from uv's cache (uvx), which uv cleans away: install the package "
             "(uv tool install claude-remote-mcp-agent-bridge) and run its agent-bridge setup"
         )
     installed = next((path for path in (paths.env_file, paths.state_file, paths.plist) if path.exists()), None)
@@ -283,13 +301,16 @@ def _host(passed: str | None, system: System) -> str:
 
 def _port_number(value: str) -> int:
     if not re.fullmatch(r"[0-9]+", value) or not 1 <= int(value) <= 65535:
-        raise Refused(f"--port must be a number from 1 to 65535, not {value}")
+        raise ValueError(f"must be a number from 1 to 65535, not {value}")
     return int(value)
 
 
 def _port(passed: str | None, system: System, read: Read) -> int:
     if passed is not None:
-        port = _port_number(passed)
+        try:
+            port = _port_number(passed)
+        except ValueError as error:
+            raise Refused(f"--port {error}") from None
         if holder := system.port_holder(port):
             raise Refused(f"Port {port} is in use by {holder}; pass another --port")
         return port
@@ -299,7 +320,12 @@ def _port(passed: str | None, system: System, read: Read) -> int:
         free = port + 1
         while system.port_holder(free):
             free += 1
-        port = _port_number(ask(read, "Port", str(free)))
+        while True:
+            try:
+                port = _port_number(ask(read, "Port", str(free)))
+                break
+            except ValueError as error:
+                print(f"The port {error}.", file=sys.stderr)
     return port
 
 
@@ -398,6 +424,14 @@ def _enroll(plan: Plan, system: System, read: Read, paths: Paths) -> tuple[bool,
     return False, ""
 
 
+def _undo(system: System, paths: Paths) -> None:
+    """Stops the launch agent and removes the env file and plist, so setup can run again."""
+    system.launchctl("bootout", f"{system.domain()}/{LABEL}")
+    for path in (paths.plist, paths.env_file):
+        with contextlib.suppress(OSError):
+            path.unlink(missing_ok=True)
+
+
 def _another_name(read: Read) -> str:
     """A valid name, or "" when none is given."""
     while name := ask(read, "Another name for this host", "", "required"):
@@ -445,6 +479,10 @@ class MacSystem:
     def in_checkout(self) -> bool:
         # A checkout's agent-bridge runs from <checkout>/.venv.
         return (Path(sys.prefix).parent / "agent-bridge" / "pyproject.toml").is_file()
+
+    def in_uv_cache(self) -> bool:
+        # uvx's environments are <uv cache>/archive-v0/<id>.
+        return Path(sys.prefix).parent.name.startswith("archive-v")
 
     def hostname(self) -> str:
         return socket.gethostname()

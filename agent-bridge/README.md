@@ -304,7 +304,8 @@ values to skip the questions: `--roots`, `--name`, `--host`, `--port`, `--herdr-
 (`''` to enroll later); see `agent-bridge setup --help`.
 
 It refuses on a Mac that has an install already, and when run from a checkout: to change
-an install, re-run the setup script.
+an install, re-run the setup script. It refuses under `uvx` too, whose copy uv cleans away.
+If it fails after writing the env file, it removes what it wrote, so it can run again.
 
 #### With the setup script
 

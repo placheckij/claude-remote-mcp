@@ -35,6 +35,7 @@ class FakeMac:
     holders: dict[int, str] = field(default_factory=dict)
     root: bool = False
     checkout: bool = False
+    cached: bool = False
     name: str = "Studio-Mac.local"
     enroll_codes: list[int] = field(default_factory=list)
     bootstrap_failures: int = 0
@@ -47,6 +48,9 @@ class FakeMac:
 
     def in_checkout(self) -> bool:
         return self.checkout
+
+    def in_uv_cache(self) -> bool:
+        return self.cached
 
     def hostname(self) -> str:
         return self.name
@@ -323,6 +327,18 @@ def test_offers_a_free_port_when_the_default_is_taken(mac: FakeMac, capsys) -> N
     assert env(mac)["AGENT_BRIDGE_PORT"] == "8767"
 
 
+def test_asks_again_for_a_port_that_isnt_one(mac: FakeMac, capsys) -> None:
+    mac.holders = {8765: "PID 42: other"}
+    flags = every_flag(mac)
+    del flags[flags.index("--port"):flags.index("--port") + 2]
+
+    run = setup(mac, capsys, *flags, answers=("abc", "9000"))
+
+    assert run.code == 0, run.out
+    assert "The port must be a number from 1 to 65535, not abc." in run.out
+    assert env(mac)["AGENT_BRIDGE_PORT"] == "9000"
+
+
 def test_finds_the_lan_address_and_herdr(mac: FakeMac, capsys) -> None:
     flags = every_flag(mac)
     for flag in ("--host", "--herdr-bin"):
@@ -365,7 +381,9 @@ def test_fails_when_no_other_name_is_given(mac: FakeMac, capsys) -> None:
 
     assert run.code == 1
     assert "the gateway has another host named studio" in run.out
-    assert env(mac)["AGENT_BRIDGE_NAME"] == "studio"
+    assert nothing_left(mac)
+    # So the run it advises is not refused as an install.
+    assert setup(mac, capsys, *every_flag(mac, name="studio-2")).code == 0
 
 
 def test_leaves_enrolling_for_later_when_the_gateway_is_down(mac: FakeMac, capsys) -> None:
@@ -396,6 +414,39 @@ def test_stops_when_the_gateway_took_it_but_the_state_isnt_saved(mac: FakeMac, c
     assert run.asked == []
     assert mac.ran("agent-bridge") == [("check",), ("enroll", ENROLLMENT)]
     assert "state file couldn't be written" in run.out
+
+
+# --- Failing after writing: undone, so setup can run again ----------------------------
+
+
+def nothing_left(mac: FakeMac) -> bool:
+    return not mac.env_file.exists() and not mac.plist.exists() and mac.ran("launchctl")[-1] == (
+        "bootout", f"gui/501/{LABEL}")
+
+
+def test_undoes_the_install_when_launchd_wont_start_it(mac: FakeMac, capsys) -> None:
+    mac.bootstrap_failures = macos.BOOTSTRAPS
+
+    run = setup(mac, capsys, *every_flag(mac))
+
+    assert run.code == 1
+    assert "launchctl bootstrap failed" in run.out
+    assert "Setup removed what it wrote" in run.out
+    assert nothing_left(mac)
+    assert setup(mac, capsys, *every_flag(mac)).code == 0
+
+
+def test_undoes_the_install_on_ctrl_c(mac: FakeMac, capsys) -> None:
+    mac.enroll_codes = [3]
+
+    def interrupted() -> str:
+        raise KeyboardInterrupt
+
+    options = macos.Options.from_args(cli._parser().parse_args(["setup", *every_flag(mac)]))
+    with pytest.raises(KeyboardInterrupt):
+        macos.setup(options, mac, interrupted)
+
+    assert nothing_left(mac)
 
 
 # --- Refusals, before anything changes ------------------------------------------------
@@ -456,6 +507,16 @@ def test_refuses_from_a_checkout(mac: FakeMac, capsys) -> None:
 
     assert run.code == 1
     assert "deploy/macos/setup.sh" in run.out
+    assert nothing_changed(mac)
+
+
+def test_refuses_under_uvx(mac: FakeMac, capsys) -> None:
+    mac.cached = True
+
+    run = setup(mac, capsys, *every_flag(mac))
+
+    assert run.code == 1
+    assert "uv tool install claude-remote-mcp-agent-bridge" in run.out
     assert nothing_changed(mac)
 
 
@@ -529,3 +590,103 @@ def test_finds_a_command_run_by_name_on_the_path() -> None:
     assert macos.stable_command("agent-bridge", which=lambda name: f"/opt/homebrew/bin/{name}") == (
         "/opt/homebrew/bin/agent-bridge"
     )
+
+
+# --- The real Mac, over canned command output -----------------------------------------
+
+
+@pytest.fixture
+def outputs(monkeypatch: pytest.MonkeyPatch) -> dict[tuple[str, ...], str]:
+    """What each command prints; one not listed prints nothing."""
+    printed: dict[tuple[str, ...], str] = {}
+    monkeypatch.setattr(macos, "_output", lambda *argv: printed.get(argv, ""))
+    return printed
+
+
+LSOF = ("lsof", "-nP", "-iTCP:8765", "-sTCP:LISTEN", "-t")
+NETSTAT = ("netstat", "-anv", "-p", "tcp")
+NETSTAT_HEADER = "Proto Recv-Q Send-Q  Local Address          Foreign Address        (state)\n"
+
+
+def test_names_your_own_program_on_the_port(outputs: dict) -> None:
+    outputs[LSOF] = "123\n"
+    outputs[("ps", "-o", "command=", "-p", "123")] = "python3 -m http.server 8765\n"
+
+    assert macos.MacSystem().port_holder(8765) == "PID 123: python3 -m http.server 8765"
+
+
+def test_sees_another_users_program_on_the_port(outputs: dict) -> None:
+    outputs[NETSTAT] = NETSTAT_HEADER + "tcp4       0      0  *.8765                 *.*                    LISTEN\n"
+
+    assert macos.MacSystem().port_holder(8765) == "another user's program"
+
+
+def test_a_free_port_has_no_holder(outputs: dict) -> None:
+    outputs[NETSTAT] = NETSTAT_HEADER + (
+        "tcp4       0      0  *.18765                *.*                    LISTEN\n"
+        "tcp4       0      0  10.0.0.2.8765          10.0.0.1.50000         ESTABLISHED\n"
+    )
+
+    assert macos.MacSystem().port_holder(8765) is None
+
+
+def test_finds_the_address_of_the_default_routes_interface(outputs: dict) -> None:
+    outputs[("route", "-n", "get", "default")] = "   route to: default\n   interface: en0\n"
+    outputs[("ipconfig", "getifaddr", "en0")] = "192.168.1.20\n"
+
+    assert macos.MacSystem().lan_address() == "192.168.1.20"
+
+
+def test_no_default_route_has_no_address(outputs: dict) -> None:
+    assert macos.MacSystem().lan_address() is None
+
+
+@pytest.mark.parametrize(
+    ("address", "has"),
+    [("192.168.1.20", True), ("fe80::1", True), ("127.0.0.1", True), ("192.168.1.2", False)],
+)
+def test_knows_the_interfaces_addresses(outputs: dict, address: str, has: bool) -> None:
+    outputs[("ifconfig",)] = (
+        "en0: flags=8863<UP,BROADCAST> mtu 1500\n"
+        "\tinet6 fe80::1%en0 prefixlen 64 scopeid 0x4\n"
+        "\tinet 192.168.1.20 netmask 0xffffff00 broadcast 192.168.1.255\n"
+    )
+
+    assert macos.MacSystem().has_address(address) is has
+
+
+def test_knows_a_checkout_and_uvx(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    (tmp_path / "agent-bridge").mkdir()
+    (tmp_path / "agent-bridge" / "pyproject.toml").write_text("")
+    monkeypatch.setattr(sys, "prefix", str(tmp_path / ".venv"))
+    assert macos.MacSystem().in_checkout()
+    assert not macos.MacSystem().in_uv_cache()
+
+    monkeypatch.setattr(sys, "prefix", "/Users/me/.cache/uv/archive-v0/m4XVlWm3syEIKOSH")
+    assert not macos.MacSystem().in_checkout()
+    assert macos.MacSystem().in_uv_cache()
+
+
+def test_runs_the_bridge_without_its_settings_in_the_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+    ran = {}
+
+    def run(argv: list[str], **options) -> object:
+        ran.update(argv=argv, **options)
+        return type("Result", (), {"returncode": 0, "stdout": "ok\n"})()
+
+    monkeypatch.setattr(macos.subprocess, "run", run)
+    monkeypatch.setattr(sys, "argv", [COMMAND, "setup"])
+    monkeypatch.setenv("AGENT_BRIDGE_PORT", "1")
+    monkeypatch.setenv("HOME", "/Users/me")
+
+    assert macos.MacSystem().bridge("check", capture=True) == (0, "ok\n")
+    assert ran["argv"] == [COMMAND, "check"]
+    assert "AGENT_BRIDGE_PORT" not in ran["env"]
+    assert ran["env"]["HOME"] == "/Users/me"
+
+
+def test_setup_is_for_macos_only(monkeypatch: pytest.MonkeyPatch, capsys) -> None:
+    monkeypatch.setattr(sys, "platform", "linux")
+
+    assert cli.main(["setup"]) == 1
+    assert "for macOS for now" in capsys.readouterr().err
