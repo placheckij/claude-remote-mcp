@@ -55,6 +55,8 @@ param(
 
 . (Join-Path $PSScriptRoot 'common.ps1')
 $Bound = $PSBoundParameters
+# Before it, uv wrote a venv's pythonw.exe as a console program (astral-sh/uv#19235).
+$WindowlessUv = [version]'0.12.4'
 
 # --- Helpers ---------------------------------------------------------------------------
 
@@ -352,11 +354,55 @@ function Get-Unchanged {
     return 'the installed ones are as they were'
 }
 
+function Get-UvVersion {
+    <# uv's version, or $null when it doesn't say. #>
+    [void](Invoke-Native uv @('--version') -Quiet)
+    $line = [string]($script:NativeOutput | Select-Object -First 1)
+    if ($line -match '^uv (\d+\.\d+\.\d+)') { return [version]$Matches[1] }
+    return $null
+}
+
+function Test-ConsolePythonw {
+    <# Whether the checkout's .venv has a console pythonw.exe. agent-bridgew.exe runs it, and
+       with no console to share, Windows opens a window for it at every start. #>
+    return (Get-PeSubsystem $VenvPythonw) -eq 3
+}
+
+function Get-UvAdvice {
+    return "update uv to $WindowlessUv or later (``uv self update``, or the way you installed it), then run setup again"
+}
+
+function Remove-Venv {
+    <# Deletes the checkout's .venv, so uv sync makes it anew: it keeps an existing one's
+       pythonw.exe. Moved aside first, which fails as a whole while something has a file in it
+       open, instead of leaving half a .venv. #>
+    $venv = Join-Path $Checkout '.venv'
+    $old = Join-Path $Checkout '.venv-old'
+    Remove-Item -LiteralPath $old -Recurse -Force -ErrorAction SilentlyContinue
+    if (Test-Path -LiteralPath $old) { Stop-Setup "couldn't delete $old, an old .venv: delete it, then run setup again; $(Get-Unchanged)" }
+    try {
+        # Not Move-Item, which moves what it can one by one when that fails.
+        [IO.Directory]::Move($venv, $old)
+    } catch {
+        Stop-Setup ("couldn't move $venv aside to make it again ($($_.Exception.Message)). Close what uses it, " +
+            "such as an editor or a shell it is activated in, then run setup again; $(Get-Unchanged)")
+    }
+    $script:RebuildVenv = $false
+    Remove-Item -LiteralPath $old -Recurse -Force -ErrorAction SilentlyContinue
+    if (Test-Path -LiteralPath $old) { Write-Warn "couldn't delete $old, the old .venv; delete it later" }
+}
+
 function Sync-Checkout {
     Write-Step "Installing dependencies into $Checkout\.venv"
+    if ($script:RebuildVenv) { Remove-Venv }
     # Counted as done even when it fails: it may have changed the .venv halfway.
     $script:Synced = $true
     if ((Invoke-Native uv @('sync', '--all-packages', '--frozen', '--directory', $Checkout)) -ne 0) { Stop-Setup "uv sync failed; $(Get-Unchanged)" }
+    if (Test-ConsolePythonw) {
+        $version = Get-UvVersion
+        Stop-Setup ("$(if ($version) { "uv $version" } else { 'uv' }) made $VenvPythonw a console program, so agent-bridge " +
+            "would open a terminal window at every start: $(Get-UvAdvice); $(Get-Unchanged)")
+    }
 }
 
 function Assert-ServiceExe {
@@ -392,9 +438,23 @@ try {
         Write-Host "The task ran $installedExe; it will run $Exe. To keep the other one, pass -Bridge $(Format-Quoted $installedExe)."
     }
     $Synced = $false
+    $RebuildVenv = $false
     if ($Checkout) {
         if (-not (Get-Command uv -ErrorAction SilentlyContinue)) {
             Stop-Setup 'uv not found; install it: https://docs.astral.sh/uv/getting-started/installation/'
+        }
+        # What agent-bridgew.exe runs. A .venv an older uv made keeps its console one through
+        # uv sync, so it is made again (by Sync-Checkout, once the bridge is stopped), with a
+        # uv that makes it windowless.
+        $VenvPythonw = Join-Path $Checkout '.venv\Scripts\pythonw.exe'
+        if (Test-ConsolePythonw) {
+            $uvVersion = Get-UvVersion
+            if ($uvVersion -and $uvVersion -lt $WindowlessUv) {
+                Stop-Setup ("$VenvPythonw is a console program, so agent-bridge would open a terminal window at every " +
+                    "start, and uv $uvVersion would make it so again: $(Get-UvAdvice), which makes $Checkout\.venv anew")
+            }
+            Write-Host "$VenvPythonw is a console program, so agent-bridge would open a terminal window at every start: setup makes $Checkout\.venv anew."
+            $RebuildVenv = $true
         }
         # A first install has nothing running yet that holds the .venv's files.
         if (-not (Test-Path -LiteralPath $Exe)) { Sync-Checkout }

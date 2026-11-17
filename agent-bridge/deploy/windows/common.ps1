@@ -111,6 +111,19 @@ function Get-ServiceExe([string]$Exe) {
     return Join-Path (Split-Path -Parent $Exe) 'agent-bridgew.exe'
 }
 
+function Get-PeSubsystem([string]$Path) {
+    <# The subsystem in the PE header of the program $Path: 2 for a GUI program, 3 for a
+       console one, which Windows opens a console window for when it has none to share. 0 when
+       it isn't a program or can't be read. #>
+    try { $bytes = [IO.File]::ReadAllBytes($Path) } catch { return 0 }
+    if ($bytes.Length -lt 64 -or $bytes[0] -ne 0x4D -or $bytes[1] -ne 0x5A) { return 0 }
+    $pe = [BitConverter]::ToInt32($bytes, 0x3C)
+    # PE\0\0, the 20-byte file header, then the optional header, with Subsystem at 68 in both
+    # PE32 and PE32+.
+    if ($pe -lt 64 -or $pe + 94 -gt $bytes.Length -or [BitConverter]::ToUInt32($bytes, $pe) -ne 0x4550) { return 0 }
+    return [int][BitConverter]::ToUInt16($bytes, $pe + 92)
+}
+
 function Get-InstalledExe {
     <# The agent-bridge beside the agent-bridgew.exe the task runs: the one bridge.txt names
        if it is there, else an .exe, .cmd or .bat named agent-bridge; or ''. Older setups had
