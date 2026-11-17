@@ -471,9 +471,10 @@ until you stop it (`herdr server stop`) or reboot. Lingering stays on;
 A scheduled task starts agent-bridge when you log on. It runs as you, in your session
 (where the herdr server runs), with no window. It needs uv 0.12.4 or later: older ones
 write the `.venv`'s `pythonw.exe` as a console program, which opens a terminal window at
-every start of agent-bridge (astral-sh/uv#19235). Setup stops with such a uv. With a newer
-uv, it deletes a `.venv` an older one made and makes it again, because `uv sync` keeps the
-old `pythonw.exe`. Run the setup script from the checkout in an ordinary PowerShell window:
+every start of agent-bridge (astral-sh/uv#19235). When the `.venv`'s `pythonw.exe` is a
+console program, setup stops with such a uv; with a newer one, it makes the `.venv` again,
+because `uv sync` keeps the old `pythonw.exe` (the old `.venv` is put back if that fails).
+Run the setup script from the checkout in an ordinary PowerShell window:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File agent-bridge\deploy\windows\setup.ps1

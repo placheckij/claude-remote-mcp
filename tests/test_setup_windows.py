@@ -144,17 +144,20 @@ function Get-NetConnectionProfile { param($InterfaceIndex, $ErrorAction)
     [pscustomobject]@{ NetworkCategory = $env:FAKE_CATEGORY; Name = 'Home Wi-Fi' } }
 
 # uv $FAKE_UV_VERSION. sync makes .venv\Scripts as uv does, keeping a pythonw.exe that is
-# there: one uv writes is a console program before 0.12.4.
+# there: one uv writes is a console program before 0.12.4 (or as FAKE_UV_PYTHONW says).
+# FAKE_UV_SYNC_FAILS: sync fails halfway. FAKE_UV_HOLD: sync opens that file and keeps it open.
 function uv {
     Add-Call "uv $args"
     $global:LASTEXITCODE = 0
     if ($args[0] -eq '--version') { return "uv $env:FAKE_UV_VERSION (0123456789 2026-11-17 x86_64-pc-windows-msvc)" }
+    if ($env:FAKE_UV_HOLD) { $global:FakeHeld = [IO.File]::Open($env:FAKE_UV_HOLD, 'Open', 'Read', 'Read') }
     $scripts = Join-Path $args[[array]::IndexOf($args, '--directory') + 1] '.venv\Scripts'
     New-Item -ItemType Directory -Force -Path $scripts | Out-Null
+    if ($env:FAKE_UV_SYNC_FAILS) { $global:LASTEXITCODE = 1; return 'error: Failed to download (fake)' }
     Copy-Item -LiteralPath $env:FAKE_LAUNCHER -Destination (Join-Path $scripts 'agent-bridge.exe')
     Set-Content -LiteralPath (Join-Path $scripts 'agent-bridgew.exe') -Value ''
     $pythonw = Join-Path $scripts 'pythonw.exe'
-    $kind = if ([version]$env:FAKE_UV_VERSION -lt [version]'0.12.4') { 'console' } else { 'gui' }
+    $kind = if ($env:FAKE_UV_PYTHONW) { $env:FAKE_UV_PYTHONW } elseif ([version]$env:FAKE_UV_VERSION -lt [version]'0.12.4') { 'console' } else { 'gui' }
     if (-not (Test-Path -LiteralPath $pythonw)) { Copy-Item -LiteralPath (Join-Path $env:FAKE_PE "$kind.exe") -Destination $pythonw } }
 """
 
@@ -384,6 +387,9 @@ class Machine:
             "FAKE_ELEVATED_EXIT": "0",
             "FAKE_BLOCKED_PROGRAM": "",
             "FAKE_UV_VERSION": "0.13.9",
+            "FAKE_UV_PYTHONW": "",
+            "FAKE_UV_SYNC_FAILS": "",
+            "FAKE_UV_HOLD": "",
             "FAKE_LAUNCHER": str(self.launcher or ""),
             "FAKE_PE": str(self.pe),
             "FAKE_PYTHON": sys.executable,
@@ -1555,3 +1561,70 @@ def test_a_venv_in_use_is_left_as_it_was_and_the_task_brought_back(machine: Mach
     assert (venv / "marker").exists()
     assert not (repo / ".venv-old").exists()
     assert machine.fake()["enabled"]
+
+
+def installed_with_a_console_pythonw(machine: Machine, launcher: Path) -> Path:
+    """A checkout install whose .venv then has a console pythonw.exe and a marker file, as a
+    .venv uv before 0.12.4 made. Returns the checkout."""
+    repo = machine.checkout(launcher)
+    machine.run("setup.ps1", "-Enrollment ''", input="\n\n")
+    (repo / ".venv" / "Scripts" / "pythonw.exe").write_bytes(pe(3))
+    (repo / ".venv" / "marker").write_text("")
+    return repo
+
+
+@pytest.mark.parametrize(
+    ("fakes", "said"),
+    [
+        ({"FAKE_UV_SYNC_FAILS": "1"}, "uv sync failed"),
+        ({"FAKE_UV_PYTHONW": "console"}, "uv 0.13.9 made"),
+    ],
+)
+def test_a_venv_that_cant_be_made_anew_is_put_back(machine: Machine, launcher: Path, fakes: dict, said: str) -> None:
+    repo = installed_with_a_console_pythonw(machine, launcher)
+
+    output = machine.run("setup.ps1", expect=1, **fakes)
+
+    assert said in output
+    # As it was: the bridge runs from it as before, only with a window.
+    assert "the installed ones are as they were" in output
+    assert (repo / ".venv" / "marker").exists()
+    assert (repo / ".venv" / "Scripts" / "pythonw.exe").read_bytes() == pe(3)
+    assert not (repo / ".venv-old").exists()
+    assert machine.fake()["enabled"]
+
+
+def test_a_leftover_old_venv_is_deleted_before_the_venv_is_moved_there(machine: Machine, launcher: Path) -> None:
+    repo = installed_with_a_console_pythonw(machine, launcher)
+    (repo / ".venv-old" / "Scripts").mkdir(parents=True)
+    (repo / ".venv-old" / "leftover").write_text("")
+
+    machine.run("setup.ps1")
+
+    assert not (repo / ".venv-old").exists()
+    assert (repo / ".venv" / "Scripts" / "pythonw.exe").read_bytes() == pe(2)
+
+
+def test_a_leftover_old_venv_that_cant_be_deleted_stops_setup_with_the_venv_as_it_was(machine: Machine, launcher: Path) -> None:
+    repo = installed_with_a_console_pythonw(machine, launcher)
+    leftover = repo / ".venv-old" / "leftover"
+    leftover.parent.mkdir()
+    leftover.write_text("")
+
+    with leftover.open("rb"):
+        output = machine.run("setup.ps1", expect=1)
+
+    assert f"couldn't delete {repo / '.venv-old'}, an old .venv: delete it, then run setup again" in output
+    assert (repo / ".venv" / "marker").exists()
+    assert not any(call.startswith("uv sync") for call in machine.calls())
+    assert machine.fake()["enabled"]
+
+
+def test_an_old_venv_that_cant_be_deleted_after_the_new_one_is_made_is_only_warned_about(machine: Machine, launcher: Path) -> None:
+    repo = installed_with_a_console_pythonw(machine, launcher)
+
+    output = machine.run("setup.ps1", FAKE_UV_HOLD=str(repo / ".venv-old" / "marker"))
+
+    assert f"couldn't delete {repo / '.venv-old'}, the old .venv; delete it later" in output
+    assert (repo / ".venv" / "Scripts" / "pythonw.exe").read_bytes() == pe(2)
+    assert "Done." in output
