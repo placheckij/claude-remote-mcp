@@ -125,19 +125,25 @@ class Settings(BaseSettings):
             settings = cls(_env_file=files)
         except ValidationError as error:
             raise RuntimeError(describe(error, cls.model_config["env_prefix"], path)) from None
-        # Checked here rather than in a model validator so tests can still build this
-        # combination and show trust.py refusing the default config on its own.
-        if settings.trust_root and not settings.claude_config_dir:
+        settings.check_combination()
+        return settings
+
+    def check_combination(self) -> None:
+        """Raises RuntimeError for settings that are fine one by one but not together.
+
+        Not a model validator, so tests can still build this combination and show trust.py
+        refusing the default config on its own.
+        """
+        if self.trust_root and not self.claude_config_dir:
             raise RuntimeError(
                 "AGENT_BRIDGE_TRUST_ROOT needs AGENT_BRIDGE_CLAUDE_CONFIG_DIR: folders are "
                 "only ever trusted in a separate Claude config, never the default one"
             )
-        if settings.claude_config_dir and is_default_config(settings.claude_config_dir):
+        if self.claude_config_dir and is_default_config(self.claude_config_dir):
             raise RuntimeError(
                 f"AGENT_BRIDGE_CLAUDE_CONFIG_DIR is the default Claude config "
-                f"({settings.claude_config_dir}); set it to a separate folder, e.g. ~/.claude-agents"
+                f"({self.claude_config_dir}); set it to a separate folder, e.g. ~/.claude-agents"
             )
-        return settings
 
     @field_validator("allowed_roots", mode="before")
     @classmethod
