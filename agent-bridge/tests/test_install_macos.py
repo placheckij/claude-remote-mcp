@@ -13,6 +13,7 @@ import pytest
 from dotenv import dotenv_values
 
 from agent_bridge import cli
+from agent_bridge.config import check_name_format
 from agent_bridge.install import common, macos
 
 # POSIX paths and file modes; the Windows setup is its own.
@@ -312,6 +313,22 @@ def test_asks_again_for_a_string_that_isnt_one(mac: FakeMac, capsys) -> None:
     assert mac.ran("agent-bridge")[-1] == ("enroll", ENROLLMENT)
 
 
+@pytest.mark.parametrize(
+    ("hostname", "name"),
+    [
+        ("Studio-Mac.local", "studio-mac"),
+        ("-", "mac"),
+        ("", "mac"),
+        ("a" * 40, "a" * 32),
+        # Cut to 32 characters, then the - it ends with.
+        ("a" * 31 + "-b", "a" * 31),
+    ],
+)
+def test_the_default_name_is_always_valid(hostname: str, name: str) -> None:
+    assert common.default_name(hostname, "mac") == name
+    assert check_name_format(name) == name
+
+
 def test_a_hostname_starting_with_a_digit_gets_a_mac_name(mac: FakeMac, capsys) -> None:
     mac.name = "2019-MBP.local"
 
@@ -428,6 +445,19 @@ def test_stops_when_the_gateway_took_it_but_the_state_isnt_saved(mac: FakeMac, c
 def nothing_left(mac: FakeMac) -> bool:
     return not any(path.exists() for path in (mac.env_file, mac.state_file, mac.plist)) and (
         mac.ran("launchctl")[-1] == ("bootout", f"gui/501/{LABEL}"))
+
+
+def test_undoes_the_install_when_the_bridge_cant_run(mac: FakeMac, capsys) -> None:
+    def missing(*args: str, capture: bool = False) -> tuple[int, str]:
+        raise macos.Refused(f"can't run {COMMAND} (No such file or directory)")
+
+    mac.bridge = missing
+
+    run = setup(mac, capsys, *every_flag(mac))
+
+    assert run.code == 1
+    assert f"can't run {COMMAND}" in run.out
+    assert nothing_left(mac)
 
 
 def test_undoes_the_install_when_the_log_folder_cant_be_made(mac: FakeMac, capsys) -> None:
@@ -737,6 +767,39 @@ def test_knows_a_checkout_and_uvx(tmp_path: Path, monkeypatch: pytest.MonkeyPatc
     monkeypatch.setattr(sys, "prefix", "/Users/me/.cache/uv/archive-v0/m4XVlWm3syEIKOSH")
     assert not macos.MacSystem().in_checkout()
     assert macos.MacSystem().in_uv_cache()
+
+
+def test_finds_herdr_on_the_path_else_in_the_usual_places(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, set_home: Callable[[Path], None]
+) -> None:
+    set_home(tmp_path)
+    local = tmp_path / ".local" / "bin" / "herdr"
+    local.parent.mkdir(parents=True)
+    local.write_text("#!/bin/sh\n")
+    local.chmod(0o644)
+    on_path = tmp_path / "path" / "herdr"
+    on_path.parent.mkdir()
+    on_path.write_text("#!/bin/sh\n")
+    on_path.chmod(0o755)
+    monkeypatch.setattr(macos.shutil, "which", lambda name: str(on_path))
+    assert macos.MacSystem().find_herdr() == str(on_path)
+
+    monkeypatch.setattr(macos.shutil, "which", lambda name: None)
+    # Not executable: passed over.
+    assert macos.MacSystem().find_herdr() in (None, "/opt/homebrew/bin/herdr", "/usr/local/bin/herdr")
+    local.chmod(0o755)
+    assert macos.MacSystem().find_herdr() == str(local)
+
+
+def test_cant_run_a_missing_bridge(monkeypatch: pytest.MonkeyPatch) -> None:
+    def run(argv: list[str], **options) -> object:
+        raise FileNotFoundError(2, "No such file or directory")
+
+    monkeypatch.setattr(macos.subprocess, "run", run)
+    monkeypatch.setattr(sys, "argv", [COMMAND, "setup"])
+
+    with pytest.raises(macos.Refused, match=f"can't run {COMMAND} \\(No such file or directory\\)"):
+        macos.MacSystem().bridge("check", capture=True)
 
 
 def test_runs_the_bridge_without_its_settings_in_the_environment(monkeypatch: pytest.MonkeyPatch) -> None:
