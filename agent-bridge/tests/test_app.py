@@ -384,6 +384,97 @@ def test_start_uses_auto_mode_and_the_default_config(root: Path) -> None:
     assert not runner.called("workspace", "close")
 
 
+def start_with_remote_control(root: Path, runner: "FakeRunner", asked: bool, **overrides) -> dict:
+    response = client(runner, root, **overrides).post(
+        "/agents",
+        headers=AUTH,
+        json={"cwd": str(root / "project"), "name": "Probe", "remote_control": asked},
+    )
+    assert response.status_code == 201
+    return response.json()
+
+
+def test_start_turns_on_remote_control_named_like_the_agent(root: Path) -> None:
+    runner = FakeRunner(start_responses(trust_dialog=False))
+    assert start_with_remote_control(root, runner, True)["remote_control"] == "on"
+    assert runner.called("agent", "start")[0][-5:] == [
+        "--", "--permission-mode", "auto", "--remote-control", "probe",
+    ]
+    # The trust dialog and the policy notice are looked for in one wait.
+    probe = runner.called("pane", "wait-output")[0]
+    assert probe[probe.index("--regex") + 1] == "Yes, I trust this folder|Remote Control is disabled"
+
+
+def test_start_without_remote_control_passes_no_flag(root: Path) -> None:
+    runner = FakeRunner(start_responses(trust_dialog=False))
+    assert start_with_remote_control(root, runner, False)["remote_control"] == "off"
+    assert runner.called("agent", "start")[0][-3:] == ["--", "--permission-mode", "auto"]
+    assert "--match" in runner.called("pane", "wait-output")[0]
+
+
+@pytest.mark.parametrize("configured", [("--remote-control",), ("--remote-control=mine",)])
+@pytest.mark.parametrize("asked", [True, False])
+def test_remote_control_in_the_claude_args_is_not_passed_twice(
+    root: Path, configured: tuple[str, ...], asked: bool
+) -> None:
+    runner = FakeRunner(start_responses(trust_dialog=False))
+    body = start_with_remote_control(root, runner, asked, claude_args=configured)
+    # On for every agent, asked or not: the start says so.
+    assert body["remote_control"] == "on"
+    assert runner.called("agent", "start")[0][-2:] == ["--", *configured]
+
+
+def test_a_start_whose_organization_disables_remote_control_says_so(root: Path) -> None:
+    runner = FakeRunner({
+        **start_responses(trust_dialog=False),
+        ("pane", "wait-output"): ok({
+            "matched_line": "  Remote Control is disabled by your organization's policy.",
+            "read": {"text": "Welcome to Claude Code\n  Remote Control is disabled by your organization's policy.\n"},
+        }),
+    })
+    body = start_with_remote_control(root, runner, True)
+    assert (body["id"], body["remote_control"]) == ("w5:p1", "blocked")
+    assert not runner.called("workspace", "close")
+
+
+def test_the_trust_dialog_wins_over_the_remote_control_notice(root: Path) -> None:
+    runner = FakeRunner({
+        **start_responses(trust_dialog=False),
+        ("pane", "wait-output"): ok({
+            "matched_line": "Remote Control is disabled",
+            "read": {"text": "Remote Control is disabled\n> 1. Yes, I trust this folder\n"},
+        }),
+    })
+    response = client(runner, root).post(
+        "/agents", headers=AUTH, json={"cwd": str(root / "project"), "remote_control": True}
+    )
+    assert response.status_code == 409
+    assert response.json()["error"]["code"] == "folder_not_trusted"
+
+
+def test_a_match_herdr_doesnt_describe_is_taken_for_the_trust_dialog(root: Path) -> None:
+    # herdr 0.8.0+ names the matched line; if it ever didn't, refusing is the safe guess:
+    # the trust dialog defaults to "No, exit", so a prompt sent to it would quit Claude.
+    runner = FakeRunner({**start_responses(trust_dialog=False), ("pane", "wait-output"): ok({})})
+    response = client(runner, root).post(
+        "/agents", headers=AUTH, json={"cwd": str(root / "project"), "remote_control": True}
+    )
+    assert response.status_code == 409
+    assert response.json()["error"]["code"] == "folder_not_trusted"
+
+
+def test_start_leaves_remote_control_off_for_gateways_that_dont_ask(root: Path) -> None:
+    runner = FakeRunner(start_responses(trust_dialog=False))
+    response = client(runner, root).post("/agents", headers=AUTH, json={"cwd": str(root / "project")})
+    assert response.json()["remote_control"] == "off"
+    assert "--remote-control" not in runner.called("agent", "start")[0]
+
+
+def test_listed_agents_say_nothing_about_remote_control(root: Path) -> None:
+    runner = FakeRunner({("agent", "list"): ok({"agents": [agent()]}), ("agent", "read"): (0, "", "")})
+    assert "remote_control" not in client(runner, root).get("/agents", headers=AUTH).json()[0]
+
+
 def test_start_passes_a_configured_claude_config_dir(root: Path) -> None:
     runner = FakeRunner(start_responses(trust_dialog=False))
     config_dir = root / ".claude-agents"
