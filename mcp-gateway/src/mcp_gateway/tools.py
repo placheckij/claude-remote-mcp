@@ -350,7 +350,7 @@ def build_server(settings: Settings, hosts: Hosts, oauth: GatewayOAuth) -> MCPSe
             bool,
             Field(
                 description="Turn on Claude Code's Remote Control, so the session shows up in the "
-                "Claude app under the agent's name. On by default; false only when the user asks "
+                "Claude app under the name the agent starts with. On by default; false only when the user asks "
                 "for it off.",
             ),
         ] = True,
