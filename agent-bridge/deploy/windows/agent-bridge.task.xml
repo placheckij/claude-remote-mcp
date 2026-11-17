@@ -3,9 +3,8 @@
   The scheduled task that runs agent-bridge: at logon, as you, in your session (where the
   herdr server runs), with no window. setup.ps1 fills in the {{...}} fields and registers it.
 
-  The action is `conhost.exe headless` (no console window) running cmd.exe on run.cmd,
-  which setup writes beside the log; run.cmd runs `agent-bridge serve` and appends its
-  output to the log.
+  The action runs agent-bridgew.exe, the windowless agent-bridge, to serve and append to its
+  log, with nothing in between: ending the task ends it and the python.exe it runs.
 -->
 <Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
   <RegistrationInfo>
@@ -14,9 +13,8 @@
   </RegistrationInfo>
   <!-- Both triggers repeat every minute while you are logged on, which is ignored while it
        runs: it starts once the LAN address exists (after Wi-Fi connects), and again if it
-       stops. Task Scheduler can't see it fail, since conhost.exe always exits with 0. A
-       trigger's repetition starts only when it fires, so the logon trigger covers every
-       logon, and the registration trigger the time from setup to the next logon. -->
+       stops. A trigger's repetition starts only when it fires, so the logon trigger covers
+       every logon, and the registration trigger the time from setup to the next logon. -->
   <Triggers>
     <LogonTrigger>
       <Enabled>true</Enabled>

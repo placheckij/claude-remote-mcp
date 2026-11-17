@@ -10,11 +10,14 @@ gateway is too old to rename hosts (rename it there); `rename`, `check --token-f
 
 import argparse
 import asyncio
+import contextlib
 import logging
+import logging.handlers
 import os
 import stat
 import sys
 from collections.abc import Callable
+from datetime import datetime
 from pathlib import Path
 
 import httpx
@@ -36,8 +39,12 @@ from agent_bridge.host import API_VERSION
 from agent_bridge.state import Gateway, State, StateError, env_file, load, load_or_create, rename, save, state_file
 
 OK, FAILED, INVALID, NAME_TAKEN, UNREACHABLE, SAVE_FAILED, OUTDATED = 0, 1, 2, 3, 4, 5, 6
+# A --log-file larger than this is set aside as <name>.1.
+LOG_LIMIT = 1024 * 1024
 # The gateway's codes for a host it has no record of with this token (enrollment.py).
 NOT_KNOWN = ("not_enrolled", "unauthorized")
+
+log = logging.getLogger(__name__)
 
 
 class _Refused(Exception):
@@ -49,7 +56,7 @@ def main(argv: list[str] | None = None, *, run: Callable[..., None] = uvicorn.ru
     args = _parser().parse_args(argv)
     try:
         if args.command == "serve":
-            return _serve(run)
+            return _serve(run, args.log_file)
         if args.command == "enroll":
             return _enroll(args.string)
         if args.command == "rename":
@@ -69,7 +76,8 @@ def main(argv: list[str] | None = None, *, run: Callable[..., None] = uvicorn.ru
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="agent-bridge", description="Run agent-bridge and join it to a gateway.")
     commands = parser.add_subparsers(dest="command", required=True)
-    commands.add_parser("serve", help="run the service, from the env file and state file")
+    serve = commands.add_parser("serve", help="run the service, from the env file and state file")
+    serve.add_argument("--log-file", type=Path, metavar="PATH", help="append the log to PATH instead of stderr")
     enroll_command = commands.add_parser("enroll", help="join the gateway that printed the string")
     enroll_command.add_argument("string", help="what `sudo mcp-gateway enroll` printed, crm1@…")
     rename_command = commands.add_parser("rename", help="rename this host on the gateway")
@@ -92,13 +100,81 @@ def _settings(for_service: bool = True) -> Settings:
     return settings
 
 
-def _serve(run: Callable[..., None]) -> int:
-    logging.basicConfig(level=logging.INFO, format="%(levelname)-9s %(message)s")
-    settings = _settings()
-    path = state_file()
-    app = create_app(settings, state=load_or_create(path), state_path=path)
-    run(app, host=settings.host, port=settings.port, server_header=False)
+def _serve(run: Callable[..., None], log_file: Path | None) -> int:
+    if log_file is None:
+        logging.basicConfig(level=logging.INFO, format="%(levelname)-9s %(message)s")
+        handler = None
+    else:
+        handler = _open_log(log_file)
+    try:
+        settings = _settings()
+        path = state_file()
+        app = create_app(settings, state=load_or_create(path), state_path=path)
+        # uvicorn's loggers then reach the log file too, through the root logger.
+        options = {"log_config": None} if handler else {}
+        run(app, host=settings.host, port=settings.port, server_header=False, **options)
+    except (_Refused, StateError) as error:
+        # Printed too, where no one may see it (the Windows task has no console).
+        if handler:
+            log.error("Not starting: %s", error)
+        raise
+    except Exception as error:
+        # Its type alone: the message or traceback may hold a setting.
+        log.error("agent-bridge stopped: %s", type(error).__name__)
+        raise
+    finally:
+        if handler:
+            logging.getLogger().removeHandler(handler)
+            handler.close()
     return OK
+
+
+class _NoTraceback(logging.Formatter):
+    """Writes a logged exception as its type alone: its message or traceback may hold a
+    setting. Works on a copy, since another handler may have put the traceback in the
+    record already."""
+
+    def format(self, record: logging.LogRecord) -> str:
+        copy = logging.makeLogRecord(record.__dict__)
+        kind = record.exc_info[0] if record.exc_info else None
+        copy.exc_text = f"{kind.__name__} (traceback left out)" if kind else None
+        copy.exc_info = copy.stack_info = None
+        if kind and isinstance(copy.msg, str):
+            copy.msg = copy.msg.rstrip()
+        return super().format(copy)
+
+
+class _RotatingLog(logging.handlers.RotatingFileHandler):
+    """Moved to `<name>.1` once past `maxBytes`. On Windows that fails while another process
+    has it open, e.g. `Get-Content -Wait`: it is then appended to and tried again at the next
+    line, where RotatingFileHandler would drop each line until it can."""
+
+    def doRollover(self) -> None:
+        try:
+            super().doRollover()
+        except OSError:
+            if self.stream is None:
+                self.stream = self._open()
+
+
+def _open_log(path: Path) -> logging.Handler:
+    """Sends logging, and only logging, to `path`, after a line for this start. What is
+    printed stays out of it, as do tracebacks: they may hold settings. The log is moved to
+    `<name>.1` once it passes 1 MB, also while agent-bridge runs."""
+    with contextlib.suppress(OSError):  # not there yet, or held open by another bridge
+        if path.stat().st_size > LOG_LIMIT:
+            os.replace(path, path.with_name(f"{path.name}.1"))
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        handler = _RotatingLog(path, maxBytes=LOG_LIMIT, backupCount=1, encoding="utf-8")
+    except OSError as error:
+        raise _Refused(f"Can't write {path} ({error.strerror}).") from None
+    handler.stream.write(f"==== {datetime.now():%Y-%m-%d %H:%M:%S} starting agent-bridge\n")
+    handler.setFormatter(_NoTraceback("%(asctime)s %(levelname)-9s %(message)s", "%Y-%m-%d %H:%M:%S"))
+    root = logging.getLogger()
+    root.setLevel(logging.INFO)
+    root.addHandler(handler)
+    return handler
 
 
 def _enroll(string: str) -> int:

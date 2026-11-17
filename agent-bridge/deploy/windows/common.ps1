@@ -18,7 +18,7 @@ $script:EnvFile = Join-Path $script:SettingsDir 'env'
 $script:StateDir = Join-Path $env:LOCALAPPDATA 'agent-bridge'
 $script:StateFile = Join-Path $script:StateDir 'state.json'
 $script:LogFile = Join-Path $script:StateDir 'agent-bridge.log'
-# What the task runs, from run.cmd in this folder.
+# What the task ran before it ran agent-bridgew.exe itself; setup and uninstall remove it.
 $script:RunFile = Join-Path $script:StateDir 'run.cmd'
 # Where setup checks a copy of the settings; uninstall removes what a killed setup left.
 $script:CheckDir = Join-Path $script:StateDir 'setup-check'
@@ -103,8 +103,26 @@ function Assert-RunAsYou([string]$Script) {
     }
 }
 
+function Get-ServiceExe([string]$Exe) {
+    <# What the task runs for agent-bridge.exe $Exe: agent-bridgew.exe beside it, which runs
+       it without a console window (pythonw.exe's way). #>
+    return Join-Path (Split-Path -Parent $Exe) 'agent-bridgew.exe'
+}
+
 function Get-InstalledExe {
-    <# The agent-bridge.exe the installed run.cmd runs, or ''. #>
+    <# The agent-bridge beside the agent-bridgew.exe the task runs (an .exe, or a .cmd or .bat
+       of that name), or ''. Older setups had it run run.cmd, which names it. #>
+    if (Get-ScheduledTask -TaskName $script:TaskName -TaskPath '\' -ErrorAction SilentlyContinue) {
+        $xml = [string](Export-ScheduledTask -TaskName $script:TaskName -TaskPath '\' -ErrorAction SilentlyContinue)
+        $command = if ($xml) { @(([xml]$xml).GetElementsByTagName('Command')) | Select-Object -First 1 } else { $null }
+        if ($command -and (Split-Path -Leaf $command.InnerText) -eq 'agent-bridgew.exe') {
+            $folder = Split-Path -Parent $command.InnerText
+            $found = @('agent-bridge.exe', 'agent-bridge.cmd', 'agent-bridge.bat' | ForEach-Object { Join-Path $folder $_ } |
+                Where-Object { Test-Path -LiteralPath $_ -PathType Leaf })
+            if ($found.Count -gt 0) { return $found[0] }
+            return Join-Path $folder 'agent-bridge.exe'
+        }
+    }
     if (-not (Test-Path -LiteralPath $script:RunFile)) { return '' }
     foreach ($line in @(Get-Content -LiteralPath $script:RunFile -Encoding UTF8)) {
         if ($line -match '^"(.+)" serve\b') { return $Matches[1] }
@@ -164,11 +182,9 @@ function Invoke-Native {
         foreach ($name in $Environment.Keys) { Set-Item -LiteralPath "Env:$name" -Value $Environment[$name] }
         Push-Location -LiteralPath ([IO.Path]::GetTempPath())
         $moved = $true
-        # In UTF-8 mode, as run.cmd runs the service: agent-bridge reads the env file, which
-        # setup writes as UTF-8, in the locale's code page otherwise.
+        # In UTF-8 mode agent-bridge writes UTF-8, and Windows PowerShell decodes what a
+        # program prints with the console's code page.
         $env:PYTHONUTF8 = '1'
-        # It then writes UTF-8, and Windows PowerShell decodes what a program prints with the
-        # console's code page.
         try { $savedEncoding = [Console]::OutputEncoding; [Console]::OutputEncoding = New-Object Text.UTF8Encoding $false } catch { $savedEncoding = $null }
         $script:NativeOutput = @(& $FilePath @ArgumentList 2>&1 | ForEach-Object {
                 $text = if ($_ -is [Management.Automation.ErrorRecord]) { $_.Exception.Message } else { [string]$_ }
@@ -225,7 +241,8 @@ function Test-IsBridge([string]$CommandLine) {
         # serve right after the path, not anywhere on the line.
         if ($known -and $CommandLine -match ('(?i)' + [regex]::Escape($known) + '"?\s+serve\b')) { return $true }
     }
-    return ($CommandLine -match '(?i)agent-bridge(\.(exe|cmd|bat))?"?\s+serve\b') -or
+    # agent-bridgew: the windowless one the task runs.
+    return ($CommandLine -match '(?i)agent-bridgew?(\.(exe|cmd|bat))?"?\s+serve\b') -or
         ($CommandLine -match '(?i)-m\s+agent_bridge(\.cli)?\s+serve\b') -or
         ($CommandLine -match '(?i)\bagent_bridge\.app:main\b')
 }
@@ -297,11 +314,12 @@ function Stop-Bridge([string]$Exe, [int[]]$Port) {
         Disable-ScheduledTask -TaskName $script:TaskName -TaskPath '\' | Out-Null
         Stop-ScheduledTask -TaskName $script:TaskName -TaskPath '\'
     }
-    # Ending the task ends only the conhost.exe it started; the cmd.exe running run.cmd, the
-    # agent-bridge.exe launcher and python.exe behind it keep running, so they are ended here
-    # by their command lines: run.cmd's, and the ones that serve with this $Exe or the
-    # installed one.
-    $exes = @(@($Exe) + $script:BridgeExes | Where-Object { $_ } | Select-Object -Unique)
+    # Ending the task ends the agent-bridgew.exe it runs, which takes the python.exe below it
+    # along. Not so for a bridge started by hand, or by an older setup's task, which ran
+    # run.cmd under conhost.exe: ending it left cmd.exe and everything below running. So
+    # they are ended here by their command lines: run.cmd's, and the ones that serve with
+    # this $Exe or the installed one, or the agent-bridgew.exe beside either.
+    $exes = @(@($Exe) + $script:BridgeExes | Where-Object { $_ } | ForEach-Object { $_; Get-ServiceExe $_ } | Select-Object -Unique)
     # Narrowed by WMI first; the matching below decides.
     $candidates = "Name='cmd.exe' OR CommandLine LIKE '%serve%' OR CommandLine LIKE '%agent_bridge%'"
     $stopped = @(Get-CimInstance Win32_Process -Filter $candidates -ErrorAction SilentlyContinue | Where-Object {
