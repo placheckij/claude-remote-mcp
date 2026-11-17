@@ -1101,6 +1101,16 @@ def test_an_agent_bridge_under_another_name_is_found_again(machine: Machine) -> 
     assert machine.calls()[0] == "agent-bridge unenroll"
 
 
+def test_without_bridge_txt_the_agent_bridge_beside_the_task_is_found(machine: Machine) -> None:
+    # bridge.txt deleted: bin\agent-bridge.cmd is found beside the agent-bridgew.exe the task runs.
+    machine.setup("-Enrollment ''", input="\n\n")
+    (machine.localappdata / "agent-bridge" / "bridge.txt").unlink()
+
+    rerun = machine.setup("-Enrollment ''")
+
+    assert "The task ran" not in rerun
+
+
 def test_a_skipped_check_isnt_called_failed(machine: Machine) -> None:
     output = machine.setup("-Enrollment ''", input="\n\n", expect=1, FAKE_NO_START="1")
 
