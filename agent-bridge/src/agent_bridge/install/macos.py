@@ -498,6 +498,9 @@ class MacSystem:
 
     def bridge(self, *args: str, capture: bool = False) -> tuple[int, str]:
         environment = {name: value for name, value in os.environ.items() if not name.startswith(PREFIX)}
+        # What was printed so far goes first: piped, Python holds it while the child writes.
+        sys.stdout.flush()
+        sys.stderr.flush()
         try:
             result = subprocess.run([self.command(), *args], env=environment, cwd="/", text=True,
                                     capture_output=capture)
