@@ -25,7 +25,7 @@ requirements, configuration, deployment and tests.
 
 You need:
 
-- [herdr](https://github.com/herdrdev/herdr) 0.9.5+ and Claude Code on each agent
+- [herdr](https://github.com/herdrdev/herdr) 0.8.0+ and Claude Code on each agent
   host;
 - [uv](https://docs.astral.sh/uv/) on each agent host (the gateway's setup script
   installs it on the gateway host);

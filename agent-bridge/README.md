@@ -17,8 +17,8 @@ whose folder is under the allowed roots.
 
 | | |
 |---|---|
-| OS | macOS, Linux or Windows (natively), wherever [herdr](https://github.com/herdrdev/herdr) runs. Tested on macOS, Linux and Windows. |
-| herdr | 0.9.5 or newer; its server must be running for the same user (it is whenever herdr is open, and keeps running after you detach) |
+| OS | macOS, Linux or Windows (natively), wherever [herdr](https://github.com/herdrdev/herdr) runs. Tested on macOS 27.2 (Apple silicon), Ubuntu 26.04 LTS (x86_64, systemd 259) and Windows 11 25H2 (Windows PowerShell 5.1). The setup scripts need launchd on macOS, systemd user units on Linux, and Windows 10 version 1809 or later. |
+| herdr | 0.8.0 or newer (tested with 0.8.0 and 0.9.5); its server must be running for the same user (it is whenever herdr is open, and keeps running after you detach) |
 | Claude Code | the `claude` CLI, installed and logged in for that user |
 | Python | 3.11+, via [uv](https://docs.astral.sh/uv/) (uv installs it if needed) |
 | Network | reachable from the gateway host on one TCP port (default 8765), and able to reach the gateway on its port (8766) to enroll. Give the host a fixed LAN address, e.g. a DHCP reservation. Nothing is exposed to the internet. |
