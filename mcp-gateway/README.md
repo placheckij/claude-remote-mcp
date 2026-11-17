@@ -30,7 +30,7 @@ or with a NUL character) come back the same way as one sentence.
 | OS | anything that runs Python 3.11+; tested on Linux and macOS, Windows should work but is untested. The [setup script](#deploy-with-the-setup-script) needs a Debian-based Linux with systemd (e.g. Debian 12+, Ubuntu 22.04+); elsewhere, [install by hand](#install-by-hand). |
 | Hardware | very light: one small Python process plus cloudflared. A single-board computer, a small home server, a VPS (if it can reach agent-bridge, e.g. over a VPN) or the agent host itself is enough. 64-bit recommended. |
 | Software | [uv](https://docs.astral.sh/uv/) (installs Python 3.11+ itself if needed); [cloudflared](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/) for the tunnel |
-| Network | outbound HTTPS to Cloudflare; a route to agent-bridge's URL; agent hosts on the LAN reach port 8766 to [enroll](#enrollment). No port needs to be open to the internet. |
+| Network | outbound HTTPS to Cloudflare; a route to agent-bridge's URL; agent hosts on the LAN reach port 8766 to [enroll](#enrollment) and, afterwards, to report their address, rename and unenroll. No port needs to be open to the internet. |
 | Accounts | a Cloudflare account with a domain whose DNS is on Cloudflare (Free plan is fine); a Claude plan with custom connectors (Free, Pro and Max included) |
 | Always on | yes: the connector only works while this host is up |
 
@@ -72,10 +72,11 @@ unset. An invalid setting stops startup with one line per problem, naming the va
 | Variable | |
 |---|---|
 | `MCP_GATEWAY_OAUTH_PASSPHRASE` | required, 16+ chars; typed on the [sign-in page](#oauth-sign-in) when the connector is added |
-| `MCP_GATEWAY_STATE_DIR` | required; where the signed-in clients and token hashes are kept (`oauth.json`, mode 600), e.g. `/var/lib/mcp-gateway`. The running gateway locks it (`oauth.lock`); see [One process](#one-process) |
+| `MCP_GATEWAY_STATE_DIR` | required; where the gateway keeps its state, all mode 600: signed-in clients and token hashes (`oauth.json`), agent hosts (`bridges.json`) and the enrollment window (`enrollment.json`), e.g. `/var/lib/mcp-gateway`. The running gateway locks it (`oauth.lock`); see [One process](#one-process) |
 | `MCP_GATEWAY_TOKEN` | optional, 32+ chars; the static token from before OAuth, still accepted as `Authorization: Bearer …` while set. Leave it unset unless a connector added with request headers still uses it |
 | `MCP_GATEWAY_PUBLIC_HOST` | required; the tunnel hostname, e.g. `mcp.example.com` (requests with any other `Host` are refused). The OAuth issuer is `https://<host>` and the connector URL `https://<host>/mcp` |
 | `MCP_GATEWAY_BRIDGE_URL`, `MCP_GATEWAY_BRIDGE_TOKEN` | legacy, both or neither; see [Agent hosts](#agent-hosts) |
+| `MCP_GATEWAY_PORT` | optional, CLI only; the port `mcp-gateway enroll` puts in the enrollment string (default 8766; the setup script's wrapper sets it to `PORT`) |
 | `MCP_GATEWAY_PROJECTS_ROOT` | optional; only for an agent-bridge without `GET /info`, which can't look up project names: where `start_agent` finds them, as a path on the agent host, e.g. `/home/me/projects`. Unset, such a host takes absolute paths only |
 
 ## Agent hosts
@@ -93,8 +94,9 @@ sudo mcp-gateway bridges remove studio
 ```
 
 `add` takes the name and everything else from the bridge's `/info`, and refuses a
-bridge without it (`--name` picks another name). Without a terminal it takes the token
-from an exported `AGENT_BRIDGE_TOKEN` (`sudo --preserve-env=AGENT_BRIDGE_TOKEN`). The
+bridge without it (`--name` picks another name). It takes the token from an exported
+`AGENT_BRIDGE_TOKEN` when set (`sudo --preserve-env=AGENT_BRIDGE_TOKEN`), and otherwise
+asks for it. The
 running gateway picks up each change before its next request.
 
 - **Agent ids** carry their host, e.g. `mac/w1:p1`. While only one host is set up, bare
@@ -116,7 +118,8 @@ opens a 30-minute window for any number of agent hosts and prints the string the
 enroll with, `crm1@<LAN address>:8766#<secret>`, once the gateway answers at that
 address (the setup script's listens on IPv4 only). On each agent host,
 `agent-bridge enroll '<string>'` sends its id, address, token and name; the gateway calls that address's `/info`, checks it answers with the same id, and
-adds the host (or replaces its record, if it enrolled before). Each enrollment is logged
+adds the host (or replaces its record, if it enrolled before; any other host recorded at
+that address is dropped, as is one at an address a bridge later reports). Each enrollment is logged
 as a warning.
 
 - **The secret** is 96 random bits, kept only as a hash with its expiry in
@@ -151,8 +154,8 @@ What stands between the internet and an agent:
    `WWW-Authenticate: Bearer resource_metadata="https://<host>/.well-known/oauth-protected-resource/mcp"`,
    from which claude.ai starts the sign-in, and each refusal is logged with the request's
    headers, secrets redacted.
-4. **Host and Origin check.** Only `MCP_GATEWAY_PUBLIC_HOST` (and localhost) is
-   accepted as `Host`, and only `https://claude.ai` or `https://claude.com` as `Origin`
+4. **Host and Origin check.** Only `MCP_GATEWAY_PUBLIC_HOST` (and `localhost` or
+   `127.0.0.1` with a port) is accepted as `Host`, and only `https://claude.ai` or `https://claude.com` as `Origin`
    (a request without one is fine). This is DNS-rebinding protection from the SDK. A
    refused Origin with a valid token is logged as an error: if it is the Claude app,
    every call fails until that Origin is added to `ALLOWED_ORIGINS` in
@@ -230,7 +233,8 @@ Cloudflare Tunnel, and generates the sign-in passphrase.
   It coexists with other services: mcp-gateway uses port 8766 (the script stops if
   something else has it), and the tunnel runs as its own `cloudflared-claude-remote`
   service next to any other cloudflared setup. A firewall on the host must let the LAN
-  reach port 8766 for agent hosts to enroll.
+  reach port 8766 for agent hosts to enroll and, afterwards, to report their address,
+  rename and unenroll.
 - A domain whose DNS is on Cloudflare (any plan, including Free). The MCP server gets a
   subdomain of it, e.g. `mcp.example.com`.
 - Fixed LAN addresses for the gateway host and the agent hosts (DHCP reservations on the
@@ -308,8 +312,9 @@ the tunnel checks fail, try again shortly:
 
 ### Update and rotate
 
-- **Update the code:** `git pull` in the checkout, then re-run the script without any
-  variables: `sudo mcp-gateway/deploy/setup.sh`. It takes `PUBLIC_HOST` and, if set,
+- **Update the code:** `git pull` in the checkout, then re-run the script:
+  `sudo mcp-gateway/deploy/setup.sh`, passing `PORT` and `TUNNEL_NAME` again if you
+  changed them (they aren't kept). It takes `PUBLIC_HOST` and, if set,
   `PROJECTS_ROOT` from `/etc/mcp-gateway/env` and lists the ones it keeps, keeps the
   passphrase, the OAuth tokens, the static token if there is one and the agent hosts,
   and reuses the tunnel. An agent-bridge set up before `bridges.json` is imported as a
@@ -327,7 +332,7 @@ the tunnel checks fail, try again shortly:
   itself when it starts; after a new token, enroll it again (`sudo mcp-gateway enroll`,
   then `agent-bridge enroll '<string>'` on the agent host). One added by hand:
   `sudo mcp-gateway bridges remove <name>`, then `sudo mcp-gateway bridges add <url>`.
-  **The projects folder:** re-run with `PROJECTS_ROOT`.
+- **Change the projects folder:** re-run with `PROJECTS_ROOT`.
 - **Change the hostname:** re-run with the new `PUBLIC_HOST`. It gets a new DNS record;
   delete the old one in the Cloudflare dashboard, and re-add the connector in claude.ai
   with the new URL.

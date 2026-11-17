@@ -25,9 +25,10 @@ requirements, configuration, deployment and tests.
 
 You need:
 
-- [herdr](https://github.com/herdrdev/herdr) 0.8.0+ and Claude Code on the agent
+- [herdr](https://github.com/herdrdev/herdr) 0.9.5+ and Claude Code on each agent
   host;
-- [uv](https://docs.astral.sh/uv/) on both hosts;
+- [uv](https://docs.astral.sh/uv/) on each agent host (the gateway's setup script
+  installs it on the gateway host);
 - an agent host that stays awake and logged in while you use it (see
   [Keeping the agent host available](agent-bridge/README.md#keeping-the-agent-host-available));
 - a Cloudflare account (the Free plan is fine) with a domain whose DNS is on Cloudflare;
@@ -54,7 +55,7 @@ The gateway and the agent host can be one machine.
    does the same with a systemd user service. On Windows, run
    [`powershell -ExecutionPolicy Bypass -File agent-bridge\deploy\windows\setup.ps1`](agent-bridge/README.md#as-a-service-on-windows-task-scheduler)
    and paste that string when asked; it installs a logon task, adds a firewall rule for
-   the port (Private networks only) and enrolls it. Elsewhere,
+   the port (Private networks only) and enrolls it. Or, without a setup script,
    start [agent-bridge](agent-bridge/README.md#run), then
    [enroll](agent-bridge/README.md#enroll-with-the-gateway) it with that string.
 4. **claude.ai:** [add the custom connector](mcp-gateway/README.md#add-the-connector-in-claudeai)
@@ -64,6 +65,11 @@ If you have more than one Claude subscription, e.g. a work and a personal one, a
 start on the right one for each project folder: see
 [Claude accounts](agent-bridge/README.md#claude-accounts).
 
+Agents only start in folders Claude Code trusts. agent-bridge can mark them trusted in a
+separate Claude config: the macOS and Linux setup scripts ask for it, and on Windows pass
+`-ClaudeConfigDir` and `-TrustRoot`. Log in to that config once when the script says so.
+See [Folder trust](agent-bridge/README.md#folder-trust).
+
 ## Development
 
 uv workspace; each component is its own package.
@@ -72,6 +78,7 @@ uv workspace; each component is its own package.
 uv sync --all-packages
 uv run --package agent-bridge pytest agent-bridge
 uv run --package mcp-gateway pytest mcp-gateway
+uv run pytest   # both packages plus tests/ (deploy scripts, enrollment end to end)
 ```
 
 ## License
