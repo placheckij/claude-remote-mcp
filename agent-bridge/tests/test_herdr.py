@@ -2,6 +2,8 @@
 platform: Windows' rules are applied by setting `herdr.WINDOWS`."""
 
 import json
+import os
+import subprocess
 import sys
 from collections.abc import Sequence
 from pathlib import Path
@@ -109,6 +111,26 @@ def test_a_prompt_too_long_for_windows_is_the_callers_to_shorten(
     )
     assert response.status_code == 422
     assert response.json()["error"]["code"] == "prompt_too_long"
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows' console windows")
+def test_herdr_gets_no_console_window(tmp_path: Path) -> None:
+    # Run as agent-bridgew runs it, by pythonw, which has no console: a console program it
+    # starts gets a new console window on the desktop unless told not to. Real processes;
+    # the child reports its console window.
+    script, out = tmp_path / "run.py", tmp_path / "out"
+    script.write_text(
+        "import asyncio, sys\n"
+        "from agent_bridge.herdr import subprocess_runner\n"
+        "probe = 'import ctypes; print(ctypes.windll.kernel32.GetConsoleWindow())'\n"
+        "argv = [sys.executable.replace('pythonw.exe', 'python.exe'), '-c', probe]\n"
+        "code, stdout, _ = asyncio.run(subprocess_runner(argv))\n"
+        "open(sys.argv[1], 'w').write(f'{code} {stdout.strip()}')\n"
+    )
+    pythonw = Path(sys._base_executable).with_name("pythonw.exe")
+    env = {**os.environ, "PYTHONPATH": str(Path(herdr.__file__).parents[1])}
+    subprocess.run([pythonw, script, out], env=env, timeout=60, check=True)
+    assert out.read_text() == "0 0"
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="Windows' own command-line limit")

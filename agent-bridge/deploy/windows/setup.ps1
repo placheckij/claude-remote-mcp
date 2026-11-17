@@ -340,7 +340,7 @@ function Test-EnvCopy($Settings) {
 }
 
 function Write-EnrollCommand {
-    <# How to enroll by hand, in UTF-8 mode as setup and the task run agent-bridge. #>
+    <# How to enroll by hand, in UTF-8 mode as setup runs agent-bridge. #>
     Write-Host "  `$env:PYTHONUTF8 = '1'; & $(Format-Quoted $Exe) enroll '<the string it printed>'"
 }
 
