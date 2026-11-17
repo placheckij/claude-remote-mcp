@@ -250,7 +250,7 @@ def _has_settings(path: Path) -> bool:
         # As dotenv reads them: `export ` in front, and names in any case.
         return any(
             line.strip().removeprefix("export ").lstrip().upper().startswith("AGENT_BRIDGE_")
-            for line in path.read_text().splitlines()
+            for line in path.read_text(encoding="utf-8").splitlines()
         )
     except (OSError, UnicodeDecodeError):
         return False

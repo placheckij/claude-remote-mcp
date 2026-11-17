@@ -498,36 +498,38 @@ It finds the LAN address and `herdr.exe` itself, including herdr's
    script asks whether to make it Private (answer `y`): the gateway can't reach
    agent-bridge otherwise;
 4. registers the `agent-bridge` task, which starts it. The task runs
-   `%LOCALAPPDATA%\agent-bridge\run.cmd`, which runs `agent-bridge serve` and writes its
-   log. It is tried every minute while you're logged on, which does nothing while it runs.
-   That way it starts once Wi-Fi brings up the LAN address, and starts again if it stops;
+   `agent-bridgew.exe serve --log-file …`: `agent-bridgew` is agent-bridge without a
+   console window, as `pythonw` is to `python`. Nothing runs in between, so ending the task
+   ends agent-bridge. It is tried every minute while you're logged on, which does nothing
+   while it runs. That way it starts once Wi-Fi brings up the LAN address, and starts again
+   if it stops;
 5. enrolls with the gateway (asking for another name if the gateway already has a host by
    that name), and runs `agent-bridge check`.
 
 Its log is `%LOCALAPPDATA%\agent-bridge\agent-bridge.log`, with a line for each start. A log
 over 1 MB is moved to `agent-bridge.log.1` when agent-bridge starts; while it runs, the log
-grows by a line per request. Re-run setup after pulling new code: it keeps the token and settings,
+grows by a line per request. It holds only what agent-bridge logs, not what it prints, such
+as a traceback, which could include a setting; an error it stops on is logged by its type
+alone. Re-run setup after pulling new code: it keeps the token and settings,
 and asks only for what's missing. Parameters skip the questions or change a setting:
 `-Roots`, `-Name`, `-Enrollment` (`''` skips), `-Address`, `-Port`, `-HerdrBin`,
 `-ClaudeConfigDir` and `-TrustRoot` (for [folder trust](#folder-trust); `''` removes
-them), `-RotateToken`, and `-Bridge` (an `agent-bridge.exe` installed elsewhere). A new `-Name`
+them), `-RotateToken`, and `-Bridge` (an `agent-bridge.exe` installed elsewhere, with its `agent-bridgew.exe` beside it). A new `-Name`
 on an enrolled host renames it on the gateway (`agent-bridge rename`); a gateway too old
 for that, or one that can't be reached, is asked for an enrollment string instead. Settings
 it doesn't manage, such as `AGENT_BRIDGE_ACCOUNTS`, can be added to the env file by hand;
 re-runs keep them.
 
 ```powershell
-# Stop it. Ending the task stops only its conhost.exe, so stop the cmd.exe running run.cmd
-# and the bridge too; the task starts it again within a minute unless you disable it first.
+# Restart it, e.g. after pulling and `uv sync --all-packages --frozen`. The log gets a new
+# "starting agent-bridge" line. (A task an older setup registered runs conhost.exe on
+# run.cmd, and ending it leaves agent-bridge running: re-run setup once first.)
+Stop-ScheduledTask -TaskName agent-bridge
+Start-ScheduledTask -TaskName agent-bridge
+
+# Stop it. Disabled first, or the task starts it again within a minute.
 Disable-ScheduledTask -TaskName agent-bridge
 Stop-ScheduledTask -TaskName agent-bridge
-$run = "$env:LOCALAPPDATA\agent-bridge\run.cmd"
-# The agent-bridge.exe run.cmd runs, whatever it is named (-Bridge).
-$exe = (Select-String -LiteralPath $run -Pattern '^"(.+)" serve').Matches[0].Groups[1].Value
-Get-CimInstance Win32_Process | Where-Object {
-  ($_.Name -eq 'cmd.exe' -and $_.CommandLine -like "*$run*") -or
-    ($_.CommandLine -match ([regex]::Escape($exe) + '"?\s+serve'))
-} | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }
 
 # Start again (re-running setup does this too). Registering it again, rather than only
 # starting it, also brings back the every-minute retry, which disabling ended.

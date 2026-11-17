@@ -5,6 +5,8 @@ import asyncio
 import json
 import logging
 import os
+import re
+import sys
 from pathlib import Path
 
 import httpx
@@ -115,6 +117,90 @@ def test_serve_refuses_without_what_the_service_needs(capsys, settings: Path) ->
     assert code == 1
     assert "AGENT_BRIDGE_HOST, AGENT_BRIDGE_NAME, AGENT_BRIDGE_HERDR_BIN" in err
     assert str(settings) in err
+
+
+def test_serve_reads_the_env_file_as_utf8(capsys, settings: Path, tmp_path: Path) -> None:
+    # As the Windows setup writes it, whatever the locale's code page is.
+    root = tmp_path / "Projekty-żółw"
+    root.mkdir()
+    settings.write_text(settings.read_text().replace(f"={tmp_path}\n", f"={root}\n"), encoding="utf-8")
+    served = {}
+
+    assert run(capsys, "serve", run=lambda app, **options: served.update(app=app))[0] == 0
+    assert served["app"].state.agents.settings.allowed_roots == (root.resolve(),)
+
+
+def test_serve_logs_to_the_log_file_only_what_it_logs(capsys, settings: Path, tmp_path: Path) -> None:
+    log_file = tmp_path / "logs" / "agent-bridge.log"
+    log_file.parent.mkdir()
+    log_file.write_text("an earlier start\n", encoding="utf-8")
+    served = {}
+
+    def serve(app, **options) -> None:
+        served.update(options)
+        logging.getLogger("uvicorn.error").info("Uvicorn running on http://192.168.1.20:8765")
+        print("printed: may hold a setting", file=sys.stderr)
+
+    code, _, err = run(capsys, "serve", "--log-file", str(log_file), run=serve)
+
+    assert code == 0
+    # uvicorn's loggers are left to reach the root logger's file.
+    assert served["log_config"] is None
+    lines = log_file.read_text(encoding="utf-8").splitlines()
+    assert lines[0] == "an earlier start"
+    assert re.fullmatch(r"==== \d{4}-\d\d-\d\d \d\d:\d\d:\d\d starting agent-bridge", lines[1])
+    assert re.fullmatch(r"\d{4}-\d\d-\d\d \d\d:\d\d:\d\d INFO      Uvicorn running on http://192.168.1.20:8765", lines[2])
+    assert "printed" not in log_file.read_text(encoding="utf-8")
+    assert "Uvicorn running" not in err
+    # Let go of once serving ends.
+    assert str(log_file) not in [getattr(handler, "baseFilename", "") for handler in logging.getLogger().handlers]
+
+
+def test_serve_sets_a_large_log_aside_first(capsys, settings: Path, tmp_path: Path) -> None:
+    log_file = tmp_path / "agent-bridge.log"
+    log_file.write_bytes(b"x" * (cli.LOG_LIMIT + 1))
+    (tmp_path / "agent-bridge.log.1").write_text("the one before", encoding="utf-8")
+
+    assert run(capsys, "serve", "--log-file", str(log_file), run=lambda app, **options: None)[0] == 0
+    assert (tmp_path / "agent-bridge.log.1").stat().st_size == cli.LOG_LIMIT + 1
+    assert log_file.read_text(encoding="utf-8").startswith("==== ")
+
+
+def test_serve_logs_why_it_wont_start(capsys, settings: Path, tmp_path: Path) -> None:
+    settings.write_text(f"AGENT_BRIDGE_TOKEN={TOKEN}\nAGENT_BRIDGE_ALLOWED_ROOTS={settings.parent}\n")
+    log_file = tmp_path / "agent-bridge.log"
+
+    code, _, err = run(capsys, "serve", "--log-file", str(log_file), run=lambda app, **options: pytest.fail("served"))
+
+    assert code == 1
+    text = log_file.read_text(encoding="utf-8")
+    assert "ERROR     Not starting: Set AGENT_BRIDGE_HOST, AGENT_BRIDGE_NAME, AGENT_BRIDGE_HERDR_BIN" in text
+    assert "AGENT_BRIDGE_HOST" in err
+
+
+def test_serve_logs_only_the_type_of_an_error_it_stops_on(capsys, settings: Path, tmp_path: Path) -> None:
+    log_file = tmp_path / "agent-bridge.log"
+
+    def serve(app, **options) -> None:
+        raise ValueError(f"a message with {TOKEN} in it")
+
+    with pytest.raises(ValueError):
+        cli.main(["serve", "--log-file", str(log_file)], run=serve)
+
+    text = log_file.read_text(encoding="utf-8")
+    assert "ERROR     agent-bridge stopped: ValueError" in text
+    assert TOKEN not in text
+
+
+def test_serve_refuses_a_log_file_it_cant_write(capsys, settings: Path, tmp_path: Path) -> None:
+    # A folder where the file should be.
+    log_file = tmp_path / "agent-bridge.log"
+    log_file.mkdir()
+
+    code, _, err = run(capsys, "serve", "--log-file", str(log_file), run=lambda app, **options: pytest.fail("served"))
+
+    assert code == 1
+    assert f"Can't write {log_file}" in err
 
 
 def test_enroll_sends_this_bridge_and_keeps_the_gateway(capsys, settings: Path, fake: FakeGateway) -> None:
