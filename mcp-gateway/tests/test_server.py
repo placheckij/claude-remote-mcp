@@ -235,6 +235,111 @@ def test_list_agents_is_one_line_per_agent(client: TestClient, fake: FakeAgentBr
     )
 
 
+def test_list_agents_says_each_agents_account(client: TestClient, fake: FakeAgentBridge) -> None:
+    fake.routes[("GET", "/agents")] = httpx.Response(200, json=[{**AGENT, "account": "work"}, {**AGENT, "id": "w2:p1", "account": None}])
+    assert call_tool(client, "list_agents") == (
+        False,
+        "2 agents:\nw1:p1 · grafik · idle · grafik · work account\nw2:p1 · grafik · idle · grafik",
+    )
+
+
+LISTED = [
+    {**AGENT, "account": "work"},
+    {**AGENT, "id": "w2:p1", "name": "api", "project": "Grafik/api", "account": "personal"},
+    {**AGENT, "id": "w3:p1", "name": "notes", "project": "notes", "account": "work"},
+    {**AGENT, "id": "w4:p1", "name": "grafika", "project": "grafika", "account": None},
+]
+
+
+@pytest.mark.parametrize(
+    ("filters", "expected"),
+    [
+        ({"project": "grafik"}, "2 agents in grafik:\nw1:p1 · grafik · idle · grafik · work account\n"
+                                "w2:p1 · api · idle · Grafik/api · personal account"),
+        ({"account": "Work"}, "2 agents on the Work account:\nw1:p1 · grafik · idle · grafik · work account\n"
+                              "w3:p1 · notes · idle · notes · work account\n"
+                              "mac has 1 agent not known to be on any account."),
+        ({"project": "notes", "account": "personal"}, "No agents in notes on the personal account."),
+    ],
+)
+def test_list_agents_filters_by_project_and_account(
+    client: TestClient, fake: FakeAgentBridge, filters: dict, expected: str
+) -> None:
+    fake.routes[("GET", "/info")] = httpx.Response(200, json={**INFO, "accounts": ["personal", "work"]})
+    fake.routes[("GET", "/agents")] = httpx.Response(200, json=LISTED)
+    assert call_tool(client, "list_agents", **filters) == (False, expected)
+
+
+def test_list_agents_by_an_absolute_folder(client: TestClient, fake: FakeAgentBridge) -> None:
+    # Outside every project an agent's folder is its path, and the filter takes it as shown.
+    outside = {**AGENT, "id": "w5:p1", "name": "tool", "cwd": "/srv/tool", "project": None}
+    fake.routes[("GET", "/agents")] = httpx.Response(200, json=[AGENT, outside])
+    assert call_tool(client, "list_agents", project="/srv/tool/") == (
+        False, "1 agent in /srv/tool/:\nw5:p1 · tool · idle · /srv/tool",
+    )
+
+
+def test_list_agents_by_account_counts_agents_whose_account_is_unknown(client: TestClient, fake: FakeAgentBridge) -> None:
+    # The host has the account, but couldn't read these agents' (e.g. a herdr without
+    # process-info): they may be on it, so "no agents" alone would mislead.
+    fake.routes[("GET", "/info")] = httpx.Response(200, json={**INFO, "accounts": ["work"]})
+    fake.routes[("GET", "/agents")] = httpx.Response(200, json=[
+        {**AGENT, "account": None}, {**AGENT, "id": "w2:p1", "account": None}, {**AGENT, "id": "w3:p1", "project": "notes", "account": None},
+    ])
+    assert call_tool(client, "list_agents", account="work", project="grafik") == (
+        False, "No agents in grafik on the work account.\nmac has 2 agents not known to be on any account.",
+    )
+
+
+def test_list_agents_by_a_projects_full_path(client: TestClient, fake: FakeAgentBridge) -> None:
+    # Listed as "grafik"; its path names it too, and the projects root every agent under it.
+    fake.routes[("GET", "/agents")] = httpx.Response(200, json=[AGENT, {**AGENT, "id": "w2:p1", "cwd": "/srv/x", "project": None}])
+    assert call_tool(client, "list_agents", project="/home/me/projects/grafik") == (
+        False, "1 agent in /home/me/projects/grafik:\nw1:p1 · grafik · idle · grafik",
+    )
+    assert call_tool(client, "list_agents", project="/home/me/projects")[1].startswith("1 agent in /home/me/projects:\nw1:p1")
+
+
+@pytest.mark.parametrize("filters", [{"project": "  "}, {"account": " "}])
+def test_list_agents_refuses_a_blank_filter(client: TestClient, fake: FakeAgentBridge, filters: dict) -> None:
+    fake.routes[("GET", "/agents")] = httpx.Response(200, json=[AGENT])
+    is_error, text = call_tool(client, "list_agents", **filters)
+    assert is_error and text.endswith(f"{next(iter(filters))} has the wrong form.")
+
+
+def test_list_agents_by_a_windows_folder(client: TestClient, fake: FakeAgentBridge) -> None:
+    below = {**AGENT, "id": "w5:p1", "name": "tool", "cwd": "C:\\srv\\tool\\sub", "project": None}
+    fake.routes[("GET", "/agents")] = httpx.Response(200, json=[AGENT, below])
+    assert call_tool(client, "list_agents", project="c:\\SRV\\tool\\") == (
+        False, "1 agent in c:\\SRV\\tool\\:\nw5:p1 · tool · idle · C:\\srv\\tool\\sub",
+    )
+
+
+def test_send_prompt_says_the_agents_account(client: TestClient, fake: FakeAgentBridge) -> None:
+    fake.routes[("POST", "/agents/w1:p1/prompt")] = httpx.Response(
+        200, json={"agent": {**AGENT, "status": "done", "account": "work"},
+                   "output": {"text": "⏺ PONG", "truncated": False}, "timed_out": False},
+    )
+    text = call_tool(client, "send_prompt", agent_id="w1:p1", text="say pong")[1]
+    assert text.startswith("Agent is done.\nw1:p1 · grafik · done · grafik · work account\n---\n")
+
+
+def test_list_agents_by_account_says_an_old_host_cant_tell(client: TestClient, fake: FakeAgentBridge) -> None:
+    fake.routes[("GET", "/agents")] = httpx.Response(200, json=[AGENT])
+    assert call_tool(client, "list_agents", account="work") == (
+        False,
+        "No agents on the work account.\nmac can't tell agents' accounts: update its agent-bridge.",
+    )
+
+
+def test_list_agents_by_account_says_the_host_has_no_such_account(client: TestClient, fake: FakeAgentBridge) -> None:
+    # Without that account every agent there is on none: "no agents" alone would mislead.
+    fake.routes[("GET", "/agents")] = httpx.Response(200, json=[{**AGENT, "account": None}])
+    assert call_tool(client, "list_agents", account="Work") == (
+        False, "No agents on the Work account.\nmac has no work account.",
+    )
+
+
 ASKING = {**AGENT, "status": "done", "question": "Do you want me to commit it?"}
 
 

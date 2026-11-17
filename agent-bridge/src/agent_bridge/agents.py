@@ -8,7 +8,9 @@ import asyncio
 import re
 import unicodedata
 from collections.abc import Awaitable, Sequence
-from pathlib import Path, PurePath
+from pathlib import Path, PurePath, PureWindowsPath
+
+import psutil
 
 from agent_bridge.config import Settings, claude_env
 from agent_bridge.errors import BridgeError
@@ -19,7 +21,6 @@ from agent_bridge.schemas import (
     HostInfo,
     Output,
     PromptResult,
-    StartedAgent,
     cap,
     summarize,
 )
@@ -96,21 +97,45 @@ class AgentService:
 
     async def list_agents(self) -> list[AgentSummary]:
         agents = [self._summarize(agent) for agent in await self.herdr.list_agents()]
-        return list(await asyncio.gather(*(self._with_question(agent) for agent in agents)))
+        return list(await asyncio.gather(*(self._detailed(agent) for agent in agents)))
 
     async def get_agent(self, agent_id: str) -> AgentSummary:
-        return await self._with_question(self._summarize(await self.herdr.get_agent(agent_id)))
+        return await self._detailed(self._summarize(await self.herdr.get_agent(agent_id)))
 
-    async def _with_question(self, agent: AgentSummary) -> AgentSummary:
+    async def _detailed(self, agent: AgentSummary) -> AgentSummary:
+        question, account = await asyncio.gather(self._question(agent), self._account_of(agent))
+        return agent.model_copy(update={"question": question, "account": account})
+
+    async def _question(self, agent: AgentSummary) -> str | None:
         if agent.status not in FINISHED:
-            return agent
+            return None
         try:
             # Unwrapped, so a long question comes back whole.
             snapshot = await self.herdr.read(agent.id, QUESTION_LINES, "recent-unwrapped")
         except HerdrError:
             # The status is still right; only the question is missing.
-            return agent
-        return agent.model_copy(update={"question": last_question(snapshot)})
+            return None
+        return last_question(snapshot)
+
+    async def _account_of(self, agent: AgentSummary) -> str | None:
+        """The account whose config the agent's Claude Code runs on, from its
+        CLAUDE_CONFIG_DIR: also right for an agent started by hand, or with another account
+        than its folder's. None when no account has that config or it can't be read."""
+        if not self.settings.accounts:
+            return None
+        try:
+            info = await self.herdr.process_info(agent.id)
+        except HerdrError:
+            return None
+        # Off the event loop: reading another process's memory may block, on Windows above all.
+        environ = await asyncio.to_thread(claude_environ, info)
+        if environ is None:
+            return None
+        config_dir = environ.get("CLAUDE_CONFIG_DIR")
+        if not config_dir:
+            return self.settings.account_using(None)
+        # A relative one is relative to wherever that claude was started, unknown here.
+        return self.settings.account_using(Path(config_dir)) if Path(config_dir).is_absolute() else None
 
     async def read_output(self, agent_id: str, lines: int, source: str) -> Output:
         return cap(await self._tail(agent_id, lines, source), self.settings.max_output_chars)
@@ -170,7 +195,7 @@ class AgentService:
         *,
         project: str | None = None,
         cwd: str | None = None,
-    ) -> StartedAgent:
+    ) -> AgentSummary:
         folder = self._allowed_folder(cwd) if cwd is not None else self._project_folder(project)
         account, config_dir = self._account(folder, account)
         # Named after the folder as given, not where a link to it leads.
@@ -181,7 +206,7 @@ class AgentService:
             name = herdr_name(name or default_name, {agent.get("name") for agent in running})
             await self._trust(folder, config_dir)
             agent = await self._start_with_one_retry(name, folder, config_dir)
-        return StartedAgent(**self._summarize(agent).model_dump(), account=account)
+        return self._summarize(agent).model_copy(update={"account": account})
 
     def _project_folder(self, project: str) -> Path:
         """The folder `project` names: an absolute path as given, or a folder name under
@@ -221,8 +246,7 @@ class AgentService:
         if name is not None:
             return name, accounts[name].config_dir
         config_dir = self.settings.claude_config_dir
-        same = [name for name, account in accounts.items() if account.config_dir == config_dir]
-        return (same[0] if len(same) == 1 else None), config_dir
+        return self.settings.account_using(config_dir), config_dir
 
     async def _start_with_one_retry(self, name: str, folder: Path, config_dir: Path | None) -> dict:
         # herdr 0.8.0 once failed a start with "expected claude, detected " (no agent seen
@@ -257,7 +281,7 @@ class AgentService:
             name = herdr_name(name, {a.get("name") for a in running if a["pane_id"] != agent_id})
             renamed = await self.herdr.rename_agent(agent_id, name)
             await self.herdr.rename_workspace(agent.workspace_id, name)
-        return self._summarize(renamed)
+        return await self._detailed(self._summarize(renamed))
 
     async def stop_agent(self, agent_id: str) -> None:
         # Looking the agent up first also refuses panes that aren't agents (a shell, a dev
@@ -314,7 +338,7 @@ class AgentService:
             agent = await self.herdr.get_agent(agent_id)
         output = await self._tail(agent_id, lines)
         return PromptResult(
-            agent=await self._with_question(self._summarize(agent)),
+            agent=await self._detailed(self._summarize(agent)),
             output=cap(output, self.settings.max_output_chars),
             timed_out=timed_out,
             unconfirmed=unconfirmed,
@@ -382,6 +406,32 @@ class AgentService:
             "the trust dialog: check the folder's entry there, or trust it once by opening "
             "Claude Code there."
         )
+
+
+def claude_environ(process_info: dict) -> dict[str, str] | None:
+    """The environment of the pane's Claude Code, from herdr's process info, if it has one
+    and the OS lets it be read. Found by name: its MCP servers run in the pane too."""
+    processes = process_info.get("foreground_processes") if isinstance(process_info, dict) else None
+    claudes = [
+        process
+        for process in (processes if isinstance(processes, list) else [])
+        # A positive int pid only: psutil.Process(None) would be this bridge itself.
+        if isinstance(process, dict) and type(process.get("pid")) is int and process["pid"] > 0
+        and any(
+            isinstance(name, str) and PureWindowsPath(name).name.lower().removesuffix(".exe") == "claude"
+            for name in (process.get("name"), process.get("argv0"))
+        )
+    ]
+    if not claudes:
+        return None
+    # herdr lists newer processes first, so a claude the agent's tools run comes before the
+    # agent's own: that one is the group leader, else the oldest.
+    leader = process_info.get("foreground_process_group_id")
+    agent = next((process for process in claudes if process["pid"] == leader), claudes[-1])
+    try:
+        return psutil.Process(agent["pid"]).environ()
+    except (psutil.Error, OSError):
+        return None
 
 
 def is_project_name(name: str) -> bool:

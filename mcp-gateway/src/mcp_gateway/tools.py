@@ -4,7 +4,7 @@ import posixpath
 import re
 from pathlib import PureWindowsPath
 from time import monotonic
-from typing import Annotated
+from typing import Annotated, Literal
 
 from mcp.server.mcpserver import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError, UnexpectedToolError
@@ -18,7 +18,7 @@ from mcp_gateway.config import Settings
 from mcp_gateway.hosts import NO_HOSTS, Host, Hosts, gather_hosts, version_problem
 from mcp_gateway.oauth import LOGIN_PATH, GatewayOAuth
 from mcp_gateway.registry import NAME_PATTERN
-from mcp_gateway.replies import count, describe, invalid, report, with_truncation_note
+from mcp_gateway.replies import count, describe, folder, invalid, report, with_truncation_note
 
 INSTRUCTIONS = """\
 Controls the user's Claude Code agents running on their agent hosts (via herdr). The user is
@@ -122,34 +122,103 @@ def build_server(settings: Settings, hosts: Hosts, oauth: GatewayOAuth) -> MCPSe
         agent = {**result["agent"], "id": hosts.show(host, result["agent"]["id"])}
         return report({**result, "agent": agent}, wait_seconds, root)
 
-    async def agents_on(host: Host) -> list[str]:
-        """The host's agents, one line each. Described here, inside gather_hosts, so one
-        host's odd answer fails that host only, not the whole list."""
-        problem = version_problem(host.name, (await hosts.info(host))["api_version"])
-        if problem:
-            raise _Outdated(problem)
-        agents = await host.bridge.list_agents()
-        if not isinstance(agents, list):
-            raise BridgeError("The agent host answered /agents with something other than a list of agents.")
-        return [shown(host, agent) for agent in agents]
+    def agents_on(wanted: _Wanted):
+        async def agents_on(host: Host) -> _Listed:
+            """The host's wanted agents, one line each. Described here, inside gather_hosts,
+            so one host's odd answer fails that host only, not the whole list."""
+            info = await hosts.info(host)
+            problem = version_problem(host.name, info["api_version"])
+            if problem:
+                raise _Outdated(problem)
+            agents = await host.bridge.list_agents()
+            if not isinstance(agents, list):
+                raise BridgeError("The agent host answered /agents with something other than a list of agents.")
+            note = None
+            if wanted.account is not None:
+                # A bridge before accounts leaves the key out; None is an agent on no account.
+                if any("account" not in agent for agent in agents):
+                    note = f"{host.name} can't tell agents' accounts: update its agent-bridge."
+                elif wanted.account not in [name.lower() for name in info.get("accounts", [])]:
+                    note = f"{host.name} has no {wanted.account} account."
+                # None is an unnamed config or one that couldn't be read: such an agent may be
+                # on this account, so it is counted rather than left out without a word.
+                elif unknown := sum(1 for a in agents if a.get("account") is None and wanted.in_project(a, root)):
+                    note = f"{host.name} has {count(unknown, 'agent')} not known to be on any account."
+            lines = [shown(host, agent) for agent in agents if wanted.matches(agent, root)]
+            return _Listed(lines, note)
+
+        return agents_on
 
     @mcp.tool(annotations=READ_ONLY)
-    async def list_agents() -> str:
-        """List the Claude Code agents on every agent host with id, name, status and folder.
-        A host that doesn't answer is named, and the others are still listed."""
+    async def list_agents(
+        host: Annotated[
+            str | None,
+            Field(pattern=f"^{NAME_PATTERN}$", description="Only this agent host's agents, as list_agents names it."),
+        ] = None,
+        platform: Annotated[
+            Literal["macos", "linux", "windows"] | None,
+            Field(description="Only agents on hosts running this operating system."),
+        ] = None,
+        project: Annotated[
+            str | None,
+            # Not blank: a filter that strips to nothing would quietly list everything.
+            Field(min_length=1, max_length=200, pattern=r"\S", description='Only agents in this project folder, e.g. "grafik".'),
+        ] = None,
+        account: Annotated[
+            str | None,
+            Field(min_length=1, max_length=64, pattern=r"\S", description='Only agents on this Claude account, e.g. "work".'),
+        ] = None,
+    ) -> str:
+        """List the Claude Code agents on every agent host with id, name, status, folder and
+        account. Give host, platform, project or account only when the user asks for those
+        agents. A host that doesn't answer is named, and the others are still listed."""
         everywhere = hosts.all()
         if not everywhere:
             raise ToolError(NO_HOSTS)
+        asked = everywhere if host is None else [hosts.named(host)]
+        if platform is not None:
+            runs_none = (
+                f"No agent host runs {PLATFORM_NAMES[platform]}." if host is None
+                else f"{host} doesn't run {PLATFORM_NAMES[platform]}."
+            )
+            # Hosts that never said are asked; after answering, only those that run it count.
+            asked = [one for one in asked if _platform(one) in (None, PLATFORMS[platform])]
+            if not asked:
+                return runs_none
+        wanted = _Wanted(project, account)
         # One host waits as long as before there were several: there is nothing else to list.
-        answers = await gather_hosts(everywhere, agents_on, LIST_TIMEOUT_S if len(everywhere) > 1 else None)
-        if len(everywhere) == 1:
-            (agents,) = answers
-            if isinstance(agents, BaseException):
-                raise ToolError(str(agents)) from agents
-            if not agents:
-                return "No agents are running."
-            return f"{count(len(agents), 'agent')}:\n" + "\n".join(agents)
-        return _by_host(everywhere, answers)
+        # Named, or the only host set up; one a platform filter left among several is not.
+        only_one = host is not None or len(everywhere) == 1
+        answers = await gather_hosts(asked, agents_on(wanted), None if only_one else LIST_TIMEOUT_S)
+        unsure: list[str] = []
+        if platform is not None:
+            # Answered without saying (a bridge before /info): left out, and named.
+            unsure = [
+                f"{one.name} can't say which system it runs: update its agent-bridge."
+                for one, answer in zip(asked, answers)
+                if _platform(one) is None and not isinstance(answer, BaseException)
+            ]
+            kept = [
+                (one, answer) for one, answer in zip(asked, answers)
+                if _platform(one) == PLATFORMS[platform]
+                or (_platform(one) is None and isinstance(answer, BaseException))
+            ]
+            if not kept:
+                return "\n".join(unsure) if unsure else runs_none
+            asked, answers = [one for one, _ in kept], [answer for _, answer in kept]
+        # A host down fails the call only when it was the one asked; among several it is named.
+        if len(asked) == 1 and (only_one or not isinstance(answers[0], BaseException)):
+            (listed,) = answers
+            if isinstance(listed, BaseException):
+                raise ToolError(str(listed)) from listed
+            # Picked by host or platform: say which, as other hosts may have agents.
+            where = f"{wanted} on {asked[0].name}" if host is not None or platform is not None else str(wanted)
+            if not listed.lines:
+                head = f"No agents{where}." if where else "No agents are running."
+            else:
+                head = f"{count(len(listed.lines), 'agent')}{where}:"
+            return "\n".join([head, *listed.lines, *_notes(answers), *unsure])
+        return "\n".join([_by_host(asked, answers, wanted), *unsure])
 
     @mcp.tool(annotations=READ_ONLY)
     async def agent_details(agent_id: AgentId) -> str:
@@ -325,7 +394,8 @@ def build_server(settings: Settings, hosts: Hosts, oauth: GatewayOAuth) -> MCPSe
         started = f"Started on the {agent['account']} account:" if agent.get("account") else "Started"
         # Started on the one host found; one not asked may have the project too.
         unchecked = f"\nCouldn't ask {_and(unasked)}, which may have {project} too." if unasked else ""
-        return f"{started} {shown(target, agent)}{unchecked}"
+        # The account is said up front, not again in the agent's line.
+        return f"{started} {shown(target, {**agent, 'account': None})}{unchecked}"
 
     async def host_with(everywhere: list[Host], project: str) -> tuple[Host, list[str]] | str:
         """The one host that has the project, and the hosts that couldn't be asked;
@@ -388,25 +458,83 @@ class _Outdated(BridgeError):
     """A host the gateway doesn't call, with why."""
 
 
-def _by_host(everywhere: list[Host], answers: list) -> str:
+# list_agents' platforms, as agent-bridge's /info names them and as they are read aloud.
+PLATFORMS = {"macos": "darwin", "linux": "linux", "windows": "windows"}
+PLATFORM_NAMES = {"macos": "macOS", "linux": "Linux", "windows": "Windows"}
+
+
+def _platform(host: Host) -> str | None:
+    """What the host last said it runs; None before it said (or a bridge before /info)."""
+    return (host.record.info or {}).get("platform")
+
+
+class _Wanted:
+    """list_agents' project and account filters; reads as their words, e.g. " in grafik"."""
+
+    def __init__(self, project: str | None, account: str | None):
+        project, account = (project or "").strip(), (account or "").strip()
+        # "grafik/" is grafik; "/" stays, as an absolute path outside every project starts with
+        # it. Windows paths are compared with "/" too.
+        slashed = project.replace("\\", "/")
+        self.project = (slashed.rstrip("/") or slashed).lower() or None
+        self.account = account.lower() or None
+        words = [f"in {project}"] if project else []
+        words += [f"on the {account} account"] if account else []
+        self.words = " ".join(words)
+
+    def matches(self, agent: dict, projects_root: str | None) -> bool:
+        if not self.in_project(agent, projects_root):
+            return False
+        return self.account is None or (agent.get("account") or "").lower() == self.account
+
+    def in_project(self, agent: dict, projects_root: str | None) -> bool:
+        if self.project is None:
+            return True
+        # As listed (the project, e.g. "grafik") or as its full path.
+        below = self.project if self.project.endswith("/") else f"{self.project}/"
+        places = [folder(agent, projects_root), agent.get("cwd") or ""]
+        places = [place.replace("\\", "/").lower() for place in places]
+        return any(place == self.project or place.startswith(below) for place in places)
+
+    def __bool__(self) -> bool:
+        return bool(self.words)
+
+    def __str__(self) -> str:
+        return f" {self.words}" if self.words else ""
+
+
+class _Listed:
+    """One host's agent lines for list_agents."""
+
+    def __init__(self, lines: list[str], note: str | None):
+        self.lines = lines
+        # Why an account filter can't find agents there, e.g. the host has no such account.
+        self.note = note
+
+
+def _notes(answers: list) -> list[str]:
+    return [answer.note for answer in answers if isinstance(answer, _Listed) and answer.note]
+
+
+def _by_host(everywhere: list[Host], answers: list, wanted: _Wanted) -> str:
     """list_agents with several hosts: each host's agent lines under it, then the hosts
     with none, then those that didn't answer or need an update."""
-    agents = sum(len(answer) for answer in answers if isinstance(answer, list))
-    lines = [f"{count(agents, 'agent')} on {count(len(everywhere), 'host')}."]
+    agents = sum(len(answer.lines) for answer in answers if isinstance(answer, _Listed))
+    lines = [f"{count(agents, 'agent')}{wanted} on {count(len(everywhere), 'host')}."]
     empty, failed = [], []
     for host, answer in zip(everywhere, answers):
         if isinstance(answer, _Outdated):
             failed.append(str(answer))
         elif isinstance(answer, BaseException):
             failed.append(f"{host.name} didn't answer: {answer}")
-        elif not answer:
+        elif not answer.lines:
             empty.append(host.name)
         else:
-            lines.append(f"{host.name}, {count(len(answer), 'agent')}:")
-            lines += answer
+            lines.append(f"{host.name}, {count(len(answer.lines), 'agent')}:")
+            lines += answer.lines
     if empty:
-        lines.append(f"No agents on {_and(empty)}.")
-    return "\n".join(lines + failed)
+        lines.append(f"No agents{wanted} on {_and(empty)}.")
+    return "\n".join(lines + failed + _notes(answers))
 
 
 def _and(names: list[str]) -> str:

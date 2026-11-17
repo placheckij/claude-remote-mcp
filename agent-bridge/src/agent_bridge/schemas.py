@@ -35,11 +35,10 @@ class AgentSummary(BaseModel):
     # `cwd` under the closest allowed root, e.g. "grafik/api" (agents.project_of); None at
     # a root itself or outside every root.
     project: str | None = None
-
-
-class StartedAgent(AgentSummary):
-    # The account (AGENT_BRIDGE_ACCOUNTS) it was started with; None for an unnamed one.
-    account: str | None
+    # The account (AGENT_BRIDGE_ACCOUNTS) whose config its Claude Code runs on: the one it
+    # was started with, or for a listed agent the one with its CLAUDE_CONFIG_DIR. None for
+    # an unnamed config, or one that can't be read.
+    account: str | None = None
 
 
 class Output(BaseModel):

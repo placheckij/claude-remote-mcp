@@ -166,6 +166,168 @@ def test_list_agents_groups_by_host_and_names_the_ones_that_failed(
     ))
 
 
+def test_list_agents_on_one_host_asks_only_it(make) -> None:
+    gateway = make(["mac", "linux"])
+    gateway.route("linux", "GET", "/agents", agents("w1:p1"))
+    assert gateway.call("list_agents", host="linux") == (False, "1 agent on linux:\nlinux/w1:p1 · grafik · idle · grafik")
+    assert gateway.paths("mac") == []
+
+
+def test_list_agents_on_one_host_that_is_down_fails(make, monkeypatch: pytest.MonkeyPatch) -> None:
+    # Named by the user: waited for past the several-host limit, and an error if it's down.
+    monkeypatch.setattr(tools, "LIST_TIMEOUT_S", 0.1)
+
+    async def slow(request: httpx.Request) -> httpx.Response:
+        await asyncio.sleep(0.3)
+        return agents("w1:p1")
+
+    gateway = make(["mac", "linux"])
+    gateway.route("linux", "GET", "/agents", slow)
+    assert gateway.call("list_agents", host="linux") == (False, "1 agent on linux:\nlinux/w1:p1 · grafik · idle · grafik")
+    gateway.fakes["linux"].down = True
+    is_error, text = gateway.call("list_agents", host="linux")
+    assert is_error and "not reachable" in text
+
+
+def test_list_agents_on_a_host_with_none_names_it(make) -> None:
+    # Not "No agents are running.": the other hosts weren't asked.
+    gateway = make(["mac", "linux"])
+    gateway.route("linux", "GET", "/agents", agents())
+    says(gateway, "linux", {**info("linux"), "platform": "linux"})
+    assert gateway.call("list_agents", host="linux") == (False, "No agents on linux.")
+    assert gateway.call("list_agents", platform="linux", project="grafik") == (False, "No agents in grafik on linux.")
+
+
+def test_list_agents_on_an_unknown_host_names_the_hosts(make) -> None:
+    is_error, text = make(["mac", "linux"]).call("list_agents", host="pc")
+    assert is_error and text.endswith("No host named pc; hosts: mac, linux.")
+
+
+def says(gateway: Gateway, name: str, answer: dict) -> None:
+    """The host recorded as having said `answer` about itself, and saying it again."""
+    bridge_id = next(record.bridge_id for record in gateway.registry.bridges if record.name == name)
+    gateway.registry.seen(bridge_id, answer)
+    gateway.route(name, "GET", "/info", httpx.Response(200, json=answer) if answer["api_version"] > 1 else NO_INFO)
+
+
+def test_list_agents_by_platform_asks_only_hosts_that_run_it(make) -> None:
+    gateway = make(["mac", "linux", "box", "old"])
+    for name in ("linux", "box"):
+        says(gateway, name, {**info(name), "platform": "linux"})
+    gateway.route("linux", "GET", "/agents", agents("w1:p1"))
+    gateway.route("box", "GET", "/agents", agents())
+    # A bridge from before /info can't say its platform: it's asked, left out and named.
+    says(gateway, "old", {"api_version": 1})
+    gateway.route("old", "GET", "/agents", agents("w1:p1"))
+    assert gateway.call("list_agents", platform="linux") == (False, (
+        "1 agent on 2 hosts.\n"
+        "linux, 1 agent:\n"
+        "linux/w1:p1 · grafik · idle · grafik\n"
+        "No agents on box.\n"
+        "old can't say which system it runs: update its agent-bridge."
+    ))
+    assert gateway.paths("mac") == []
+
+
+def test_list_agents_by_platform_with_only_a_down_host_left_doesnt_fail(make) -> None:
+    # Two were asked; the one that may run it is down, which never fails the call.
+    gateway = make(["old", "pc"])
+    says(gateway, "old", {"api_version": 1})
+    gateway.route("old", "GET", "/agents", agents("w1:p1"))
+    says(gateway, "pc", {key: value for key, value in info("pc").items() if key != "platform"})
+    gateway.fakes["pc"].down = True
+    assert gateway.call("list_agents", platform="linux") == (False, (
+        "0 agents on 1 host.\n"
+        "pc didn't answer: The agent host is not reachable (ConnectError). It may be asleep or offline.\n"
+        "old can't say which system it runs: update its agent-bridge."
+    ))
+
+
+def test_list_agents_by_platform_names_the_one_host_left_when_it_is_down(make, monkeypatch: pytest.MonkeyPatch) -> None:
+    # Not named by the user: it's waited for as among several, and named as down.
+    monkeypatch.setattr(tools, "LIST_TIMEOUT_S", 0.5)
+    gateway = make(["mac", "linux"])
+    says(gateway, "linux", {**info("linux"), "platform": "linux"})
+    gateway.route("linux", "GET", "/info", too_slow)
+    assert gateway.call("list_agents", platform="linux") == (
+        False, "0 agents on 1 host.\nlinux didn't answer: It didn't answer within 0.5 s.",
+    )
+
+
+def test_list_agents_by_platform_on_a_host_that_cant_say(make) -> None:
+    gateway = make(["mac", "old"])
+    says(gateway, "old", {"api_version": 1})
+    gateway.route("old", "GET", "/agents", agents("w1:p1"))
+    assert gateway.call("list_agents", host="old", platform="linux") == (
+        False, "old can't say which system it runs: update its agent-bridge.",
+    )
+
+
+@pytest.mark.parametrize(
+    ("platform", "expected"),
+    [("linux", "1 agent on box:\nbox/w1:p1 · grafik · idle · grafik"), ("macos", "No agents on mac.")],
+)
+def test_list_agents_by_platform_goes_by_what_a_host_says_when_asked(make, platform: str, expected: str) -> None:
+    # Recorded before it could say (updated since): asked, then kept or left out by its answer.
+    gateway = make(["mac", "box"])
+    gateway.registry.seen(next(r.bridge_id for r in gateway.registry.bridges if r.name == "box"), {"api_version": 1})
+    gateway.route("mac", "GET", "/agents", agents())
+    gateway.route("box", "GET", "/info", httpx.Response(200, json={**info("box"), "platform": "linux"}))
+    gateway.route("box", "GET", "/agents", agents("w1:p1"))
+    assert gateway.call("list_agents", platform=platform) == (False, expected)
+    assert "/agents" in gateway.paths("box")
+
+
+def test_list_agents_by_platform_no_host_runs(make) -> None:
+    assert make(["mac"]).call("list_agents", platform="windows") == (False, "No agent host runs Windows.")
+
+
+def test_list_agents_on_a_host_that_doesnt_run_the_platform(make) -> None:
+    gateway = make(["mac", "linux"])
+    says(gateway, "linux", {**info("linux"), "platform": "linux"})
+    assert gateway.call("list_agents", host="mac", platform="linux") == (False, "mac doesn't run Linux.")
+
+
+def test_list_agents_by_platform_names_a_host_that_never_said_and_is_down(make) -> None:
+    # It may run the platform, so it isn't left out silently.
+    gateway = make(["mac", "pc"])
+    gateway.route("mac", "GET", "/agents", agents("w1:p1"))
+    says(gateway, "pc", {key: value for key, value in info("pc").items() if key != "platform"})
+    gateway.fakes["pc"].down = True
+    is_error, text = gateway.call("list_agents", platform="macos")
+    assert not is_error
+    assert text.startswith("1 agent on 2 hosts.\nmac, 1 agent:\nmac/w1:p1 · grafik · idle · grafik\n")
+    assert text.endswith("pc didn't answer: The agent host is not reachable (ConnectError). It may be asleep or offline.")
+
+
+def test_list_agents_by_account_on_several_hosts_says_why_some_cant_have_it(make) -> None:
+    gateway = make(["mac", "linux", "pc"])
+    says(gateway, "linux", {**info("linux"), "accounts": ["work"]})
+    gateway.route("mac", "GET", "/agents", agents("w1:p1"))  # an agent-bridge before accounts
+    gateway.route("linux", "GET", "/agents", httpx.Response(200, json=[{**AGENT, "account": "work"}]))
+    gateway.route("pc", "GET", "/agents", httpx.Response(200, json=[{**AGENT, "account": None}]))
+    assert gateway.call("list_agents", account="work") == (False, (
+        "1 agent on the work account on 3 hosts.\n"
+        "linux, 1 agent:\n"
+        "linux/w1:p1 · grafik · idle · grafik · work account\n"
+        "No agents on the work account on mac and pc.\n"
+        "mac can't tell agents' accounts: update its agent-bridge.\n"
+        "pc has no work account."
+    ))
+
+
+def test_list_agents_by_project_on_several_hosts(make) -> None:
+    gateway = make(["mac", "linux"])
+    gateway.route("mac", "GET", "/agents", httpx.Response(200, json=[AGENT, {**AGENT, "id": "w2:p1", "project": "notes"}]))
+    gateway.route("linux", "GET", "/agents", httpx.Response(200, json=[{**AGENT, "project": "notes"}]))
+    assert gateway.call("list_agents", project="grafik") == (False, (
+        "1 agent in grafik on 2 hosts.\n"
+        "mac, 1 agent:\n"
+        "mac/w1:p1 · grafik · idle · grafik\n"
+        "No agents in grafik on linux."
+    ))
+
+
 @pytest.mark.parametrize(
     ("api_version", "says"),
     [(0, "old needs an update: its agent-bridge is too old for this gateway."),

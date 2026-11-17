@@ -1,6 +1,9 @@
 import asyncio
 import json
+import os
 import re
+import subprocess
+import sys
 from collections.abc import Callable, Sequence
 from pathlib import Path, PurePosixPath, PureWindowsPath
 
@@ -118,6 +121,7 @@ def test_lists_agents_as_summaries(root: Path) -> None:
             "workspace_id": "w1",
             "question": None,
             "project": None,
+            "account": None,
         }
     ]
 
@@ -456,10 +460,188 @@ def test_an_unnamed_default_config_starts_without_an_account(root: Path) -> None
     assert start_config(runner) == str(root / ".claude-other")
 
 
-def test_listed_agents_carry_no_account(root: Path) -> None:
-    # Only a start knows the account; a listing would have to guess.
+@pytest.fixture
+def claude_process():
+    """Starts a process standing in for an agent's Claude Code, with CLAUDE_CONFIG_DIR set
+    to the folder given or (None) left out; returns its pid."""
+    processes: list[subprocess.Popen] = []
+
+    def start(config_dir: Path | None) -> int:
+        env = {key: value for key, value in os.environ.items() if key != "CLAUDE_CONFIG_DIR"}
+        if config_dir is not None:
+            env["CLAUDE_CONFIG_DIR"] = str(config_dir)
+        process = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"], env=env)
+        processes.append(process)
+        return process.pid
+
+    yield start
+    for process in processes:
+        process.kill()
+        process.wait()
+
+
+def process_info(pid: int, name: str = "claude") -> tuple[int, str, str]:
+    """herdr's `pane process-info` with the agent's Claude Code under one of its MCP servers."""
+    mcp_server = {"argv0": "node", "name": "node", "pid": os.getpid()}
+    return ok({"process_info": {"foreground_processes": [mcp_server, {"argv0": name, "name": name, "pid": pid}]}})
+
+
+def test_listed_agents_carry_the_account_their_claude_runs_on(root: Path, claude_process) -> None:
+    # Read from the process, so it is also right for an agent started by hand, or with
+    # another account than its folder's.
+    runner = FakeRunner({
+        ("agent", "list"): ok({"agents": [agent("w1:p1", cwd=str(root / "work")), agent("w2:p1")]}),
+        ("agent", "read"): (0, "", ""),
+        ("pane", "process-info", "--pane", "w1:p1"): process_info(claude_process(root / ".claude-personal")),
+        # Claude Code's default config, which the work account is on.
+        ("pane", "process-info", "--pane", "w2:p1"): process_info(claude_process(None), name="claude.exe"),
+    })
+    listed = accounts_client(runner, root).get("/agents", headers=AUTH).json()
+    assert [agent["account"] for agent in listed] == ["personal", "work"]
+
+
+def test_an_agent_on_a_config_no_account_has_carries_none(root: Path, claude_process) -> None:
+    runner = FakeRunner({
+        ("agent", "get"): ok({"agent": agent()}),
+        ("agent", "read"): (0, "", ""),
+        ("pane", "process-info"): process_info(claude_process(root / ".claude-other")),
+    })
+    assert accounts_client(runner, root).get("/agents/w1:p1", headers=AUTH).json()["account"] is None
+
+
+def test_agent_details_carry_the_account(root: Path, claude_process) -> None:
+    runner = FakeRunner({
+        ("agent", "get"): ok({"agent": agent()}),
+        ("agent", "read"): (0, "", ""),
+        ("pane", "process-info"): process_info(claude_process(root / ".claude-personal")),
+    })
+    assert accounts_client(runner, root).get("/agents/w1:p1", headers=AUTH).json()["account"] == "personal"
+
+
+@pytest.mark.parametrize(
+    "answer",
+    [
+        err("unknown_command"),  # a herdr without process-info
+        ok({"process_info": {"foreground_processes": [{"argv0": "zsh", "name": "zsh", "pid": 1}]}}),
+        process_info(2**22 + 12345),  # gone by now
+        ok({}),
+        ok({"process_info": {"foreground_processes": None}}),
+        # No pid: psutil would read this bridge's own process instead.
+        ok({"process_info": {"foreground_processes": [{"name": "claude"}, {"name": "claude", "pid": None}]}}),
+        ok({"process_info": {"foreground_processes": [{"name": "claude", "pid": -1}]}}),
+        ok({"process_info": [{"name": "claude", "pid": 1}]}),
+    ],
+)
+def test_an_account_that_cant_be_read_is_none(root: Path, answer) -> None:
+    runner = FakeRunner({
+        ("agent", "list"): ok({"agents": [agent()]}),
+        ("agent", "read"): (0, "", ""),
+        ("pane", "process-info"): answer,
+    })
+    response = accounts_client(runner, root).get("/agents", headers=AUTH)
+    assert response.status_code == 200 and response.json()[0]["account"] is None
+
+
+def test_a_claude_the_agents_tools_run_doesnt_name_its_account(root: Path, claude_process) -> None:
+    # herdr lists the group's newer processes first; the agent's own Claude Code leads it.
+    agent_pid, nested_pid = claude_process(root / ".claude-personal"), claude_process(root / ".claude-other")
+    processes = [{"name": "claude", "pid": nested_pid}, {"name": "claude", "pid": agent_pid}]
+    runner = FakeRunner({
+        ("agent", "get"): ok({"agent": agent()}),
+        ("agent", "read"): (0, "", ""),
+        ("pane", "process-info"): ok({
+            "process_info": {"foreground_process_group_id": agent_pid, "foreground_processes": processes}
+        }),
+    })
+    assert accounts_client(runner, root).get("/agents/w1:p1", headers=AUTH).json()["account"] == "personal"
+
+
+def test_without_a_claude_group_leader_the_oldest_claude_names_the_account(root: Path, claude_process) -> None:
+    # E.g. a wrapper script that started claude leads the group.
+    agent_pid, nested_pid = claude_process(root / ".claude-personal"), claude_process(root / ".claude-other")
+    processes = [{"name": "claude", "pid": nested_pid}, {"name": "claude", "pid": agent_pid}]
+    runner = FakeRunner({
+        ("agent", "get"): ok({"agent": agent()}),
+        ("agent", "read"): (0, "", ""),
+        ("pane", "process-info"): ok({
+            "process_info": {"foreground_process_group_id": 1, "foreground_processes": processes}
+        }),
+    })
+    assert accounts_client(runner, root).get("/agents/w1:p1", headers=AUTH).json()["account"] == "personal"
+
+
+def test_prompt_and_rename_replies_carry_the_account(root: Path, claude_process) -> None:
+    runner = FakeRunner({
+        **rename_responses(root),
+        ("agent", "prompt"): ok({"agent": agent(status="done")}),
+        ("agent", "read"): (0, "⏺ Done.\n", ""),
+        ("pane", "process-info"): process_info(claude_process(root / ".claude-personal")),
+    })
+    c = accounts_client(runner, root)
+    prompted = c.post("/agents/w1:p1/prompt", headers=AUTH, json={"text": "go"}).json()
+    assert prompted["agent"]["account"] == "personal"
+    assert c.patch("/agents/w1:p1", headers=AUTH, json={"name": "x"}).json()["account"] == "personal"
+
+
+def test_a_config_is_matched_however_it_is_spelled(
+    root: Path, set_home, symlink, tmp_path_factory: pytest.TempPathFactory
+) -> None:
+    home = tmp_path_factory.mktemp("home")
+    set_home(home)
+    (home / ".claude").mkdir()
+    (root / ".claude-personal").mkdir()
+    symlink(root / "personal-link", root / ".claude-personal")
+    settings = Settings(token=TOKEN, allowed_roots=(root.resolve(),), accounts={
+        "alt": {"config_dir": home / ".claude"}, "personal": {"config_dir": root / "personal-link"},
+    })
+    assert settings.account_using(root / ".claude-personal") == "personal"
+    assert settings.account_using(home / ".." / home.name / ".claude") == "alt"
+    # No CLAUDE_CONFIG_DIR logs in with ~/.claude.json; CLAUDE_CONFIG_DIR=~/.claude with the
+    # .claude.json inside it: two logins.
+    assert settings.account_using(None) is None
+
+
+def test_a_config_dir_in_a_link_loop_matches_only_as_written(root: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # Python before 3.13 raises RuntimeError resolving a link loop; it must not fail a listing.
+    settings = Settings(token=TOKEN, allowed_roots=(root.resolve(),), accounts={
+        "loop": {"config_dir": root / "loop"}, "personal": {"config_dir": root / ".claude-personal"},
+    })
+
+    def loops(self: Path, strict: bool = False) -> Path:
+        raise RuntimeError(f"Symlink loop from {self}")
+
+    monkeypatch.setattr(Path, "resolve", loops)
+    assert settings.account_using(root / "loop") == "loop"
+    assert settings.account_using(root / "elsewhere") is None
+
+
+def test_a_relative_config_dir_names_no_account(root: Path, claude_process) -> None:
+    runner = FakeRunner({
+        ("agent", "get"): ok({"agent": agent()}),
+        ("agent", "read"): (0, "", ""),
+        ("pane", "process-info"): process_info(claude_process(Path(".claude-personal"))),
+    })
+    assert accounts_client(runner, root).get("/agents/w1:p1", headers=AUTH).json()["account"] is None
+
+
+def test_a_config_inside_the_default_one_is_another_account(
+    root: Path, set_home, tmp_path_factory: pytest.TempPathFactory
+) -> None:
+    # Only ~/.claude itself is the default config, not a folder in it.
+    home = tmp_path_factory.mktemp("home")
+    set_home(home)
+    runner = FakeRunner(start_responses(trust_dialog=False))
+    c = client(runner, root, accounts={
+        "work": {"config_dir": None}, "alt": {"config_dir": home / ".claude" / "alt"},
+    })
+    response = c.post("/agents", headers=AUTH, json={"cwd": str(root / "project"), "name": "x"})
+    assert response.json()["account"] == "work"
+
+
+def test_without_accounts_no_process_is_looked_at(root: Path) -> None:
     runner = FakeRunner({("agent", "list"): ok({"agents": [agent()]}), ("agent", "read"): (0, "", "")})
-    assert "account" not in accounts_client(runner, root).get("/agents", headers=AUTH).json()[0]
+    assert client(runner, root).get("/agents", headers=AUTH).json()[0]["account"] is None
+    assert not runner.called("pane", "process-info")
 
 
 def test_folders_are_trusted_in_the_accounts_own_config(root: Path) -> None:
@@ -647,6 +829,7 @@ def rename_responses(root: Path, others: list[dict] = ()) -> dict:
         ("agent", "list"): ok({"agents": [mine, *others]}),
         ("agent", "rename"): ok({"agent": {**mine, "name": "renamed"}}),
         ("workspace", "rename"): ok({"workspace": {"workspace_id": "w1"}}),
+        ("agent", "read"): (0, "", ""),
     }
 
 

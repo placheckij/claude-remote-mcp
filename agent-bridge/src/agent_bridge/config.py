@@ -216,6 +216,12 @@ class Settings(BaseSettings):
         ]
         return max(matches)[1] if matches else None
 
+    def account_using(self, config_dir: Path | None) -> str | None:
+        """The one account on `config_dir` (None: Claude Code's default config), if exactly
+        one is."""
+        same = [name for name, account in self.accounts.items() if _same_config(account.config_dir, config_dir)]
+        return same[0] if len(same) == 1 else None
+
     def is_allowed(self, path: Path) -> bool:
         resolved = path.expanduser().resolve()
         return any(resolved.is_relative_to(root) for root in self.allowed_roots)
@@ -223,6 +229,19 @@ class Settings(BaseSettings):
 
 def claude_env(config_dir: Path | None) -> dict[str, str]:
     return {} if config_dir is None else {"CLAUDE_CONFIG_DIR": str(config_dir)}
+
+
+def _same_config(one: Path | None, other: Path | None) -> bool:
+    """Whether two config dirs are the same folder, however spelled (case, links). None,
+    Claude Code's default config, is only itself: it logs in with ~/.claude.json, while a
+    CLAUDE_CONFIG_DIR, even ~/.claude, uses the .claude.json inside it."""
+    if one is None or other is None:
+        return one is other
+    one, other = one.expanduser(), other.expanduser()
+    try:
+        return one.resolve() == other.resolve() or os.path.samefile(one, other)
+    except (OSError, RuntimeError):  # one missing, or a link loop (RuntimeError before 3.13)
+        return one == other
 
 
 def _has_settings(path: Path) -> bool:
