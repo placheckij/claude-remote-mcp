@@ -143,6 +143,15 @@ function Get-NetIPAddress { param($IPAddress, $ErrorAction)
 function Get-NetConnectionProfile { param($InterfaceIndex, $ErrorAction)
     [pscustomobject]@{ NetworkCategory = $env:FAKE_CATEGORY; Name = 'Home Wi-Fi' } }
 
+# FAKE_INTERRUPT_REMOVING: the first Remove-Item of that path ends setup as Ctrl+C would (see
+# FAKE_UV_INTERRUPTED below); any other is the real one.
+$global:FakeInterrupted = $false
+function Remove-Item { param([string]$LiteralPath, [switch]$Recurse, [switch]$Force, $ErrorAction)
+    if ($env:FAKE_INTERRUPT_REMOVING -and $LiteralPath -eq $env:FAKE_INTERRUPT_REMOVING -and -not $global:FakeInterrupted) {
+        $global:FakeInterrupted = $true
+        break }
+    Microsoft.PowerShell.Management\Remove-Item @PSBoundParameters }
+
 # uv $FAKE_UV_VERSION. sync makes .venv\Scripts as uv does, keeping a pythonw.exe that is
 # there: one uv writes is a console program before 0.12.4 (or as FAKE_UV_PYTHONW says).
 # FAKE_UV_SAYS: what --version prints instead. FAKE_UV_SYNC_FAILS: sync fails halfway.
@@ -399,6 +408,7 @@ class Machine:
             "FAKE_UV_HOLD": "",
             "FAKE_UV_SAYS": "",
             "FAKE_UV_INTERRUPTED": "",
+            "FAKE_INTERRUPT_REMOVING": "",
             "FAKE_LAUNCHER": str(self.launcher or ""),
             "FAKE_PE": str(self.pe),
             "FAKE_PYTHON": sys.executable,
@@ -1679,3 +1689,15 @@ def test_a_uv_that_doesnt_say_its_version_and_makes_a_console_pythonw_is_told_to
     assert f"error: uv made {repo / '.venv' / 'Scripts' / 'pythonw.exe'} a console program" in output
     assert "update uv to 0.12.4 or later" in output
     assert (repo / ".venv" / "marker").exists()
+
+
+def test_a_setup_interrupted_while_putting_the_old_venv_back_puts_it_back_from_finally(machine: Machine, launcher: Path) -> None:
+    repo = installed_with_a_console_pythonw(machine, launcher)
+
+    # The sync fails; deleting the new .venv to make way for the old one is interrupted.
+    machine.run("setup.ps1", FAKE_UV_SYNC_FAILS="1", FAKE_INTERRUPT_REMOVING=str(repo / ".venv"))
+
+    assert (repo / ".venv" / "marker").exists()
+    assert (repo / ".venv" / "Scripts" / "pythonw.exe").read_bytes() == pe(3)
+    assert not (repo / ".venv-old").exists()
+    assert machine.fake()["enabled"]

@@ -384,25 +384,29 @@ function Move-VenvAside {
     try {
         # Not Move-Item, which moves what it can one by one when that fails.
         [IO.Directory]::Move($Venv, $OldVenv)
+        # At once, for setup's finally; not before, or a failed move would have it delete the .venv.
+        $script:VenvAside = $true
     } catch {
         Stop-Setup ("couldn't move $Venv aside to make it again ($($_.Exception.Message)). Close what uses it, " +
             "such as an editor or a shell it is activated in, then run setup again; $(Get-Unchanged)")
     }
     $script:RebuildVenv = $false
-    $script:VenvAside = $true
 }
 
 function Restore-Venv {
     <# Puts back the .venv Move-VenvAside moved, in place of a new one that failed (or of what
        a setup stopped halfway made), so agent-bridge runs as it did. #>
     if (-not $script:VenvAside) { return }
-    $script:VenvAside = $false
+    # The flag stays set until the old one is back, or can't be: setup's finally tries again
+    # after a Ctrl+C during the delete, which can take a while.
     Remove-Item -LiteralPath $Venv -Recurse -Force -ErrorAction SilentlyContinue
     try {
         [IO.Directory]::Move($OldVenv, $Venv)
+        $script:VenvAside = $false
         # The .venv is as it was.
         $script:Synced = $false
     } catch {
+        $script:VenvAside = $false
         Write-Warn "couldn't put back the old .venv, which is $OldVenv ($($_.Exception.Message))"
     }
 }
