@@ -21,4 +21,4 @@ def platform_name() -> str:
 
 
 def bridge_version() -> str:
-    return version("agent-bridge")
+    return version("claude-remote-mcp-agent-bridge")

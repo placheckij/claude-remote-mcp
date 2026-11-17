@@ -6,7 +6,7 @@ requires-python = ">=3.11"
 license = "MIT"
 # Depending on both members makes a plain `uv sync` install them too. Without this it
 # would remove agent-bridge and its dependencies from the .venv that launchd runs.
-dependencies = ["agent-bridge", "mcp-gateway"]
+dependencies = ["claude-remote-mcp-agent-bridge", "mcp-gateway"]
 
 # A root `uv run pytest` installs only the root's dev group, not the members' ones.
 [dependency-groups]
@@ -26,7 +26,7 @@ addopts = ["--import-mode=importlib"]
 package = false
 
 [tool.uv.sources]
-agent-bridge = { workspace = true }
+claude-remote-mcp-agent-bridge = { workspace = true }
 mcp-gateway = { workspace = true }
 
 [tool.uv.workspace]

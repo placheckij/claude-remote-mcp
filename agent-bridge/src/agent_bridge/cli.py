@@ -32,7 +32,7 @@ from agent_bridge.gateway import (
     unenroll,
 )
 from agent_bridge.herdr import Herdr, HerdrError
-from agent_bridge.host import API_VERSION
+from agent_bridge.host import API_VERSION, bridge_version
 from agent_bridge.state import Gateway, State, StateError, env_file, load, load_or_create, rename, save, state_file
 
 OK, FAILED, INVALID, NAME_TAKEN, UNREACHABLE, SAVE_FAILED, OUTDATED = 0, 1, 2, 3, 4, 5, 6
@@ -68,6 +68,7 @@ def main(argv: list[str] | None = None, *, run: Callable[..., None] = uvicorn.ru
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="agent-bridge", description="Run agent-bridge and join it to a gateway.")
+    parser.add_argument("--version", action="version", version=f"%(prog)s {bridge_version()}")
     commands = parser.add_subparsers(dest="command", required=True)
     commands.add_parser("serve", help="run the service, from the env file and state file")
     enroll_command = commands.add_parser("enroll", help="join the gateway that printed the string")

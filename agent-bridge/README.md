@@ -1,7 +1,7 @@
 # agent-bridge
 
 A small HTTP service on the machine where your Claude Code agents run (the *agent
-host*). [`mcp-gateway`](../mcp-gateway/) calls it over the LAN. It turns each request
+host*). [`mcp-gateway`](https://github.com/placheckij/claude-remote-mcp/tree/main/mcp-gateway) calls it over the LAN. It turns each request
 into `herdr` CLI calls and returns trimmed results. herdr owns the agents, which are
 addressed by their herdr pane id (e.g. `w1:p1`); agent-bridge's own state is only its id
 and the gateway it [enrolled](#enroll-with-the-gateway) with.
@@ -235,7 +235,7 @@ set it up as a service instead (below).
 
 ```sh
 uv sync --all-packages
-uv run --package agent-bridge agent-bridge serve
+uv run --package claude-remote-mcp-agent-bridge agent-bridge serve
 ```
 
 ### Commands
@@ -254,7 +254,7 @@ uv run --package agent-bridge agent-bridge serve
 With agent-bridge running, run `sudo mcp-gateway enroll` on the gateway host, then here:
 
 ```sh
-uv run --package agent-bridge agent-bridge enroll 'crm1@192.168.1.10:8766#…'
+uv run --package claude-remote-mcp-agent-bridge agent-bridge enroll 'crm1@192.168.1.10:8766#…'
 ```
 
 The gateway checks that the address in `AGENT_BRIDGE_HOST` and `AGENT_BRIDGE_PORT`
@@ -546,13 +546,13 @@ is not reachable", and the agents in herdr keep running untouched. Uninstalling 
 behind any folder-trust entries agent-bridge added to the agents' Claude configs
 (`<config dir>/.claude.json`); they're ordinary trust entries and can
 stay. To retire the whole setup, also
-[uninstall mcp-gateway](../mcp-gateway/README.md#stop-restart-uninstall) and remove the
+[uninstall mcp-gateway](https://github.com/placheckij/claude-remote-mcp/blob/main/mcp-gateway/README.md#stop-restart-uninstall) and remove the
 connector in claude.ai.
 
 ## Tests
 
 ```sh
-uv run --package agent-bridge pytest agent-bridge
+uv run --package claude-remote-mcp-agent-bridge pytest agent-bridge
 ```
 
 The tests replace the herdr CLI with a fake runner, so they never touch real agents or
