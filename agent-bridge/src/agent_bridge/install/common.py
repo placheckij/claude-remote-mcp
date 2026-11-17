@@ -42,7 +42,10 @@ def absolute(value: str, what: str) -> str:
     """`value` with a leading ~ expanded; refuses a relative path. Empty stays empty."""
     if not value:
         return value
-    path = Path(value).expanduser()
+    try:
+        path = Path(value).expanduser()
+    except RuntimeError:  # ~name with no such user
+        raise Refused(f"{what} must be a full path, got {value}") from None
     if not path.is_absolute():
         raise Refused(f"{what} must be a full path, got {value}")
     return str(path)

@@ -500,6 +500,7 @@ def nothing_changed(mac: FakeMac) -> bool:
     [
         ({"roots": "/"}, "too broad"),
         ({"roots": "Projects"}, "must be a full path"),
+        ({"roots": "~nosuchuser-crm/work"}, "must be a full path"),
         ({"name": "Studio Mac"}, "lowercase letter"),
         ({"host": "0.0.0.0"}, "not one that listens on every interface"),
         ({"host": "studio.local"}, "IP address"),
