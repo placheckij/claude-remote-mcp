@@ -425,9 +425,15 @@ def _enroll(plan: Plan, system: System, read: Read, paths: Paths) -> tuple[bool,
 
 
 def _undo(system: System, paths: Paths) -> None:
-    """Stops the launch agent and removes the env file and plist, so setup can run again."""
+    """Stops the launch agent and removes the plist, the env file and the state file the
+    service made when it started, so setup can run again. A state file that records an
+    enrollment is kept, so the gateway's record of it isn't lost."""
     system.launchctl("bootout", f"{system.domain()}/{LABEL}")
-    for path in (paths.plist, paths.env_file):
+    try:
+        enrolled = (state := load(paths.state_file)) is not None and state.gateway is not None
+    except StateError:
+        enrolled = False
+    for path in (paths.plist, paths.env_file, *(() if enrolled else (paths.state_file,))):
         with contextlib.suppress(OSError):
             path.unlink(missing_ok=True)
 

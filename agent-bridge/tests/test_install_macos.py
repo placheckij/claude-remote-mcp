@@ -75,9 +75,13 @@ class FakeMac:
 
     def launchctl(self, *args: str) -> int:
         self.calls.append(("launchctl", *args))
-        if args[0] == "bootstrap" and self.bootstrap_failures:
-            self.bootstrap_failures -= 1
-            return 5
+        if args[0] == "bootstrap":
+            if self.bootstrap_failures:
+                self.bootstrap_failures -= 1
+                return 5
+            # The service makes its state file when it starts.
+            if not self.state_file.exists():
+                self.state_file.write_text(json.dumps({"version": 1, "bridge_id": "b1"}))
         return 0
 
     def bridge(self, *args: str, capture: bool = False) -> tuple[int, str]:
@@ -420,8 +424,42 @@ def test_stops_when_the_gateway_took_it_but_the_state_isnt_saved(mac: FakeMac, c
 
 
 def nothing_left(mac: FakeMac) -> bool:
-    return not mac.env_file.exists() and not mac.plist.exists() and mac.ran("launchctl")[-1] == (
-        "bootout", f"gui/501/{LABEL}")
+    return not any(path.exists() for path in (mac.env_file, mac.state_file, mac.plist)) and (
+        mac.ran("launchctl")[-1] == ("bootout", f"gui/501/{LABEL}"))
+
+
+def test_undoes_the_install_when_the_plist_cant_be_written(mac: FakeMac, capsys) -> None:
+    (mac.home / "Library").mkdir()
+    (mac.home / "Library" / "LaunchAgents").write_text("not a folder")
+
+    run = setup(mac, capsys, *every_flag(mac))
+
+    assert run.code == 1
+    assert f"can't write {mac.plist}" in run.out
+    assert nothing_left(mac)
+
+
+def test_keeps_the_state_of_an_enrollment_when_undoing(mac: FakeMac, capsys) -> None:
+    def interrupted() -> str:
+        raise KeyboardInterrupt
+
+    mac.enroll_codes = [3]
+    original = mac.bridge
+
+    def enrolled_then_taken(*args: str, capture: bool = False) -> tuple[int, str]:
+        if args[0] == "enroll":
+            mac.state_file.write_text(json.dumps(
+                {"version": 1, "bridge_id": "b1",
+                 "gateway": {"url": "http://10.0.0.1:8766", "gateway_id": "g1", "name": "studio"}}))
+        return original(*args, capture=capture)
+
+    mac.bridge = enrolled_then_taken
+    options = macos.Options.from_args(cli._parser().parse_args(["setup", *every_flag(mac)]))
+    with pytest.raises(KeyboardInterrupt):
+        macos.setup(options, mac, interrupted)
+
+    assert not mac.env_file.exists() and not mac.plist.exists()
+    assert "gateway" in json.loads(mac.state_file.read_text())
 
 
 def test_undoes_the_install_when_launchd_wont_start_it(mac: FakeMac, capsys) -> None:

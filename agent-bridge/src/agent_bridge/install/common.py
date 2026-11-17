@@ -90,12 +90,12 @@ def check_settings(values: dict[str, str]) -> None:
 def write_file(path: Path, data: bytes, mode: int, folder_mode: int | None = None) -> None:
     """Written beside `path` with `mode` and renamed over it, so it is never half written or
     readable by others for a moment."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    if folder_mode is not None:
-        path.parent.chmod(folder_mode)
     temporary = path.with_name(f"{path.name}.tmp")
-    temporary.unlink(missing_ok=True)
     try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if folder_mode is not None:
+            path.parent.chmod(folder_mode)
+        temporary.unlink(missing_ok=True)
         with os.fdopen(os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, mode), "wb") as file:
             file.write(data)
         os.replace(temporary, path)
