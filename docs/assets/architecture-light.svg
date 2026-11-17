@@ -1,6 +1,6 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="960" height="680" viewBox="0 0 960 680" role="img" aria-labelledby="title desc">
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="900" viewBox="0 0 960 900" role="img" aria-labelledby="title desc">
   <title id="title">claude-remote-mcp architecture</title>
-  <desc id="desc">Three layers. Interaction: the Claude app (voice, mobile, CarPlay, web, desktop). It reaches the orchestration layer on the gateway host over MCP over HTTPS through a Cloudflare Tunnel with an OAuth access token: mcp-gateway handles OAuth, authentication, tool routing and agent operations, and keeps clients and token hashes in oauth.json. mcp-gateway reaches the execution layer on the agent host over HTTP on the LAN with agent-bridge's bearer token: agent-bridge, a stateless HTTP API that only changes agents under its allowed roots, drives herdr workspaces and panes through the herdr CLI, and herdr runs many Claude Code sessions, one per pane.</desc>
+  <desc id="desc">Three layers and four trust boundaries. Interaction: the Claude app (voice, mobile, CarPlay, web, desktop). It reaches the orchestration layer on the gateway host over MCP over HTTPS through a Cloudflare Tunnel with an OAuth access token: mcp-gateway handles OAuth, authentication, tool routing, agent operations and enrollment, and keeps clients and token hashes in oauth.json, its agent hosts in bridges.json and the enrollment window in enrollment.json. mcp-gateway reaches the execution layer over HTTP on the LAN with each host's bearer token, and agent hosts enroll with the gateway over the LAN with the window's secret. There are three agent hosts: macOS, Linux and Windows. On each, agent-bridge runs as a launchd service, a systemd user unit or a scheduled task and keeps its id and gateway in state.json; only agents under its allowed roots can be changed. It drives herdr workspaces and panes through the herdr CLI, and herdr runs Claude Code sessions, one per pane, each on the Claude account set up for its folder, with ids that name the host, such as mac/w1:p1.</desc>
   <style>
     .sans { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', sans-serif; }
     .mono { font-family: ui-monospace, 'SF Mono', 'JetBrains Mono', Menlo, Consolas, monospace; }
@@ -52,31 +52,28 @@
     </pattern>
   </defs>
 
-  <rect class="bg" width="960" height="680"/>
-  <rect width="960" height="680" fill="url(#hex)"/>
+  <rect class="bg" width="960" height="900"/>
+  <rect width="960" height="900" fill="url(#hex)"/>
   <path class="frame" d="M12,34 V12 H34"/>
-<path class="frame" d="M926,12 H948 V34"/>
-<path class="frame" d="M948,646 V668 H926"/>
-<path class="frame" d="M34,668 H12 V646"/>
-
+  <path class="frame" d="M926,12 H948 V34"/>
+  <path class="frame" d="M948,866 V888 H926"/>
+  <path class="frame" d="M34,888 H12 V866"/>
   <text class="mono head-l" x="40" y="34">CLAUDE-REMOTE-MCP // SYSTEM MAP</text>
-  <text class="mono head-r" x="920" y="34" text-anchor="end">3 LAYERS · 2 TRUST BOUNDARIES</text>
+  <text class="mono head-r" x="920" y="34" text-anchor="end">3 LAYERS · 4 TRUST BOUNDARIES</text>
   <path class="ruler" d="M40,48 H920 M40,48 V42 M60,48 V45 M80,48 V45 M100,48 V45 M120,48 V45 M140,48 V42 M160,48 V45 M180,48 V45 M200,48 V45 M220,48 V45 M240,48 V42 M260,48 V45 M280,48 V45 M300,48 V45 M320,48 V45 M340,48 V42 M360,48 V45 M380,48 V45 M400,48 V45 M420,48 V45 M440,48 V42 M460,48 V45 M480,48 V45 M500,48 V45 M520,48 V45 M540,48 V42 M560,48 V45 M580,48 V45 M600,48 V45 M620,48 V45 M640,48 V42 M660,48 V45 M680,48 V45 M700,48 V45 M720,48 V45 M740,48 V42 M760,48 V45 M780,48 V45 M800,48 V45 M820,48 V45 M840,48 V42 M860,48 V45 M880,48 V45 M900,48 V45 M920,48 V45 "/>
-
-  <path class="panel" d="M40,60 H902 L920,78 V172 L920,172 H58 L40,154 V60 Z"/>
+  
+  <path class="panel" d="M40,60 H902 L920,78 V172 H58 L40,154 V60 Z"/>
   <text class="mono label" x="58" y="81">L1 // INTERACTION</text>
   <text class="mono tag" x="900" y="81" text-anchor="end">ANY CLAUDE CLIENT</text>
-
-  <path class="node" d="M82,94 H370 L370,94 V140 L358,152 H70 L70,152 V106 Z"/>
-  <path class="edge" d="M82,94 H370 L370,94 V140 L358,152 H70 L70,152 V106 Z"/>
+  <path class="node" d="M82,94 H370 V140 L358,152 H70 V106 Z"/>
+  <path class="edge" d="M82,94 H370 V140 L358,152 H70 V106 Z"/>
   <path class="accent" d="M90,94 H120"/>
-  <text class="sans title" x="220.0" y="118" text-anchor="middle">Claude app</text>
-  <text class="mono sub" x="220.0" y="138" text-anchor="middle">voice · mobile · CarPlay · web · desktop</text>
-
+  <text class="sans title" x="220" y="118" text-anchor="middle">Claude app</text>
+  <text class="mono sub" x="220" y="138" text-anchor="middle">voice · mobile · CarPlay · web · desktop</text>
   <path class="bracket" d="M600,100 V92 H608"/>
-<path class="bracket" d="M892,92 H900 V100"/>
-<path class="bracket" d="M900,150 V158 H892"/>
-<path class="bracket" d="M608,158 H600 V150"/>
+  <path class="bracket" d="M892,92 H900 V100"/>
+  <path class="bracket" d="M900,150 V158 H892"/>
+  <path class="bracket" d="M608,158 H600 V150"/>
   <text class="mono rotitle" x="614" y="109">CLIENT LIMITS</text>
   <text class="mono rokey" x="614" y="127">voice tool call</text>
   <text class="mono roval" x="886" y="127" text-anchor="end">~30 s</text>
@@ -84,106 +81,185 @@
   <text class="mono roval" x="886" y="142" text-anchor="end">≤ 20 s</text>
   <text class="mono rokey" x="614" y="157">replies</text>
   <text class="mono roval" x="886" y="157" text-anchor="end">a few spoken lines</text>
-
   <path class="wire" d="M220,152 V286"/>
   <path class="head" d="M215,278 L220,286 L225,278 Z"/>
-
+  
   <path class="boundary" d="M40,214 H920"/>
   <path class="bdiamond" d="M40,210 L44,214 L40,218 L36,214 Z"/>
   <text class="mono btext" x="916" y="207" text-anchor="end">TRUST BOUNDARY 01 · INTERNET → GATEWAY</text>
-
-  <path class="wiretag" d="M242,182 H387.2 L394.2,189 V241 L394.2,241 H249 L242,234 V182 Z"/>
+  <path class="wiretag" d="M242,182 H387 L394,189 V241 H249 L242,234 V182 Z"/>
   <path class="wirestub" d="M226,211.5 H242"/>
   <text class="mono wiretext" x="256" y="201">MCP over HTTPS</text>
   <text class="mono wiretext" x="256" y="216">Cloudflare Tunnel</text>
   <text class="mono wiretext" x="256" y="231">OAuth access token</text>
-
-  <path class="panel" d="M40,252 H902 L920,270 V394 L920,394 H58 L40,376 V252 Z"/>
+  
+  <path class="panel" d="M40,252 H902 L920,270 V412 H58 L40,394 V252 Z"/>
   <text class="mono label" x="58" y="273">L2 // ORCHESTRATION</text>
   <text class="mono tag" x="900" y="273" text-anchor="end">GATEWAY HOST</text>
-
-  <path class="node" d="M82,286 H370 L370,286 V360 L358,372 H70 L70,372 V298 Z"/>
-  <path class="edge" d="M82,286 H370 L370,286 V360 L358,372 H70 L70,372 V298 Z"/>
+  <path class="node" d="M82,286 H370 V380 L358,392 H70 V298 Z"/>
+  <path class="edge" d="M82,286 H370 V380 L358,392 H70 V298 Z"/>
   <path class="accent" d="M90,286 H120"/>
-  <text class="sans title" x="220.0" y="310" text-anchor="middle">mcp-gateway</text>
-  <text class="mono sub" x="220.0" y="330" text-anchor="middle">OAuth · authentication</text>
-  <text class="mono sub" x="220.0" y="345" text-anchor="middle">tool routing</text>
-  <text class="mono sub" x="220.0" y="360" text-anchor="middle">agent operations</text>
-  <path class="dotted" d="M370,329 H420"/>
-
-  <path class="store" d="M430,300 H640 L640,300 V348 L630,358 H420 L420,358 V310 Z"/>
-  <text class="mono storetitle" x="530.0" y="326" text-anchor="middle">oauth.json</text>
-  <text class="mono sub" x="530.0" y="345" text-anchor="middle">clients · token hashes</text>
-
-  <path class="bracket" d="M670,298 V290 H678"/>
-<path class="bracket" d="M892,290 H900 V298"/>
-<path class="bracket" d="M900,356 V364 H892"/>
-<path class="bracket" d="M678,364 H670 V356"/>
-  <text class="mono rotitle" x="684" y="307">SIGN-IN</text>
-  <text class="mono rokey" x="684" y="325">access token</text>
+  <text class="sans title" x="220" y="310" text-anchor="middle">mcp-gateway</text>
+  <text class="mono sub" x="220" y="330" text-anchor="middle">OAuth · authentication</text>
+  <text class="mono sub" x="220" y="345" text-anchor="middle">tool routing</text>
+  <text class="mono sub" x="220" y="360" text-anchor="middle">agent operations</text>
+  <text class="mono sub" x="220" y="375" text-anchor="middle">enrollment</text>
+  <path class="store" d="M404,290 H656 V310 L648,318 H396 V298 Z"/>
+  <text class="mono storetitle" x="408" y="309">oauth.json</text>
+  <text class="mono sub" x="644" y="309" text-anchor="end">clients · token hashes</text>
+  <path class="store" d="M404,325 H656 V345 L648,353 H396 V333 Z"/>
+  <text class="mono storetitle" x="408" y="344">bridges.json</text>
+  <text class="mono sub" x="644" y="344" text-anchor="end">hosts · tokens</text>
+  <path class="store" d="M404,360 H656 V380 L648,388 H396 V368 Z"/>
+  <text class="mono storetitle" x="408" y="379">enrollment.json</text>
+  <text class="mono sub" x="644" y="379" text-anchor="end">window · secret</text>
+  <path class="dotted" d="M370,339 H387 M387,304 V374 M387,304 H396 M387,339 H396 M387,374 H396"/>
+  <path class="bracket" d="M676,298 V290 H684"/>
+  <path class="bracket" d="M892,290 H900 V298"/>
+  <path class="bracket" d="M900,356 V364 H892"/>
+  <path class="bracket" d="M684,364 H676 V356"/>
+  <text class="mono rotitle" x="690" y="307">SIGN-IN</text>
+  <text class="mono rokey" x="690" y="325">access token</text>
   <text class="mono roval" x="886" y="325" text-anchor="end">1 h</text>
-  <text class="mono rokey" x="684" y="340">refresh token</text>
+  <text class="mono rokey" x="690" y="340">refresh token</text>
   <text class="mono roval" x="886" y="340" text-anchor="end">90 d, rotated</text>
-  <text class="mono rokey" x="684" y="355">credential</text>
+  <text class="mono rokey" x="690" y="355">credential</text>
   <text class="mono roval" x="886" y="355" text-anchor="end">passphrase</text>
-
-  <path class="wire" d="M220,372 V536"/>
-  <path class="head" d="M215,528 L220,536 L225,528 Z"/>
-
-  <path class="boundary" d="M40,436 H920"/>
-  <path class="bdiamond" d="M40,432 L44,436 L40,440 L36,436 Z"/>
-  <text class="mono btext" x="916" y="429" text-anchor="end">TRUST BOUNDARY 02 · GATEWAY → AGENT HOST</text>
-
-  <path class="wiretag" d="M242,414 H449.3 L456.3,421 V458 L456.3,458 H249 L242,451 V414 Z"/>
-  <path class="wirestub" d="M226,436.0 H242"/>
-  <text class="mono wiretext" x="256" y="433">HTTP over the LAN</text>
-  <text class="mono wiretext" x="256" y="448">agent-bridge's bearer token</text>
-
-  <path class="panel" d="M40,474 H902 L920,492 V650 L920,650 H58 L40,632 V474 Z"/>
-  <text class="mono label" x="58" y="495">L3 // EXECUTION</text>
-  <text class="mono tag" x="900" y="495" text-anchor="end">AGENT HOST</text>
-
-  <path class="node" d="M82,536 H370 L370,536 V592 L358,604 H70 L70,604 V548 Z"/>
-  <path class="edge" d="M82,536 H370 L370,536 V592 L358,604 H70 L70,604 V548 Z"/>
-  <path class="accent" d="M90,536 H120"/>
-  <text class="sans title" x="220.0" y="563" text-anchor="middle">agent-bridge</text>
-  <text class="mono sub" x="220.0" y="583" text-anchor="middle">HTTP API · no state · allowed roots</text>
-
-  <path class="node" d="M452,536 H640 L640,536 V592 L628,604 H440 L440,604 V548 Z"/>
-  <path class="edge" d="M452,536 H640 L640,536 V592 L628,604 H440 L440,604 V548 Z"/>
-  <path class="accent" d="M460,536 H490"/>
-  <text class="sans title" x="540.0" y="563" text-anchor="middle">herdr</text>
-  <text class="mono sub" x="540.0" y="583" text-anchor="middle">workspaces · panes</text>
-  <path class="wire" d="M370,570 H440"/>
-  <path class="head" d="M432,565 L440,570 L432,575 Z"/>
-  <text class="mono wirelabel" x="405" y="561" text-anchor="middle">herdr CLI</text>
-
-  <path class="node" d="M728,508 H900 L900,508 V536 L892,544 H720 L720,544 V516 Z"/>
-  <path class="edge" d="M728,508 H900 L900,508 V536 L892,544 H720 L720,544 V516 Z"/>
-  <text class="sans sessiontitle" x="734" y="531">Claude Code</text>
-  <text class="mono sub" x="886" y="531" text-anchor="end">w1:p1</text>
-  <path class="wire" d="M640,570 H656 L700,526 H720"/>
-  <path class="head" d="M712,521 L720,526 L712,531 Z"/>
-
-  <path class="node" d="M728,552 H900 L900,552 V580 L892,588 H720 L720,588 V560 Z"/>
-  <path class="edge" d="M728,552 H900 L900,552 V580 L892,588 H720 L720,588 V560 Z"/>
-  <text class="sans sessiontitle" x="734" y="575">Claude Code</text>
-  <text class="mono sub" x="886" y="575" text-anchor="end">w2:p1</text>
-  <path class="wire" d="M640,570 H720"/>
-  <path class="head" d="M712,565 L720,570 L712,575 Z"/>
-
-  <path class="node" d="M728,596 H900 L900,596 V624 L892,632 H720 L720,632 V604 Z"/>
-  <path class="edge" d="M728,596 H900 L900,596 V624 L892,632 H720 L720,632 V604 Z"/>
-  <text class="sans sessiontitle" x="734" y="619">Claude Code</text>
-  <text class="mono sub" x="886" y="619" text-anchor="end">w3:p1</text>
-  <path class="wire" d="M640,570 H656 L700,614 H720"/>
-  <path class="head" d="M712,609 L720,614 L712,619 Z"/>
-
-  <path class="ruler" d="M40,666 H920 M40,666 V660 M60,666 V663 M80,666 V663 M100,666 V663 M120,666 V663 M140,666 V660 M160,666 V663 M180,666 V663 M200,666 V663 M220,666 V663 M240,666 V660 M260,666 V663 M280,666 V663 M300,666 V663 M320,666 V663 M340,666 V660 M360,666 V663 M380,666 V663 M400,666 V663 M420,666 V663 M440,666 V660 M460,666 V663 M480,666 V663 M500,666 V663 M520,666 V663 M540,666 V660 M560,666 V663 M580,666 V663 M600,666 V663 M620,666 V663 M640,666 V660 M660,666 V663 M680,666 V663 M700,666 V663 M720,666 V663 M740,666 V660 M760,666 V663 M780,666 V663 M800,666 V663 M820,666 V663 M840,666 V660 M860,666 V663 M880,666 V663 M900,666 V663 M920,666 V663 "/>
+  
+  <path class="dotted" d="M300,526 V392 M166,526 H742 M166,572 V526 M454,572 V526 M742,572 V526"/>
+  <path class="head" d="M295,400 L300,392 L305,400 Z"/>
+  <path class="wire" d="M220,392 V514 M96,514 H672 M96,514 V572 M384,514 V572 M672,514 V572"/>
+  <path class="head" d="M91,564 L96,572 L101,564 Z"/>
+  <path class="head" d="M379,564 L384,572 L389,564 Z"/>
+  <path class="head" d="M667,564 L672,572 L677,564 Z"/>
+  <path class="boundary" d="M40,446 H920"/>
+  <path class="bdiamond" d="M40,442 L44,446 L40,450 L36,446 Z"/>
+  <text class="mono btext" x="916" y="439" text-anchor="end">TRUST BOUNDARY 02 · GATEWAY → AGENT HOSTS</text>
+  <text class="mono btext" x="916" y="461" text-anchor="end">TRUST BOUNDARY 03 · LAN → GATEWAY</text>
+  <path class="wiretag" d="M52,424 H199 L206,431 V468 H59 L52,461 V424 Z"/>
+  <path class="wirestub" d="M220,446 H206"/>
+  <text class="mono wiretext" x="66" y="443">HTTP over the LAN</text>
+  <text class="mono wiretext" x="66" y="458">host's bearer token</text>
+  <path class="wiretag" d="M314,424 H487 L494,431 V468 H321 L314,461 V424 Z"/>
+  <path class="wirestub" d="M300,446 H314"/>
+  <text class="mono wiretext" x="328" y="443">POST /enroll · LAN only</text>
+  <text class="mono wiretext" x="328" y="458">the window's secret</text>
+  
+  <path class="panel" d="M40,478 H902 L920,496 V864 H58 L40,846 V478 Z"/>
+  <text class="mono label" x="58" y="499">L3 // EXECUTION</text>
+  <text class="mono tag" x="900" y="499" text-anchor="end">AGENT HOSTS</text>
+  <path class="boundary" d="M40,662 H920"/>
+  <path class="bdiamond" d="M40,658 L44,662 L40,666 L36,662 Z"/>
+  <text class="mono btext" x="896" y="655" text-anchor="end">TRUST BOUNDARY 04 · AGENTS</text>
+  
+  <path class="panel" d="M68,538 H328 V836 L316,848 H56 V550 Z"/>
+  <text class="mono label" x="314" y="556" text-anchor="end">MACOS</text>
+  <path class="node" d="M80,572 H208 V616 L196,628 H68 V584 Z"/>
+  <path class="edge" d="M80,572 H208 V616 L196,628 H68 V584 Z"/>
+  <path class="accent" d="M88,572 H118"/>
+  <text class="sans title" x="138" y="596" text-anchor="middle">agent-bridge</text>
+  <text class="mono sub" x="138" y="615" text-anchor="middle">launchd service</text>
+  <path class="store" d="M230,580 H316 V610 L306,620 H220 V590 Z"/>
+  <text class="mono storetitle" x="268" y="597" text-anchor="middle">state.json</text>
+  <text class="mono sub" x="268" y="612" text-anchor="middle">id · gateway</text>
+  <path class="dotted" d="M208,600 H220"/>
+  <path class="wire" d="M96,628 V690"/>
+  <path class="head" d="M91,682 L96,690 L101,682 Z"/>
+  <text class="mono wirelabel" x="104" y="682">herdr CLI</text>
+  <path class="node" d="M80,690 H316 V724 L304,736 H68 V702 Z"/>
+  <path class="edge" d="M80,690 H316 V724 L304,736 H68 V702 Z"/>
+  <path class="accent" d="M88,690 H118"/>
+  <text class="sans title" x="192" y="711" text-anchor="middle">herdr</text>
+  <text class="mono sub" x="192" y="728" text-anchor="middle">workspaces · panes</text>
+  <path class="wire" d="M80,736 V802 H96 M80,764 H96"/>
+  <path class="head" d="M88,759 L96,764 L88,769 Z"/>
+  <path class="head" d="M88,797 L96,802 L88,807 Z"/>
+  <path class="node" d="M104,750 H316 V770 L308,778 H96 V758 Z"/>
+  <path class="edge" d="M104,750 H316 V770 L308,778 H96 V758 Z"/>
+  <text class="sans sessiontitle" x="104" y="769">Claude Code</text>
+  <text class="mono sub" x="308" y="769" text-anchor="end">mac/w1:p1</text>
+  <path class="node" d="M104,788 H316 V808 L308,816 H96 V796 Z"/>
+  <path class="edge" d="M104,788 H316 V808 L308,816 H96 V796 Z"/>
+  <text class="sans sessiontitle" x="104" y="807">Claude Code</text>
+  <text class="mono sub" x="308" y="807" text-anchor="end">mac/w2:p1</text>
+  <text class="mono sub" x="96" y="834">Claude account per folder</text>
+  
+  <path class="panel" d="M356,538 H616 V836 L604,848 H344 V550 Z"/>
+  <text class="mono label" x="602" y="556" text-anchor="end">LINUX</text>
+  <path class="node" d="M368,572 H496 V616 L484,628 H356 V584 Z"/>
+  <path class="edge" d="M368,572 H496 V616 L484,628 H356 V584 Z"/>
+  <path class="accent" d="M376,572 H406"/>
+  <text class="sans title" x="426" y="596" text-anchor="middle">agent-bridge</text>
+  <text class="mono sub" x="426" y="615" text-anchor="middle">systemd user unit</text>
+  <path class="store" d="M518,580 H604 V610 L594,620 H508 V590 Z"/>
+  <text class="mono storetitle" x="556" y="597" text-anchor="middle">state.json</text>
+  <text class="mono sub" x="556" y="612" text-anchor="middle">id · gateway</text>
+  <path class="dotted" d="M496,600 H508"/>
+  <path class="wire" d="M384,628 V690"/>
+  <path class="head" d="M379,682 L384,690 L389,682 Z"/>
+  <text class="mono wirelabel" x="392" y="682">herdr CLI</text>
+  <path class="node" d="M368,690 H604 V724 L592,736 H356 V702 Z"/>
+  <path class="edge" d="M368,690 H604 V724 L592,736 H356 V702 Z"/>
+  <path class="accent" d="M376,690 H406"/>
+  <text class="sans title" x="480" y="711" text-anchor="middle">herdr</text>
+  <text class="mono sub" x="480" y="728" text-anchor="middle">workspaces · panes</text>
+  <path class="wire" d="M368,736 V802 H384 M368,764 H384"/>
+  <path class="head" d="M376,759 L384,764 L376,769 Z"/>
+  <path class="head" d="M376,797 L384,802 L376,807 Z"/>
+  <path class="node" d="M392,750 H604 V770 L596,778 H384 V758 Z"/>
+  <path class="edge" d="M392,750 H604 V770 L596,778 H384 V758 Z"/>
+  <text class="sans sessiontitle" x="392" y="769">Claude Code</text>
+  <text class="mono sub" x="596" y="769" text-anchor="end">linux/w1:p1</text>
+  <path class="node" d="M392,788 H604 V808 L596,816 H384 V796 Z"/>
+  <path class="edge" d="M392,788 H604 V808 L596,816 H384 V796 Z"/>
+  <text class="sans sessiontitle" x="392" y="807">Claude Code</text>
+  <text class="mono sub" x="596" y="807" text-anchor="end">linux/w2:p1</text>
+  <text class="mono sub" x="384" y="834">Claude account per folder</text>
+  
+  <path class="panel" d="M644,538 H904 V836 L892,848 H632 V550 Z"/>
+  <text class="mono label" x="890" y="556" text-anchor="end">WINDOWS</text>
+  <path class="node" d="M656,572 H784 V616 L772,628 H644 V584 Z"/>
+  <path class="edge" d="M656,572 H784 V616 L772,628 H644 V584 Z"/>
+  <path class="accent" d="M664,572 H694"/>
+  <text class="sans title" x="714" y="596" text-anchor="middle">agent-bridge</text>
+  <text class="mono sub" x="714" y="615" text-anchor="middle">scheduled task</text>
+  <path class="store" d="M806,580 H892 V610 L882,620 H796 V590 Z"/>
+  <text class="mono storetitle" x="844" y="597" text-anchor="middle">state.json</text>
+  <text class="mono sub" x="844" y="612" text-anchor="middle">id · gateway</text>
+  <path class="dotted" d="M784,600 H796"/>
+  <path class="wire" d="M672,628 V690"/>
+  <path class="head" d="M667,682 L672,690 L677,682 Z"/>
+  <text class="mono wirelabel" x="680" y="682">herdr CLI</text>
+  <path class="node" d="M656,690 H892 V724 L880,736 H644 V702 Z"/>
+  <path class="edge" d="M656,690 H892 V724 L880,736 H644 V702 Z"/>
+  <path class="accent" d="M664,690 H694"/>
+  <text class="sans title" x="768" y="711" text-anchor="middle">herdr</text>
+  <text class="mono sub" x="768" y="728" text-anchor="middle">workspaces · panes</text>
+  <path class="wire" d="M656,736 V802 H672 M656,764 H672"/>
+  <path class="head" d="M664,759 L672,764 L664,769 Z"/>
+  <path class="head" d="M664,797 L672,802 L664,807 Z"/>
+  <path class="node" d="M680,750 H892 V770 L884,778 H672 V758 Z"/>
+  <path class="edge" d="M680,750 H892 V770 L884,778 H672 V758 Z"/>
+  <text class="sans sessiontitle" x="680" y="769">Claude Code</text>
+  <text class="mono sub" x="884" y="769" text-anchor="end">win/w1:p1</text>
+  <path class="node" d="M680,788 H892 V808 L884,816 H672 V796 Z"/>
+  <path class="edge" d="M680,788 H892 V808 L884,816 H672 V796 Z"/>
+  <text class="sans sessiontitle" x="680" y="807">Claude Code</text>
+  <text class="mono sub" x="884" y="807" text-anchor="end">win/w2:p1</text>
+  <text class="mono sub" x="672" y="834">Claude account per folder</text>
+  
+  <path class="ruler" d="M40,886 H920 M40,886 V880 M60,886 V883 M80,886 V883 M100,886 V883 M120,886 V883 M140,886 V880 M160,886 V883 M180,886 V883 M200,886 V883 M220,886 V883 M240,886 V880 M260,886 V883 M280,886 V883 M300,886 V883 M320,886 V883 M340,886 V880 M360,886 V883 M380,886 V883 M400,886 V883 M420,886 V883 M440,886 V880 M460,886 V883 M480,886 V883 M500,886 V883 M520,886 V883 M540,886 V880 M560,886 V883 M580,886 V883 M600,886 V883 M620,886 V883 M640,886 V880 M660,886 V883 M680,886 V883 M700,886 V883 M720,886 V883 M740,886 V880 M760,886 V883 M780,886 V883 M800,886 V883 M820,886 V883 M840,886 V880 M860,886 V883 M880,886 V883 M900,886 V883 M920,886 V883 "/>
   <path class="spark s1" pathLength="100" d="M220,152 V286"/>
-  <path class="spark s2" pathLength="100" d="M220,372 V536"/>
-  <path class="spark s3" pathLength="100" d="M370,570 H440"/>
-  <path class="spark s4" pathLength="100" d="M640,570 H656 L700,526 H720"/>
-  <path class="spark s4" pathLength="100" d="M640,570 H720"/>
-  <path class="spark s4" pathLength="100" d="M640,570 H656 L700,614 H720"/>
+  <path class="spark s2" pathLength="100" d="M220,392 V514 H96 V572"/>
+  <path class="spark s2" pathLength="100" d="M220,392 V514 H384 V572"/>
+  <path class="spark s2" pathLength="100" d="M220,392 V514 H672 V572"/>
+  <path class="spark s3" pathLength="100" d="M96,628 V690"/>
+  <path class="spark s3" pathLength="100" d="M384,628 V690"/>
+  <path class="spark s3" pathLength="100" d="M672,628 V690"/>
+  <path class="spark s4" pathLength="100" d="M80,736 V764 H96"/>
+  <path class="spark s4" pathLength="100" d="M80,736 V802 H96"/>
+  <path class="spark s4" pathLength="100" d="M368,736 V764 H384"/>
+  <path class="spark s4" pathLength="100" d="M368,736 V802 H384"/>
+  <path class="spark s4" pathLength="100" d="M656,736 V764 H672"/>
+  <path class="spark s4" pathLength="100" d="M656,736 V802 H672"/>
 </svg>

@@ -6,7 +6,7 @@ the map; the component READMEs have the details.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/assets/architecture-dark.svg">
-  <img src="docs/assets/architecture-light.svg" width="100%" alt="Three layers. The Claude app reaches mcp-gateway on the gateway host over MCP over HTTPS, through a Cloudflare Tunnel, with an OAuth access token; mcp-gateway keeps clients and token hashes in oauth.json. mcp-gateway reaches agent-bridge on the agent host over HTTP on the LAN with agent-bridge's bearer token. agent-bridge, which only changes agents under its allowed roots, drives herdr through the herdr CLI, and herdr runs many Claude Code sessions, one per pane.">
+  <img src="docs/assets/architecture-light.svg" width="100%" alt="Three layers and four trust boundaries. The Claude app reaches mcp-gateway on the gateway host over MCP over HTTPS, through a Cloudflare Tunnel, with an OAuth access token; mcp-gateway keeps clients and token hashes in oauth.json, its agent hosts in bridges.json and the enrollment window in enrollment.json. mcp-gateway reaches agent-bridge on each agent host (macOS, Linux, Windows) over HTTP on the LAN with that host's bearer token, and agent hosts enroll with the gateway over the LAN with the window's secret. Each agent-bridge keeps its id and gateway in state.json, only changes agents under its allowed roots, and drives herdr through the herdr CLI; herdr runs Claude Code sessions, one per pane, each on the Claude account set up for its folder, with ids that name the host, such as mac/w1:p1.">
 </picture>
 
 ## Interaction layer: the Claude app
