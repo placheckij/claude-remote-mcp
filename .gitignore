@@ -153,6 +153,8 @@ activemq-data/
 .env
 .envrc
 .venv
+# What agent-bridge's Windows setup moves a .venv to before making it anew.
+.venv-old/
 env/
 venv/
 ENV/
