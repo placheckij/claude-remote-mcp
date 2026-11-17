@@ -12,6 +12,7 @@ import argparse
 import asyncio
 import contextlib
 import logging
+import logging.handlers
 import os
 import stat
 import sys
@@ -38,7 +39,7 @@ from agent_bridge.host import API_VERSION
 from agent_bridge.state import Gateway, State, StateError, env_file, load, load_or_create, rename, save, state_file
 
 OK, FAILED, INVALID, NAME_TAKEN, UNREACHABLE, SAVE_FAILED, OUTDATED = 0, 1, 2, 3, 4, 5, 6
-# A --log-file larger than this is set aside when agent-bridge starts.
+# A --log-file larger than this is set aside as <name>.1.
 LOG_LIMIT = 1024 * 1024
 # The gateway's codes for a host it has no record of with this token (enrollment.py).
 NOT_KNOWN = ("not_enrolled", "unauthorized")
@@ -128,20 +129,48 @@ def _serve(run: Callable[..., None], log_file: Path | None) -> int:
     return OK
 
 
+class _NoTraceback(logging.Formatter):
+    """Writes a logged exception as its type alone: its message or traceback may hold a
+    setting. Works on a copy, since another handler may have put the traceback in the
+    record already."""
+
+    def format(self, record: logging.LogRecord) -> str:
+        copy = logging.makeLogRecord(record.__dict__)
+        kind = record.exc_info[0] if record.exc_info else None
+        copy.exc_text = f"{kind.__name__} (traceback left out)" if kind else None
+        copy.exc_info = copy.stack_info = None
+        if kind and isinstance(copy.msg, str):
+            copy.msg = copy.msg.rstrip()
+        return super().format(copy)
+
+
+class _RotatingLog(logging.handlers.RotatingFileHandler):
+    """Moved to `<name>.1` once past `maxBytes`. On Windows that fails while another process
+    has it open, e.g. `Get-Content -Wait`: it is then appended to and tried again at the next
+    line, where RotatingFileHandler would drop each line until it can."""
+
+    def doRollover(self) -> None:
+        try:
+            super().doRollover()
+        except OSError:
+            if self.stream is None:
+                self.stream = self._open()
+
+
 def _open_log(path: Path) -> logging.Handler:
     """Sends logging, and only logging, to `path`, after a line for this start. What is
-    printed, such as tracebacks, stays out of it: it may hold settings. A log over 1 MB is
-    moved to `<name>.1` first."""
+    printed stays out of it, as do tracebacks: they may hold settings. The log is moved to
+    `<name>.1` once it passes 1 MB, also while agent-bridge runs."""
     with contextlib.suppress(OSError):  # not there yet, or held open by another bridge
         if path.stat().st_size > LOG_LIMIT:
             os.replace(path, path.with_name(f"{path.name}.1"))
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        handler = logging.FileHandler(path, encoding="utf-8")
+        handler = _RotatingLog(path, maxBytes=LOG_LIMIT, backupCount=1, encoding="utf-8")
     except OSError as error:
         raise _Refused(f"Can't write {path} ({error.strerror}).") from None
     handler.stream.write(f"==== {datetime.now():%Y-%m-%d %H:%M:%S} starting agent-bridge\n")
-    handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)-9s %(message)s", "%Y-%m-%d %H:%M:%S"))
+    handler.setFormatter(_NoTraceback("%(asctime)s %(levelname)-9s %(message)s", "%Y-%m-%d %H:%M:%S"))
     root = logging.getLogger()
     root.setLevel(logging.INFO)
     root.addHandler(handler)

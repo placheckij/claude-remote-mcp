@@ -166,6 +166,61 @@ def test_serve_sets_a_large_log_aside_first(capsys, settings: Path, tmp_path: Pa
     assert log_file.read_text(encoding="utf-8").startswith("==== ")
 
 
+def test_serve_sets_the_log_aside_while_it_runs(capsys, settings: Path, tmp_path: Path, monkeypatch) -> None:
+    # A host that isn't restarted for weeks.
+    monkeypatch.setattr(cli, "LOG_LIMIT", 2000)
+    log_file = tmp_path / "agent-bridge.log"
+    sizes = []
+
+    def serve(app, **options) -> None:
+        for number in range(100):
+            logging.getLogger("uvicorn.access").info("request %d", number)
+            sizes.append(log_file.stat().st_size)
+
+    assert run(capsys, "serve", "--log-file", str(log_file), run=serve)[0] == 0
+    assert max(sizes) <= 2000
+    assert "request 99" in log_file.read_text(encoding="utf-8")
+    assert "request" in (tmp_path / "agent-bridge.log.1").read_text(encoding="utf-8")
+
+
+def test_serve_keeps_logging_while_the_log_cant_be_moved(capsys, settings: Path, tmp_path: Path, monkeypatch) -> None:
+    # On Windows, while another process has it open, e.g. Get-Content -Wait.
+    monkeypatch.setattr(cli, "LOG_LIMIT", 500)
+    log_file = tmp_path / "agent-bridge.log"
+
+    def held(source, dest) -> None:
+        raise PermissionError(13, "The process cannot access the file")
+
+    def serve(app, **options) -> None:
+        monkeypatch.setattr(os, "rename", held)
+        for number in range(30):
+            logging.getLogger("uvicorn.access").info("request %d", number)
+        monkeypatch.undo()
+        logging.getLogger("uvicorn.access").info("after it was let go")
+
+    assert run(capsys, "serve", "--log-file", str(log_file), run=serve)[0] == 0
+    lines = (tmp_path / "agent-bridge.log.1").read_text(encoding="utf-8") + log_file.read_text(encoding="utf-8")
+    assert all(f"request {number}\n" in lines for number in range(30))
+    assert "after it was let go" in log_file.read_text(encoding="utf-8")
+
+
+def test_serve_logs_a_logged_exception_by_its_type_alone(capsys, settings: Path, tmp_path: Path) -> None:
+    log_file = tmp_path / "agent-bridge.log"
+
+    def serve(app, **options) -> None:
+        try:
+            raise ValueError(f"a message with {TOKEN} in it")
+        except ValueError as error:
+            # As uvicorn logs an error in a request.
+            logging.getLogger("uvicorn.error").error("Exception in ASGI application\n", exc_info=error)
+
+    assert run(capsys, "serve", "--log-file", str(log_file), run=serve)[0] == 0
+    text = log_file.read_text(encoding="utf-8")
+    assert "ERROR     Exception in ASGI application\nValueError (traceback left out)\n" in text
+    assert TOKEN not in text
+    assert "Traceback" not in text
+
+
 def test_serve_logs_why_it_wont_start(capsys, settings: Path, tmp_path: Path) -> None:
     settings.write_text(f"AGENT_BRIDGE_TOKEN={TOKEN}\nAGENT_BRIDGE_ALLOWED_ROOTS={settings.parent}\n")
     log_file = tmp_path / "agent-bridge.log"

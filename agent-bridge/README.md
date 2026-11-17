@@ -506,11 +506,12 @@ It finds the LAN address and `herdr.exe` itself, including herdr's
 5. enrolls with the gateway (asking for another name if the gateway already has a host by
    that name), and runs `agent-bridge check`.
 
-Its log is `%LOCALAPPDATA%\agent-bridge\agent-bridge.log`, with a line for each start. A log
-over 1 MB is moved to `agent-bridge.log.1` when agent-bridge starts; while it runs, the log
-grows by a line per request. It holds only what agent-bridge logs, not what it prints, such
-as a traceback, which could include a setting; an error it stops on is logged by its type
-alone. Re-run setup after pulling new code: it keeps the token and settings,
+Its log is `%LOCALAPPDATA%\agent-bridge\agent-bridge.log`, with a line for each start and one
+per request. Once it passes 1 MB it is moved to `agent-bridge.log.1`, replacing the one
+before, also while agent-bridge runs (while another program has it open, such as
+`Get-Content -Wait`, that waits until it lets go). It holds only what agent-bridge logs, not
+what it prints; an exception is logged by its type alone, without its message or traceback,
+which could include a setting. Re-run setup after pulling new code: it keeps the token and settings,
 and asks only for what's missing. Parameters skip the questions or change a setting:
 `-Roots`, `-Name`, `-Enrollment` (`''` skips), `-Address`, `-Port`, `-HerdrBin`,
 `-ClaudeConfigDir` and `-TrustRoot` (for [folder trust](#folder-trust); `''` removes
