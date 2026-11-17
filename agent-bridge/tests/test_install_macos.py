@@ -39,6 +39,14 @@ class FakeMac:
     cached: bool = False
     name: str = "Studio-Mac.local"
     enroll_codes: list[int] = field(default_factory=list)
+    rename_codes: list[int] = field(default_factory=list)
+    unenroll_code: int = 0
+    # The port the launch agent listens on.
+    service_port: int | None = None
+    # What the gateway has for this host: the token (None for no record) and the name.
+    gateway_token: str | None = None
+    gateway_name: str = ""
+    gateway_down: bool = False
     bootstrap_failures: int = 0
     # How many `check`s report agent-bridge not answering yet.
     slow_starts: int = 0
@@ -71,6 +79,9 @@ class FakeMac:
     def port_holder(self, port: int) -> str | None:
         return self.holders.get(port)
 
+    def serves(self, port: int) -> bool:
+        return port == self.service_port
+
     def find_herdr(self) -> str | None:
         return str(self.herdr) if self.herdr else None
 
@@ -86,19 +97,59 @@ class FakeMac:
         return 0
 
     def bridge(self, *args: str, capture: bool = False) -> tuple[int, str]:
+        """`check`, `enroll`, `rename` and `unenroll`, against the gateway's record above."""
         self.calls.append(("agent-bridge", *args))
         if args[0] == "check":
             if self.slow_starts:
                 self.slow_starts -= 1
                 return 1, "FAIL  agent-bridge answers at http://192.168.1.20:8765 (ConnectError)\n"
-            return 0, "ok    agent-bridge answers at http://192.168.1.20:8765\n"
+            return 0, "ok    agent-bridge answers at http://192.168.1.20:8765\n" + self._gateway_check()
+        if args[0] == "rename":
+            code = self.rename_codes.pop(0) if self.rename_codes else 0
+            if code in (0, 5):
+                self.gateway_name = args[1]
+            if code == 0:
+                self.save_gateway(args[1])
+            return code, ""
+        if args[0] == "unenroll":
+            if self.unenroll_code == 0 and self.state_file.exists():
+                self.state_file.write_text(json.dumps({"version": 1, "bridge_id": "b1"}))
+                self.gateway_token = None
+            return self.unenroll_code, ""
         code = self.enroll_codes.pop(0) if self.enroll_codes else 0
+        if code in (0, 5):
+            self.gateway_token = self.env("TOKEN")
+            self.gateway_name = self.env("NAME")
         if code == 0:
-            name = dotenv_values(self.env_file)["AGENT_BRIDGE_NAME"]
-            self.state_file.write_text(json.dumps(
-                {"version": 1, "bridge_id": "b1",
-                 "gateway": {"url": "http://10.0.0.1:8766", "gateway_id": "g1", "name": name}}))
+            self.save_gateway(self.gateway_name)
         return code, ""
+
+    def _gateway_check(self) -> str:
+        gateway = self.gateway()
+        if gateway is None:
+            return "--    not enrolled with a gateway\n"
+        failed = f"FAIL  the gateway at {gateway['url']} has this host"
+        if self.gateway_down:
+            return f"{failed} (ConnectError)\n"
+        if self.gateway_token is None:
+            return f"{failed} (This agent host isn't enrolled with the gateway.)\n"
+        if self.gateway_token != self.env("TOKEN"):
+            return f"{failed} (That isn't this agent host's token.)\n"
+        # check saves the gateway's name.
+        self.save_gateway(self.gateway_name)
+        return f"ok    the gateway at {gateway['url']} has this host as {self.gateway_name}\n"
+
+    def env(self, key: str) -> str | None:
+        return dotenv_values(self.env_file).get(f"AGENT_BRIDGE_{key}")
+
+    def gateway(self) -> dict | None:
+        return json.loads(self.state_file.read_text()).get("gateway") if self.state_file.exists() else None
+
+    def save_gateway(self, name: str) -> None:
+        self.state_file.parent.mkdir(parents=True, exist_ok=True)
+        self.state_file.write_text(json.dumps(
+            {"version": 1, "bridge_id": "b1",
+             "gateway": {"url": "http://10.0.0.1:8766", "gateway_id": "g1", "name": name}}))
 
     def sleep(self, seconds: float) -> None:
         pass
@@ -118,6 +169,10 @@ class FakeMac:
     @property
     def plist(self) -> Path:
         return self.home / "Library" / "LaunchAgents" / f"{LABEL}.plist"
+
+    @property
+    def log(self) -> Path:
+        return self.home / "Library" / "Logs" / "agent-bridge.log"
 
     def ran(self, kind: str) -> list[tuple[str, ...]]:
         return [call[1:] for call in self.calls if call[0] == kind]
@@ -403,10 +458,12 @@ def test_fails_when_no_other_name_is_given(mac: FakeMac, capsys) -> None:
     run = setup(mac, capsys, *every_flag(mac))
 
     assert run.code == 1
-    assert "the gateway has another host named studio" in run.out
-    assert nothing_left(mac)
-    # So the run it advises is not refused as an install.
-    assert setup(mac, capsys, *every_flag(mac, name="studio-2")).code == 0
+    assert "the gateway has another host named studio; run again with another --name" in run.out
+    assert env(mac)["AGENT_BRIDGE_NAME"] == "studio"
+    # The run it advises.
+    run = setup(mac, capsys, "--name", "studio-2", answers=(ENROLLMENT,))
+    assert run.code == 0, run.out
+    assert "as studio-2" in run.out
 
 
 def test_leaves_enrolling_for_later_when_the_gateway_is_down(mac: FakeMac, capsys) -> None:
@@ -439,15 +496,10 @@ def test_stops_when_the_gateway_took_it_but_the_state_isnt_saved(mac: FakeMac, c
     assert "state file couldn't be written" in run.out
 
 
-# --- Failing after writing: undone, so setup can run again ----------------------------
+# --- Failing partway: running again picks it up --------------------------------------
 
 
-def nothing_left(mac: FakeMac) -> bool:
-    return not any(path.exists() for path in (mac.env_file, mac.state_file, mac.plist)) and (
-        mac.ran("launchctl")[-1] == ("bootout", f"gui/501/{LABEL}"))
-
-
-def test_undoes_the_install_when_the_bridge_cant_run(mac: FakeMac, capsys) -> None:
+def test_a_bridge_that_cant_run_stops_setup(mac: FakeMac, capsys) -> None:
     def missing(*args: str, capture: bool = False) -> tuple[int, str]:
         raise macos.Refused(f"can't run {COMMAND} (No such file or directory)")
 
@@ -457,10 +509,9 @@ def test_undoes_the_install_when_the_bridge_cant_run(mac: FakeMac, capsys) -> No
 
     assert run.code == 1
     assert f"can't run {COMMAND}" in run.out
-    assert nothing_left(mac)
 
 
-def test_undoes_the_install_when_the_log_folder_cant_be_made(mac: FakeMac, capsys) -> None:
+def test_stops_when_the_log_folder_cant_be_made(mac: FakeMac, capsys) -> None:
     (mac.home / "Library").mkdir()
     (mac.home / "Library" / "Logs").write_text("not a folder")
 
@@ -468,10 +519,9 @@ def test_undoes_the_install_when_the_log_folder_cant_be_made(mac: FakeMac, capsy
 
     assert run.code == 1
     assert f"can't make {mac.home / 'Library' / 'Logs'}" in run.out
-    assert nothing_left(mac)
 
 
-def test_undoes_the_install_when_the_plist_cant_be_written(mac: FakeMac, capsys) -> None:
+def test_stops_when_the_plist_cant_be_written(mac: FakeMac, capsys) -> None:
     (mac.home / "Library").mkdir()
     (mac.home / "Library" / "LaunchAgents").write_text("not a folder")
 
@@ -479,56 +529,548 @@ def test_undoes_the_install_when_the_plist_cant_be_written(mac: FakeMac, capsys)
 
     assert run.code == 1
     assert f"can't write {mac.plist}" in run.out
-    assert nothing_left(mac)
 
 
-def test_keeps_an_install_the_gateway_enrolled(mac: FakeMac, capsys) -> None:
-    def interrupted() -> str:
-        raise KeyboardInterrupt
-
-    mac.enroll_codes = [3]
-    original = mac.bridge
-
-    def enrolled_then_taken(*args: str, capture: bool = False) -> tuple[int, str]:
-        if args[0] == "enroll":
-            mac.state_file.write_text(json.dumps(
-                {"version": 1, "bridge_id": "b1",
-                 "gateway": {"url": "http://10.0.0.1:8766", "gateway_id": "g1", "name": "studio"}}))
-        return original(*args, capture=capture)
-
-    mac.bridge = enrolled_then_taken
-    options = macos.Options.from_args(cli._parser().parse_args(["setup", *every_flag(mac)]))
-    with pytest.raises(KeyboardInterrupt):
-        macos.setup(options, mac, interrupted)
-
-    assert mac.env_file.exists() and mac.plist.exists()
-    assert "gateway" in json.loads(mac.state_file.read_text())
-    assert mac.ran("launchctl")[-1][0] == "bootstrap"
-
-
-def test_undoes_the_install_when_launchd_wont_start_it(mac: FakeMac, capsys) -> None:
+def test_runs_again_after_launchd_wouldnt_start_it(mac: FakeMac, capsys) -> None:
     mac.bootstrap_failures = macos.BOOTSTRAPS
 
     run = setup(mac, capsys, *every_flag(mac))
 
     assert run.code == 1
     assert "launchctl bootstrap failed" in run.out
-    assert "Setup removed what it wrote" in run.out
-    assert nothing_left(mac)
-    assert setup(mac, capsys, *every_flag(mac)).code == 0
+    token = env(mac)["AGENT_BRIDGE_TOKEN"]
+    run = setup(mac, capsys, answers=(ENROLLMENT,))
+    assert run.code == 0, run.out
+    assert run.asked == ["Enrollment string it printed, crm1@… [Enter to enroll later"]
+    assert env(mac)["AGENT_BRIDGE_TOKEN"] == token
+    assert "as studio" in run.out
 
 
-def test_undoes_the_install_on_ctrl_c(mac: FakeMac, capsys) -> None:
+# --- Running again on an installed Mac ------------------------------------------------
+
+TOKEN = "t" * 64
+# What the checkout's setup script had the launch agent run.
+CHECKOUT_COMMAND = "/Users/me/claude-remote-mcp/.venv/bin/agent-bridge"
+
+
+def installed(mac: FakeMac, *, enrolled: bool = True, **changes: str | None) -> dict[str, str]:
+    """An install the checkout's setup script made: its env file, plist and enrollment, with
+    the service on its port. A change of None leaves that setting out."""
+    values = {"TOKEN": TOKEN, "ALLOWED_ROOTS": str(mac.home / "Projects"), "HOST": "192.168.1.20", "PORT": "8765",
+              "NAME": "studio", "HERDR_BIN": str(mac.herdr), "CLAUDE_CONFIG_DIR": "", "TRUST_ROOT": ""}
+    values.update(changes)
+    settings = {f"AGENT_BRIDGE_{key}": value for key, value in values.items() if value is not None}
+    mac.support.mkdir(parents=True)
+    mac.env_file.write_text(common.env_text(settings))
+    mac.plist.parent.mkdir(parents=True)
+    mac.plist.write_bytes(plistlib.dumps(macos.launch_agent(CHECKOUT_COMMAND, mac.home / "Library/Logs/agent-bridge.log")))
+    port = int(values["PORT"] or macos.DEFAULT_PORT)
+    mac.holders[port] = f"PID 7: {CHECKOUT_COMMAND} serve"
+    mac.service_port = port
+    if enrolled:
+        mac.gateway_token, mac.gateway_name = values["TOKEN"], values["NAME"] or "studio"
+        mac.save_gateway(mac.gateway_name)
+    return settings
+
+
+def old_plist(mac: FakeMac, **environment: str) -> None:
+    """A plist from before the env file, with the settings in it, running uvicorn."""
+    mac.plist.parent.mkdir(parents=True)
+    mac.plist.write_bytes(plistlib.dumps({
+        "Label": LABEL,
+        "ProgramArguments": ["/Users/me/claude-remote-mcp/.venv/bin/uvicorn", "agent_bridge.app:main", "--factory",
+                             "--host", "127.0.0.1", "--port", "8770"],
+        "EnvironmentVariables": {"AGENT_BRIDGE_TOKEN": TOKEN, "AGENT_BRIDGE_ALLOWED_ROOTS": str(mac.home / "Projects"),
+                                 "AGENT_BRIDGE_HERDR_BIN": str(mac.herdr), **environment},
+    }))
+
+
+def test_a_rerun_asks_nothing_and_keeps_the_settings_and_the_enrollment(mac: FakeMac, capsys) -> None:
+    settings = installed(mac)
+
+    run = setup(mac, capsys)
+
+    assert run.code == 0, run.out
+    assert run.asked == []
+    assert env(mac) == settings
+    # It asks the gateway first, then checks the restarted service; nothing enrolls again.
+    assert mac.ran("agent-bridge") == [("check",), ("check",)]
+    assert "enrolled with the gateway at http://10.0.0.1:8766 as studio" in run.out
+
+
+def test_takes_over_a_checkout_install(mac: FakeMac, capsys) -> None:
+    installed(mac)
+
+    run = setup(mac, capsys)
+
+    assert run.code == 0, run.out
+    assert plistlib.loads(mac.plist.read_bytes())["ProgramArguments"] == [COMMAND, "serve"]
+    assert mac.ran("launchctl")[-1] == ("bootstrap", "gui/501", str(mac.plist))
+    # The gateway still reaches it under the same name, with the same token.
+    assert mac.gateway_token == env(mac)["AGENT_BRIDGE_TOKEN"] == TOKEN
+    assert "as studio: Claude reaches its agents as studio/" in run.out
+
+
+def test_a_rerun_keeps_settings_setup_doesnt_write(mac: FakeMac, capsys) -> None:
+    installed(mac)
+    with mac.env_file.open("a") as file:
+        file.write("# a comment\nAGENT_BRIDGE_MAX_AGENTS=3\nOTHER='x y'\n")
+
+    run = setup(mac, capsys)
+
+    assert run.code == 0, run.out
+    assert env(mac)["AGENT_BRIDGE_MAX_AGENTS"] == "3"
+    assert env(mac)["OTHER"] == "x y"
+    assert "# a comment" not in mac.env_file.read_text()
+
+
+def test_a_hand_edited_env_file_is_read_as_the_bridge_reads_it(mac: FakeMac, capsys) -> None:
+    installed(mac)
+    # Keys in any case, the last one winning.
+    with mac.env_file.open("a") as file:
+        file.write("agent_bridge_max_agents=2\nAGENT_BRIDGE_MAX_AGENTS=3\n")
+
+    setup(mac, capsys)
+
+    assert env(mac)["AGENT_BRIDGE_MAX_AGENTS"] == "3"
+    assert "agent_bridge_max_agents" not in mac.env_file.read_text()
+
+
+def test_a_value_passed_in_changes_an_installed_setting(mac: FakeMac, capsys) -> None:
+    installed(mac)
+    (mac.home / "work").mkdir()
+
+    run = setup(mac, capsys, "--roots", str(mac.home / "work"), "--port", "9000")
+
+    assert run.code == 0, run.out
+    assert env(mac)["AGENT_BRIDGE_ALLOWED_ROOTS"] == str(mac.home / "work")
+    assert env(mac)["AGENT_BRIDGE_PORT"] == "9000"
+    assert run.asked == []
+
+
+def test_folder_trust_is_asked_once(mac: FakeMac, capsys) -> None:
+    installed(mac, CLAUDE_CONFIG_DIR=None, TRUST_ROOT=None)
+
+    run = setup(mac, capsys, answers=("-",))
+
+    assert run.asked == ["Separate Claude config folder for agents [" + str(mac.home / ".claude-agents")
+                         + "; Enter for that, - for none"]
+    assert setup(mac, capsys).asked == []
+
+
+def test_accounts_are_kept_changed_or_removed(mac: FakeMac, capsys) -> None:
+    accounts = '{"work": {"config_dir": null, "folders": ["/Users/me/work"]}}'
+    installed(mac, ACCOUNTS=accounts)
+
+    setup(mac, capsys)
+    assert env(mac)["AGENT_BRIDGE_ACCOUNTS"] == accounts
+
+    setup(mac, capsys, "--accounts", "")
+    assert "AGENT_BRIDGE_ACCOUNTS" not in env(mac)
+
+    setup(mac, capsys, "--accounts", accounts)
+    assert env(mac)["AGENT_BRIDGE_ACCOUNTS"] == accounts
+
+
+def test_the_installed_herdr_wins_over_the_one_found(mac: FakeMac, capsys, tmp_path: Path) -> None:
+    installed(mac)
+    other = tmp_path / "other-herdr"
+    other.write_text("#!/bin/sh\n")
+    other.chmod(0o755)
+    mac.herdr, installed_herdr = other, mac.herdr
+
+    setup(mac, capsys)
+
+    assert env(mac)["AGENT_BRIDGE_HERDR_BIN"] == str(installed_herdr)
+
+
+def test_the_port_the_service_holds_is_kept(mac: FakeMac, capsys) -> None:
+    installed(mac)
+
+    run = setup(mac, capsys)
+
+    assert "in use" not in run.out
+    assert env(mac)["AGENT_BRIDGE_PORT"] == "8765"
+
+
+def test_an_installed_port_another_program_holds_is_named_and_a_free_one_offered(mac: FakeMac, capsys) -> None:
+    installed(mac)
+    mac.service_port = None
+    mac.holders = {8765: "PID 42: python3 -m http.server 8765"}
+
+    run = setup(mac, capsys, answers=("",))
+
+    assert run.asked == ["Port [8766"]
+    assert "Port 8765 is in use by PID 42: python3 -m http.server 8765" in run.out
+    assert env(mac)["AGENT_BRIDGE_PORT"] == "8766"
+
+
+def test_an_installed_address_the_mac_no_longer_has_is_replaced(mac: FakeMac, capsys) -> None:
+    installed(mac, HOST="192.168.1.5")
+
+    run = setup(mac, capsys)
+
+    assert env(mac)["AGENT_BRIDGE_HOST"] == "192.168.1.20"
+    assert "The LAN address is now 192.168.1.20 (was 192.168.1.5)." in run.out
+
+
+def test_an_offline_rerun_keeps_the_installed_address(mac: FakeMac, capsys) -> None:
+    installed(mac, HOST="192.168.1.5")
+    mac.lan = None
+
+    run = setup(mac, capsys)
+
+    assert run.code == 0, run.out
+    assert env(mac)["AGENT_BRIDGE_HOST"] == "192.168.1.5"
+    assert "no interface has 192.168.1.5 right now" in run.out
+
+
+def test_an_installed_ipv6_address_is_kept_in_ifconfigs_form(mac: FakeMac, capsys) -> None:
+    installed(mac, HOST="FE80:0:0:0:0:0:0:1")
+    mac.addresses = ("fe80::1",)
+
+    setup(mac, capsys)
+
+    assert env(mac)["AGENT_BRIDGE_HOST"] == "fe80::1"
+
+
+def test_an_installed_token_that_wont_do_is_refused(mac: FakeMac, capsys) -> None:
+    installed(mac, TOKEN="short")
+
+    run = setup(mac, capsys)
+
+    assert run.code == 1
+    assert "run again with --rotate-token" in run.out
+
+
+# --- Upgrading an install from before the env file ------------------------------------
+
+
+def test_an_upgrade_moves_the_plist_settings_into_the_env_file(mac: FakeMac, capsys) -> None:
+    accounts = '{"work": {"config_dir": null, "folders": ["/Users/me/work"]}}'
+    old_plist(mac, AGENT_BRIDGE_CLAUDE_CONFIG_DIR=str(mac.home / ".claude-agents"),
+              AGENT_BRIDGE_TRUST_ROOT=str(mac.home / "Projects"), AGENT_BRIDGE_ACCOUNTS=accounts,
+              AGENT_BRIDGE_MAX_AGENTS="3", PATH="/usr/bin")
+    mac.addresses = ("127.0.0.1",)
+
+    run = setup(mac, capsys, "--name", "studio", "--enrollment", ENROLLMENT)
+
+    assert run.code == 0, run.out
+    assert run.asked == []
+    assert f"Moving the settings from {mac.plist} to {mac.env_file}" in run.out
+    settings = env(mac)
+    assert settings["AGENT_BRIDGE_TOKEN"] == TOKEN
+    assert settings["AGENT_BRIDGE_HOST"] == "127.0.0.1"
+    assert settings["AGENT_BRIDGE_PORT"] == "8770"
+    assert settings["AGENT_BRIDGE_TRUST_ROOT"] == str(mac.home / "Projects")
+    assert settings["AGENT_BRIDGE_ACCOUNTS"] == accounts
+    assert settings["AGENT_BRIDGE_MAX_AGENTS"] == "3"
+    assert "PATH" not in settings
+    assert plistlib.loads(mac.plist.read_bytes()) == macos.launch_agent(COMMAND, mac.home / "Library/Logs/agent-bridge.log")
+    assert "as studio" in run.out
+
+
+def test_an_upgrade_without_folder_trust_doesnt_ask_for_it(mac: FakeMac, capsys) -> None:
+    old_plist(mac)
+    mac.addresses = ("127.0.0.1",)
+
+    run = setup(mac, capsys, "--name", "studio", "--enrollment", ENROLLMENT)
+
+    assert run.asked == []
+    assert env(mac)["AGENT_BRIDGE_CLAUDE_CONFIG_DIR"] == ""
+
+
+# --- The gateway's record on a re-run --------------------------------------------------
+
+
+def test_a_rename_on_the_gateway_is_kept(mac: FakeMac, capsys) -> None:
+    installed(mac)
+    mac.gateway_name = "studio-2"  # sudo mcp-gateway bridges rename studio studio-2
+
+    run = setup(mac, capsys)
+
+    assert run.asked == []
+    assert env(mac)["AGENT_BRIDGE_NAME"] == "studio-2"
+    assert "as studio-2" in run.out
+
+
+def test_an_enrolled_host_with_no_name_installed_takes_the_gateways(mac: FakeMac, capsys) -> None:
+    installed(mac, NAME=None)
+
+    run = setup(mac, capsys)
+
+    assert run.asked == []
+    assert env(mac)["AGENT_BRIDGE_NAME"] == "studio"
+
+
+@pytest.mark.parametrize("lost", ["dropped", "other token"])
+def test_a_host_the_gateway_lost_is_asked_to_enroll_again(mac: FakeMac, capsys, lost: str) -> None:
+    installed(mac)
+    mac.gateway_token = None if lost == "dropped" else "o" * 64
+
+    run = setup(mac, capsys, answers=(ENROLLMENT,))
+
+    assert run.code == 0, run.out
+    assert "didn't confirm it has this host as studio" in run.out
+    assert run.asked == ["Enrollment string it printed, crm1@… [Enter to enroll later"]
+    assert mac.ran("agent-bridge")[-1] == ("enroll", ENROLLMENT)
+    assert "It is enrolled with the gateway" in run.out
+
+
+def test_a_host_the_gateway_lost_and_left_unenrolled_says_so(mac: FakeMac, capsys) -> None:
+    installed(mac)
+    mac.gateway_token = None
+
+    run = setup(mac, capsys)
+
+    assert run.code == 0, run.out
+    assert "didn't confirm it has it as studio (see the warning above)" in run.out
+
+
+def test_a_gateway_that_cant_be_asked_keeps_the_enrollment(mac: FakeMac, capsys) -> None:
+    installed(mac)
+    mac.gateway_down = True
+
+    run = setup(mac, capsys)
+
+    assert run.code == 0, run.out
+    assert run.asked == []
+    assert "couldn't check with the gateway at http://10.0.0.1:8766 right now (ConnectError)" in run.out
+
+
+def test_a_new_name_on_an_enrolled_host_renames_it_on_the_gateway(mac: FakeMac, capsys) -> None:
+    installed(mac)
+
+    run = setup(mac, capsys, "--name", "studio-2")
+
+    assert run.code == 0, run.out
+    assert run.asked == []
+    assert ("rename", "studio-2") in mac.ran("agent-bridge")
+    assert env(mac)["AGENT_BRIDGE_NAME"] == "studio-2"
+    assert "as studio-2" in run.out
+
+
+def test_a_new_name_taken_on_the_gateway_changes_nothing(mac: FakeMac, capsys) -> None:
+    settings = installed(mac)
+    mac.rename_codes = [3]
+
+    run = setup(mac, capsys, "--name", "studio-2")
+
+    assert run.code == 1
+    assert "another host named studio-2; nothing was changed" in run.out
+    assert env(mac) == settings
+    assert mac.ran("launchctl") == []
+
+
+@pytest.mark.parametrize("code", [4, 6])
+def test_a_new_name_the_gateway_cant_take_is_renamed_by_enrolling_again(mac: FakeMac, capsys, code: int) -> None:
+    installed(mac)
+    mac.rename_codes = [code]
+
+    run = setup(mac, capsys, "--name", "studio-2", answers=(ENROLLMENT,))
+
+    assert run.code == 0, run.out
+    assert "The gateway has this host as studio; enrolling again renames it studio-2." in run.out
+    assert mac.ran("agent-bridge")[-1] == ("enroll", ENROLLMENT)
+    assert "as studio-2" in run.out
+
+
+def test_a_new_name_left_unrenamed_says_the_gateway_kept_the_old_one(mac: FakeMac, capsys) -> None:
+    installed(mac)
+    mac.rename_codes = [4]
+
+    run = setup(mac, capsys, "--name", "studio-2")
+
+    assert run.code == 0, run.out
+    assert "The gateway still has it as studio, not studio-2" in run.out
+
+
+def test_a_rename_the_state_file_missed_isnt_asked_to_enroll(mac: FakeMac, capsys) -> None:
+    installed(mac)
+    mac.rename_codes = [5]
+
+    run = setup(mac, capsys, "--name", "studio-2")
+
+    assert run.code == 0, run.out
+    assert run.asked == []
+    assert "as studio-2" in run.out
+
+
+def test_setup_stopping_after_a_rename_says_the_gateway_has_the_new_name(mac: FakeMac, capsys) -> None:
+    installed(mac)
+    mac.bootstrap_failures = macos.BOOTSTRAPS
+
+    run = setup(mac, capsys, "--name", "studio-2")
+
+    assert run.code == 1
+    assert "note: the gateway has this host as studio-2 now; the next run takes that name." in run.out
+
+
+def test_a_taken_name_on_a_rerun_keeps_the_install(mac: FakeMac, capsys) -> None:
+    installed(mac, enrolled=False)
     mac.enroll_codes = [3]
 
-    def interrupted() -> str:
-        raise KeyboardInterrupt
+    run = setup(mac, capsys, "--enrollment", ENROLLMENT)
 
-    options = macos.Options.from_args(cli._parser().parse_args(["setup", *every_flag(mac)]))
-    with pytest.raises(KeyboardInterrupt):
-        macos.setup(options, mac, interrupted)
+    assert run.code == 1
+    assert "run again with another --name" in run.out
+    assert env(mac)["AGENT_BRIDGE_TOKEN"] == TOKEN
 
-    assert nothing_left(mac)
+
+# --- A new token ----------------------------------------------------------------------
+
+
+def test_rotate_token_replaces_the_token_and_enrolls_again(mac: FakeMac, capsys) -> None:
+    installed(mac)
+
+    run = setup(mac, capsys, "--rotate-token", "--enrollment", ENROLLMENT)
+
+    assert run.code == 0, run.out
+    assert env(mac)["AGENT_BRIDGE_TOKEN"] not in (TOKEN, None)
+    assert mac.gateway_token == env(mac)["AGENT_BRIDGE_TOKEN"]
+
+
+def test_rotate_token_without_an_enrollment_string_changes_nothing(mac: FakeMac, capsys) -> None:
+    settings = installed(mac)
+
+    run = setup(mac, capsys, "--rotate-token")
+
+    assert run.code == 1
+    assert "--rotate-token needs an enrollment string" in run.out
+    assert env(mac) == settings
+    assert mac.ran("launchctl") == []
+
+
+@pytest.mark.parametrize("codes", [[1], [3]])
+def test_rotate_token_puts_the_installed_token_back_when_enrolling_fails(mac: FakeMac, capsys, codes: list) -> None:
+    installed(mac)
+    mac.enroll_codes = codes
+
+    run = setup(mac, capsys, "--rotate-token", "--enrollment", ENROLLMENT)
+
+    assert run.code == 1
+    assert "the installed one is back" in run.out
+    assert env(mac)["AGENT_BRIDGE_TOKEN"] == TOKEN
+    assert mac.ran("launchctl")[-1][0] == "bootstrap"
+
+
+def test_rotate_token_keeps_the_new_token_when_enroll_says_the_gateway_took_it(mac: FakeMac, capsys) -> None:
+    installed(mac)
+    mac.enroll_codes = [5]
+
+    run = setup(mac, capsys, "--rotate-token", "--enrollment", ENROLLMENT)
+
+    assert env(mac)["AGENT_BRIDGE_TOKEN"] != TOKEN
+    assert "state file couldn't be written" in run.out
+
+
+def test_rotate_token_keeps_the_new_token_when_the_gateway_has_it(mac: FakeMac, capsys) -> None:
+    installed(mac)
+    original = mac.bridge
+
+    def took_it_but_lost_the_answer(*args: str, capture: bool = False) -> tuple[int, str]:
+        if args[0] == "enroll":
+            mac.gateway_token = mac.env("TOKEN")
+            return 1, ""
+        return original(*args, capture=capture)
+
+    mac.bridge = took_it_but_lost_the_answer
+
+    run = setup(mac, capsys, "--rotate-token", "--enrollment", ENROLLMENT)
+
+    assert run.code == 0, run.out
+    assert env(mac)["AGENT_BRIDGE_TOKEN"] == mac.gateway_token != TOKEN
+
+
+def test_a_new_token_on_a_host_enrolled_before_asks_for_an_enrollment_string(mac: FakeMac, capsys) -> None:
+    installed(mac, TOKEN=None)
+
+    run = setup(mac, capsys, answers=("",))
+
+    assert run.asked == ["Enrollment string it printed, crm1@… [Enter to enroll later"]
+    assert "with an older token, so it can't reach it" in run.out
+
+
+# --- Uninstalling ---------------------------------------------------------------------
+
+
+def uninstall(mac: FakeMac, capsys: pytest.CaptureFixture) -> tuple[int, str]:
+    code = macos.uninstall(mac)
+    out, err = capsys.readouterr()
+    return code, out + err
+
+
+def test_uninstall_leaves_the_gateway_then_removes_the_service_and_files(mac: FakeMac, capsys) -> None:
+    installed(mac)
+    mac.log.parent.mkdir(parents=True)
+    mac.log.write_text("log\n")
+
+    code, out = uninstall(mac, capsys)
+
+    assert code == 0
+    assert mac.ran("agent-bridge") == [("unenroll",)]
+    assert mac.gateway_token is None
+    assert mac.ran("launchctl") == [("bootout", f"gui/501/{LABEL}")]
+    assert not any(path.exists() for path in (mac.plist, mac.log, mac.support))
+    assert "agent-bridge is removed" in out
+
+
+def test_uninstall_of_a_host_never_enrolled_says_how_to_remove_one_added_by_hand(mac: FakeMac, capsys) -> None:
+    installed(mac, enrolled=False)
+
+    _, out = uninstall(mac, capsys)
+
+    assert "added with bridges add" in out
+
+
+def test_uninstall_keeps_a_folder_with_other_files_in_it(mac: FakeMac, capsys) -> None:
+    installed(mac)
+    (mac.support / "notes").write_text("mine")
+
+    _, out = uninstall(mac, capsys)
+
+    assert (mac.support / "notes").read_text() == "mine"
+    assert not mac.env_file.exists()
+    assert f"Left {mac.support}: it holds other files." in out
+
+
+@pytest.mark.parametrize("failure", ["unenroll fails", "the bridge can't run"])
+def test_uninstall_still_removes_the_service_and_files(mac: FakeMac, capsys, failure: str) -> None:
+    installed(mac)
+    if failure == "unenroll fails":
+        mac.unenroll_code = 1
+    else:
+        def missing(*args: str, capture: bool = False) -> tuple[int, str]:
+            raise macos.Refused(f"can't run {COMMAND} (No such file or directory)")
+
+        mac.bridge = missing
+
+    code, out = uninstall(mac, capsys)
+
+    assert code == 0
+    assert "sudo mcp-gateway bridges remove studio" in out
+    assert not mac.plist.exists() and not mac.support.exists()
+
+
+def test_uninstalling_twice_says_nothing_about_a_folder_that_is_gone(mac: FakeMac, capsys) -> None:
+    installed(mac)
+    uninstall(mac, capsys)
+
+    code, out = uninstall(mac, capsys)
+
+    assert code == 0
+    assert "Left" not in out
+
+
+def test_uninstall_refuses_sudo(mac: FakeMac, capsys) -> None:
+    installed(mac)
+    mac.root = True
+
+    code, out = uninstall(mac, capsys)
+
+    assert code == 1
+    assert "not with sudo" in out
+    assert mac.env_file.exists()
 
 
 # --- Refusals, before anything changes ------------------------------------------------
@@ -608,7 +1150,7 @@ def test_refuses_from_a_checkout(mac: FakeMac, capsys) -> None:
     run = setup(mac, capsys, *every_flag(mac))
 
     assert run.code == 1
-    assert "deploy/macos/setup.sh" in run.out
+    assert "uv tool install --editable ./agent-bridge" in run.out
     assert nothing_changed(mac)
 
 
@@ -620,20 +1162,6 @@ def test_refuses_under_uvx(mac: FakeMac, capsys) -> None:
     assert run.code == 1
     assert "uv tool install claude-remote-mcp-agent-bridge" in run.out
     assert nothing_changed(mac)
-
-
-@pytest.mark.parametrize("existing", ["env_file", "state_file", "plist"])
-def test_refuses_on_a_mac_that_has_an_install(mac: FakeMac, capsys, existing: str) -> None:
-    path = getattr(mac, existing)
-    path.parent.mkdir(parents=True)
-    path.write_text("kept")
-
-    run = setup(mac, capsys, *every_flag(mac))
-
-    assert run.code == 1
-    assert "already installed" in run.out
-    assert path.read_text() == "kept"
-    assert mac.calls == []
 
 
 def test_refuses_without_a_lan_address(mac: FakeMac, capsys) -> None:
@@ -721,6 +1249,18 @@ def test_sees_another_users_program_on_the_port(outputs: dict) -> None:
     outputs[NETSTAT] = NETSTAT_HEADER + "tcp4       0      0  *.8765                 *.*                    LISTEN\n"
 
     assert macos.MacSystem().port_holder(8765) == "another user's program"
+
+
+@pytest.mark.parametrize(("job", "serves"), [("123", True), ("456", False), (None, False)])
+def test_the_service_holds_the_port_when_launchd_runs_the_listener(
+    outputs: dict, monkeypatch: pytest.MonkeyPatch, job: str | None, serves: bool
+) -> None:
+    monkeypatch.setattr(macos.os, "getuid", lambda: 501)
+    outputs[LSOF] = "123\n"
+    if job is not None:
+        outputs[("launchctl", "print", f"gui/501/{LABEL}")] = f"gui/501/{LABEL} = {{\n\tstate = running\n\tpid = {job}\n}}\n"
+
+    assert macos.MacSystem().serves(8765) is serves
 
 
 def test_a_free_port_has_no_holder(outputs: dict) -> None:
@@ -822,8 +1362,9 @@ def test_runs_the_bridge_without_its_settings_in_the_environment(monkeypatch: py
     assert ran["env"]["HOME"] == "/Users/me"
 
 
-def test_setup_is_for_macos_only(monkeypatch: pytest.MonkeyPatch, capsys) -> None:
+@pytest.mark.parametrize("command", ["setup", "uninstall"])
+def test_setup_and_uninstall_are_for_macos_only(monkeypatch: pytest.MonkeyPatch, capsys, command: str) -> None:
     monkeypatch.setattr(sys, "platform", "linux")
 
-    assert cli.main(["setup"]) == 1
-    assert "for macOS for now" in capsys.readouterr().err
+    assert cli.main([command]) == 1
+    assert f"agent-bridge {command} is for macOS for now" in capsys.readouterr().err

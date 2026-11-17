@@ -48,9 +48,9 @@ The gateway and the agent host can be one machine.
    [Cloudflare Tunnel](mcp-gateway/README.md#cloudflare-tunnel), prints the sign-in
    passphrase, and prints an enrollment string for the agent hosts, good for 30 minutes
    (`sudo mcp-gateway enroll` prints a new one).
-3. **Agent hosts:** on a Mac, run
-   [`agent-bridge/deploy/macos/setup.sh`](agent-bridge/README.md#with-the-setup-script)
-   and paste that string when asked; it installs the service and enrolls it. On Linux,
+3. **Agent hosts:** on a Mac, run `uv tool install claude-remote-mcp-agent-bridge`, then
+   [`agent-bridge setup`](agent-bridge/README.md#as-a-service-on-macos-launchd), and paste
+   that string when asked; it installs the service and enrolls it. On Linux,
    [`agent-bridge/deploy/linux/setup.sh`](agent-bridge/README.md#as-a-service-on-linux-systemd-user-unit)
    does the same with a systemd user service. On Windows, run
    [`powershell -ExecutionPolicy Bypass -File agent-bridge\deploy\windows\setup.ps1`](agent-bridge/README.md#as-a-service-on-windows-task-scheduler)

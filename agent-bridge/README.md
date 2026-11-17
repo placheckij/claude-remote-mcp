@@ -17,7 +17,7 @@ whose folder is under the allowed roots.
 
 | | |
 |---|---|
-| OS | macOS, Linux or Windows (natively), wherever [herdr](https://github.com/herdrdev/herdr) runs. Tested on macOS 27.2 (Apple silicon), Ubuntu 26.04 LTS (x86_64, systemd 259) and Windows 11 25H2 (Windows PowerShell 5.1). The setup scripts need launchd on macOS, systemd user units on Linux, and Windows 10 version 1809 or later. |
+| OS | macOS, Linux or Windows (natively), wherever [herdr](https://github.com/herdrdev/herdr) runs. Tested on macOS 27.2 (Apple silicon), Ubuntu 26.04 LTS (x86_64, systemd 259) and Windows 11 25H2 (Windows PowerShell 5.1). The service setup needs launchd on macOS, systemd user units on Linux, and Windows 10 version 1809 or later. |
 | herdr | 0.8.0 or newer (tested with 0.8.0 and 0.9.5); its server must be running for the same user (it is whenever herdr is open, and keeps running after you detach) |
 | Claude Code | the `claude` CLI, installed and logged in for that user |
 | Python | 3.11+, via [uv](https://docs.astral.sh/uv/) (uv installs it if needed) |
@@ -145,12 +145,12 @@ what a plain `claude` uses), or another named by `CLAUDE_CONFIG_DIR`.
      "personal": {"config_dir": "/Users/me/.claude-personal", "folders": ["/Users/me/projects/own"]}
    }
    ```
-3. **Apply it.** With the macOS or Linux setup script, pass it in once; re-runs keep it, and an
-   empty value removes it:
+3. **Apply it.** With `agent-bridge setup` on macOS, pass it in once as `--accounts`, or
+   with the Linux setup script as `AGENT_BRIDGE_ACCOUNTS`; re-runs keep it, and an empty
+   value removes it:
 
    ```sh
-   AGENT_BRIDGE_ACCOUNTS='{"work": {"config_dir": null, "folders": ["/Users/me/projects/work"]}}' \
-     agent-bridge/deploy/macos/setup.sh
+   agent-bridge setup --accounts '{"work": {"config_dir": null, "folders": ["/Users/me/projects/work"]}}'
    ```
 
    By hand, add it to the [env file](#configuration) in single quotes, and restart
@@ -257,7 +257,8 @@ uv run --package claude-remote-mcp-agent-bridge agent-bridge serve
 | `agent-bridge unenroll` | leaves that gateway | 0, also when the gateway can't be reached or refuses (prints the gateway's command); 1 if the state file can't be read or written |
 | `agent-bridge check` | checks the settings, the files' modes, herdr, the running service and the gateway, one line each | 0 all passed, 1 one failed |
 | `agent-bridge check --token-format <token>`, `--name-format <name>` | checks a value before it goes in the env file | 0 fine, 2 not (why, on stderr) |
-| `agent-bridge setup` | macOS: installs the service on a Mac without one and enrolls it ([below](#from-the-package)) | 0 installed (enrolled or not), 1 refused or failed |
+| `agent-bridge setup` | macOS: installs or updates the service and enrolls it ([below](#with-agent-bridge-setup)) | 0 installed (enrolled or not), 1 refused or failed |
+| `agent-bridge uninstall` | macOS: leaves the gateway, then removes the service, its settings, state and log | 0 removed, also when leaving the gateway failed (prints the gateway's command); 1 run with sudo |
 | `agent-bridge --version` | prints the installed version | 0 |
 
 ### Enroll with the gateway
@@ -281,40 +282,17 @@ the LAN address and `~/projects` for the projects folder; replace them with your
 
 launchd, macOS's service manager, starts agent-bridge at login and restarts it if it
 stops. It is configured by a *plist* file in `~/Library/LaunchAgents`, which runs
-`agent-bridge serve`; the settings are in the [env file](#configuration). The setup
-script writes both and enrolls the bridge.
+`agent-bridge serve`; the settings are in the [env file](#configuration).
+`agent-bridge setup` writes both and enrolls the bridge.
 
-#### From the package
+#### With agent-bridge setup
 
-On a Mac without an install, agent-bridge installs from PyPI, no checkout needed. Run
-`sudo mcp-gateway enroll` on the gateway host for an enrollment string, then, as your own
-user:
+Run `sudo mcp-gateway enroll` on the gateway host for an enrollment string. Then, as your
+own user, not with `sudo`:
 
 ```sh
 uv tool install claude-remote-mcp-agent-bridge
 agent-bridge setup
-```
-
-It asks the same questions as the setup script below, finds the LAN address and `herdr`,
-checks the port, generates the token, writes the env file and the plist, starts the
-service and enrolls it. The plist runs `~/.local/bin/agent-bridge`, which `uv tool upgrade
-claude-remote-mcp-agent-bridge` keeps; restart the service after upgrading (below). Pass
-values to skip the questions: `--roots`, `--name`, `--host`, `--port`, `--herdr-bin`,
-`--claude-config-dir` and `--trust-root` (`''` for no folder trust), `--enrollment`
-(`''` to enroll later); see `agent-bridge setup --help`.
-
-It refuses on a Mac that has an install already, and when run from a checkout: to change
-an install, re-run the setup script. It refuses under `uvx` too, whose copy uv cleans away.
-If it fails after writing the env file and before the gateway enrolls it, it removes what
-it wrote, so it can run again.
-
-#### With the setup script
-
-Run `sudo mcp-gateway enroll` on the gateway host for an enrollment string. Then run the
-script from the checkout as your own user, not with `sudo`:
-
-```sh
-agent-bridge/deploy/macos/setup.sh
 ```
 
 It asks only for what isn't installed yet:
@@ -324,67 +302,91 @@ It asks only for what isn't installed yet:
 - once, a separate Claude config (default `~/.claude-agents`) and a trust root
   (default: the first folder agents may start in), for [folder trust](#folder-trust).
   Answer `-` at the config question to skip both. If the config is new, log in to it
-  once, as the script reminds you at the end;
+  once, as setup reminds you at the end;
 - the enrollment string, until the host is enrolled. Enter installs without enrolling.
 
 It finds the LAN address and `herdr` itself, and generates the token on the first run.
 Then it:
 
-1. runs `uv sync --all-packages` to install the dependencies;
-2. checks the port (8765). If another program holds it, it names the program and offers
+1. checks the port (8765). If another program holds it, it names the program and offers
    a free port;
-3. writes the env file, readable only by you. Other settings in it are kept, but not its
+2. writes the env file, readable only by you. Other settings in it are kept, but not its
    comments;
-4. writes the plist and (re)starts the service;
-5. runs `agent-bridge check`;
-6. enrolls with the gateway. If the gateway has another host by that name, it asks for
+3. writes the plist and (re)starts the service;
+4. runs `agent-bridge check`;
+5. enrolls with the gateway. If the gateway has another host by that name, it asks for
    another one.
 
 The last lines name the host as the gateway knows it. Nothing needs copying to the
-gateway host.
+gateway host. The plist runs `~/.local/bin/agent-bridge`, which `uv tool upgrade
+claude-remote-mcp-agent-bridge` keeps; re-run `agent-bridge setup` after upgrading, which
+restarts the service. Re-running asks nothing on an installed Mac, and keeps the token
+and the enrollment. If setup stops partway, run it again: it picks up from there.
 
-To skip the questions or change an installed value, pass it as a variable, e.g.
-`ALLOWED_ROOTS=/Users/me/projects NAME=mac ENROLLMENT='crm1@…' agent-bridge/deploy/macos/setup.sh`.
-The others are `HOST`, `PORT`, `HERDR_BIN`, `AGENT_BRIDGE_CLAUDE_CONFIG_DIR` and
-`TRUST_ROOT` (pass these two empty for no folder trust), `AGENT_BRIDGE_ACCOUNTS` (never
-asked for; an empty one removes it), and `ROTATE_TOKEN=1`, which replaces the token and
-needs `ENROLLMENT` (if enrolling fails, the old token is put back). A new `NAME` on an
-enrolled host renames it on the gateway (`agent-bridge rename`); a gateway too old for that,
-or one that can't be reached, is asked for an enrollment string instead, as enrolling again
-renames it too. For any other
-setting, edit the env file and re-run the script.
+To skip the questions or change an installed value, pass it: `--roots`, `--name`,
+`--host`, `--port`, `--herdr-bin`, `--claude-config-dir` and `--trust-root` (`''` for no
+folder trust), `--enrollment` (`''` to enroll later), and `--accounts` (never asked for;
+`''` removes it). `--rotate-token` replaces the token and needs `--enrollment` (if
+enrolling fails, the old token is put back). A new `--name` on an enrolled host renames
+it on the gateway (`agent-bridge rename`); a gateway too old for that, or one that can't
+be reached, is asked for an enrollment string instead, as enrolling again renames it too.
+For any other setting, edit the env file and re-run setup. See `agent-bridge setup --help`.
 
-Re-run it after pulling new code. If the plist still holds the settings, the script moves
-them to the env file, keeps the token, and asks for the name and an enrollment string.
+On a Mac set up from a checkout with the setup script of earlier versions, `agent-bridge
+setup` takes the install over: it keeps the env file, the token and the enrollment, and
+points the plist at the package. An older install whose settings are still in the plist
+has them moved to the env file; setup then asks for the name and an enrollment string.
 Give the name the host has on the gateway: the gateway replaces its record at the same
 address. If the Mac's address has changed since, the old record holds the name; remove it
 first with `sudo mcp-gateway bridges remove <name>` on the gateway host.
 
+Setup refuses to run from a checkout's `.venv` or under `uvx`, as the plist must run an
+installed agent-bridge. From a checkout, install it with
+`uv tool install --editable ./agent-bridge` and run that one's `agent-bridge setup`.
+
 #### By hand
 
-What the script does, step by step:
+What setup does, step by step:
 
-1. In the checkout, run `uv sync --all-packages`.
-2. Write the [env file](#configuration), with at least `AGENT_BRIDGE_TOKEN` (generate it
+1. Write the [env file](#configuration), with at least `AGENT_BRIDGE_TOKEN` (generate it
    with `openssl rand -hex 32`), `AGENT_BRIDGE_ALLOWED_ROOTS`, `AGENT_BRIDGE_HOST` (the
    LAN address, `ipconfig getifaddr en0` on Wi-Fi), `AGENT_BRIDGE_NAME` and
    `AGENT_BRIDGE_HERDR_BIN` (`command -v herdr`), and `chmod 600` it.
-3. Copy [`deploy/macos/dev.claude-remote.agent-bridge.plist`](deploy/macos/dev.claude-remote.agent-bridge.plist)
-   to `~/Library/LaunchAgents/`, and in it replace `@AGENT_BRIDGE@` with
-   `/path/to/claude-remote-mcp/.venv/bin/agent-bridge` and `@LOG_FILE@` with
-   `/Users/me/Library/Logs/agent-bridge.log`. Write paths in full: launchd doesn't
-   expand `~` or `$HOME`.
-4. Check it and load it. It starts right away and at every login:
+2. Write `~/Library/LaunchAgents/dev.claude-remote.agent-bridge.plist`, with the full path
+   of `agent-bridge` (`command -v agent-bridge`) and of the log. Write paths in full:
+   launchd doesn't expand `~` or `$HOME`. Make the log's folder, `~/Library/Logs`, if it
+   isn't there.
+
+   ```xml
+   <?xml version="1.0" encoding="UTF-8"?>
+   <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+   <plist version="1.0">
+   <dict>
+     <key>Label</key><string>dev.claude-remote.agent-bridge</string>
+     <key>ProgramArguments</key>
+     <array>
+       <string>/Users/me/.local/bin/agent-bridge</string>
+       <string>serve</string>
+     </array>
+     <key>RunAtLoad</key><true/>
+     <key>KeepAlive</key><true/>
+     <key>ThrottleInterval</key><integer>10</integer>
+     <key>StandardOutPath</key><string>/Users/me/Library/Logs/agent-bridge.log</string>
+     <key>StandardErrorPath</key><string>/Users/me/Library/Logs/agent-bridge.log</string>
+   </dict>
+   </plist>
+   ```
+
+3. Check it and load it. It starts right away and at every login:
 
    ```sh
    plutil -lint ~/Library/LaunchAgents/dev.claude-remote.agent-bridge.plist
    launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/dev.claude-remote.agent-bridge.plist
    ```
 
-5. Run `.venv/bin/agent-bridge check`, then [enroll](#enroll-with-the-gateway) it.
+4. Run `agent-bridge check`, then [enroll](#enroll-with-the-gateway) it.
 
-If the macOS firewall is on, allow incoming connections for the venv's Python when
-asked.
+If the macOS firewall is on, allow incoming connections for Python when asked.
 
 #### Restart, stop, uninstall
 
@@ -399,8 +401,7 @@ launchctl print gui/$(id -u)/dev.claude-remote.agent-bridge | grep -E 'state|pid
 tail -f ~/Library/Logs/agent-bridge.log
 : > ~/Library/Logs/agent-bridge.log
 
-# Restart, e.g. after editing the env file, or after pulling new code and
-# `uv sync --all-packages`. Re-running the setup script does that too.
+# Restart, e.g. after editing the env file. Re-running agent-bridge setup does that too.
 launchctl kickstart -k gui/$(id -u)/dev.claude-remote.agent-bridge
 
 # Stop. `launchctl stop` is not enough: KeepAlive would start it again at once.
@@ -412,17 +413,17 @@ launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/dev.claude-remote.agent-
 
 # Keep it from starting at login without deleting the plist. This doesn't stop it if
 # it's running (bootout does), and bootstrap fails with "5: Input/output error" until
-# you enable it again. Re-running the setup script enables it too.
+# you enable it again. Re-running agent-bridge setup enables it too.
 launchctl disable gui/$(id -u)/dev.claude-remote.agent-bridge
 launchctl enable gui/$(id -u)/dev.claude-remote.agent-bridge      # undo
 
 # Uninstall: leaves the gateway, then removes the service, the env and state files and
-# the log
-agent-bridge/deploy/macos/uninstall.sh
+# the log. Then `uv tool uninstall claude-remote-mcp-agent-bridge` removes the package.
+agent-bridge uninstall
 ```
 
-By hand, uninstalling is `.venv/bin/agent-bridge unenroll`, `launchctl bootout` as
-above, then removing the plist, `~/Library/Application Support/agent-bridge` and the log.
+By hand, uninstalling is `agent-bridge unenroll`, `launchctl bootout` as above, then
+removing the plist, `~/Library/Application Support/agent-bridge` and the log.
 
 ### As a service on Linux (systemd user unit)
 
