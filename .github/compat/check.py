@@ -230,13 +230,12 @@ class Run:
         self.expect("start_agent by path starts", not error and text.startswith("Started"), text)
         self.expect("start_agent by path starts in it", started_in(commands) == [str(beta)], commands)
         self.expect("start_agent by path takes the name", started_as(commands) == ["beta-test"], commands)
-        # Remote Control needs both sides: an older gateway doesn't ask, an older bridge ignores it.
-        both_new = self.new_bridge and not self.old_gateway
-        self.expect("start_agent by path turns on Remote Control only when both know it",
-                    remote_controlled(commands) == [both_new], commands)
-        if not self.old_gateway and not self.new_bridge:
-            self.expect("start_agent by path says the old bridge can't do Remote Control",
-                        "Remote Control is off: update" in text, text)
+        # main knows Remote Control too, so every pairing turns it on. A bridge from before
+        # Remote Control and the gateway's "update" note are covered by mcp-gateway's tests.
+        self.expect("start_agent by path turns on Remote Control",
+                    remote_controlled(commands) == [True], commands)
+        self.expect("start_agent by path doesn't say Remote Control is off",
+                    "Remote Control is off" not in text, text)
 
         (error, text), commands = self.call_logged("start_agent", project="nope")
         self.expect("start_agent with a bad name is refused", error, text)
