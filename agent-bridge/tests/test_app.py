@@ -452,6 +452,17 @@ def test_the_trust_dialog_wins_over_the_remote_control_notice(root: Path) -> Non
     assert response.json()["error"]["code"] == "folder_not_trusted"
 
 
+def test_a_match_herdr_doesnt_describe_is_taken_for_the_trust_dialog(root: Path) -> None:
+    # herdr 0.8.0+ names the matched line; if it ever didn't, refusing is the safe guess:
+    # the trust dialog defaults to "No, exit", so a prompt sent to it would quit Claude.
+    runner = FakeRunner({**start_responses(trust_dialog=False), ("pane", "wait-output"): ok({})})
+    response = client(runner, root).post(
+        "/agents", headers=AUTH, json={"cwd": str(root / "project"), "remote_control": True}
+    )
+    assert response.status_code == 409
+    assert response.json()["error"]["code"] == "folder_not_trusted"
+
+
 def test_start_leaves_remote_control_off_for_gateways_that_dont_ask(root: Path) -> None:
     runner = FakeRunner(start_responses(trust_dialog=False))
     response = client(runner, root).post("/agents", headers=AUTH, json={"cwd": str(root / "project")})
