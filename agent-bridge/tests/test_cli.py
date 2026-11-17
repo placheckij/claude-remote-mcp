@@ -7,6 +7,7 @@ import logging
 import os
 import re
 import sys
+import tomllib
 from pathlib import Path
 
 import httpx
@@ -95,6 +96,16 @@ def test_check_formats(capsys, flag: str, value: str, code: int, reason: str) ->
     assert result == code
     assert out == ""
     assert reason in err
+
+
+def test_version_is_the_packages(capsys) -> None:
+    pyproject = tomllib.loads((Path(__file__).parent.parent / "pyproject.toml").read_text())
+
+    with pytest.raises(SystemExit) as exit_:
+        cli.main(["--version"])
+
+    assert exit_.value.code == 0
+    assert capsys.readouterr().out == f"agent-bridge {pyproject['project']['version']}\n"
 
 
 def test_serve_runs_from_the_env_file_and_makes_the_state(capsys, settings: Path) -> None:

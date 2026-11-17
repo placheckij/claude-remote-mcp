@@ -4,6 +4,8 @@ on:
   pull_request:
   push:
     branches: [main]
+  # The release runs it before publishing.
+  workflow_call:
 
 permissions:
   contents: read
@@ -33,7 +35,7 @@ jobs:
       - name: Install dependencies
         run: uv sync --all-packages --frozen
       - name: agent-bridge tests
-        run: uv run --frozen --package agent-bridge pytest agent-bridge
+        run: uv run --frozen --package claude-remote-mcp-agent-bridge pytest agent-bridge
       - name: mcp-gateway tests
         run: uv run --frozen --package mcp-gateway pytest mcp-gateway
       # Exact, so packages the steps above installed from member dev groups are gone and the
@@ -58,11 +60,11 @@ jobs:
       - name: Install uv
         run: pipx install uv==0.11.15
       - name: Install dependencies
-        run: uv sync --package agent-bridge --frozen
+        run: uv sync --package claude-remote-mcp-agent-bridge --frozen
       - name: agent-bridge tests
-        run: uv run --frozen --package agent-bridge pytest agent-bridge
+        run: uv run --frozen --package claude-remote-mcp-agent-bridge pytest agent-bridge
       - name: Windows setup and uninstall scripts
-        run: uv run --frozen --package agent-bridge pytest tests/test_setup_windows.py
+        run: uv run --frozen --package claude-remote-mcp-agent-bridge pytest tests/test_setup_windows.py
 
   psscriptanalyzer:
     name: PSScriptAnalyzer

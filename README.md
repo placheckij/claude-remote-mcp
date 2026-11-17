@@ -76,10 +76,23 @@ uv workspace; each component is its own package.
 
 ```sh
 uv sync --all-packages
-uv run --package agent-bridge pytest agent-bridge
+uv run --package claude-remote-mcp-agent-bridge pytest agent-bridge
 uv run --package mcp-gateway pytest mcp-gateway
 uv run pytest   # both packages plus tests/ (deploy scripts, enrollment end to end)
 ```
+
+### Releasing agent-bridge
+
+agent-bridge is published to PyPI as `claude-remote-mcp-agent-bridge`; its command is
+`agent-bridge`. To release:
+
+1. Set the version, e.g. `uv version --package claude-remote-mcp-agent-bridge 0.2.0`, and
+   merge that to main.
+2. Tag that commit on main and push the tag:
+   `git tag agent-bridge-v0.2.0 && git push origin agent-bridge-v0.2.0`.
+3. The [release workflow](.github/workflows/release.yml) runs CI, checks that the tag is
+   the package's version, builds it, and waits for approval in the `pypi` environment.
+   Approve it in the run; it then publishes to PyPI and creates the GitHub Release.
 
 ## License
 
