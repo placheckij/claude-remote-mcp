@@ -463,6 +463,18 @@ def test_a_bridge_unit_that_doesnt_start_stops_the_setup(host: FakeLinux, capsys
     assert ("enroll", ENROLLMENT) not in host.ran("agent-bridge")
 
 
+def test_units_systemd_didnt_reload_stop_the_setup(host: FakeLinux, capsys) -> None:
+    installed_by_setup_sh(host)
+    host.failing = {("daemon-reload", "daemon-reload")}
+
+    run = setup(host, capsys)
+
+    assert run.code == 1
+    assert "daemon-reload failed" in run.out
+    # systemd would start the checkout's unit it still has.
+    assert ("restart", UNIT) not in host.ran("systemctl")
+
+
 def test_a_herdr_unit_that_cant_be_enabled_stops_the_setup(host: FakeLinux, capsys) -> None:
     host.failing = {("enable", HERDR_UNIT)}
 

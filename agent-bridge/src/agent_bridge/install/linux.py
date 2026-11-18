@@ -144,7 +144,7 @@ class LinuxService:
         if self.herdr_service:
             self._write(HERDR_UNIT, unit(HERDR_UNIT, "HERDR_BIN", herdr))
         self._write(UNIT, unit(UNIT, "AGENT_BRIDGE", self.system.command()))
-        self.system.systemctl("daemon-reload")
+        self._reload()
         self._herdr(herdr)
         # Lingering starts the user's services at boot and keeps them after logout.
         if not self.system.lingering():
@@ -152,6 +152,11 @@ class LinuxService:
             if not self.system.enable_linger():
                 self.linger_hint = ("Lingering is off, so agent-bridge stops at your last logout and doesn't start "
                                     f"at boot. Turn it on with:\n  sudo loginctl enable-linger {self.system.user()}")
+
+    def _reload(self) -> None:
+        # Without it, systemd starts the units it read before, e.g. a checkout's.
+        if self.system.systemctl("daemon-reload") != 0:
+            raise Refused("systemctl --user daemon-reload failed, so systemd still has the old units; run setup again")
 
     def _write(self, name: str, text: str) -> None:
         print(f"\n==> Writing {self.unit_dir / name}")
@@ -162,7 +167,7 @@ class LinuxService:
             if (self.unit_dir / HERDR_UNIT).exists():
                 print(f"\n==> Removing {HERDR_UNIT} (its server keeps running until it stops)")
                 self._remove_herdr_unit()
-                self.system.systemctl("daemon-reload")
+                self._reload()
             return
         if self.system.systemctl("enable", "--quiet", HERDR_UNIT) != 0:
             raise Refused(f"systemctl --user enable {HERDR_UNIT} failed")
