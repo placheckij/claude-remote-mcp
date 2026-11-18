@@ -48,6 +48,8 @@ class FakeMac:
     gateway_name: str = ""
     gateway_down: bool = False
     bootstrap_failures: int = 0
+    # `launchctl disable` was run on the job.
+    job_disabled: bool = False
     # How many `check`s report agent-bridge not answering yet.
     slow_starts: int = 0
     calls: list[tuple[str, ...]] = field(default_factory=list)
@@ -85,9 +87,16 @@ class FakeMac:
     def find_herdr(self) -> str | None:
         return str(self.herdr) if self.herdr else None
 
+    def disabled(self) -> bool:
+        return self.job_disabled
+
     def launchctl(self, *args: str) -> int:
         self.calls.append(("launchctl", *args))
+        if args[0] == "enable":
+            self.job_disabled = False
         if args[0] == "bootstrap":
+            if self.job_disabled:
+                return 5
             if self.bootstrap_failures:
                 self.bootstrap_failures -= 1
                 return 5
@@ -286,13 +295,26 @@ def test_the_launch_agent_runs_the_installed_command(mac: FakeMac, capsys) -> No
 def test_starts_the_launch_agent(mac: FakeMac, capsys) -> None:
     setup(mac, capsys, *every_flag(mac))
 
+    # Not enabled: that would leave an override in launchd after uninstall.
+    assert mac.ran("launchctl") == [
+        ("bootout", f"gui/501/{LABEL}"),
+        ("bootstrap", "gui/501", str(mac.plist)),
+    ]
+    # launchd doesn't make the log's folder.
+    assert (mac.home / "Library" / "Logs").is_dir()
+
+
+def test_enables_a_disabled_launch_agent(mac: FakeMac, capsys) -> None:
+    mac.job_disabled = True
+
+    run = setup(mac, capsys, *every_flag(mac))
+
+    assert run.code == 0, run.out
     assert mac.ran("launchctl") == [
         ("bootout", f"gui/501/{LABEL}"),
         ("enable", f"gui/501/{LABEL}"),
         ("bootstrap", "gui/501", str(mac.plist)),
     ]
-    # launchd doesn't make the log's folder.
-    assert (mac.home / "Library" / "Logs").is_dir()
 
 
 def test_retries_the_bootstrap_while_the_old_job_goes(mac: FakeMac, capsys) -> None:
@@ -1367,6 +1389,22 @@ def test_the_service_holds_the_port_when_launchd_runs_the_listener(
         outputs[("launchctl", "print", f"gui/501/{LABEL}")] = f"gui/501/{LABEL} = {{\n\tstate = running\n\tpid = {job}\n}}\n"
 
     assert macos.MacSystem().serves(8765) is serves
+
+
+@pytest.mark.parametrize(("listed", "disabled"), [
+    (f'\t"{LABEL}" => disabled\n', True),
+    (f'\t"{LABEL}" => true\n', True),
+    (f'\t"{LABEL}" => enabled\n', False),
+    (f'\t"{LABEL}-TEST" => disabled\n', False),
+    ("", False),
+])
+def test_reads_whether_the_launch_agent_is_disabled(
+    outputs: dict, monkeypatch: pytest.MonkeyPatch, listed: str, disabled: bool
+) -> None:
+    monkeypatch.setattr(macos.os, "getuid", lambda: 501)
+    outputs[("launchctl", "print-disabled", "gui/501")] = f"disabled services = {{\n{listed}}}\n"
+
+    assert macos.MacSystem().disabled() is disabled
 
 
 def test_a_free_port_has_no_holder(outputs: dict) -> None:
