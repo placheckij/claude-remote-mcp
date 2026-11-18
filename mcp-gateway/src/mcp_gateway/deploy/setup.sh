@@ -316,11 +316,10 @@ chmod 0600 "$CREDENTIALS"
 
 log "Routing $PUBLIC_HOST to tunnel $TUNNEL_NAME"
 # Never overwrites an existing DNS record: it may be another service's.
-# DNS_ROUTE: new (created now), kept (already this tunnel's) or failed.
+# DNS_ROUTE: ok (created now, or already this tunnel's) or failed.
 if route="$(cloudflared tunnel route dns "$TUNNEL_NAME" "$PUBLIC_HOST" 2>&1)"; then
   echo "$route"
-  DNS_ROUTE=kept
-  [[ $route != *"Added CNAME"* ]] || DNS_ROUTE=new
+  DNS_ROUTE=ok
 else
   echo "$route"
   DNS_ROUTE=failed
@@ -475,9 +474,10 @@ else
   printf '\nNot working yet: %d check(s) failed:\n' "${#FAILED[@]}"
   printf '  - %s\n' "${FAILED[@]}"
   echo "Fix the cause (see the logs below) and re-run mcp-gateway setup; it keeps the passphrase and tokens."
-  if [[ $DNS_ROUTE == new ]]; then
+  # Also on a re-run: the record made by the run before may still be on its way.
+  if [[ $DNS_ROUTE == ok ]]; then
     cat <<EOF
-If only the tunnel checks failed, DNS for the new hostname may need a few more minutes:
+If only the tunnel checks failed, DNS for a new hostname may need a few more minutes:
   curl -i -X POST https://$PUBLIC_HOST/mcp    should answer 401.
 EOF
   fi

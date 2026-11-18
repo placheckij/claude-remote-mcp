@@ -4,6 +4,7 @@ packages of the environment setup runs from, to install for the service."""
 import io
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tomllib
@@ -207,3 +208,57 @@ def test_the_shipped_script_is_in_the_wheel(tmp_path: Path) -> None:
                    check=True, capture_output=True)
     (wheel,) = tmp_path.glob("claude_remote_mcp_gateway-*.whl")
     assert "mcp_gateway/deploy/setup.sh" in zipfile.ZipFile(wheel).namelist()
+
+
+# setup.sh's DNS route step, run on its own with a cloudflared that answers as told.
+ROUTING = 'log "Routing' + SCRIPT.read_text().split('log "Routing', 1)[1].split("# Only /mcp and the OAuth", 1)[0]
+needs_bash = pytest.mark.skipif(shutil.which("bash") is None, reason="setup.sh is a bash script")
+
+
+def routing(answer: str, status: int) -> str:
+    script = "\n".join([
+        "set -euo pipefail",
+        "log() { :; }",
+        "TUNNEL_NAME=claude-remote PUBLIC_HOST=mcp.example.com ORIGIN_CERT=/etc/cloudflared/cert.pem",
+        'cloudflared() { echo "$ANSWER"; return "$STATUS"; }',
+        ROUTING,
+        'echo "DNS_ROUTE=$DNS_ROUTE"',
+    ])
+    env = {**os.environ, "ANSWER": answer, "STATUS": str(status)}
+    return subprocess.run(["bash", "-c", script], env=env, capture_output=True, text=True, check=True).stdout
+
+
+@needs_bash
+@pytest.mark.parametrize("answer", ["INF Added CNAME mcp.example.com which will route to this tunnel",
+                                    "INF mcp.example.com is already configured to route to your tunnel"])
+def test_setup_takes_a_route_that_is_new_or_already_the_tunnels(answer: str) -> None:
+    assert routing(answer, 0).splitlines() == [answer, "DNS_ROUTE=ok"]
+
+
+@needs_bash
+def test_setup_says_how_to_replace_a_record_left_for_something_else() -> None:
+    # E.g. the CNAME of a tunnel deleted before, which `tunnel delete` leaves behind.
+    taken = "Failed to add route: code: 1003, reason: An A, AAAA, or CNAME record with that host already exists."
+
+    output = routing(taken, 1)
+
+    assert output.splitlines()[-1] == "DNS_ROUTE=failed"
+    assert "cloudflared tunnel route dns --overwrite-dns claude-remote mcp.example.com" in output
+    assert "DNS -> Records" in output
+
+
+@needs_bash
+def test_setup_fails_on_any_other_route_error() -> None:
+    output = routing("ERR failed to reach the API", 1)
+
+    assert output.splitlines()[-2:] == [
+        "error: the DNS route for mcp.example.com wasn't created (above); fix that and re-run mcp-gateway setup.",
+        "DNS_ROUTE=failed",
+    ]
+
+
+def test_setup_prints_a_new_passphrase_before_anything_that_can_stop_it() -> None:
+    # The Cloudflare login, the tunnel and the checks come after; a re-run only says where it is.
+    text = SCRIPT.read_text()
+
+    assert text.index('echo "Sign-in passphrase (new): $PASSPHRASE"') < text.index("cloudflared tunnel login")
