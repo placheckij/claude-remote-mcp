@@ -812,9 +812,9 @@ class WindowsSystem:
         inner = f"$ErrorActionPreference = 'Stop'; $failed = 0; {steps}; exit $failed"
         encoded = b64encode(inner.encode("utf-16-le")).decode()
         code, output = self.powershell(
-            "try { $p = Start-Process -FilePath powershell.exe -Verb RunAs -Wait -PassThru -WindowStyle Hidden "
-            f"-ArgumentList '-NoProfile', '-NonInteractive', '-EncodedCommand', '{encoded}'; $p.ExitCode }} "
-            "catch { -1 }")
+            f"try {{ $p = Start-Process -FilePath {quoted(_powershell())} -Verb RunAs -Wait -PassThru -WindowStyle "
+            "Hidden -ArgumentList '-NoProfile', '-NonInteractive', '-EncodedCommand', "
+            f"'{encoded}'; $p.ExitCode }} catch {{ -1 }}")
         try:
             return int(output.strip().splitlines()[-1]) if code == 0 else -1
         except (ValueError, IndexError):

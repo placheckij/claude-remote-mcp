@@ -997,6 +997,73 @@ def test_windows_own_programs_run_by_their_full_path(monkeypatch: pytest.MonkeyP
         "whoami.exe", "netsh.exe", "netsh.exe", "schtasks.exe", "schtasks.exe")]
 
 
+@pytest.mark.parametrize(("code", "printed", "rule"), [
+    (0, "", None),
+    (0, '{"Enabled":"True","Direction":"Inbound","Action":"Allow","Profile":"Private","Protocol":"TCP","Port":"8765"}',
+     RULE),
+    (1, "", ()),
+    (0, "not json", ()),
+])
+def test_the_firewall_rule_as_powershell_reports_it(monkeypatch: pytest.MonkeyPatch, code: int, printed: str,
+                                                    rule: tuple | None) -> None:
+    monkeypatch.setattr(windows.WindowsSystem, "powershell", lambda self, script: (code, printed))
+    assert windows.WindowsSystem().firewall_rule() == rule
+
+
+@pytest.mark.parametrize(("code", "printed", "failed"), [(0, "0", 0), (0, "2", 2), (0, "-1", -1), (0, "", -1),
+                                                         (1, "0", -1)])
+def test_the_elevated_steps_that_failed_as_powershell_reports_them(monkeypatch: pytest.MonkeyPatch, code: int,
+                                                                   printed: str, failed: int) -> None:
+    scripts: list[str] = []
+
+    def powershell(self: windows.WindowsSystem, script: str) -> tuple[int, str]:
+        scripts.append(script)
+        return code, printed
+
+    monkeypatch.setattr(windows.WindowsSystem, "powershell", powershell)
+    assert windows.WindowsSystem().elevated(["a", "b"]) == failed
+    assert "-Verb RunAs" in scripts[0]
+    assert "WindowsPowerShell" in scripts[0]
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows' own firewall, read only")
+def test_a_firewall_rule_that_isnt_there_reads_as_not_there(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(windows, "RULE", "agent-bridge-test-no-such-rule")
+    assert windows.WindowsSystem().firewall_rule() is None
+
+
+def test_putting_back_a_task_unregistered_since_only_drops_the_marker(host: FakeWindows) -> None:
+    host.paths.state.mkdir(parents=True)
+    host.paths.disabled_marker.write_text("setup\n")
+    service = windows.WindowsService(host, lambda: None)
+
+    service.abandon()
+
+    assert not host.paths.disabled_marker.exists()
+    assert host.ran("register") == []
+
+
+def test_a_marker_that_cant_be_written_stops_before_the_task_is_disabled(host: FakeWindows, tmp_path: Path,
+                                                                         monkeypatch: pytest.MonkeyPatch) -> None:
+    installed_by_setup_ps1(host, tmp_path / "claude-remote-mcp")
+    write_text = Path.write_text
+
+    def full_disk(path: Path, *args: object, **kwargs: object) -> int:
+        if path == host.paths.disabled_marker:
+            raise OSError(28, "No space left on device")
+        return write_text(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "write_text", full_disk)
+    service = windows.WindowsService(host, lambda: None)
+
+    with pytest.raises(Refused, match="can't write"):
+        service.start()
+
+    assert host.ran("schtasks") == []
+    assert host.task_on
+    assert SERVER in host.pids()
+
+
 @pytest.mark.skipif(sys.platform != "win32", reason="Windows' own session")
 def test_the_desktop_owner_is_whoever_runs_the_tests() -> None:
     # None where no one is logged on to the session, as on a CI runner's service session.
