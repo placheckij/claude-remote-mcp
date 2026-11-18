@@ -305,6 +305,34 @@ def test_without_a_user_manager_it_stops_before_changing_anything(host: FakeLinu
     assert host.ran("systemctl") == []
 
 
+def test_without_a_user_manager_it_stops_before_any_question(host: FakeLinux, capsys) -> None:
+    host.user_manager = False
+
+    run = setup(host, capsys)
+
+    assert run.code == 1
+    assert run.asked == []
+    assert "can't reach your systemd user manager" in run.out
+
+
+def test_with_sudo_it_says_to_run_as_your_own_user(host: FakeLinux, capsys) -> None:
+    host.root, host.user_manager = True, False
+
+    assert setup(host, capsys, *every_flag(host)).code == 1
+    assert linux.uninstall(host) == 1
+
+    out = capsys.readouterr().err
+    assert "run as your own user, not with sudo" in out
+    assert "user manager" not in out
+
+
+def test_the_herdr_unit_is_written_before_the_bridge_unit(host: FakeLinux, capsys) -> None:
+    run = setup(host, capsys, *every_flag(host))
+
+    # So a setup stopped between them doesn't leave a host that re-runs read as having none.
+    assert run.out.index(f"Writing {host.units / HERDR_UNIT}") < run.out.index(f"Writing {host.units / UNIT}")
+
+
 def test_the_default_name_is_the_hostname(host: FakeLinux, capsys) -> None:
     run = setup(host, capsys, *every_flag(host, name=None), answers=("",))
 
@@ -331,13 +359,14 @@ def test_paths_with_spaces_dollars_and_percents_are_quoted_for_systemd(host: Fak
     herdr.parent.mkdir()
     herdr.write_text("#!/bin/sh\n")
     herdr.chmod(0o755)
-    host.command_path = "/opt/my tools/50%/agent-bridge"
+    host.command_path = "/opt/my tools/50%/${X}/agent-bridge"
 
     run = setup(host, capsys, *every_flag(host, herdr_bin=str(herdr)))
 
     assert run.code == 0, run.out
-    assert 'ExecStart="/opt/my tools/50%%/agent-bridge" serve' in (host.units / UNIT).read_text()
-    assert f'ExecStart="{str(herdr).replace("%", "%%")}" server' in (host.units / HERDR_UNIT).read_text()
+    assert 'ExecStart="/opt/my tools/50%%/$${X}/agent-bridge" serve' in (host.units / UNIT).read_text()
+    escaped = str(herdr).replace("%", "%%").replace("$", "$$")
+    assert f'ExecStart="{escaped}" server' in (host.units / HERDR_UNIT).read_text()
 
 
 @pytest.mark.parametrize("path", ['/opt/a"b/agent-bridge', "/opt/a\\b/agent-bridge"])

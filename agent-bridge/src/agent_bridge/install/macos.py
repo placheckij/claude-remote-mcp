@@ -82,7 +82,8 @@ class MacService:
         return self.system.home / "Library" / "Logs" / "agent-bridge.log"
 
     def check(self, plan: Plan, options: Options) -> None:
-        pass
+        if options.herdr_service is not None:
+            raise Refused("--herdr-service and --no-herdr-service are for Linux; on macOS you start herdr's server")
 
     def prepare(self) -> None:
         pass

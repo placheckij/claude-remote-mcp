@@ -38,14 +38,23 @@ class System(flow.System, Protocol):
 
 
 def setup(options: Options, system: System, read: Read) -> int:
+    if _no_user_manager(system):
+        return flow.FAILED
     return flow.setup(options, system, LinuxService(system), read)
 
 
 def uninstall(system: System) -> int:
-    if not system.has_user_manager():
-        print(f"error: {NO_USER_MANAGER}", file=sys.stderr)
+    if _no_user_manager(system):
         return flow.FAILED
     return flow.uninstall(system, LinuxService(system))
+
+
+def _no_user_manager(system: System) -> bool:
+    """Said before any question. Root is left to flow, which says to run as your own user."""
+    if system.is_root() or system.has_user_manager():
+        return False
+    print(f"error: {NO_USER_MANAGER}", file=sys.stderr)
+    return True
 
 
 NO_USER_MANAGER = ("can't reach your systemd user manager; run this from your own login (SSH or a console), "
@@ -54,11 +63,12 @@ NO_USER_MANAGER = ("can't reach your systemd user manager; run this from your ow
 
 def unit(name: str, placeholder: str, value: str) -> str:
     """The packaged unit `name` with `value` in place of `@placeholder@`, where the unit
-    double-quotes it: systemd reads % as a specifier, and can't take " or \\ there."""
+    double-quotes it: systemd reads % as a specifier and $ as a variable, and can't take " or \\
+    there."""
     if re.search(r'["\\\n]', value):
         raise Refused(f"systemd can't run a program whose path has \", \\ or a line break in it: {value}")
     template = resources.files("agent_bridge.install").joinpath("systemd", name).read_text(encoding="utf-8")
-    return template.replace(f"@{placeholder}@", value.replace("%", "%%"))
+    return template.replace(f"@{placeholder}@", value.replace("%", "%%").replace("$", "$$"))
 
 
 @dataclass
@@ -84,8 +94,6 @@ class LinuxService:
         return self.system.home / ".config" / "systemd" / "user"
 
     def check(self, plan: Plan, options: Options) -> None:
-        if not self.system.has_user_manager():
-            raise Refused(NO_USER_MANAGER)
         # Kept as installed unless passed: a host set up without it (HERDR_SERVICE=0 with
         # setup.sh) stays so, and a new one gets it.
         if options.herdr_service is not None:
@@ -108,10 +116,11 @@ class LinuxService:
         return None
 
     def install(self, plan: Plan) -> None:
-        self._write(UNIT, unit(UNIT, "AGENT_BRIDGE", self.system.command()))
         herdr = plan.values[f"{flow.PREFIX}HERDR_BIN"]
+        # herdr's first: a re-run reads an agent-bridge unit without it as no herdr service.
         if self.herdr_service:
             self._write(HERDR_UNIT, unit(HERDR_UNIT, "HERDR_BIN", herdr))
+        self._write(UNIT, unit(UNIT, "AGENT_BRIDGE", self.system.command()))
         self.system.systemctl("daemon-reload")
         self._herdr(herdr)
         # Lingering starts the user's services at boot and keeps them after logout.
@@ -237,7 +246,8 @@ class LinuxSystem(PosixSystem):
 
     def systemctl(self, *args: str) -> int:
         try:
-            return subprocess.run(["systemctl", "--user", *args], stdout=subprocess.DEVNULL).returncode
+            # Its errors are said by setup, e.g. reset-failed's for a unit just removed.
+            return subprocess.run(["systemctl", "--user", *args], capture_output=True).returncode
         except OSError:
             return 1
 

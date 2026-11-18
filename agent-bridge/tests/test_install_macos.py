@@ -250,6 +250,15 @@ def test_installs_and_enrolls_without_asking(mac: FakeMac, capsys) -> None:
     assert "enrolled with the gateway at http://10.0.0.1:8766 as studio" in run.out
 
 
+@pytest.mark.parametrize("flag", ["--herdr-service", "--no-herdr-service"])
+def test_the_herdr_service_flags_are_refused(mac: FakeMac, capsys, flag: str) -> None:
+    run = setup(mac, capsys, *every_flag(mac), flag)
+
+    assert run.code == 1
+    assert "are for Linux" in run.out
+    assert not mac.env_file.exists()
+
+
 def test_only_the_user_can_read_the_settings(mac: FakeMac, capsys) -> None:
     setup(mac, capsys, *every_flag(mac))
 
