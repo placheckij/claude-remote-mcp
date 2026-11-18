@@ -87,8 +87,8 @@ The machine where Claude Code runs. See [agent-bridge/README.md](agent-bridge/RE
   only those in allowed folders can be changed, including ones started by hand.
 - **Claude Code sessions** run in herdr panes, each with its account's Claude config.
   With a trust root and a separate Claude config set, a new agent's folder under the
-  trust root is marked trusted in that config, so it starts without Claude's trust
-  dialog; the default config is never changed.
+  trust root is marked trusted in its account's config, so it starts without Claude's
+  trust dialog; the default config is never changed.
 
 ## Where state lives
 

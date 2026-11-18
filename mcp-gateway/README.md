@@ -534,12 +534,13 @@ apply.
 
 ## Add the connector in claude.ai
 
-claude.ai → **Customize → Connectors → Add custom connector**:
+claude.ai → **Customize → Connectors → Add → Add custom connector**:
 
 | Field | Value |
 |---|---|
+| Name | any, e.g. `claude-remote` |
 | URL | `https://mcp.example.com/mcp` |
-| OAuth client ID and secret (advanced settings) | leave empty: claude.ai registers itself |
+| OAuth client | **Register automatically** (dynamic client registration), or, where the dialog shows a client ID and secret under advanced settings, leave them empty: claude.ai registers itself. The gateway doesn't take Claude's published identity |
 
 Then click **Connect**. A page from your gateway asks for the passphrase
 (`MCP_GATEWAY_OAUTH_PASSPHRASE`); after **Allow** you are back in claude.ai, connected.
