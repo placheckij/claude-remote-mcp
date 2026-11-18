@@ -43,9 +43,10 @@ Cloudflare Tunnel. See [mcp-gateway/README.md](mcp-gateway/README.md).
   once, and `start_agent` without a host asks each one for the project
   (`GET /projects/{name}`). Hosts first say about themselves (`GET /info`), and only
   those at the gateway's API version or one behind are called (one that hasn't answered
-  yet is tried, and asked again before it is refused). Arguments (agent ids, prompt
-  length, waits) are checked before anything is sent. Project names and paths go to
-  agent-bridge as given: it resolves and checks them, and reports each agent's project.
+  yet is tried; one recorded at another version is asked again before it is refused).
+  Arguments (agent ids, prompt length, waits) are checked before anything is sent.
+  Project names and paths go to agent-bridge as given: it resolves and checks them, and
+  reports each agent's project.
   For an agent-bridge from before `/info`, the gateway resolves names itself, under
   `MCP_GATEWAY_PROJECTS_ROOT`.
 - **Enrollment.** Agent hosts add themselves, or are added by hand on the gateway host
