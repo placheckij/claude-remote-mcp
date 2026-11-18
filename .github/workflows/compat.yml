@@ -42,7 +42,7 @@ jobs:
           path: old
           persist-credentials: false
       - name: Install uv
-        run: pipx install uv==0.11.15
+        run: pipx install uv==0.13.9
       - name: Install this branch
         run: uv sync --all-packages --frozen --directory new
       - name: Install the old side
