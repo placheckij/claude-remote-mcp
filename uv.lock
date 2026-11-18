@@ -11,7 +11,7 @@ resolution-markers = [
 members = [
     "claude-remote-mcp",
     "claude-remote-mcp-agent-bridge",
-    "mcp-gateway",
+    "claude-remote-mcp-gateway",
 ]
 
 [[package]]
@@ -167,7 +167,7 @@ version = "0.1.0"
 source = { virtual = "." }
 dependencies = [
     { name = "claude-remote-mcp-agent-bridge" },
-    { name = "mcp-gateway" },
+    { name = "claude-remote-mcp-gateway" },
 ]
 
 [package.dev-dependencies]
@@ -180,7 +180,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "claude-remote-mcp-agent-bridge", editable = "agent-bridge" },
-    { name = "mcp-gateway", editable = "mcp-gateway" },
+    { name = "claude-remote-mcp-gateway", editable = "mcp-gateway" },
 ]
 
 [package.metadata.requires-dev]
@@ -223,6 +223,37 @@ requires-dist = [
 [package.metadata.requires-dev]
 dev = [
     { name = "httpx", specifier = ">=0.28.1" },
+    { name = "pytest", specifier = ">=9.1.1" },
+    { name = "pytest-asyncio", specifier = ">=1.4.0" },
+]
+
+[[package]]
+name = "claude-remote-mcp-gateway"
+version = "0.1.0"
+source = { editable = "mcp-gateway" }
+dependencies = [
+    { name = "httpx" },
+    { name = "mcp" },
+    { name = "pydantic-settings" },
+    { name = "uvicorn" },
+]
+
+[package.dev-dependencies]
+dev = [
+    { name = "pytest" },
+    { name = "pytest-asyncio" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "httpx", specifier = ">=0.28.1" },
+    { name = "mcp", specifier = ">=2.3.0" },
+    { name = "pydantic-settings", specifier = ">=2.16.1" },
+    { name = "uvicorn", specifier = ">=0.54.0" },
+]
+
+[package.metadata.requires-dev]
+dev = [
     { name = "pytest", specifier = ">=9.1.1" },
     { name = "pytest-asyncio", specifier = ">=1.4.0" },
 ]
@@ -574,37 +605,6 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/9d/8d/e0d339616f4810e9051d4aba6887afab289ab1f81875fe908b606cdfd0e3/mcp-2.3.0.tar.gz", hash = "sha256:8b147a50441cf059dc88c684e0aeed3687f0aa0f39c6cde7b90330effd2b34d8", size = 4171955, upload-time = "2026-10-02T22:06:56.091Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/20/d7/4a2878f128df729db3ca04e71bfce26405cc2e0c9ebe19c592feeb4c61b9/mcp-2.3.0-py3-none-any.whl", hash = "sha256:dd0c44c089d16453e8ae31a3877a0054d7a2314caaa81f5e0541b9b1734b2377", size = 368664, upload-time = "2026-10-02T22:06:52.119Z" },
-]
-
-[[package]]
-name = "mcp-gateway"
-version = "0.1.0"
-source = { editable = "mcp-gateway" }
-dependencies = [
-    { name = "httpx" },
-    { name = "mcp" },
-    { name = "pydantic-settings" },
-    { name = "uvicorn" },
-]
-
-[package.dev-dependencies]
-dev = [
-    { name = "pytest" },
-    { name = "pytest-asyncio" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "httpx", specifier = ">=0.28.1" },
-    { name = "mcp", specifier = ">=2.3.0" },
-    { name = "pydantic-settings", specifier = ">=2.16.1" },
-    { name = "uvicorn", specifier = ">=0.54.0" },
-]
-
-[package.metadata.requires-dev]
-dev = [
-    { name = "pytest", specifier = ">=9.1.1" },
-    { name = "pytest-asyncio", specifier = ">=1.4.0" },
 ]
 
 [[package]]

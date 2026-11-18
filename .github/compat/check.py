@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Checks that mcp-gateway and agent-bridge from two checkouts work together.
+"""Checks that mcp-gateway and agent-bridge from different checkouts work together.
 
 Runs each pairing (gateway / bridge: new / new, new / old, old / new), each with
 MCP_GATEWAY_PROJECTS_ROOT set and unset. The bridge runs against a stand-in herdr
@@ -9,7 +9,7 @@ say follows from the bridge under test: one without /info can't look up project 
 With this branch's bridge, it then enrolls and renames itself (`agent-bridge rename`): an
 older gateway may lack that route, and the bridge must then say how to rename it there.
 
-    python3 .github/compat/check.py --new . --old ../old
+    python3 .github/compat/check.py --new . --old-gateway ../old-gateway --old-bridge ../old-bridge
 
 Each checkout needs its .venv (`uv sync --all-packages --frozen`). Standard library only.
 """
@@ -38,15 +38,17 @@ OUTSIDE = "/elsewhere/tool"
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--new", type=Path, required=True, help="checkout of this branch")
-    parser.add_argument("--old", type=Path, required=True, help="checkout of the old side")
+    parser.add_argument("--old-gateway", type=Path, required=True, help="checkout of the old gateway")
+    parser.add_argument("--old-bridge", type=Path, required=True, help="checkout of the old bridge")
     args = parser.parse_args()
-    sides = {"new": args.new.resolve(), "old": args.old.resolve()}
+    gateways = {"new": args.new.resolve(), "old": args.old_gateway.resolve()}
+    bridges = {"new": args.new.resolve(), "old": args.old_bridge.resolve()}
     failed = []
     for gateway, bridge in (("new", "new"), ("new", "old"), ("old", "new")):
         for root_set in (True, False):
             name = f"gateway {gateway} / bridge {bridge}, projects root {'set' if root_set else 'unset'}"
             print(f"\n== {name}", flush=True)
-            run = Run(sides[gateway], sides[bridge], root_set, old_gateway=gateway == "old", new_bridge=bridge == "new")
+            run = Run(gateways[gateway], bridges[bridge], root_set, old_gateway=gateway == "old", new_bridge=bridge == "new")
             if not run.check():
                 failed.append(name)
     print()
@@ -230,7 +232,7 @@ class Run:
         self.expect("start_agent by path starts", not error and text.startswith("Started"), text)
         self.expect("start_agent by path starts in it", started_in(commands) == [str(beta)], commands)
         self.expect("start_agent by path takes the name", started_as(commands) == ["beta-test"], commands)
-        # main knows Remote Control too, so every pairing turns it on. A bridge from before
+        # The released versions know Remote Control too, so every pairing turns it on. A bridge from before
         # Remote Control and the gateway's "update" note are covered by mcp-gateway's tests.
         self.expect("start_agent by path turns on Remote Control",
                     remote_controlled(commands) == [True], commands)

@@ -37,7 +37,7 @@ jobs:
       - name: agent-bridge tests
         run: uv run --frozen --package claude-remote-mcp-agent-bridge pytest agent-bridge
       - name: mcp-gateway tests
-        run: uv run --frozen --package mcp-gateway pytest mcp-gateway
+        run: uv run --frozen --package claude-remote-mcp-gateway pytest mcp-gateway
       # Exact, so packages the steps above installed from member dev groups are gone and the
       # root dev group alone has to cover this run. Keep it last for the same reason.
       - name: root tests (both packages in one run)
@@ -72,4 +72,4 @@ jobs:
         with:
           persist-credentials: false
       - name: Check the gateway's setup script
-        run: shellcheck mcp-gateway/deploy/setup.sh
+        run: shellcheck mcp-gateway/src/mcp_gateway/deploy/setup.sh

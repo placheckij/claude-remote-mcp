@@ -1,5 +1,6 @@
 """`mcp-gateway bridges …` adds, lists, renames and removes agent hosts in bridges.json;
-`mcp-gateway enroll` opens a window for agent-bridges to add themselves (enrollment.py).
+`mcp-gateway enroll` opens a window for agent-bridges to add themselves (enrollment.py);
+`mcp-gateway setup` installs this version as the service (deploy/setup.sh).
 
 The running gateway takes changes in before its next request. On the gateway host the
 installed wrapper runs this as the service user with the state folder set (setup.sh).
@@ -8,14 +9,19 @@ installed wrapper runs this as the service user with the state folder set (setup
 import argparse
 import asyncio
 import getpass
+import json
 import os
 import re
 import socket
+import subprocess
 import sys
+import sysconfig
 from collections.abc import Callable
 from datetime import datetime
+from importlib.metadata import Distribution, distributions, version
+from importlib.resources import as_file, files
 from pathlib import Path
-from urllib.parse import urlsplit
+from urllib.parse import unquote, urlsplit
 
 from pydantic import ValidationError
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -29,6 +35,12 @@ from mcp_gateway.registry import NAME_PATTERN, Registry, RegistryError
 EXAMPLE_URL = "http://192.168.1.20:8765"
 # Where the gateway listens (setup.sh's PORT).
 DEFAULT_PORT = 8766
+PACKAGE = "claude-remote-mcp-gateway"
+# What setup.sh reads from its environment, which sudo would otherwise drop.
+SETUP_VARIABLES = (
+    "PUBLIC_HOST", "PROJECTS_ROOT", "TUNNEL_NAME", "PORT", "AGENT_BRIDGE_URL", "AGENT_BRIDGE_TOKEN",
+    "MCP_GATEWAY_OAUTH_PASSPHRASE", "ROTATE_PASSPHRASE", "MCP_GATEWAY_TOKEN", "REMOVE_TOKEN",
+)
 
 
 class _StateDir(BaseSettings):
@@ -50,9 +62,13 @@ def main(
     connect: Callable[[str, str], AgentBridge] = AgentBridge.connect,
     lan_address: Callable[[], str | None] = lambda: _lan_address(),
     reachable: Callable[[str, int], bool] = lambda address, port: _reachable(address, port),
+    run: Callable[[list[str]], int] = subprocess.call,
+    site_packages: Callable[[], list[str]] = lambda: _site_packages(),
 ) -> int:
     args = _parser().parse_args(argv)
     try:
+        if args.group == "setup":
+            return _setup(run, site_packages())
         state_dir = _state_dir(args.state_dir)
         _become_owner_of(state_dir)
         if args.group == "enroll":
@@ -79,9 +95,14 @@ def main(
 
 
 def _parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="mcp-gateway", description="Manage the gateway's agent hosts.")
+    parser = argparse.ArgumentParser(prog="mcp-gateway", description="Set up the gateway and manage its agent hosts.")
+    parser.add_argument("--version", action="version", version=f"%(prog)s {version(PACKAGE)}")
     parser.add_argument("--state-dir", type=Path, help="default: MCP_GATEWAY_STATE_DIR, also from .env")
     groups = parser.add_subparsers(dest="group", required=True)
+    groups.add_parser(
+        "setup", help="install or update the service, the tunnel and the settings on this Debian-based host, "
+                      "with sudo; keeps what is installed"
+    )
     enroll = groups.add_parser(
         "enroll", help=f"let agent-bridges add themselves for {WINDOW_S // 60} minutes; prints the string they need"
     )
@@ -102,6 +123,53 @@ def _parser() -> argparse.ArgumentParser:
     remove = bridges.add_parser("remove", help="remove an agent host")
     remove.add_argument("name")
     return parser
+
+
+def _setup(run: Callable[[list[str]], int], site_packages: list[str]) -> int:
+    """Runs the shipped setup.sh as root on this version: the Python version and the exact
+    packages of this environment, which it installs for the service. The service can't use
+    this environment itself, which is in the user's home folder (ProtectHome=yes)."""
+    if not sys.platform.startswith("linux"):
+        raise _Refused("mcp-gateway setup is for a Debian-based Linux with systemd; elsewhere, install it by hand "
+                       "(see the README).")
+    installed = list(distributions(path=site_packages))
+    if not any(_name(dist) == PACKAGE for dist in installed):
+        raise _Refused(f"No {PACKAGE} here to install for the service. Install it with: uv tool install {PACKAGE}")
+    requirements = sorted(_requirement(dist) for dist in installed)
+    python = f"{sys.version_info.major}.{sys.version_info.minor}"
+    with as_file(files("mcp_gateway") / "deploy" / "setup.sh") as script:
+        command = ["bash", str(script), python, *requirements]
+        if os.geteuid() != 0:
+            command = ["sudo", f"--preserve-env={','.join(SETUP_VARIABLES)}", *command]
+        return run(command)
+
+
+def _site_packages() -> list[str]:
+    paths = sysconfig.get_paths()
+    return list(dict.fromkeys((paths["purelib"], paths["platlib"])))
+
+
+def _name(dist: Distribution) -> str:
+    return re.sub(r"[-_.]+", "-", dist.metadata["Name"]).lower()
+
+
+def _requirement(dist: Distribution) -> str:
+    """What installs `dist` again from where it came from (PEP 610's direct_url.json)."""
+    name = _name(dist)
+    origin = dist.read_text("direct_url.json")
+    if origin is None:
+        return f"{name}=={dist.version}"
+    origin = json.loads(origin)
+    url = origin["url"]
+    if origin.get("dir_info", {}).get("editable"):
+        path = unquote(urlsplit(url).path)
+        raise _Refused(f"{name} is installed editable, from {path}, where the service can't read it. "
+                       f"Install it without --editable: uv tool install {path}")
+    if vcs := origin.get("vcs_info"):
+        url = f"{vcs['vcs']}+{url}@{vcs['commit_id']}"
+    if subdirectory := origin.get("subdirectory"):
+        url += f"#subdirectory={subdirectory}"
+    return f"{name} @ {url}"
 
 
 def _state_dir(given: Path | None) -> Path:

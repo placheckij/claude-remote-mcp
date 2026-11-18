@@ -1,9 +1,23 @@
 [project]
-name = "mcp-gateway"
+name = "claude-remote-mcp-gateway"
 version = "0.1.0"
 description = "Public MCP server that exposes Claude Code session tools and forwards them to agent-bridge"
+readme = "README.md"
 requires-python = ">=3.11"
 license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Jakub Płachecki" }]
+keywords = ["claude", "claude-code", "herdr", "mcp", "agents"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: No Input/Output (Daemon)",
+    "Intended Audience :: Developers",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+]
 dependencies = [
     "httpx>=0.28.1",
     "mcp>=2.3.0",
@@ -11,12 +25,22 @@ dependencies = [
     "uvicorn>=0.54.0",
 ]
 
+[project.urls]
+Homepage = "https://github.com/placheckij/claude-remote-mcp"
+Documentation = "https://github.com/placheckij/claude-remote-mcp/tree/main/mcp-gateway#readme"
+Issues = "https://github.com/placheckij/claude-remote-mcp/issues"
+Releases = "https://github.com/placheckij/claude-remote-mcp/releases"
+
 [project.scripts]
 mcp-gateway = "mcp_gateway.cli:main"
 
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
+
+# The import name isn't the project's name, so hatchling can't find it by itself.
+[tool.hatch.build.targets.wheel]
+packages = ["src/mcp_gateway"]
 
 [dependency-groups]
 dev = [

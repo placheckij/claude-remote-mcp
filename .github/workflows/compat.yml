@@ -1,8 +1,8 @@
 name: Mixed versions
 
-# The gateway must work with bridges at its own API version and one behind. Both hosts
-# deploy from main, so main against this branch is the mix that runs while one host is
-# updated before the other.
+# The gateway must work with bridges at its own API version and one behind. Hosts run
+# released versions, so each side of this branch is checked against the other's last
+# release: the mix that runs while one host is updated before the other.
 on:
   pull_request:
     paths:
@@ -35,17 +35,37 @@ jobs:
         with:
           path: new
           persist-credentials: false
-      # Its own folder and venv, so the two versions never share code.
+      - name: Find the last releases
+        id: releases
+        run: |
+          last() {
+            git -C new ls-remote --tags --refs origin "refs/tags/$1-v*" \
+              | sed 's|.*refs/tags/||' | sort -V | tail -n 1
+          }
+          gateway="$(last mcp-gateway)"
+          bridge="$(last agent-bridge)"
+          # Until the first release of one, main stands in for it.
+          echo "gateway=${gateway:-main}" >>"$GITHUB_OUTPUT"
+          echo "bridge=${bridge:-main}" >>"$GITHUB_OUTPUT"
+          echo "Old gateway: ${gateway:-main}, old bridge: ${bridge:-main}"
+      # Their own folders and venvs, so the versions never share code.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: main
-          path: old
+          ref: ${{ steps.releases.outputs.gateway }}
+          path: old-gateway
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ steps.releases.outputs.bridge }}
+          path: old-bridge
           persist-credentials: false
       - name: Install uv
         run: pipx install uv==0.13.9
       - name: Install this branch
         run: uv sync --all-packages --frozen --directory new
-      - name: Install the old side
-        run: uv sync --all-packages --frozen --directory old
+      - name: Install the last gateway release
+        run: uv sync --all-packages --frozen --directory old-gateway
+      - name: Install the last bridge release
+        run: uv sync --all-packages --frozen --directory old-bridge
       - name: Check every pairing
-        run: python3 new/.github/compat/check.py --new new --old old
+        run: python3 new/.github/compat/check.py --new new --old-gateway old-gateway --old-bridge old-bridge

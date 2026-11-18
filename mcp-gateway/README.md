@@ -4,7 +4,7 @@ The MCP server that the Claude app talks to. It runs on an always-on host (the
 *gateway host*), is published to the internet through a Cloudflare Tunnel, and is added
 to the Claude account as a custom connector, which signs in with OAuth. Every tool call
 is checked against the connector's access token and forwarded over the LAN to
-[`agent-bridge`](../agent-bridge/), which drives herdr on an *agent host*. One gateway
+[`agent-bridge`](https://github.com/placheckij/claude-remote-mcp/tree/main/agent-bridge), which drives herdr on an *agent host*. One gateway
 serves several agent hosts (see [Agent hosts](#agent-hosts)).
 
 ```
@@ -27,7 +27,7 @@ or with a NUL character) come back the same way as one sentence.
 
 | | |
 |---|---|
-| OS | anything that runs Python 3.11+; tested on Linux and macOS, Windows should work but is untested. The [setup script](#deploy-with-the-setup-script) needs a Debian-based Linux with systemd (e.g. Debian 12+, Ubuntu 22.04+); elsewhere, [install by hand](#install-by-hand). |
+| OS | anything that runs Python 3.11+; tested on Linux and macOS, Windows should work but is untested. [`mcp-gateway setup`](#install-with-mcp-gateway-setup) needs a Debian-based Linux with systemd (e.g. Debian 12+, Ubuntu 22.04+); elsewhere, [install by hand](#install-by-hand). |
 | Hardware | very light: one small Python process plus cloudflared. A single-board computer, a small home server, a VPS (if it can reach agent-bridge, e.g. over a VPN) or the agent host itself is enough. 64-bit recommended. |
 | Software | [uv](https://docs.astral.sh/uv/) (installs Python 3.11+ itself if needed); [cloudflared](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/) for the tunnel |
 | Network | outbound HTTPS to Cloudflare; a route to agent-bridge's URL; agent hosts on the LAN reach port 8766 to [enroll](#enrollment) and, afterwards, to report their address, rename and unenroll. No port needs to be open to the internet. |
@@ -221,11 +221,13 @@ can't catch instances on separate hosts. Running more than one process would fir
 the tokens, that state and the wrong-passphrase counts in a shared store with atomic
 updates.
 
-## Deploy with the setup script
+## Install with mcp-gateway setup
 
-[`deploy/setup.sh`](deploy/setup.sh) does the whole setup: it installs uv and
-cloudflared, installs mcp-gateway as a systemd service, creates and runs the
-Cloudflare Tunnel, and generates the sign-in passphrase.
+mcp-gateway is published to PyPI as `claude-remote-mcp-gateway`; its command is
+`mcp-gateway`. `mcp-gateway setup` runs the setup script the package ships,
+[`deploy/setup.sh`](https://github.com/placheckij/claude-remote-mcp/blob/main/mcp-gateway/src/mcp_gateway/deploy/setup.sh), with sudo. It does the whole setup:
+it installs cloudflared, installs this version of mcp-gateway as a systemd service,
+creates and runs the Cloudflare Tunnel, and generates the sign-in passphrase.
 
 ### Before you start
 
@@ -242,18 +244,20 @@ Cloudflare Tunnel, and generates the sign-in passphrase.
 
 ### Run it
 
+As your own user, not with `sudo` (it asks for your password):
+
 ```sh
-git clone <this repo> ~/claude-remote-mcp
-cd ~/claude-remote-mcp
-sudo PUBLIC_HOST=mcp.example.com mcp-gateway/deploy/setup.sh
+curl -LsSf https://astral.sh/uv/install.sh | sh   # if uv isn't installed; then open a new shell
+uv tool install claude-remote-mcp-gateway
+PUBLIC_HOST=mcp.example.com mcp-gateway setup
 ```
 
 `PUBLIC_HOST` is the only question; left out, it is asked for, and on later runs it
 comes from `/etc/mcp-gateway/env` instead (see [Update and rotate](#update-and-rotate)).
 `AGENT_BRIDGE_URL` optionally adds an agent-bridge set up by hand with
 `mcp-gateway bridges add`, which asks for its token without showing it, or takes it
-from an exported `AGENT_BRIDGE_TOKEN` (`sudo --preserve-env=AGENT_BRIDGE_TOKEN`). Keep
-tokens out of the command itself: there they end up in your shell history and, while
+from an exported `AGENT_BRIDGE_TOKEN`. setup passes these variables on through sudo.
+Keep tokens out of the command itself: there they end up in your shell history and, while
 the script runs, in the process list that other users on the host can read. Optional variables: `PROJECTS_ROOT` (only for
 an agent-bridge without `/info`, see
 [Configuration](#configuration)), `TUNNEL_NAME` (default `claude-remote`), `PORT` (default `8766`),
@@ -262,13 +266,11 @@ an agent-bridge without `/info`, see
 
 The script generates the sign-in passphrase (`MCP_GATEWAY_OAUTH_PASSPHRASE`, 96 random
 bits as six groups of four hex digits) itself. To choose your own instead, read it
-without echoing and pass it through sudo's environment:
+without echoing and export it:
 
 ```sh
 read -rsp 'Passphrase: ' MCP_GATEWAY_OAUTH_PASSPHRASE && export MCP_GATEWAY_OAUTH_PASSPHRASE && echo
-sudo --preserve-env=MCP_GATEWAY_OAUTH_PASSPHRASE \
-     PUBLIC_HOST=mcp.example.com \
-     mcp-gateway/deploy/setup.sh
+PUBLIC_HOST=mcp.example.com mcp-gateway setup
 ```
 
 It must be 16+ characters from letters, digits, spaces and `. _ ~ + / = : , ! ? @ # % ^ & * ( ) -`.
@@ -300,10 +302,10 @@ the tunnel checks fail, try again shortly:
 
 | Path | |
 |---|---|
-| `/opt/claude-remote-mcp/` | the checkout's committed files (`HEAD`; no untracked or uncommitted changes) and their `.venv`, all owned by root, so neither the service nor the checkout's owner can change the code it runs |
+| `/opt/mcp-gateway/` | the service's own install of the version setup ran from: `venv/` with the same packages as the tool, and `python/` if uv downloaded Python. Owned by root, so the service can run the code but not change it; the tool's environment in your home folder is out of the service's reach (`ProtectHome=yes`) |
 | `/etc/mcp-gateway/env` | configuration, passphrase and tokens (`root:mcp-gateway`, mode 640) |
 | `/var/lib/mcp-gateway/` | `oauth.json`: signed-in clients and token hashes, and `oauth.lock`; `bridges.json`: the [agent hosts](#agent-hosts), and `bridges.lock`; `enrollment.json`: the gateway's id and the [enrollment](#enrollment) window, and `enrollment.lock` (systemd `StateDirectory`, owned by `mcp-gateway`, mode 700) |
-| `/usr/local/bin/mcp-gateway` | runs `mcp-gateway enroll` and `bridges …` as the `mcp-gateway` user on its state folder |
+| `/usr/local/bin/mcp-gateway` | runs `mcp-gateway enroll`, `bridges …` and `--version` from `/opt/mcp-gateway` as the `mcp-gateway` user on its state folder; `setup` stays the tool's |
 | `/etc/systemd/system/mcp-gateway.service` | runs as the `mcp-gateway` system user on `0.0.0.0:8766`, sandboxed |
 | `/etc/cloudflared/cert.pem` | Cloudflare account cert from `tunnel login`; only needed to manage tunnels, root-only |
 | `/etc/cloudflared/claude-remote.json` | the tunnel's credentials (owned by the `cloudflared` user) |
@@ -312,17 +314,28 @@ the tunnel checks fail, try again shortly:
 
 ### Update and rotate
 
-- **Update the code:** `git pull` in the checkout, then re-run the script:
-  `sudo mcp-gateway/deploy/setup.sh`, passing `PORT` and `TUNNEL_NAME` again if you
-  changed them (they aren't kept). It takes `PUBLIC_HOST` and, if set,
+- **Upgrade:** `uv tool upgrade claude-remote-mcp-gateway`, then `mcp-gateway setup`,
+  passing `PORT` and `TUNNEL_NAME` again if you changed them (they aren't kept). The
+  service moves to the tool's version only with that re-run; `sudo mcp-gateway
+  --version` prints the one it runs. setup takes `PUBLIC_HOST` and, if set,
   `PROJECTS_ROOT` from `/etc/mcp-gateway/env` and lists the ones it keeps, keeps the
   passphrase, the OAuth tokens, the static token if there is one and the agent hosts,
   and reuses the tunnel. An agent-bridge set up before `bridges.json` is imported as a
-  host and dropped from the env file (see [Agent hosts](#agent-hosts)). Only committed
-  code is installed. Once agent-bridge has `GET /info`, a kept
-  `PROJECTS_ROOT` does nothing: project names resolve under the first of
-  `AGENT_BRIDGE_ALLOWED_ROOTS` that has the folder, so check those hold the projects
-  you mean.
+  host and dropped from the env file (see [Agent hosts](#agent-hosts)). Once agent-bridge
+  has `GET /info`, a kept `PROJECTS_ROOT` does nothing: project names resolve under the
+  first of `AGENT_BRIDGE_ALLOWED_ROOTS` that has the folder, so check those hold the
+  projects you mean.
+- **Move an install from a checkout** (one set up with `mcp-gateway/deploy/setup.sh`):
+  `uv tool install claude-remote-mcp-gateway`, then `mcp-gateway setup` as above. It
+  keeps the same settings, state and tunnel, and once the gateway answers from
+  `/opt/mcp-gateway`, removes `/opt/claude-remote-mcp`. The checkout isn't used after that.
+- **Run a build that isn't released:** install it as a tool from a path, a wheel or a git
+  URL, e.g. `uv tool install --reinstall ./mcp-gateway` in a checkout, then
+  `mcp-gateway setup`: the service gets it from the same place. An editable install
+  (`--editable`) is refused, as its code stays in your home folder. Back to the
+  release: `uv tool install --reinstall claude-remote-mcp-gateway`, then `mcp-gateway setup`.
+- If `mcp-gateway setup` says to run it from the tool, `/usr/local/bin` comes before
+  `~/.local/bin` in your `PATH`: run `~/.local/bin/mcp-gateway setup`.
 - **Change the passphrase:** re-run with `ROTATE_PASSPHRASE=1` (it prints the new one),
   or with `MCP_GATEWAY_OAUTH_PASSPHRASE` as above. Connectors already signed in stay
   signed in; to sign them out too, `sudo systemctl stop mcp-gateway && sudo rm -f
@@ -376,11 +389,12 @@ sudo TUNNEL_ORIGIN_CERT=/etc/cloudflared/cert.pem cloudflared tunnel delete clau
 
 # 3. Remove the code, configuration, tokens (also the agent-bridges' tokens in
 #    bridges.json) and tunnel credentials
-sudo rm -rf /opt/claude-remote-mcp /etc/mcp-gateway /var/lib/mcp-gateway
+sudo rm -rf /opt/mcp-gateway /etc/mcp-gateway /var/lib/mcp-gateway
 sudo rm -f /usr/local/bin/mcp-gateway /etc/cloudflared/claude-remote.json /etc/cloudflared/claude-remote.yml
 
-# 4. Remove the service user
+# 4. Remove the service user and the tool
 sudo userdel mcp-gateway
+uv tool uninstall claude-remote-mcp-gateway
 ```
 
 Then:
@@ -412,14 +426,15 @@ Then:
 On any other system (another Linux, macOS, Windows), or to use a different tunnel or
 reverse proxy:
 
-1. Install [uv](https://docs.astral.sh/uv/getting-started/installation/), clone the
-   repo, and run `uv sync --frozen --no-dev --package mcp-gateway`.
+1. Install [uv](https://docs.astral.sh/uv/getting-started/installation/), and the package
+   into a virtual environment the server's user can read, e.g.
+   `uv venv /opt/mcp-gateway/venv && uv pip install --python /opt/mcp-gateway/venv claude-remote-mcp-gateway`.
+   Its commands are in the venv's `bin/` (`Scripts\` on Windows).
 2. Set the [configuration](#configuration) variables and start the server, on every
    interface for agent hosts to [enroll](#enrollment) (`--host 127.0.0.1` if they are all
    added by hand):
    ```sh
-   uv run --frozen --no-dev --package mcp-gateway \
-     uvicorn mcp_gateway.server:main --factory --host 0.0.0.0 --port 8766 --no-server-header --no-proxy-headers
+   /opt/mcp-gateway/venv/bin/uvicorn mcp_gateway.server:main --factory --host 0.0.0.0 --port 8766 --no-server-header --no-proxy-headers
    ```
    Keep it running with your system's service manager (systemd, launchd, NSSM, …), as
    [one process](#one-process): no `--workers`. On Windows nothing stops a second one.
@@ -435,7 +450,7 @@ reverse proxy:
    Don't publish `/healthz` or anything else. mcp-gateway needs a writable
    `MCP_GATEWAY_STATE_DIR`.
 4. As the user the server runs as, open an enrollment window for the agent hosts:
-   `uv run --frozen --no-dev --package mcp-gateway mcp-gateway --state-dir <state dir> enroll`,
+   `/opt/mcp-gateway/venv/bin/mcp-gateway --state-dir <state dir> enroll`,
    or add them with `… bridges add <url>`.
 
 ## Cloudflare Tunnel
@@ -539,15 +554,29 @@ including the mobile app (and with it CarPlay).
 
 ```sh
 uv sync --all-packages
-uv run --package mcp-gateway pytest mcp-gateway
+uv run --package claude-remote-mcp-gateway pytest mcp-gateway
 
 # Local run against an agent-bridge on this machine
-uv run --package mcp-gateway mcp-gateway --state-dir /tmp/mcp-gateway-state bridges add http://127.0.0.1:8765
+uv run --package claude-remote-mcp-gateway mcp-gateway --state-dir /tmp/mcp-gateway-state bridges add http://127.0.0.1:8765
 MCP_GATEWAY_OAUTH_PASSPHRASE=$(openssl rand -hex 12) MCP_GATEWAY_STATE_DIR=/tmp/mcp-gateway-state \
 MCP_GATEWAY_TOKEN=$(openssl rand -hex 32) MCP_GATEWAY_PUBLIC_HOST=localhost \
-  uv run --package mcp-gateway uvicorn mcp_gateway.server:main --factory --host 127.0.0.1 --port 8766
+  uv run --package claude-remote-mcp-gateway uvicorn mcp_gateway.server:main --factory --host 127.0.0.1 --port 8766
 ```
 
 Tests drive the real MCP app over JSON-RPC with a fake agent-bridge behind
 `httpx.MockTransport`; `test_oauth.py` goes through the whole sign-in the way claude.ai
-does. `deploy/setup.sh` is checked with `shellcheck`.
+does. `src/mcp_gateway/deploy/setup.sh` is checked with `shellcheck`.
+
+### Releasing mcp-gateway
+
+Its version is independent of agent-bridge's. To release:
+
+1. Set the version, e.g. `uv version --package claude-remote-mcp-gateway 0.2.0`, and
+   merge that to main.
+2. Tag that commit on main and push the tag:
+   `git tag mcp-gateway-v0.2.0 && git push origin mcp-gateway-v0.2.0`.
+3. The [release workflow](https://github.com/placheckij/claude-remote-mcp/blob/main/.github/workflows/release-mcp-gateway.yml) runs CI, checks
+   that the tag is the version in `pyproject.toml`, builds the wheel and sdist and checks
+   that the wheel prints that version. Publishing waits for an approval in the `pypi`
+   environment: approve it in the run; it then publishes to PyPI and creates the GitHub
+   Release.
