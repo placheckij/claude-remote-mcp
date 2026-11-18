@@ -49,7 +49,9 @@ class FakeWindows:
     task_xml: str | None = None
     task_on: bool = True
     register_fails: bool = False
+    disable_fails: bool = False
     delete_fails: bool = False
+    console: list[str] = field(default_factory=list)
     rule: tuple | None = None
     category: str = "Private"
     uac: bool = True
@@ -153,6 +155,9 @@ class FakeWindows:
     def blocked(self, program: str) -> bool:
         return self.block
 
+    def console_programs(self) -> list[str]:
+        return self.console
+
     def elevated(self, commands: list[str]) -> int:
         self.calls.append(("elevated", *commands))
         if not self.uac:
@@ -172,6 +177,8 @@ class FakeWindows:
         if self.task_xml is None:
             return 1
         if args[0] == "/Change":
+            if args[-1] == "/DISABLE" and self.disable_fails:
+                return 1
             self.task_on = args[-1] == "/ENABLE"
         elif args[0] == "/End":
             # Ends the task's own processes; what a run.cmd started under cmd.exe runs on.
@@ -194,9 +201,10 @@ class FakeWindows:
             return False
         file.parent.mkdir(parents=True, exist_ok=True)
         file.write_text(xml, encoding="utf-16")
-        self.task_xml, self.task_on = xml, True
+        # Registered as its XML has it; a disabled one starts nothing.
+        self.task_xml, self.task_on = xml, windows.Task.parse(xml).enabled
         # MultipleInstancesPolicy IgnoreNew.
-        if any(process.pid == SERVER for process, _ in self.processes_):
+        if not self.task_on or any(process.pid == SERVER for process, _ in self.processes_):
             return True
         command = windows.Task.parse(xml).command
         line = f'"{command}" serve --log-file "{self.paths.log}"'
@@ -589,6 +597,84 @@ def test_a_setup_stopped_after_the_bridge_puts_the_task_back_on(host: FakeWindow
     assert not host.paths.disabled_marker.exists()
 
 
+def killed_with_the_task_disabled(host: FakeWindows, tmp_path: Path) -> None:
+    """A setup.ps1 host after a setup was killed once it had disabled the task and stopped the
+    bridge: the marker says the task is setup's to bring back."""
+    installed_by_setup_ps1(host, tmp_path / "claude-remote-mcp")
+    host.task_on = False
+    host.processes_ = []
+    host.paths.disabled_marker.write_text("setup\n")
+
+
+def test_after_a_killed_setup_a_failed_one_puts_the_task_back_on(host: FakeWindows, capsys, tmp_path: Path) -> None:
+    killed_with_the_task_disabled(host, tmp_path)
+    tries = iter([False, True])
+    real = host.register
+
+    def register(xml: str, file: Path) -> bool:
+        if next(tries):
+            return real(xml, file)
+        host.calls.append(("register", windows.Task.parse(xml).command))
+        return False
+
+    host.register = register  # type: ignore[method-assign]
+
+    assert setup(host, capsys).code == 1
+
+    assert host.task_on
+    assert SERVER in host.pids()
+    assert not host.paths.disabled_marker.exists()
+
+
+def test_after_a_killed_setup_one_refused_early_puts_the_task_back_on(host: FakeWindows, capsys,
+                                                                       tmp_path: Path) -> None:
+    killed_with_the_task_disabled(host, tmp_path)
+    host.lasting = {"user": ["AGENT_BRIDGE_PORT"]}
+
+    assert setup(host, capsys).code == 1
+
+    assert host.task_on
+    assert SERVER in host.pids()
+    assert not host.paths.disabled_marker.exists()
+
+
+def test_a_setup_ps1_task_put_back_still_has_its_files(host: FakeWindows, capsys, tmp_path: Path) -> None:
+    installed_by_setup_ps1(host, tmp_path / "claude-remote-mcp")
+    host.register_fails = True
+
+    assert setup(host, capsys).code == 1
+
+    # Its task may run run.cmd: removed only once the new task is registered.
+    for leftover in host.paths.leftovers():
+        assert leftover.exists()
+
+
+def test_a_task_that_cant_be_disabled_stops_setup_with_nothing_stopped(host: FakeWindows, capsys,
+                                                                        tmp_path: Path) -> None:
+    installed_by_setup_ps1(host, tmp_path / "claude-remote-mcp")
+    host.disable_fails = True
+
+    run = setup(host, capsys)
+
+    assert run.code == 1
+    assert "schtasks couldn't disable the task agent-bridge" in run.out
+    assert host.task_on
+    assert SERVER in host.pids()
+    assert not host.paths.disabled_marker.exists()
+    assert host.ran("register") == []
+
+
+def test_a_console_pythonw_is_refused_before_anything(host: FakeWindows, capsys) -> None:
+    host.console = [r"C:\Users\me\AppData\Roaming\uv\tools\x\Scripts\pythonw.exe"]
+
+    run = setup(host, capsys, *every_flag(host))
+
+    assert run.code == 1
+    assert r"Scripts\pythonw.exe is a console program, so agent-bridge would open a terminal window" in run.out
+    assert "uv tool install --reinstall claude-remote-mcp-agent-bridge" in run.out
+    assert not host.env_file.exists()
+
+
 def test_a_task_you_turned_off_stays_off_when_setup_stops(host: FakeWindows, capsys, tmp_path: Path) -> None:
     installed_by_setup_ps1(host, tmp_path / "claude-remote-mcp")
     host.task_on = False
@@ -657,6 +743,19 @@ def test_uninstall_puts_the_task_back_when_it_cant_remove_it(host: FakeWindows, 
     assert host.env_file.exists()
 
 
+def test_uninstall_removes_a_rule_it_couldnt_read(host: FakeWindows, capsys) -> None:
+    setup(host, capsys, *every_flag(host))
+    real = host.firewall_rule
+    host.firewall_rule = lambda: () if host.rule else real()  # type: ignore[method-assign]
+    host.calls.clear()
+
+    assert windows.uninstall(host) == 0
+
+    assert "Couldn't tell whether it is there; removing it if it is." in capsys.readouterr().out
+    assert host.ran("elevated") == [(windows.remove_rule_command(),)]
+    assert host.rule is None
+
+
 def test_uninstall_as_another_account_changes_nothing(host: FakeWindows, capsys) -> None:
     setup(host, capsys, *every_flag(host))
     host.desktop = "PC\\admin"
@@ -696,6 +795,40 @@ def test_a_disabled_task_reads_as_disabled_whatever_its_triggers_say() -> None:
     assert windows.Task.parse(disabled).enabled is False
     # The triggers' Enabled stay true.
     assert disabled.count("<Enabled>true</Enabled>") == 2
+
+
+def test_enabled_turns_the_task_on_but_not_its_triggers() -> None:
+    xml = windows.task_xml(SID, r"C:\b\agent-bridgew.exe", Path(r"C:\log"), Path("C:\\"))
+    disabled = xml.replace("<Enabled>true</Enabled>\n    <Hidden>", "<Enabled>false</Enabled>\n    <Hidden>")
+
+    again = windows.enabled(disabled)
+
+    assert windows.Task.parse(again) == windows.Task(r"C:\b\agent-bridgew.exe", True)
+    assert "ns0:" not in again and "<Hidden>true</Hidden>" in again
+    assert windows.enabled(xml) == xml
+
+
+def pe(subsystem: int) -> bytes:
+    header = bytearray(512)
+    header[:2] = b"MZ"
+    header[0x3C:0x40] = (128).to_bytes(4, "little")
+    header[128:132] = b"PE\0\0"
+    header[128 + 92:128 + 94] = subsystem.to_bytes(2, "little")
+    return bytes(header)
+
+
+@pytest.mark.parametrize(("data", "subsystem"), [(pe(2), 2), (pe(3), 3), (b"not a program", 0), (b"MZ" + bytes(62), 0)])
+def test_pe_subsystem(tmp_path: Path, data: bytes, subsystem: int) -> None:
+    (tmp_path / "program.exe").write_bytes(data)
+    assert windows.pe_subsystem(tmp_path / "program.exe") == subsystem
+    assert windows.pe_subsystem(tmp_path / "missing.exe") == 0
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows' own programs")
+def test_windows_own_programs_have_the_subsystems_they_should() -> None:
+    system = Path(r"C:\Windows\System32")
+    assert windows.pe_subsystem(system / "cmd.exe") == 3
+    assert windows.pe_subsystem(system / "notepad.exe") == 2
 
 
 def test_a_task_that_cannot_be_read_has_no_command() -> None:

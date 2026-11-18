@@ -256,8 +256,8 @@ uv run --package claude-remote-mcp-agent-bridge agent-bridge serve
 | `agent-bridge unenroll` | leaves that gateway | 0, also when the gateway can't be reached or refuses (prints the gateway's command); 1 if the state file can't be read or written |
 | `agent-bridge check` | checks the settings, the files' modes, herdr, the running service and the gateway, one line each | 0 all passed, 1 one failed |
 | `agent-bridge check --token-format <token>`, `--name-format <name>` | checks a value before it goes in the env file | 0 fine, 2 not (why, on stderr) |
-| `agent-bridge setup` | macOS and Linux: installs or updates the service and enrolls it ([macOS](#with-agent-bridge-setup), [Linux](#as-a-service-on-linux-systemd-user-unit)) | 0 installed (enrolled or not), 1 refused or failed |
-| `agent-bridge uninstall` | macOS and Linux: leaves the gateway, then removes the service, its settings, state and log | 0 removed, also when leaving the gateway failed (prints the gateway's command); 1 run with sudo, or the service couldn't be removed (Linux: also no systemd user manager; nothing is removed then) |
+| `agent-bridge setup` | installs or updates the service and enrolls it ([macOS](#with-agent-bridge-setup), [Linux](#as-a-service-on-linux-systemd-user-unit), [Windows](#as-a-service-on-windows-task-scheduler)) | 0 installed (enrolled or not), 1 refused or failed |
+| `agent-bridge uninstall` | leaves the gateway, then removes the service, its settings, state and log (on Windows, also the firewall rule) | 0 removed, also when leaving the gateway failed (prints the gateway's command); 1 run with sudo, or the service couldn't be removed (Linux: also no systemd user manager; Windows: also run as another account than the desktop's; nothing is removed then) |
 | `agent-bridge --version` | prints the installed version | 0 |
 
 ### Enroll with the gateway

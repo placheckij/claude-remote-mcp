@@ -186,6 +186,36 @@ class Task:
 _NS = {"t": "http://schemas.microsoft.com/windows/2004/02/mit/task"}
 
 
+def enabled(xml: str) -> str:
+    """The task with its Settings' Enabled true, so registering it starts it: a task setup puts
+    back after an earlier setup was killed with it disabled."""
+    if Task.parse(xml).enabled:
+        return xml
+    ElementTree.register_namespace("", _NS["t"])
+    root = ElementTree.fromstring(xml)
+    root.find("t:Settings/t:Enabled", _NS).text = "true"
+    return '<?xml version="1.0" encoding="UTF-16"?>\n' + ElementTree.tostring(root, encoding="unicode")
+
+
+def pe_subsystem(path: Path) -> int:
+    """The subsystem in the PE header of the program at `path`: 2 for a GUI program, 3 for a
+    console one, which Windows opens a console window for when it has none to share. 0 when it
+    isn't a program or can't be read."""
+    try:
+        with path.open("rb") as file:
+            header = file.read(4096)
+    except OSError:
+        return 0
+    if len(header) < 64 or header[:2] != b"MZ":
+        return 0
+    pe = int.from_bytes(header[0x3C:0x40], "little")
+    # PE\0\0, the 20-byte file header, then the optional header, with Subsystem at 68 in both
+    # PE32 and PE32+.
+    if pe < 64 or pe + 94 > len(header) or header[pe:pe + 4] != b"PE\0\0":
+        return 0
+    return int.from_bytes(header[pe + 92:pe + 94], "little")
+
+
 def firewall_rule_commands(port: int) -> str:
     """Replaces the rule with one that allows TCP `port` in, on Private networks only."""
     return (f"Remove-NetFirewallRule -Name '{RULE}' -ErrorAction SilentlyContinue; "
@@ -195,7 +225,8 @@ def firewall_rule_commands(port: int) -> str:
 
 
 def remove_rule_command() -> str:
-    return f"Remove-NetFirewallRule -Name '{RULE}'"
+    # Also when it isn't there, for when setup couldn't tell.
+    return f"Get-NetFirewallRule -Name '{RULE}' -ErrorAction SilentlyContinue | Remove-NetFirewallRule"
 
 
 def quoted(text: str) -> str:
@@ -238,7 +269,10 @@ class System(flow.System, Protocol):
     def processes(self) -> list[Listener]: ...
     def stop(self, pids: list[int]) -> None: ...
     def network(self, address: str) -> tuple[int, str, str] | None: ...
-    def firewall_rule(self) -> tuple[bool, str, str, str, str, str] | None: ...
+    # Setup's rule; None when it isn't there, () when that can't be told.
+    def firewall_rule(self) -> tuple | None: ...
+    # The programs the task runs that are console programs, which open a window at each start.
+    def console_programs(self) -> list[str]: ...
     def blocked(self, program: str) -> bool: ...
     def elevated(self, commands: list[str]) -> int: ...
     def schtasks(self, *args: str) -> int: ...
@@ -250,7 +284,13 @@ def setup(options: Options, system: System, read: Read) -> int:
     if (refusal := _other_account(system)) is not None:
         print(f"error: {refusal}", file=sys.stderr)
         return flow.FAILED
-    return flow.setup(_setup_ps1_answers(options, system.paths), system, WindowsService(system, read), read)
+    service = WindowsService(system, read)
+    code = flow.setup(_setup_ps1_answers(options, system.paths), system, service, read)
+    if code != flow.OK:
+        # Also when it stopped before stopping anything, after an earlier setup was killed
+        # with the task disabled.
+        service.abandon()
+    return code
 
 
 def uninstall(system: System) -> int:
@@ -302,6 +342,8 @@ class WindowsService:
     machine: str = "PC"
     runner: str = "scheduled task"
     name_fallback: str = "pc"
+    # How often the task tries again, e.g. until the LAN address exists.
+    retries: str = "every minute"
     host: str = ""
     port: int = 0
     # The port the bridge being replaced had, to stop it there.
@@ -338,6 +380,12 @@ class WindowsService:
         if not Path(command).is_file():
             raise Refused(f"{command}, the windowless agent-bridge the task runs, isn't there: reinstall the "
                           "package (uv tool install --reinstall claude-remote-mcp-agent-bridge)")
+        if console := self.system.console_programs():
+            are = "are console programs" if len(console) > 1 else "is a console program"
+            raise Refused(f"{' and '.join(console)} {are}, so agent-bridge would open a terminal window at every "
+                          "start. uv before 0.12.4 makes them so (astral-sh/uv#19235): update uv (uv self update), "
+                          "reinstall the package with agent-bridge stopped (uv tool install --reinstall "
+                          "claude-remote-mcp-agent-bridge), then run agent-bridge setup again")
         # Refused here, before anything changes, rather than when the task is registered.
         self._xml()
         self.host = plan.values[f"{PREFIX}HOST"]
@@ -348,11 +396,17 @@ class WindowsService:
         self.installed_port = _installed_port(self.env_file)
 
     def abandon(self) -> None:
-        """Puts back the task setup stopped, so a setup that stops halfway doesn't leave the
-        bridge off. Registering it again starts it."""
-        if self.previous is None or not self.paths.disabled_marker.exists():
+        """Puts back the task setup stopped (this one, or one killed before), so a setup that
+        stops halfway doesn't leave the bridge off. Registering it, enabled, starts it."""
+        if not self.paths.disabled_marker.exists():
             return
-        if self.system.register(self.previous, self.paths.state / "task-before-setup.xml"):
+        xml = self.previous if self.previous is not None else self.system.task()
+        if xml is None:
+            # Unregistered since: nothing to bring back.
+            with contextlib.suppress(OSError):
+                self.paths.disabled_marker.unlink()
+            return
+        if self.system.register(enabled(xml), self.paths.state / "task-before-setup.xml"):
             with contextlib.suppress(OSError):
                 self.paths.disabled_marker.unlink()
         else:
@@ -364,11 +418,6 @@ class WindowsService:
 
     def install(self, plan: Plan) -> None:
         self._firewall()
-        # What setup.ps1 used and the package's setup doesn't.
-        for path in self.paths.leftovers():
-            with contextlib.suppress(OSError):
-                path.unlink(missing_ok=True)
-        shutil.rmtree(self.paths.check_folder(), ignore_errors=True)
 
     def _firewall(self) -> None:
         print(f"\n==> Firewall rule for TCP {self.port}, on Private networks only")
@@ -412,6 +461,12 @@ class WindowsService:
             raise Refused(f"schtasks couldn't register the task {TASK}")
         with contextlib.suppress(OSError):
             self.paths.disabled_marker.unlink()
+        # What setup.ps1 used and the package's setup doesn't; only now, as the task it had,
+        # which abandon() would put back, may run run.cmd.
+        for path in self.paths.leftovers():
+            with contextlib.suppress(OSError):
+                path.unlink(missing_ok=True)
+        shutil.rmtree(self.paths.check_folder(), ignore_errors=True)
 
     def _stop(self, ports: Iterable[int]) -> None:
         """Stops the task and the bridge it runs, and any agent-bridge still holding one of
@@ -423,13 +478,21 @@ class WindowsService:
             # Brought back by a setup that stops early only if it was on, or setup had turned it
             # off before (the marker is there): one you disabled stays off then. Marked first, so
             # a setup killed in between leaves the mark too.
-            if Task.parse(xml).enabled:
+            marked = False
+            if Task.parse(xml).enabled and not self.paths.disabled_marker.exists():
                 try:
                     self.paths.state.mkdir(parents=True, exist_ok=True)
                     self.paths.disabled_marker.write_text("setup\n", encoding="utf-8")
+                    marked = True
                 except OSError as error:
                     raise Refused(f"can't write {self.paths.disabled_marker} ({error.strerror})") from None
-            self.system.schtasks("/Change", "/TN", f"\\{TASK}", "/DISABLE")
+            if self.system.schtasks("/Change", "/TN", f"\\{TASK}", "/DISABLE") != 0:
+                # Still enabled and running: nothing to put back.
+                if marked:
+                    with contextlib.suppress(OSError):
+                        self.paths.disabled_marker.unlink()
+                raise Refused(f"schtasks couldn't disable the task {TASK}, which would start the old agent-bridge "
+                              "again; nothing was stopped")
             self.system.schtasks("/End", "/TN", f"\\{TASK}")
             # The one it ran, e.g. a checkout's, and the agent-bridge.exe beside it.
             if command := Task.parse(xml).command:
@@ -474,9 +537,12 @@ class WindowsService:
             self.abandon()
             raise Refused(f"couldn't remove the scheduled task {TASK}; it is left as it was. Run uninstall again.")
         print("\n==> Removing the firewall rule")
-        if self.system.firewall_rule() is None:
+        rule = self.system.firewall_rule()
+        if rule is None:
             print("not there")
         else:
+            if rule == ():
+                print("Couldn't tell whether it is there; removing it if it is.")
             print("Windows asks for admin rights for this.")
             if self.system.elevated([remove_rule_command()]) == 0:
                 print("removed")
@@ -664,21 +730,30 @@ class WindowsSystem:
             return None
         return (int(found["Index"]), str(found["Category"]), str(found["Name"])) if found else None
 
-    def firewall_rule(self) -> tuple[bool, str, str, str, str, str] | None:
-        """Setup's rule as (enabled, direction, action, profile, protocol, port), or None."""
+    def firewall_rule(self) -> tuple | None:
+        """Setup's rule as (enabled, direction, action, profile, protocol, port); None when it
+        isn't there, () when PowerShell couldn't tell."""
         code, output = self.powershell(
             f"$r = Get-NetFirewallRule -Name '{RULE}' -ErrorAction SilentlyContinue; if ($r) {{ "
             "$f = Get-NetFirewallPortFilter -AssociatedNetFirewallRule $r; @{ Enabled = [string]$r.Enabled; "
             "Direction = [string]$r.Direction; Action = [string]$r.Action; Profile = [string]$r.Profile; "
             "Protocol = [string]$f.Protocol; Port = [string]$f.LocalPort } | ConvertTo-Json -Compress }")
+        if code != 0:
+            return ()
         try:
-            rule = json.loads(output) if code == 0 and output.strip() else None
+            rule = json.loads(output) if output.strip() else None
         except ValueError:
-            return None
+            return ()
         if not rule:
             return None
         return (rule["Enabled"] == "True", rule["Direction"], rule["Action"], rule["Profile"], rule["Protocol"],
                 rule["Port"])
+
+    def console_programs(self) -> list[str]:
+        """agent-bridgew.exe and the environment's pythonw.exe it runs, if either is a console
+        program."""
+        programs = (Path(self.service_command()), Path(sys.prefix) / "Scripts" / "pythonw.exe")
+        return [str(program) for program in programs if pe_subsystem(program) == 3]
 
     def blocked(self, program: str) -> bool:
         """Whether an inbound rule blocks `program`, e.g. python.exe after a Cancel at Windows'
