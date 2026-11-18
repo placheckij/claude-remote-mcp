@@ -93,7 +93,7 @@ def _parser() -> argparse.ArgumentParser:
     formats.add_argument("--token-format", metavar="TOKEN", help="exit 0 if TOKEN can be AGENT_BRIDGE_TOKEN, else 2")
     formats.add_argument("--name-format", metavar="NAME", help="exit 0 if NAME can be AGENT_BRIDGE_NAME, else 2")
     setup = commands.add_parser(
-        "setup", help="install or update the service on this Mac or Linux host and enroll it; keeps what is installed, "
+        "setup", help="install or update the service on this host and enroll it; keeps what is installed, "
                       "and asks for what is missing",
     )
     setup.add_argument("--roots", metavar="DIRS", help=f"the {os.pathsep}-separated folders agents may start in")
@@ -326,7 +326,7 @@ def _unenroll() -> int:
 
 
 def _setup(args: argparse.Namespace) -> int:
-    platform = _platform("setup", "setup.ps1")
+    platform = _platform("setup")
     if platform is None:
         return FAILED
     options = platform.Options.from_args(args)
@@ -334,13 +334,13 @@ def _setup(args: argparse.Namespace) -> int:
 
 
 def _uninstall() -> int:
-    platform = _platform("uninstall", "uninstall.ps1")
+    platform = _platform("uninstall")
     if platform is None:
         return FAILED
     return platform.uninstall(platform.system())
 
 
-def _platform(command: str, script: str):  # noqa: ANN202 - the platform's install module
+def _platform(command: str):  # noqa: ANN202 - the platform's install module
     if sys.platform == "darwin":
         from agent_bridge.install import macos
 
@@ -349,8 +349,11 @@ def _platform(command: str, script: str):  # noqa: ANN202 - the platform's insta
         from agent_bridge.install import linux
 
         return linux
-    print(f"agent-bridge {command} is for macOS and Linux for now. On Windows, run "
-          f"agent-bridge\\deploy\\windows\\{script} from a checkout.", file=sys.stderr)
+    if sys.platform == "win32":
+        from agent_bridge.install import windows
+
+        return windows
+    print(f"agent-bridge {command} is for macOS, Linux and Windows.", file=sys.stderr)
     return None
 
 
