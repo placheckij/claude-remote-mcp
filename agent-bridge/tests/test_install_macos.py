@@ -1469,8 +1469,8 @@ def test_runs_the_bridge_without_its_settings_in_the_environment(monkeypatch: py
 
 
 @pytest.mark.parametrize("command", ["setup", "uninstall"])
-def test_setup_and_uninstall_are_not_for_windows(monkeypatch: pytest.MonkeyPatch, capsys, command: str) -> None:
-    monkeypatch.setattr(sys, "platform", "win32")
+def test_setup_and_uninstall_are_not_for_other_platforms(monkeypatch: pytest.MonkeyPatch, capsys, command: str) -> None:
+    monkeypatch.setattr(sys, "platform", "freebsd14")
 
     assert cli.main([command]) == 1
-    assert f"agent-bridge {command} is for macOS and Linux for now" in capsys.readouterr().err
+    assert f"agent-bridge {command} is for macOS, Linux and Windows" in capsys.readouterr().err

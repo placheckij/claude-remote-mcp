@@ -58,7 +58,8 @@ def no_real_setup(monkeypatch: pytest.MonkeyPatch) -> None:
     def refuse() -> None:
         raise AssertionError("a test reached the real system's setup or uninstall; pass a fake system")
 
-    from agent_bridge.install import linux, macos
+    from agent_bridge.install import linux, macos, windows
 
     monkeypatch.setattr(macos, "system", refuse)
     monkeypatch.setattr(linux, "system", refuse)
+    monkeypatch.setattr(windows, "system", refuse)

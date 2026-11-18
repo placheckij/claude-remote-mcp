@@ -1,11 +1,9 @@
-"""`agent-bridge setup` and `uninstall` on Windows: installs agent-bridge as a scheduled task of
-the user who runs it, from the installed package, and enrolls it with the gateway.
-
-The task starts at logon, in that user's session (next to their herdr server), with no window,
-and again every minute while it isn't running. Setup adds a firewall rule for the port on
-Private networks, the one step that asks for admin rights. A host set up with setup.ps1 from a
-checkout is taken over: its settings, token and enrollment stay, and the task runs the package
-from then on.
+"""`agent-bridge setup` and `uninstall` on Windows: agent-bridge as a scheduled task of the user
+who runs it. It starts at logon, in that user's session (next to their herdr server), with no
+window, and again every minute while it isn't running. Setup adds a firewall rule for the port
+on Private networks, the one step that asks for admin rights. A host set up with setup.ps1
+from a checkout is taken over: the task runs the package from then on. The rest of setup is
+flow's.
 """
 
 import contextlib
@@ -23,12 +21,19 @@ import tempfile
 import time
 from base64 import b64encode
 from collections.abc import Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
 from pathlib import Path
+from typing import Protocol
 from xml.etree import ElementTree  # the user's own task, as schtasks exports it
 from xml.sax.saxutils import escape
 
-from agent_bridge.install.common import PREFIX, Refused
+from dotenv import dotenv_values
+
+from agent_bridge.install import flow
+from agent_bridge.install.common import PREFIX, Read, Refused, ask
+from agent_bridge.install.flow import Installed, Options, Plan
+
+__all__ = ["RULE", "TASK", "Options", "WindowsService", "WindowsSystem", "setup", "system", "task_xml", "uninstall"]
 
 TASK = "agent-bridge"
 RULE = "agent-bridge"
@@ -107,8 +112,8 @@ def task_xml(user: str, command: str, log: Path, folder: Path) -> str:
         "{{WORKING_DIRECTORY}}": str(folder),
     }
     xml = importlib.resources.files(__package__).joinpath("agent-bridge.task.xml").read_text(encoding="utf-8")
-    for field, value in fields.items():
-        xml = xml.replace(field, escape(value, {'"': "&quot;"}))
+    for placeholder, value in fields.items():
+        xml = xml.replace(placeholder, escape(value, {'"': "&quot;"}))
     return xml
 
 
@@ -198,11 +203,325 @@ def quoted(text: str) -> str:
     return "'" + text.replace("'", "''") + "'"
 
 
+def holder(listeners: list[Listener], excluded: list[tuple[int, int]], port: int) -> str | None:
+    """Who has `port`, as setup says it: another program before an agent-bridge, which setup
+    can stop; Windows when it keeps the port for itself; None when it is free."""
+    others = [listener for listener in listeners if not is_bridge(listener.command_line)]
+    for listener in others or listeners:
+        if not listener.command_line:
+            return f"PID {listener.pid} ({listener.name}, another user's or an elevated program)"
+        return f"PID {listener.pid}: {listener.command_line}"
+    if any(first <= port <= last for first, last in excluded):
+        return ("Windows, which keeps it for itself (see: netsh int ipv4 show excludedportrange "
+                "protocol=tcp)")
+    return None
+
+
+def serving(listeners: list[Listener]) -> bool:
+    """Whether agent-bridge, and nothing else, listens there: setup stops it and takes the port."""
+    return bool(listeners) and all(is_bridge(listener.command_line) for listener in listeners)
+
+
+class System(flow.System, Protocol):
+    paths: Paths
+
+    # This account's SID, and DOMAIN\user.
+    def user(self) -> str: ...
+    def me(self) -> str: ...
+    # Whose desktop this session is, when it can be told.
+    def desktop_owner(self) -> str | None: ...
+    # The agent-bridgew.exe the task runs.
+    def service_command(self) -> str: ...
+    def lasting_settings(self) -> dict[str, list[str]]: ...
+    def listeners(self, port: int) -> list[Listener]: ...
+    # Every process whose command line can be read.
+    def processes(self) -> list[Listener]: ...
+    def stop(self, pids: list[int]) -> None: ...
+    def network(self, address: str) -> tuple[int, str, str] | None: ...
+    def firewall_rule(self) -> tuple[bool, str, str, str, str, str] | None: ...
+    def blocked(self, program: str) -> bool: ...
+    def elevated(self, commands: list[str]) -> int: ...
+    def schtasks(self, *args: str) -> int: ...
+    def task(self) -> str | None: ...
+    def register(self, xml: str, file: Path) -> bool: ...
+
+
+def setup(options: Options, system: System, read: Read) -> int:
+    if (refusal := _other_account(system)) is not None:
+        print(f"error: {refusal}", file=sys.stderr)
+        return flow.FAILED
+    return flow.setup(_setup_ps1_answers(options, system.paths), system, WindowsService(system, read), read)
+
+
+def uninstall(system: System) -> int:
+    if (refusal := _other_account(system)) is not None:
+        print(f"error: {refusal}", file=sys.stderr)
+        return flow.FAILED
+    return flow.uninstall(system, WindowsService(system, lambda: None))
+
+
+def _setup_ps1_answers(options: Options, paths: Paths) -> Options:
+    """setup.ps1 set up folder trust only when it was passed, and asked nothing about it: on a
+    host it set up, a folder-trust setting its env file doesn't have was answered none."""
+    if not paths.env_file.exists() or not _from_setup_ps1(paths):
+        return options
+    try:
+        keys = {key.upper() for key in dotenv_values(paths.env_file)}
+    except OSError:
+        return options
+    return replace(options, **{name: "" for key, name in (("CLAUDE_CONFIG_DIR", "claude_config_dir"),
+                                                          ("TRUST_ROOT", "trust_root"))
+                               if getattr(options, name) is None and f"{PREFIX}{key}" not in keys})
+
+
+def _from_setup_ps1(paths: Paths) -> bool:
+    """Whether setup.ps1 wrote the env file: its first line says so, or its files are there."""
+    try:
+        with paths.env_file.open(encoding="utf-8", errors="replace") as file:
+            first = file.readline()
+    except OSError:
+        first = ""
+    return r"deploy\windows\setup.ps1" in first or any(path.exists() for path in paths.leftovers())
+
+
+def _other_account(system: System) -> str | None:
+    """Why setup refuses to run as another account than the one whose desktop this is, e.g. an
+    administrator's typed in at a UAC prompt: the task and the settings would be that
+    account's, away from herdr."""
+    owner, me = system.desktop_owner(), system.me()
+    if owner is None or owner.lower() == me.lower():
+        return None
+    return (f"run this as {owner}, whose desktop this is, not as {me}: agent-bridge must run next to your herdr "
+            "server. Open PowerShell normally; setup asks for admin rights only for the firewall rule.")
+
+
+@dataclass
+class WindowsService:
+    system: System
+    read: Read
+    machine: str = "PC"
+    runner: str = "scheduled task"
+    name_fallback: str = "pc"
+    host: str = ""
+    port: int = 0
+    # The port the bridge being replaced had, to stop it there.
+    installed_port: int = 0
+    # The task as it was, to put back when setup stops after stopping it.
+    previous: str | None = None
+    # Lines for the end: what setup couldn't do.
+    notes: list[str] = field(default_factory=list)
+
+    @property
+    def paths(self) -> Paths:
+        return self.system.paths
+
+    @property
+    def env_file(self) -> Path:
+        return self.paths.env_file
+
+    @property
+    def state_file(self) -> Path:
+        return self.paths.state_file
+
+    def _xml(self) -> str:
+        return task_xml(self.system.user(), self.system.service_command(), self.paths.log, self.paths.state)
+
+    def check(self, plan: Plan, options: Options) -> None:
+        # The task gets your lasting environment, where these win over the env file.
+        for scope, names in self.system.lasting_settings().items():
+            target = "Machine" if scope == "machine" else "User"
+            remove = "; ".join(f"[Environment]::SetEnvironmentVariable('{name}', $null, '{target}')" for name in names)
+            raise Refused(f"{', '.join(names)} set in your {scope} environment would win over {self.env_file} for "
+                          f"the task. Remove {'them' if len(names) > 1 else 'it'}"
+                          f"{' as administrator' if scope == 'machine' else ''}, then run setup again:\n  {remove}")
+        command = self.system.service_command()
+        if not Path(command).is_file():
+            raise Refused(f"{command}, the windowless agent-bridge the task runs, isn't there: reinstall the "
+                          "package (uv tool install --reinstall claude-remote-mcp-agent-bridge)")
+        # Refused here, before anything changes, rather than when the task is registered.
+        self._xml()
+        self.host = plan.values[f"{PREFIX}HOST"]
+        self.port = int(plan.values[f"{PREFIX}PORT"])
+
+    def prepare(self) -> None:
+        self.previous = self.system.task()
+        self.installed_port = _installed_port(self.env_file)
+
+    def abandon(self) -> None:
+        """Puts back the task setup stopped, so a setup that stops halfway doesn't leave the
+        bridge off. Registering it again starts it."""
+        if self.previous is None or not self.paths.disabled_marker.exists():
+            return
+        if self.system.register(self.previous, self.paths.state / "task-before-setup.xml"):
+            with contextlib.suppress(OSError):
+                self.paths.disabled_marker.unlink()
+        else:
+            print("warning: couldn't start the agent-bridge task again; run setup again", file=sys.stderr)
+
+    def legacy(self) -> Installed | None:
+        # setup.ps1 wrote the same env file.
+        return None
+
+    def install(self, plan: Plan) -> None:
+        self._firewall()
+        # What setup.ps1 used and the package's setup doesn't.
+        for path in self.paths.leftovers():
+            with contextlib.suppress(OSError):
+                path.unlink(missing_ok=True)
+        shutil.rmtree(self.paths.check_folder(), ignore_errors=True)
+
+    def _firewall(self) -> None:
+        print(f"\n==> Firewall rule for TCP {self.port}, on Private networks only")
+        commands = []
+        if self.system.firewall_rule() != (True, "Inbound", "Allow", "Private", "TCP", str(self.port)):
+            commands.append(firewall_rule_commands(self.port))
+        network = self.system.network(self.host)
+        if network is not None and network[1] == "Public":
+            index, _, name = network
+            print(f"Windows treats the network {self.host} is on ({name}) as Public, where the rule doesn't apply, "
+                  "so the gateway couldn't reach agent-bridge. On your own network, make it Private.")
+            if ask(self.read, f"Make {name} a Private network?", "n", "y/N").lower().startswith("y"):
+                commands.append(f"Set-NetConnectionProfile -InterfaceIndex {index} -NetworkCategory Private")
+            else:
+                self.notes.append(f"The network {name} is Public, so the gateway can't reach agent-bridge until you "
+                                  "make it Private.")
+        elif network is not None and network[1] != "Private":
+            print(f"warning: the network {self.host} is on is {network[1]}; the rule applies only on Private "
+                  "networks", file=sys.stderr)
+        if not commands:
+            print("The rule is already there.")
+            return
+        print("Windows asks for admin rights for this.")
+        failed = self.system.elevated(commands)
+        by_hand = [command for i, command in enumerate(commands) if failed == -1 or failed & (1 << i)]
+        if not by_hand:
+            print("ok")
+            return
+        print("warning: not done, so the gateway can't reach agent-bridge. In a PowerShell run as administrator:",
+              file=sys.stderr)
+        for command in by_hand:
+            print(f"  {command}", file=sys.stderr)
+        self.notes.append("The firewall step wasn't done (see above), so the gateway can't reach agent-bridge yet.")
+
+    def start(self) -> None:
+        print(f"\n==> Starting the scheduled task {TASK}")
+        self._stop((self.port, self.installed_port))
+        print("If Windows asks whether to let Python through the firewall, allow it on Private networks: Cancel "
+              "adds a rule that blocks Python, which wins over setup's rule.")
+        if not self.system.register(self._xml(), self.paths.task_file):
+            raise Refused(f"schtasks couldn't register the task {TASK}")
+        with contextlib.suppress(OSError):
+            self.paths.disabled_marker.unlink()
+
+    def _stop(self, ports: Iterable[int]) -> None:
+        """Stops the task and the bridge it runs, and any agent-bridge still holding one of
+        `ports`. The task is left disabled, or its every-minute repeat could start the old
+        bridge again meanwhile; registering it enables it again."""
+        known = {self.system.service_command(), self.system.command()}
+        xml = self.system.task()
+        if xml is not None:
+            # Brought back by a setup that stops early only if it was on, or setup had turned it
+            # off before (the marker is there): one you disabled stays off then. Marked first, so
+            # a setup killed in between leaves the mark too.
+            if Task.parse(xml).enabled:
+                try:
+                    self.paths.state.mkdir(parents=True, exist_ok=True)
+                    self.paths.disabled_marker.write_text("setup\n", encoding="utf-8")
+                except OSError as error:
+                    raise Refused(f"can't write {self.paths.disabled_marker} ({error.strerror})") from None
+            self.system.schtasks("/Change", "/TN", f"\\{TASK}", "/DISABLE")
+            self.system.schtasks("/End", "/TN", f"\\{TASK}")
+            # The one it ran, e.g. a checkout's, and the agent-bridge.exe beside it.
+            if command := Task.parse(xml).command:
+                known |= {command, str(Path(command).with_name("agent-bridge.exe"))}
+        # Ending the task ends the agent-bridgew.exe it runs, which takes its python.exe along.
+        # Not so for a bridge started by hand, or by setup.ps1's older task, which ran run.cmd
+        # under cmd.exe, leaving everything below it running.
+        run_file = str(self.paths.state / "run.cmd").lower()
+        known_lower = [path.lower() for path in known]
+        self.system.stop([process.pid for process in self.system.processes() if (
+            (process.name.lower() == "cmd.exe" and run_file in process.command_line.lower())
+            or (is_bridge(process.command_line, known)
+                and any(path in process.command_line.lower() for path in known_lower)))])
+        for port in {port for port in ports if port}:
+            # Even beside another program on the port, on another address.
+            bridges = [listener.pid for listener in self.system.listeners(port) if is_bridge(listener.command_line)]
+            if bridges:
+                print(f"Stopping the agent-bridge on port {port} (PID {', '.join(map(str, bridges))})")
+                self.system.stop(bridges)
+            for _ in range(20):
+                if not any(is_bridge(listener.command_line) for listener in self.system.listeners(port)):
+                    break
+                self.system.sleep(0.5)
+
+    def done(self, url: str) -> list[str]:
+        lines = [f"Done. agent-bridge listens on {url} and starts at every logon.",
+                 f"If a check failed: see its log, {self.paths.log} (herdr failing means its server isn't running)."]
+        program = next((listener.path for listener in self.system.listeners(self.port)
+                        if is_bridge(listener.command_line) and listener.path), "")
+        if program and self.system.blocked(program):
+            lines += [f"warning: a firewall rule blocks {program}, so the gateway can't reach agent-bridge. In a "
+                      "PowerShell run as administrator:",
+                      f"  Get-NetFirewallApplicationFilter -Program {quoted(program)} | Get-NetFirewallRule | "
+                      "Where-Object Action -eq Block | Remove-NetFirewallRule"]
+        return lines + self.notes
+
+    def remove(self) -> None:
+        print(f"\n==> Removing the scheduled task {TASK}")
+        self.previous = self.system.task()
+        self._stop((_installed_port(self.env_file),))
+        if self.previous is not None and self.system.schtasks("/Delete", "/TN", f"\\{TASK}", "/F") != 0:
+            self.abandon()
+            raise Refused(f"couldn't remove the scheduled task {TASK}; it is left as it was. Run uninstall again.")
+        print("\n==> Removing the firewall rule")
+        if self.system.firewall_rule() is None:
+            print("not there")
+        else:
+            print("Windows asks for admin rights for this.")
+            if self.system.elevated([remove_rule_command()]) == 0:
+                print("removed")
+            else:
+                print(f"warning: not removed. In a PowerShell run as administrator:\n  {remove_rule_command()}",
+                      file=sys.stderr)
+        for path in (self.paths.log, self.paths.log.with_name(f"{self.paths.log.name}.1"), self.paths.task_file,
+                     self.paths.state / "task-before-setup.xml", self.paths.disabled_marker, *self.paths.leftovers()):
+            self._remove(path)
+        shutil.rmtree(self.paths.check_folder(), ignore_errors=True)
+
+    def _remove(self, path: Path) -> None:
+        # A process that has only just exited may still hold the log for a moment.
+        for attempt in range(5):
+            try:
+                path.unlink(missing_ok=True)
+                return
+            except OSError as error:
+                if attempt == 4:
+                    print(f"warning: couldn't remove {path} ({error.strerror}); delete it by hand", file=sys.stderr)
+                    return
+                self.system.sleep(1)
+
+    def folders(self) -> Iterable[Path]:
+        return (self.paths.settings, self.paths.state)
+
+
+def _installed_port(env_file: Path) -> int:
+    """The port the env file sets, else agent-bridge's default; 0 without an env file, when no
+    port is ours."""
+    try:
+        values = dotenv_values(env_file) if env_file.exists() else None
+    except OSError:
+        values = None
+    if values is None:
+        return 0
+    port = {key.upper(): value for key, value in values.items()}.get(f"{PREFIX}PORT") or ""
+    return int(port) if port.isdigit() and 1 <= int(port) <= 65535 else flow.DEFAULT_PORT
+
+
 # --- The real Windows ----------------------------------------------------------------
 
 
 class WindowsSystem:
-    """What setup asks of Windows; tests replace it."""
+    """What setup asks of the real Windows; tests replace it."""
 
     def __init__(self) -> None:
         self.home = Path.home()
@@ -230,6 +549,10 @@ class WindowsSystem:
 
     def me(self) -> str:
         return f"{os.environ.get('USERDOMAIN', '')}\\{os.environ.get('USERNAME', '')}"
+
+    def is_root(self) -> bool:
+        # Another account than the desktop's is refused before flow asks (_other_account).
+        return False
 
     def in_checkout(self) -> bool:
         # A checkout's agent-bridge runs from <checkout>/.venv.
@@ -314,6 +637,12 @@ class WindowsSystem:
                 command_line, path = "", ""
             found.append(Listener(pid, name, command_line, path))
         return found
+
+    def port_holder(self, port: int) -> str | None:
+        return holder(self.listeners(port), self.excluded_ranges(), port)
+
+    def serves(self, port: int) -> bool:
+        return serving(self.listeners(port))
 
     def excluded_ranges(self) -> list[tuple[int, int]]:
         """The TCP ports Windows keeps for itself (Hyper-V, WSL and Docker reserve them), IPv4's
@@ -433,7 +762,7 @@ class WindowsSystem:
         psutil.wait_procs(processes, timeout=10)
 
     def processes(self) -> list[Listener]:
-        """Every process whose command line can be read and might be agent-bridge serving."""
+        """Every process whose command line can be read."""
         import psutil
 
         found = []
@@ -441,9 +770,8 @@ class WindowsSystem:
             command = process.info.get("cmdline")
             if not command:
                 continue
-            line = subprocess.list2cmdline(command)
-            if "serve" in line or "agent_bridge" in line:
-                found.append(Listener(process.pid, process.info.get("name") or "", line, process.info.get("exe") or ""))
+            found.append(Listener(process.pid, process.info.get("name") or "", subprocess.list2cmdline(command),
+                                  process.info.get("exe") or ""))
         return found
 
     def find_herdr(self) -> str | None:
@@ -504,3 +832,7 @@ def _processes(name: str) -> list:
     import psutil
 
     return [process for process in psutil.process_iter(["name"]) if (process.info.get("name") or "").lower() == name]
+
+
+def system() -> WindowsSystem:
+    return WindowsSystem()

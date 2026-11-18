@@ -497,82 +497,98 @@ or reboot. Lingering stays on; `loginctl disable-linger` turns it off.
 ### As a service on Windows (Task Scheduler)
 
 A scheduled task starts agent-bridge when you log on. It runs as you, in your session
-(where the herdr server runs), with no window. It needs uv 0.12.4 or later: older ones
-write the `.venv`'s `pythonw.exe` as a console program, which opens a terminal window at
-every start of agent-bridge (astral-sh/uv#19235). When the `.venv`'s `pythonw.exe` is a
-console program, setup stops with such a uv; with a newer one, it makes the `.venv` again,
-because `uv sync` keeps the old `pythonw.exe` (the old `.venv` is put back if that fails).
-Run the setup script from the checkout in an ordinary PowerShell window:
+(where the herdr server runs), with no window.
+
+#### With agent-bridge setup
+
+Run `sudo mcp-gateway enroll` on the gateway host for an enrollment string. Then, in an
+ordinary PowerShell window (not one run as administrator, and not as another account):
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File agent-bridge\deploy\windows\setup.ps1
+uv tool install claude-remote-mcp-agent-bridge
+agent-bridge setup
 ```
 
-It asks for:
-
-- the folders agents may start in (default `%USERPROFILE%\Projects`);
-- this host's name, as Claude will say it (default: the computer name, e.g. `win-pc`);
-- the enrollment string that `sudo mcp-gateway enroll` prints on the gateway host (Enter
-  skips enrolling).
-
-It finds the LAN address and `herdr.exe` itself, including herdr's
-`%LOCALAPPDATA%\Programs\Herdr\bin\herdr.exe`, which isn't on `PATH`. Then it:
+It asks the same questions as [on macOS](#with-agent-bridge-setup), only for what isn't
+installed yet, and takes the same flags; `--roots` takes folders separated by `;`. The
+default name is the computer name, e.g. `win-pc`. It finds the LAN address and
+`herdr.exe` itself, including herdr's `%LOCALAPPDATA%\Programs\Herdr\bin\herdr.exe`,
+which isn't on `PATH`. Then it:
 
 1. checks the port (8765). If another program holds it, or Windows keeps it for Hyper-V or
-   WSL, the script names that and offers a free port. A port held by agent-bridge itself is
-   fine; it is restarted;
-2. checks the new settings with `agent-bridge check` on a copy, so settings agent-bridge
-   would refuse never replace a working install. Then it stops the running bridge, runs
-   `uv sync --all-packages --frozen` (checking the settings again with the new code), and
-   writes the env file;
+   WSL, it names that and offers a free port. A port held by agent-bridge itself is fine;
+   it is restarted;
+2. writes the settings to `%APPDATA%\agent-bridge\env`. Other settings in it are kept, but
+   not its comments. `AGENT_BRIDGE_*` variables set in your user or machine environment
+   would win over it for the task, so setup refuses them and prints how to remove them;
 3. adds an inbound firewall rule for the port on **Private** networks only. This is the
-   only step that asks for admin rights. If Windows treats your network as Public, the
-   script asks whether to make it Private (answer `y`): the gateway can't reach
-   agent-bridge otherwise;
-4. registers the `agent-bridge` task, which starts it. The task runs
-   `agent-bridgew.exe serve --log-file …`: `agent-bridgew` is agent-bridge without a
-   console window, as `pythonw` is to `python`. Nothing runs in between, so ending the task
-   ends agent-bridge. It is tried every minute while you're logged on, which does nothing
-   while it runs. That way it starts once Wi-Fi brings up the LAN address, and starts again
-   if it stops;
-5. enrolls with the gateway (asking for another name if the gateway already has a host by
-   that name), and runs `agent-bridge check`.
+   only step that asks for admin rights (one UAC prompt). If Windows treats your network
+   as Public, it asks whether to make it Private (answer `y`): the gateway can't reach
+   agent-bridge otherwise. If you decline the prompt, it prints the commands to run as
+   administrator;
+4. stops the running agent-bridge, if any, and registers the `agent-bridge` task, which
+   starts it. The task runs `agent-bridgew.exe serve --log-file …`: `agent-bridgew` is
+   agent-bridge without a console window, as `pythonw` is to `python`. Nothing runs in
+   between, so ending the task ends agent-bridge. It is tried every minute while you're
+   logged on, which does nothing while it runs. That way it starts once Wi-Fi brings up
+   the LAN address, and starts again if it stops;
+5. runs `agent-bridge check`, and enrolls with the gateway (asking for another name if the
+   gateway already has a host by that name).
 
 Its log is `%LOCALAPPDATA%\agent-bridge\agent-bridge.log`, with a line for each start and one
 per request. Once it passes 1 MB it is moved to `agent-bridge.log.1`, replacing the one
 before, also while agent-bridge runs (while another program has it open, such as
 `Get-Content -Wait`, that waits until it lets go). It holds only what agent-bridge logs, not
 what it prints; an exception is logged by its type alone, without its message or traceback,
-which could include a setting. Re-run setup after pulling new code: it keeps the token and settings,
-and asks only for what's missing. Parameters skip the questions or change a setting:
-`-Roots`, `-Name`, `-Enrollment` (`''` skips), `-Address`, `-Port`, `-HerdrBin`,
-`-ClaudeConfigDir` and `-TrustRoot` (for [folder trust](#folder-trust); `''` removes
-them), `-RotateToken`, and `-Bridge` (an `agent-bridge.exe` installed elsewhere, with its `agent-bridgew.exe` beside it). A new `-Name`
-on an enrolled host renames it on the gateway (`agent-bridge rename`); a gateway too old
-for that, or one that can't be reached, is asked for an enrollment string instead. Settings
-it doesn't manage, such as `AGENT_BRIDGE_ACCOUNTS`, can be added to the env file by hand;
-re-runs keep them.
+which could include a setting.
+
+The task runs `%USERPROFILE%\.local\bin\agent-bridgew.exe`, which upgrades keep. Re-running
+setup asks nothing on an installed host, and keeps the token and the enrollment. If setup
+stops partway, run it again; a setup that stops after stopping agent-bridge puts the task
+back as it was.
+
+Windows can't replace files a running program has open, so stop agent-bridge before
+upgrading: `uv tool upgrade` fails while it runs, and leaves the package half removed.
+Setup starts it again:
 
 ```powershell
-# Restart it. The log gets a new "starting agent-bridge" line. (After pulling, re-run setup
-# instead: it stops agent-bridge before `uv sync`, which can't replace files a running one
-# has open. A task an older setup registered runs conhost.exe on run.cmd, and ending it
-# leaves agent-bridge running: re-run setup once first.)
-Stop-ScheduledTask -TaskName agent-bridge
-Start-ScheduledTask -TaskName agent-bridge
+schtasks /Change /TN agent-bridge /DISABLE; schtasks /End /TN agent-bridge
+uv tool upgrade claude-remote-mcp-agent-bridge
+agent-bridge setup
+```
+
+If an upgrade failed that way, `agent-bridge` is gone too: run
+`uv tool install --reinstall claude-remote-mcp-agent-bridge` (with agent-bridge stopped,
+as above), then `agent-bridge setup`.
+
+A host set up from a checkout with `agent-bridge\deploy\windows\setup.ps1` (earlier
+versions) is taken over with no questions: setup keeps its env file, token and
+enrollment, and no folder trust if none was set up. It stops the checkout's agent-bridge
+and points the task at the package. The checkout isn't used after that.
+
+Setup refuses to run from a checkout's `.venv` or under `uvx`, as the task must run an
+installed agent-bridge. From a checkout, install it with
+`uv tool install --editable ./agent-bridge` and run that one's `agent-bridge setup`.
+
+#### Restart, stop, uninstall
+
+```powershell
+# Restart it, e.g. after editing the env file. The log gets a new "starting agent-bridge"
+# line. Re-running agent-bridge setup does that too.
+schtasks /End /TN agent-bridge; schtasks /Run /TN agent-bridge
 
 # Stop it. Disabled first, or the task starts it again within a minute.
-Disable-ScheduledTask -TaskName agent-bridge
-Stop-ScheduledTask -TaskName agent-bridge
+schtasks /Change /TN agent-bridge /DISABLE; schtasks /End /TN agent-bridge
 
-# Start again (re-running setup does this too). Registering it again, rather than only
-# starting it, also brings back the every-minute retry, which disabling ended.
-Enable-ScheduledTask -TaskName agent-bridge
-Register-ScheduledTask -TaskName agent-bridge -Xml (Export-ScheduledTask -TaskName agent-bridge) -Force
+# Start again: re-run agent-bridge setup, which registers the task again. Only enabling and
+# starting it (schtasks /Change /ENABLE, then /Run) leaves out the every-minute retry,
+# which disabling ended, until your next logon.
+agent-bridge setup
 
-# Uninstall: leaves the gateway, then removes the task, the firewall rule, the env file,
-# the state file and the log. The checkout stays.
-powershell -ExecutionPolicy Bypass -File agent-bridge\deploy\windows\uninstall.ps1
+# Uninstall: leaves the gateway, then removes the task, the firewall rule (one UAC
+# prompt), the env file, the state file and the log.
+agent-bridge uninstall
+uv tool uninstall claude-remote-mcp-agent-bridge
 ```
 
 ### When it's stopped or removed
