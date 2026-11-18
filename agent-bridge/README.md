@@ -51,7 +51,7 @@ answers "The agent host is not reachable". The gateway host can't wake it: macOS
 - Turn off suspend: `sudo systemctl mask sleep.target suspend.target hibernate.target
   hybrid-sleep.target`. On a laptop, also set `HandleLidSwitch=ignore` and
   `HandleLidSwitchExternalPower=ignore` in `/etc/systemd/logind.conf`.
-- The [setup script](#as-a-service-on-linux-systemd-user-unit) turns on lingering, so
+- [`agent-bridge setup`](#as-a-service-on-linux-systemd-user-unit) turns on lingering, so
   agent-bridge and herdr's server start at boot and keep running after you log out.
 
 **Windows**
@@ -145,9 +145,8 @@ what a plain `claude` uses), or another named by `CLAUDE_CONFIG_DIR`.
      "personal": {"config_dir": "/Users/me/.claude-personal", "folders": ["/Users/me/projects/own"]}
    }
    ```
-3. **Apply it.** With `agent-bridge setup` on macOS, pass it in once as `--accounts`, or
-   with the Linux setup script as `AGENT_BRIDGE_ACCOUNTS`; re-runs keep it, and an empty
-   value removes it:
+3. **Apply it.** With `agent-bridge setup` on macOS or Linux, pass it in once as
+   `--accounts`; re-runs keep it, and an empty value removes it:
 
    ```sh
    agent-bridge setup --accounts '{"work": {"config_dir": null, "folders": ["/Users/me/projects/work"]}}'
@@ -257,8 +256,8 @@ uv run --package claude-remote-mcp-agent-bridge agent-bridge serve
 | `agent-bridge unenroll` | leaves that gateway | 0, also when the gateway can't be reached or refuses (prints the gateway's command); 1 if the state file can't be read or written |
 | `agent-bridge check` | checks the settings, the files' modes, herdr, the running service and the gateway, one line each | 0 all passed, 1 one failed |
 | `agent-bridge check --token-format <token>`, `--name-format <name>` | checks a value before it goes in the env file | 0 fine, 2 not (why, on stderr) |
-| `agent-bridge setup` | macOS: installs or updates the service and enrolls it ([below](#with-agent-bridge-setup)) | 0 installed (enrolled or not), 1 refused or failed |
-| `agent-bridge uninstall` | macOS: leaves the gateway, then removes the service, its settings, state and log | 0 removed, also when leaving the gateway failed (prints the gateway's command); 1 run with sudo |
+| `agent-bridge setup` | macOS and Linux: installs or updates the service and enrolls it ([macOS](#with-agent-bridge-setup), [Linux](#as-a-service-on-linux-systemd-user-unit)) | 0 installed (enrolled or not), 1 refused or failed |
+| `agent-bridge uninstall` | macOS and Linux: leaves the gateway, then removes the service, its settings, state and log | 0 removed, also when leaving the gateway failed (prints the gateway's command); 1 run with sudo |
 | `agent-bridge --version` | prints the installed version | 0 |
 
 ### Enroll with the gateway
@@ -432,58 +431,50 @@ boot without anyone logging in (lingering), and restarts if it stops. A second u
 service runs herdr's server headless, so agents can start after a reboot too; you can
 still attach to it with `herdr`.
 
-#### With the setup script
+#### With agent-bridge setup
 
-Run `sudo mcp-gateway enroll` on the gateway host first. Then run the script from the
-checkout as your own user, not with `sudo`, in your own login (SSH or a console; not
-through `su` or `sudo -u`, which have no user manager):
+Run `sudo mcp-gateway enroll` on the gateway host for an enrollment string. Then, as your
+own user, not with `sudo`, in your own login (SSH or a console; not through `su` or
+`sudo -u`, which have no user manager):
 
 ```sh
-agent-bridge/deploy/linux/setup.sh
+uv tool install claude-remote-mcp-agent-bridge
+agent-bridge setup
 ```
 
-It asks only for what's missing:
+It asks the same questions as [on macOS](#with-agent-bridge-setup), only for what isn't
+installed yet, and takes the same flags. Then it:
 
-- the folders agents may start in (`AGENT_BRIDGE_ALLOWED_ROOTS`, default `~/Projects`);
-- this host's name in agent ids (default: the hostname);
-- a separate Claude config (default `~/.claude-agents`) and a trust root (default: the
-  first folder agents may start in), for [folder trust](#folder-trust). Answer `-` at
-  the config question to skip both. If the config is new, log in to it once, as the
-  script reminds you at the end. This is asked once; later runs keep the answer;
-- the enrollment string `sudo mcp-gateway enroll` printed. Press Enter to enroll later.
-
-It finds the LAN address and `herdr` itself, and generates the token. Then it:
-
-1. runs `uv sync --all-packages` to install the dependencies;
-2. checks the port (8765). If another program holds it, it names that program and
-   offers a free port. If an agent-bridge started by hand holds it, stop that one first;
-3. writes the settings to `~/.config/agent-bridge/env`, readable only by you, keeping
-   any other lines in it;
-4. installs `agent-bridge.service` and `agent-bridge-herdr.service` in
+1. checks the port (8765). If another program holds it, it names the program and offers
+   a free port;
+2. writes the settings to `~/.config/agent-bridge/env`, readable only by you. Other
+   settings in it are kept, but not its comments;
+3. installs `agent-bridge.service` and `agent-bridge-herdr.service` in
    `~/.config/systemd/user/`. It starts herdr's service only when no herdr server is
    running, and never restarts it, so running agents stay;
-5. turns on lingering (`loginctl enable-linger`). If that is refused, it prints the
+4. turns on lingering (`loginctl enable-linger`). If that is refused, it prints the
    `sudo` command to run;
-6. (re)starts agent-bridge, runs `agent-bridge check`, and enrolls. If the gateway has
+5. (re)starts agent-bridge, runs `agent-bridge check`, and enrolls. If the gateway has
    another host by that name, it asks for another one.
 
-The last lines say which name the gateway knows the host by. Nothing is copied to the
-gateway by hand.
+`--no-herdr-service` installs no service for herdr's server, if you start it yourself,
+and removes one installed before without stopping its server; `--herdr-service` brings it
+back. Re-runs keep what is installed.
 
-To skip the questions, pass the answers as variables, e.g.
-`ALLOWED_ROOTS=/home/me/projects NAME=linux-box ENROLLMENT='crm1@…' agent-bridge/deploy/linux/setup.sh`.
-The others are `HOST`, `PORT`, `HERDR_BIN`, `AGENT_BRIDGE_CLAUDE_CONFIG_DIR` and
-`TRUST_ROOT` (pass these two empty for no folder trust), `AGENT_BRIDGE_ACCOUNTS` (never
-asked for; the installed value is kept unless you pass one, and an empty one removes it),
-`ROTATE_TOKEN=1` (a new token; needs `ENROLLMENT`, so the gateway learns it) and
-`HERDR_SERVICE=0` (no service for herdr's server, if you start it yourself).
+The unit runs `~/.local/bin/agent-bridge`, which `uv tool upgrade
+claude-remote-mcp-agent-bridge` keeps; re-run `agent-bridge setup` after upgrading, which
+restarts agent-bridge but not herdr's server. Re-running asks nothing on an installed
+host, and keeps the token and the enrollment. If setup stops partway, run it again.
 
-Re-run it after pulling new code. It asks nothing it already knows; to change a setting,
-pass it as a variable or edit the env file. The name is the exception: once the host is
-enrolled, it is the gateway's. Run again with `NAME=<new>` to rename it there
-(`agent-bridge rename`); a gateway too old for that prints the command to run on the
-gateway host instead, `sudo mcp-gateway bridges rename <old> <new>`, after which the next
-run takes the new name.
+A host set up from a checkout with `agent-bridge/deploy/linux/setup.sh` (earlier
+versions) is taken over with no questions: setup keeps its env file, token and
+enrollment, keeps herdr's service as it was (none, if it was installed with
+`HERDR_SERVICE=0`), and points the unit at the package. The checkout isn't used after
+that.
+
+Setup refuses to run from a checkout's `.venv` or under `uvx`, as the unit must run an
+installed agent-bridge. From a checkout, install it with
+`uv tool install --editable ./agent-bridge` and run that one's `agent-bridge setup`.
 
 #### Restart, stop, uninstall
 
@@ -494,13 +485,14 @@ systemctl --user restart agent-bridge          # after editing the env file
 systemctl --user stop agent-bridge             # until the next start or boot
 systemctl --user disable --now agent-bridge    # and don't start at boot
 
-agent-bridge/deploy/linux/uninstall.sh
+agent-bridge uninstall
+uv tool uninstall claude-remote-mcp-agent-bridge
 ```
 
-The uninstall script leaves the gateway (`agent-bridge unenroll`), then removes both
-services, the env file and the state file. herdr's server keeps running with its agents
-until you stop it (`herdr server stop`) or reboot. Lingering stays on;
-`loginctl disable-linger` turns it off.
+`agent-bridge uninstall` leaves the gateway (`agent-bridge unenroll`), then removes both
+services, the env file and the state file. Its log is in the journal, which systemd ages
+out. herdr's server keeps running with its agents until you stop it (`herdr server stop`)
+or reboot. Lingering stays on; `loginctl disable-linger` turns it off.
 
 ### As a service on Windows (Task Scheduler)
 

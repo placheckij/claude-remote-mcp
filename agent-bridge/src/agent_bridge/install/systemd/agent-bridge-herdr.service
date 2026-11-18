@@ -1,4 +1,4 @@
-# setup.sh installs this in ~/.config/systemd/user/ and fills in @HERDR_BIN@: herdr's
+# agent-bridge setup installs this in ~/.config/systemd/user/ and fills in @HERDR_BIN@: herdr's
 # server, headless, so agents can start after a reboot without anyone logging in. You can
 # still attach to it with `herdr`. Stopping this unit stops every agent in herdr.
 [Unit]
