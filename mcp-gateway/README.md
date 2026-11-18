@@ -429,8 +429,9 @@ On any other system (another Linux, macOS, Windows), or to use a different tunne
 reverse proxy:
 
 1. Install [uv](https://docs.astral.sh/uv/getting-started/installation/), and the package
-   into a virtual environment the server's user can read, e.g.
-   `uv venv /opt/mcp-gateway/venv && uv pip install --python /opt/mcp-gateway/venv claude-remote-mcp-gateway`.
+   into a virtual environment the server's user can read, with its Python there too
+   (uv would otherwise use or download one in your home folder):
+   `UV_PYTHON_INSTALL_DIR=/opt/mcp-gateway/python uv venv --python 3.11 /opt/mcp-gateway/venv && uv pip install --python /opt/mcp-gateway/venv claude-remote-mcp-gateway`.
    Its commands are in the venv's `bin/` (`Scripts\` on Windows).
 2. Set the [configuration](#configuration) variables and start the server, on every
    interface for agent hosts to [enroll](#enrollment) (`--host 127.0.0.1` if they are all
