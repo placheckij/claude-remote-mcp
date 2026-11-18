@@ -48,3 +48,17 @@ def symlink() -> Callable[[Path, Path], None]:
             _winapi.CreateJunction(str(target), str(link))
 
     return symlink
+
+
+@pytest.fixture(autouse=True)
+def no_real_setup(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`agent-bridge setup` and `uninstall` through cli.main would install or remove the real
+    service of whoever runs the tests: they get a system that refuses. Tests pass a fake one."""
+
+    def refuse() -> None:
+        raise AssertionError("a test reached the real system's setup or uninstall; pass a fake system")
+
+    from agent_bridge.install import linux, macos
+
+    monkeypatch.setattr(macos, "system", refuse)
+    monkeypatch.setattr(linux, "system", refuse)

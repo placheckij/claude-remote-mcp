@@ -1,4 +1,4 @@
-# setup.sh installs this in ~/.config/systemd/user/ and fills in @AGENT_BRIDGE@. The
+# agent-bridge setup installs this in ~/.config/systemd/user/ and fills in @AGENT_BRIDGE@. The
 # settings are in the env file `agent-bridge serve` reads, never here.
 [Unit]
 Description=agent-bridge (claude-remote)

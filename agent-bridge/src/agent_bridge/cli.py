@@ -93,10 +93,10 @@ def _parser() -> argparse.ArgumentParser:
     formats.add_argument("--token-format", metavar="TOKEN", help="exit 0 if TOKEN can be AGENT_BRIDGE_TOKEN, else 2")
     formats.add_argument("--name-format", metavar="NAME", help="exit 0 if NAME can be AGENT_BRIDGE_NAME, else 2")
     setup = commands.add_parser(
-        "setup", help="install or update the service on this Mac and enroll it; keeps what is installed, "
+        "setup", help="install or update the service on this Mac or Linux host and enroll it; keeps what is installed, "
                       "and asks for what is missing",
     )
-    setup.add_argument("--roots", metavar="DIRS", help="the :-separated folders agents may start in")
+    setup.add_argument("--roots", metavar="DIRS", help=f"the {os.pathsep}-separated folders agents may start in")
     setup.add_argument("--name", help="this host's name in agent ids (default: the hostname); a new one on an "
                                       "enrolled host renames it on the gateway")
     setup.add_argument("--host", metavar="ADDRESS", help="the LAN address to listen on (default: found)")
@@ -108,6 +108,8 @@ def _parser() -> argparse.ArgumentParser:
     setup.add_argument("--accounts", metavar="JSON", help="AGENT_BRIDGE_ACCOUNTS, the named Claude logins; '' removes them")
     setup.add_argument("--rotate-token", action="store_true",
                        help="a new token; needs --enrollment, so the gateway learns it")
+    setup.add_argument("--herdr-service", action=argparse.BooleanOptionalAction, default=None,
+                       help="Linux: run herdr's server as a user service too (default: as installed, else yes)")
     commands.add_parser("uninstall", help="leave the gateway, then remove the service, its settings, state and log")
     return parser
 
@@ -324,23 +326,32 @@ def _unenroll() -> int:
 
 
 def _setup(args: argparse.Namespace) -> int:
-    if sys.platform != "darwin":
-        print("agent-bridge setup is for macOS for now. From a checkout, run agent-bridge/deploy/linux/setup.sh "
-              "on Linux, or agent-bridge\\deploy\\windows\\setup.ps1 on Windows.", file=sys.stderr)
+    platform = _platform("setup", "setup.ps1")
+    if platform is None:
         return FAILED
-    from agent_bridge.install import macos
-
-    return macos.setup(macos.Options.from_args(args), macos.MacSystem(), lambda: sys.stdin.readline() or None)
+    options = platform.Options.from_args(args)
+    return platform.setup(options, platform.system(), lambda: sys.stdin.readline() or None)
 
 
 def _uninstall() -> int:
-    if sys.platform != "darwin":
-        print("agent-bridge uninstall is for macOS for now. From a checkout, run agent-bridge/deploy/linux/"
-              "uninstall.sh on Linux, or agent-bridge\\deploy\\windows\\uninstall.ps1 on Windows.", file=sys.stderr)
+    platform = _platform("uninstall", "uninstall.ps1")
+    if platform is None:
         return FAILED
-    from agent_bridge.install import macos
+    return platform.uninstall(platform.system())
 
-    return macos.uninstall(macos.MacSystem())
+
+def _platform(command: str, script: str):  # noqa: ANN202 - the platform's install module
+    if sys.platform == "darwin":
+        from agent_bridge.install import macos
+
+        return macos
+    if sys.platform.startswith("linux"):
+        from agent_bridge.install import linux
+
+        return linux
+    print(f"agent-bridge {command} is for macOS and Linux for now. On Windows, run "
+          f"agent-bridge\\deploy\\windows\\{script} from a checkout.", file=sys.stderr)
+    return None
 
 
 def _format(check: Callable[[str], str], value: str, what: str) -> int:

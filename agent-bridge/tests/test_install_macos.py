@@ -14,7 +14,7 @@ from dotenv import dotenv_values
 
 from agent_bridge import cli
 from agent_bridge.config import check_name_format
-from agent_bridge.install import common, macos
+from agent_bridge.install import common, flow, macos
 
 # POSIX paths and file modes; the Windows setup is its own.
 pytestmark = pytest.mark.skipif(sys.platform == "win32", reason="the macOS setup uses POSIX paths")
@@ -248,6 +248,16 @@ def test_installs_and_enrolls_without_asking(mac: FakeMac, capsys) -> None:
     }
     assert mac.ran("agent-bridge") == [("check",), ("enroll", ENROLLMENT)]
     assert "enrolled with the gateway at http://10.0.0.1:8766 as studio" in run.out
+
+
+@pytest.mark.parametrize("flag", ["--herdr-service", "--no-herdr-service"])
+def test_the_herdr_service_flags_are_refused(mac: FakeMac, capsys, flag: str) -> None:
+    run = setup(mac, capsys, flag)
+
+    assert run.code == 1
+    assert run.asked == []
+    assert "are for Linux" in run.out
+    assert not mac.env_file.exists()
 
 
 def test_only_the_user_can_read_the_settings(mac: FakeMac, capsys) -> None:
@@ -1417,10 +1427,10 @@ def test_finds_herdr_on_the_path_else_in_the_usual_places(
     on_path.parent.mkdir()
     on_path.write_text("#!/bin/sh\n")
     on_path.chmod(0o755)
-    monkeypatch.setattr(macos.shutil, "which", lambda name: str(on_path))
+    monkeypatch.setattr(flow.shutil, "which", lambda name: str(on_path))
     assert macos.MacSystem().find_herdr() == str(on_path)
 
-    monkeypatch.setattr(macos.shutil, "which", lambda name: None)
+    monkeypatch.setattr(flow.shutil, "which", lambda name: None)
     # Not executable: passed over.
     assert macos.MacSystem().find_herdr() in (None, "/opt/homebrew/bin/herdr", "/usr/local/bin/herdr")
     local.chmod(0o755)
@@ -1431,7 +1441,7 @@ def test_cant_run_a_missing_bridge(monkeypatch: pytest.MonkeyPatch) -> None:
     def run(argv: list[str], **options) -> object:
         raise FileNotFoundError(2, "No such file or directory")
 
-    monkeypatch.setattr(macos.subprocess, "run", run)
+    monkeypatch.setattr(flow.subprocess, "run", run)
     monkeypatch.setattr(sys, "argv", [COMMAND, "setup"])
 
     with pytest.raises(macos.Refused, match=f"can't run {COMMAND} \\(No such file or directory\\)"):
@@ -1445,7 +1455,7 @@ def test_runs_the_bridge_without_its_settings_in_the_environment(monkeypatch: py
         ran.update(argv=argv, **options)
         return type("Result", (), {"returncode": 0, "stdout": "ok\n"})()
 
-    monkeypatch.setattr(macos.subprocess, "run", run)
+    monkeypatch.setattr(flow.subprocess, "run", run)
     monkeypatch.setattr(sys, "argv", [COMMAND, "setup"])
     monkeypatch.setenv("AGENT_BRIDGE_PORT", "1")
     monkeypatch.setenv("HOME", "/Users/me")
@@ -1453,14 +1463,14 @@ def test_runs_the_bridge_without_its_settings_in_the_environment(monkeypatch: py
     assert macos.MacSystem().bridge("check", capture=True) == (0, "ok\n")
     assert ran["argv"] == [COMMAND, "check"]
     # Its errors come back with its output.
-    assert ran["stderr"] == macos.subprocess.STDOUT
+    assert ran["stderr"] == flow.subprocess.STDOUT
     assert "AGENT_BRIDGE_PORT" not in ran["env"]
     assert ran["env"]["HOME"] == "/Users/me"
 
 
 @pytest.mark.parametrize("command", ["setup", "uninstall"])
-def test_setup_and_uninstall_are_for_macos_only(monkeypatch: pytest.MonkeyPatch, capsys, command: str) -> None:
-    monkeypatch.setattr(sys, "platform", "linux")
+def test_setup_and_uninstall_are_not_for_windows(monkeypatch: pytest.MonkeyPatch, capsys, command: str) -> None:
+    monkeypatch.setattr(sys, "platform", "win32")
 
     assert cli.main([command]) == 1
-    assert f"agent-bridge {command} is for macOS for now" in capsys.readouterr().err
+    assert f"agent-bridge {command} is for macOS and Linux for now" in capsys.readouterr().err
