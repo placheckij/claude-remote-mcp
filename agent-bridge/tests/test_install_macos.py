@@ -734,6 +734,39 @@ def test_an_installed_ipv6_address_is_kept_in_ifconfigs_form(mac: FakeMac, capsy
     assert env(mac)["AGENT_BRIDGE_HOST"] == "fe80::1"
 
 
+def test_an_installed_name_that_wont_do_is_asked_for(mac: FakeMac, capsys) -> None:
+    installed(mac, enrolled=False, NAME="Studio Mac")
+
+    run = setup(mac, capsys, answers=("studio", ""))
+
+    assert run.code == 0, run.out
+    assert "The installed name" in run.out
+    assert run.asked[0] == "This host's name in agent ids, like studio-mac/w1:p1 [studio-mac"
+    assert env(mac)["AGENT_BRIDGE_NAME"] == "studio"
+
+
+def test_an_installed_port_that_wont_do_is_refused(mac: FakeMac, capsys) -> None:
+    settings = installed(mac)
+    mac.env_file.write_text(common.env_text({**settings, "AGENT_BRIDGE_PORT": "http"}))
+
+    run = setup(mac, capsys)
+
+    assert run.code == 1
+    assert "the installed port must be a number from 1 to 65535, not http; pass another --port" in run.out
+    assert mac.ran("launchctl") == []
+
+
+def test_a_state_file_that_cant_be_read_is_refused(mac: FakeMac, capsys) -> None:
+    installed(mac)
+    mac.state_file.write_text("not json")
+
+    run = setup(mac, capsys)
+
+    assert run.code == 1
+    assert str(mac.state_file) in run.out
+    assert mac.ran("launchctl") == []
+
+
 def test_an_installed_token_that_wont_do_is_refused(mac: FakeMac, capsys) -> None:
     installed(mac, TOKEN="short")
 
@@ -966,6 +999,32 @@ def test_rotate_token_puts_the_installed_token_back_when_enrolling_fails(mac: Fa
     assert mac.ran("launchctl")[-1][0] == "bootstrap"
 
 
+def test_rotate_token_puts_the_installed_token_back_when_launchd_wont_start_it(mac: FakeMac, capsys) -> None:
+    installed(mac)
+    mac.bootstrap_failures = 2 * macos.BOOTSTRAPS
+
+    run = setup(mac, capsys, "--rotate-token", "--enrollment", ENROLLMENT)
+
+    assert run.code == 1
+    assert "launchctl bootstrap failed" in run.out
+    assert "the installed one is back" in run.out
+    assert env(mac)["AGENT_BRIDGE_TOKEN"] == TOKEN
+
+
+def test_rotate_token_puts_the_installed_token_back_on_ctrl_c(mac: FakeMac, capsys) -> None:
+    installed(mac)
+    mac.enroll_codes = [1]
+
+    def interrupted() -> str:
+        raise KeyboardInterrupt
+
+    options = macos.Options.from_args(cli._parser().parse_args(["setup", "--rotate-token", "--enrollment", ENROLLMENT]))
+    with pytest.raises(KeyboardInterrupt):
+        macos.setup(options, mac, interrupted)
+
+    assert env(mac)["AGENT_BRIDGE_TOKEN"] == TOKEN
+
+
 def test_rotate_token_keeps_the_new_token_when_enroll_says_the_gateway_took_it(mac: FakeMac, capsys) -> None:
     installed(mac)
     mac.enroll_codes = [5]
@@ -1033,6 +1092,17 @@ def test_uninstall_of_a_host_never_enrolled_says_how_to_remove_one_added_by_hand
     _, out = uninstall(mac, capsys)
 
     assert "added with bridges add" in out
+
+
+def test_uninstall_removes_what_an_interrupted_write_left(mac: FakeMac, capsys) -> None:
+    installed(mac)
+    for path in (mac.env_file, mac.plist):
+        path.with_name(f"{path.name}.tmp").write_text(TOKEN)
+
+    uninstall(mac, capsys)
+
+    assert not mac.support.exists()
+    assert not mac.plist.with_name(f"{mac.plist.name}.tmp").exists()
 
 
 def test_uninstall_keeps_a_folder_with_other_files_in_it(mac: FakeMac, capsys) -> None:

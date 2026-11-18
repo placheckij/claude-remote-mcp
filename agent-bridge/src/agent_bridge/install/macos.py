@@ -210,9 +210,19 @@ def setup(options: Options, system: System, read: Read) -> int:
         _rename(plan, system)
         plan.enrollment = _enrollment(options, plan, read)
         _write(plan, system, paths)
-        _start(system, paths)
-        enrolled = _enroll(plan, system, read, paths)
-        _check_new_token(plan, enrolled, system, paths)
+        enrolled = Enrolled()
+        try:
+            _start(system, paths)
+            _enroll(plan, enrolled, system, read, paths)
+        except (Refused, KeyboardInterrupt):
+            # However setup stops, a new token the gateway didn't confirm doesn't stay.
+            if _put_token_back(plan, enrolled, system, paths):
+                print("note: the gateway didn't confirm the new token, so the installed one is back.",
+                      file=sys.stderr)
+            raise
+        if _put_token_back(plan, enrolled, system, paths):
+            raise Refused("the gateway didn't confirm the new token, so the installed one is back; run again with "
+                          "--rotate-token and a new enrollment string")
     except Refused as error:
         print(f"error: {error}", file=sys.stderr)
         if plan is not None and plan.renamed:
@@ -253,9 +263,11 @@ def uninstall(system: System) -> int:
               "sudo mcp-gateway bridges remove <name> (see sudo mcp-gateway bridges list)")
     print(f"\n==> Removing {LABEL}")
     system.launchctl("bootout", f"{system.domain()}/{LABEL}")
-    for path in (paths.plist, paths.log, paths.env_file, paths.state_file, paths.state_file.with_name("state.json.tmp")):
-        with contextlib.suppress(OSError):
-            path.unlink(missing_ok=True)
+    for path in (paths.plist, paths.log, paths.env_file, paths.state_file):
+        # With what an interrupted write left beside it, which for the env file holds the token.
+        for file in (path, path.with_name(f"{path.name}.tmp")):
+            with contextlib.suppress(OSError):
+                file.unlink(missing_ok=True)
     if paths.support.is_dir():
         try:
             paths.support.rmdir()
@@ -649,8 +661,8 @@ def _start(system: System, paths: Paths) -> None:
     print(result, end="")
 
 
-def _enroll(plan: Plan, system: System, read: Read, paths: Paths) -> Enrolled:
-    enrolled = Enrolled()
+def _enroll(plan: Plan, enrolled: Enrolled, system: System, read: Read, paths: Paths) -> None:
+    """Records in `enrolled` how far it got."""
     while plan.enrollment:
         print("\n==> Enrolling with the gateway")
         code, _ = system.bridge("enroll", plan.enrollment)
@@ -678,7 +690,6 @@ def _enroll(plan: Plan, system: System, read: Read, paths: Paths) -> Enrolled:
             _start(system, paths)
             continue
         plan.enrollment = _ask_enrollment(read, "Enrollment string, crm1@…")
-    return enrolled
 
 
 def _another_name(read: Read) -> str:
@@ -691,22 +702,26 @@ def _another_name(read: Read) -> str:
     return ""
 
 
-def _check_new_token(plan: Plan, enrolled: Enrolled, system: System, paths: Paths) -> None:
-    """Unless the gateway took the new token, it still has the installed one, and the new one
-    would lock it out. `enroll` can fail after the gateway took it (a state file it can't
-    write, or a lost answer), so the gateway is asked; without that, the installed token goes
-    back on the chance the gateway has it."""
+def _put_token_back(plan: Plan, enrolled: Enrolled, system: System, paths: Paths) -> bool:
+    """Whether the installed token went back. Unless the gateway took the new one, it still
+    has the installed one, and the new one would lock it out. `enroll` can fail after the
+    gateway took it (a state file it can't write, or a lost answer), so the gateway is asked;
+    without that, the installed token goes back on the chance the gateway has it."""
     if not plan.rotate or enrolled.now or enrolled.gateway_took or not plan.installed_token:
-        return
-    _, result = system.bridge("check", capture=True)
+        return False
+    try:
+        _, result = system.bridge("check", capture=True)
+    except Refused:
+        result = ""
     if "ok    the gateway at" in result:
         enrolled.now = True
-        return
+        return False
     plan.values[f"{PREFIX}TOKEN"] = plan.installed_token
     write_file(paths.env_file, env_text(plan.values).encode(), 0o600, folder_mode=0o700)
-    _start(system, paths)
-    raise Refused("the gateway didn't confirm the new token, so the installed one is back; run again with "
-                  "--rotate-token and a new enrollment string")
+    # A launchd that wouldn't start it before may not now either; the next start reads it.
+    with contextlib.suppress(Refused):
+        _start(system, paths)
+    return True
 
 
 def _summary(plan: Plan, enrolled: Enrolled, system: System, paths: Paths) -> None:
