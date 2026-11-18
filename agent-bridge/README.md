@@ -6,9 +6,10 @@ into `herdr` CLI calls and returns trimmed results. herdr owns the agents, which
 addressed by their herdr pane id (e.g. `w1:p1`); agent-bridge's own state is only its id
 and the gateway it [enrolled](#enroll-with-the-gateway) with.
 
-```
-mcp-gateway ──LAN, bearer token──> agent-bridge :8765 ──> herdr CLI ──> Claude Code agents
-```
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/placheckij/claude-remote-mcp/main/docs/assets/architecture-dark.svg">
+  <img src="https://raw.githubusercontent.com/placheckij/claude-remote-mcp/main/docs/assets/architecture-light.svg" width="100%" alt="Three layers and four trust boundaries. The Claude app reaches mcp-gateway on the gateway host over MCP over HTTPS, through a Cloudflare Tunnel, with an OAuth access token; mcp-gateway keeps clients and token hashes in oauth.json, its agent hosts in bridges.json and the enrollment window in enrollment.json. mcp-gateway reaches agent-bridge on each agent host (macOS, Linux, Windows) over HTTP on the LAN with that host's bearer token, and agent hosts enroll with the gateway over the LAN with the window's secret. Each agent-bridge keeps its id and gateway in state.json, only changes agents under its allowed roots, and drives herdr through the herdr CLI; herdr runs Claude Code sessions, one per pane, each on the Claude account set up for its folder, with ids that name the host, such as mac/w1:p1.">
+</picture>
 
 It sees every herdr agent of its user, including ones started by hand, and controls those
 whose folder is under the allowed roots.
