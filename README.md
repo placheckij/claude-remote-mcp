@@ -66,8 +66,9 @@ start on the right one for each project folder: see
 [Claude accounts](agent-bridge/README.md#claude-accounts).
 
 Agents only start in folders Claude Code trusts. agent-bridge can mark them trusted in a
-separate Claude config: the macOS and Linux setup scripts ask for it, and on Windows pass
-`-ClaudeConfigDir` and `-TrustRoot`. Log in to that config once when the script says so.
+separate Claude config: `agent-bridge setup` on macOS and the Linux setup script ask for
+it, and on Windows pass `-ClaudeConfigDir` and `-TrustRoot`. Log in to that config once
+when setup says so.
 See [Folder trust](agent-bridge/README.md#folder-trust).
 
 ## Development
