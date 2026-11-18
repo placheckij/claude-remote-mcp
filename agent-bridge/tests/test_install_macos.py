@@ -144,7 +144,7 @@ class FakeMac:
         if self.gateway_token is None:
             return f"{failed} (This agent host isn't enrolled with the gateway. {ENROLL_AGAIN})\n"
         if self.gateway_token != self.env("TOKEN"):
-            return f"{failed} (That isn't this agent host's token.)\n"
+            return f"{failed} (That isn't this agent host's token. {ENROLL_AGAIN})\n"
         # check saves the gateway's name.
         self.save_gateway(self.gateway_name)
         return f"ok    the gateway at {gateway['url']} has this host as {self.gateway_name}\n"
@@ -1029,6 +1029,9 @@ def test_rotate_token_replaces_the_token_and_enrolls_again(mac: FakeMac, capsys)
     assert run.code == 0, run.out
     assert env(mac)["AGENT_BRIDGE_TOKEN"] not in (TOKEN, None)
     assert mac.gateway_token == env(mac)["AGENT_BRIDGE_TOKEN"]
+    # The checks before it see the gateway refuse the new token; setup enrolls, not the user.
+    assert "That isn't this agent host's token." in run.out
+    assert ENROLL_AGAIN not in run.out
 
 
 def test_rotate_token_without_an_enrollment_string_changes_nothing(mac: FakeMac, capsys) -> None:
