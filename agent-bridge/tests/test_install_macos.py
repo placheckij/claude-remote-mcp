@@ -252,9 +252,10 @@ def test_installs_and_enrolls_without_asking(mac: FakeMac, capsys) -> None:
 
 @pytest.mark.parametrize("flag", ["--herdr-service", "--no-herdr-service"])
 def test_the_herdr_service_flags_are_refused(mac: FakeMac, capsys, flag: str) -> None:
-    run = setup(mac, capsys, *every_flag(mac), flag)
+    run = setup(mac, capsys, flag)
 
     assert run.code == 1
+    assert run.asked == []
     assert "are for Linux" in run.out
     assert not mac.env_file.exists()
 

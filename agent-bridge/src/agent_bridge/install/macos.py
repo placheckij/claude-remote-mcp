@@ -6,6 +6,7 @@ import os
 import plistlib
 import re
 import subprocess
+import sys
 from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
@@ -30,6 +31,11 @@ class System(flow.System, Protocol):
 
 
 def setup(options: Options, system: System, read: Read) -> int:
+    # Before any question.
+    if options.herdr_service is not None:
+        print("error: --herdr-service and --no-herdr-service are for Linux; on macOS you start herdr's server",
+              file=sys.stderr)
+        return flow.FAILED
     return flow.setup(options, system, MacService(system), read)
 
 
@@ -83,8 +89,7 @@ class MacService:
         return self.system.home / "Library" / "Logs" / "agent-bridge.log"
 
     def check(self, plan: Plan, options: Options) -> None:
-        if options.herdr_service is not None:
-            raise Refused("--herdr-service and --no-herdr-service are for Linux; on macOS you start herdr's server")
+        pass
 
     def prepare(self) -> None:
         pass
