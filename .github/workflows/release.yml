@@ -23,7 +23,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Install uv
-        run: pipx install uv==0.11.15
+        run: pipx install uv==0.13.9
       - name: Check the tag is the package's version
         env:
           TAG: ${{ github.ref_name }}
