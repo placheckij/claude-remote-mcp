@@ -91,7 +91,8 @@ command line for herdr is longer than Windows allows is refused with
 Every error comes back as `{"error": {"code", "message"}}` with a matching status
 (`unauthorized` → 401, `path_not_allowed` → 403, `agent_not_found` → 404,
 `agent_limit_reached` → 409, `timeout` → 504, …); the message is written to be read
-aloud. Only request validation failures keep FastAPI's `{"detail": [...]}` shape (422).
+aloud. Only request validation failures (422) and unknown routes or methods (404, 405)
+keep FastAPI's `{"detail": ...}` shape.
 
 Reading (list, details, output, wait) works for every agent. Changing one (`/prompt`,
 `/keys`, `PATCH`, `DELETE`) only works for agents whose folder is under
@@ -221,7 +222,8 @@ The file is written atomically and left alone if the folder itself is already tr
 
 Read from the environment, or from the env file (the environment wins), one
 `AGENT_BRIDGE_…=value` per line. An invalid setting stops startup with one line per
-problem, naming the variable. Enrolling adds a state file. Both must be readable only by
+problem, naming the variable. The first start creates a state file with this host's id;
+enrolling adds the gateway to it. Both must be readable only by
 you (`chmod 600`):
 
 | Platform | Settings (env file) | State |
@@ -271,7 +273,7 @@ uv run --package claude-remote-mcp-agent-bridge agent-bridge serve
 | `agent-bridge check` | checks the settings, the files' modes, herdr, the running service and the gateway, one line each | 0 all passed, 1 one failed |
 | `agent-bridge check --token-format <token>`, `--name-format <name>` | checks a value before it goes in the env file | 0 fine, 2 not (why, on stderr) |
 | `agent-bridge setup` | installs or updates the service and enrolls it ([macOS](#with-agent-bridge-setup), [Linux](#as-a-service-on-linux-systemd-user-unit), [Windows](#as-a-service-on-windows-task-scheduler)) | 0 installed (enrolled or not), 1 refused or failed |
-| `agent-bridge uninstall` | leaves the gateway, then removes the service, its settings, state and log (on Windows, also the firewall rule) | 0 removed, also when leaving the gateway failed (prints the gateway's command); 1 run with sudo, or the service couldn't be removed (Linux: also no systemd user manager; Windows: also run as another account than the desktop's; nothing is removed then) |
+| `agent-bridge uninstall` | leaves the gateway, then removes the service, its settings, state and log (on Windows, also the firewall rule) | 0 removed, also when leaving the gateway failed (prints the gateway's command); 1 run with sudo, on Linux without a systemd user manager, or on Windows as another account than the desktop's (nothing is removed then); 1 also if the service couldn't be removed, after the host has left the gateway |
 | `agent-bridge --version` | prints the installed version | 0 |
 
 ### Enroll with the gateway
@@ -338,8 +340,9 @@ and the enrollment. If setup stops partway, run it again: it picks up from there
 To skip the questions or change an installed value, pass it: `--roots`, `--name`,
 `--host`, `--port`, `--herdr-bin`, `--claude-config-dir` and `--trust-root` (`''` for no
 folder trust), `--enrollment` (`''` to enroll later), and `--accounts` (never asked for;
-`''` removes it). `--rotate-token` replaces the token and needs `--enrollment` (if
-enrolling fails, the old token is put back). A new `--name` on an enrolled host renames
+`''` removes it). `--rotate-token` replaces the token and needs an enrollment string
+(`--enrollment`, or typed when asked; if enrolling fails, the old token is put back). A
+new `--name` on an enrolled host renames
 it on the gateway (`agent-bridge rename`); a gateway too old for that, or one that can't
 be reached, is asked for an enrollment string instead, as enrolling again renames it too.
 For any other setting, edit the env file and re-run setup. See `agent-bridge setup --help`.

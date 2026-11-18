@@ -50,8 +50,9 @@ The gateway and the agent host can be one machine.
    subdomain. On the first run it prints a Cloudflare login URL: open it in
    any browser and pick your domain. It then sets up the service and the
    [Cloudflare Tunnel](mcp-gateway/README.md#cloudflare-tunnel), prints the sign-in
-   passphrase, and prints an enrollment string for the agent hosts, good for 30 minutes
-   (`sudo mcp-gateway enroll` prints a new one).
+   passphrase, and, once its checks pass, prints an enrollment string for the agent hosts,
+   good for 30 minutes (`sudo mcp-gateway enroll` prints a new one). If only the tunnel
+   checks fail, DNS for a new hostname may need a few more minutes: run it again.
 3. **Agent hosts:** run `uv tool install claude-remote-mcp-agent-bridge`, then
    `agent-bridge setup` ([macOS](agent-bridge/README.md#as-a-service-on-macos-launchd),
    [Linux](agent-bridge/README.md#as-a-service-on-linux-systemd-user-unit),
@@ -74,11 +75,13 @@ See [Folder trust](agent-bridge/README.md#folder-trust).
 
 ## Updating
 
-Upgrade the package, then run its setup again; each keeps its settings, state and
-enrollment, and restarts the service on the new version.
+Upgrade the package, then run its setup again; it keeps the state and the enrollment, and
+restarts the service on the new version.
 
-- **Gateway host:** `uv tool upgrade claude-remote-mcp-gateway`, then `mcp-gateway setup`
-  (see [Update and rotate](mcp-gateway/README.md#update-and-rotate)).
+- **Gateway host:** `uv tool upgrade claude-remote-mcp-gateway`, then `mcp-gateway setup`.
+  It keeps `PUBLIC_HOST`, the passphrase, the tokens, the agent hosts and the tunnel; pass
+  `PORT` and `TUNNEL_NAME` again if you changed them, as they aren't kept (see
+  [Update and rotate](mcp-gateway/README.md#update-and-rotate)).
 - **Agent hosts:** `uv tool upgrade claude-remote-mcp-agent-bridge`, then
   `agent-bridge setup`.
 

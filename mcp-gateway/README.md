@@ -43,7 +43,7 @@ or with a NUL character) come back the same way as one sentence.
 | `send_prompt` | prompt, wait up to `wait_seconds` (default and most 20, see below), return status + output; flags `blocked`, a question the agent ended its turn with, still-working, and a prompt typed but not yet started on (not to be sent again). A `blocked` agent refuses prompts until its question is answered. If agent-bridge doesn't answer in time, it says the prompt may have been sent instead of failing, so it isn't sent twice |
 | `wait_for_agent` | keep waiting for an agent still working (e.g. after `send_prompt` ran out of time); same result format |
 | `answer_agent` | key presses for a blocked agent's question, e.g. `["1"]`, `["Enter"]`; with `wait_seconds` also waits for the result. Marked destructive, so Claude asks first |
-| `start_agent` | new agent in a project: one folder name in agent-bridge's allowed roots, or an absolute path. The gateway passes it on as it is; agent-bridge resolves and checks it. Optional `host`; without it and with several hosts, the gateway asks each (`GET /projects/{name}`) and starts on the one that has the project, or answers which hosts do. An absolute path needs `host` when there are several. Optional `account` (e.g. `work`) picks the Claude login; by default agent-bridge uses the one set up for the folder, and the reply names it. `remote_control` (default true) starts it with Claude Code's Remote Control, named like the agent at start (a later rename doesn't reach it); the reply says when it ended up off (the organization's policy, or an agent-bridge too old for it) or on though not asked (`AGENT_BRIDGE_CLAUDE_ARGS`). If agent-bridge takes over 25 s, it says the agent may still be starting instead of failing |
+| `start_agent` | new agent in a project: one folder name in agent-bridge's allowed roots, or an absolute path. The gateway passes it on as it is; agent-bridge resolves and checks it. Optional `host`; without it and with several hosts, the gateway asks each (`GET /projects/{name}`) and starts on the one that has the project, or answers which hosts do. An absolute path needs `host` when there are several. Optional `name`: any words, made into a slug (by default the folder's name). Optional `account` (e.g. `work`) picks the Claude login; by default agent-bridge uses the one set up for the folder, and the reply names it. `remote_control` (default true) starts it with Claude Code's Remote Control, named like the agent at start (a later rename doesn't reach it); the reply says when it ended up off (the organization's policy, or an agent-bridge too old for it) or on though not asked (`AGENT_BRIDGE_CLAUDE_ARGS`). If agent-bridge takes over 25 s, it says the agent may still be starting instead of failing |
 | `rename_agent` | new name for an agent and its herdr workspace, any words; agent-bridge turns it into a slug (`Webapp fix!` → `webapp-fix`, `-2` if another agent has it) and the reply says the name it got |
 | `stop_agent` | close an agent's pane (marked destructive, so Claude asks first) |
 
@@ -75,7 +75,7 @@ unset. An invalid setting stops startup with one line per problem, naming the va
 | `MCP_GATEWAY_TOKEN` | optional, 32+ chars; the static token from before OAuth, still accepted as `Authorization: Bearer …` while set. Leave it unset unless a connector added with request headers still uses it |
 | `MCP_GATEWAY_PUBLIC_HOST` | required; the tunnel hostname, e.g. `mcp.example.com` (requests with any other `Host` are refused). The OAuth issuer is `https://<host>` and the connector URL `https://<host>/mcp` |
 | `MCP_GATEWAY_BRIDGE_URL`, `MCP_GATEWAY_BRIDGE_TOKEN` | legacy, both or neither; see [Agent hosts](#agent-hosts) |
-| `MCP_GATEWAY_PORT` | optional, CLI only; the port `mcp-gateway enroll` puts in the enrollment string (default 8766; the setup script's wrapper sets it to `PORT`) |
+| `MCP_GATEWAY_PORT` | optional, CLI only, and read from the environment only, not from `.env`; the port `mcp-gateway enroll` puts in the enrollment string (default 8766; the setup script's wrapper sets it to `PORT`) |
 | `MCP_GATEWAY_PROJECTS_ROOT` | optional; only for an agent-bridge without `GET /info`, which can't look up project names: where `start_agent` finds them, as a path on the agent host, e.g. `/home/me/projects`. Unset, such a host takes absolute paths only |
 
 ## Agent hosts
@@ -105,8 +105,8 @@ running gateway picks up each change before its next request.
   other shows in `list_agents` as needing an update and isn't called.
 - **Upgrading from one bridge:** if `MCP_GATEWAY_BRIDGE_URL` and `_TOKEN` are set and
   there is no `bridges.json` yet, the first start imports them as one host, named by its
-  `/info` (`host` if it doesn't answer; one that refuses, e.g. a wrong token, isn't
-  imported). The setup script then drops them from the env file.
+  `/info` (`host` if it doesn't answer or its name can't name a host; one that refuses,
+  e.g. a wrong token, isn't imported). The setup script then drops them from the env file.
 
 ### Enrollment
 
@@ -161,8 +161,9 @@ What stands between the internet and an agent:
    every call fails until that Origin is added to `ALLOWED_ORIGINS` in
    `src/mcp_gateway/server.py`.
 
-`GET /mcp` answers `405`: the server is stateless and never pushes anything on a GET
-stream, so clients use POST only, as the MCP spec allows.
+   `GET /mcp` answers `405`: the server is stateless and never pushes anything on a GET
+   stream, so clients use POST only, as the MCP spec allows.
+
 5. **agent-bridge's own limits.** A separate token, a project-folder allowlist, the
    10-agent limit, and folder trust only under its trust root, never in the default
    Claude config.
@@ -257,6 +258,11 @@ comes from `/etc/mcp-gateway/env` instead (see [Update and rotate](#update-and-r
 `AGENT_BRIDGE_URL` optionally adds an agent-bridge set up by hand with
 `mcp-gateway bridges add`, which asks for its token without showing it, or takes it
 from an exported `AGENT_BRIDGE_TOKEN`. setup passes these variables on through sudo.
+`AGENT_BRIDGE_TOKEN` without `AGENT_BRIDGE_URL` fails the run (except to give a legacy
+`MCP_GATEWAY_BRIDGE_URL` a new token at its import), and so does a new token for a URL
+that is already a host, or an `AGENT_BRIDGE_URL` other than a legacy one not yet imported:
+change a host's URL or token with `sudo mcp-gateway bridges remove <name>`, then
+`bridges add <url>`.
 Keep tokens out of the command itself: there they end up in your shell history and, while
 the script runs, in the process list that other users on the host can read. Optional variables: `PROJECTS_ROOT` (only for
 an agent-bridge without `/info`, see

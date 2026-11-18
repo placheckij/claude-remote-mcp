@@ -21,6 +21,9 @@ invitation**: only the people listed below can open them.
   mixed-versions check in `.github/compat/` against the last releases). New commits after
   an approval need a new one.
 - Add or update tests with the change: a bug fix comes with a test that fails without it.
+  A new test dependency goes in the package's dev group and in the root `pyproject.toml`
+  dev group: CI runs the root tests with `uv run --frozen --exact pytest`, which installs
+  the root group alone.
 - Set up and run the tests as in the README's [Development](README.md#development)
   section. After changing `mcp-gateway/src/mcp_gateway/deploy/setup.sh`, also run
   `shellcheck` on it.

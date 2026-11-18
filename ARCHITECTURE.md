@@ -35,22 +35,27 @@ Cloudflare Tunnel. See [mcp-gateway/README.md](mcp-gateway/README.md).
   refresh tokens 90 days, replaced on every refresh.
 - **Authentication.** Every `/mcp` request needs a valid access token (or the static
   `MCP_GATEWAY_TOKEN` from before OAuth, while it is still set). The tunnel only
-  publishes `/mcp` and the OAuth paths, and the server only accepts its own hostname and
-  requests from claude.ai or claude.com (or with no origin).
+  publishes `/mcp` and the OAuth paths, and the server only accepts its own hostname (or
+  a loopback one) and requests from claude.ai or claude.com (or with no origin).
 - **Tool routing.** The gateway keeps its agent hosts in `bridges.json`, each with its own
   token. An agent id names its host (`mac/w1:p1`, bare while there is one host), and
   each tool becomes a call to that host's agent-bridge. `list_agents` asks every host at
   once, and `start_agent` without a host asks each one for the project
   (`GET /projects/{name}`). Hosts first say about themselves (`GET /info`), and only
-  those at the gateway's API version or one behind are called. Arguments (agent ids, prompt length, waits) are
-  checked before anything is sent. Project names and paths go to agent-bridge as given:
-  it resolves and checks them, and reports each agent's project.
-- **Enrollment.** Agent hosts add themselves. `mcp-gateway enroll` opens a 30-minute
-  window and prints a string with the gateway's LAN address and a secret; each
-  agent-bridge sends that secret with its id, address, token and name to `POST /enroll`.
-  The gateway adds it once the address's `/info` answers with the same id. Bridges then
-  report their address on every start, rename themselves, and remove themselves on
-  uninstall, each with their own token. These routes share the gateway's listener but serve only LAN callers the tunnel
+  those at the gateway's API version or one behind are called (one that hasn't answered
+  yet is tried, and asked again before it is refused). Arguments (agent ids, prompt
+  length, waits) are checked before anything is sent. Project names and paths go to
+  agent-bridge as given: it resolves and checks them, and reports each agent's project.
+  For an agent-bridge from before `/info`, the gateway resolves names itself, under
+  `MCP_GATEWAY_PROJECTS_ROOT`.
+- **Enrollment.** Agent hosts add themselves, or are added by hand on the gateway host
+  (`sudo mcp-gateway bridges add <url>`; `bridges list`, `rename` and `remove` manage
+  them). `mcp-gateway enroll` opens a 30-minute window and prints a string with the
+  gateway's LAN address and a secret; each agent-bridge sends that secret with its id,
+  address, token and name to `POST /enroll`. The gateway adds it once the address's
+  `/info` answers with the same id. Bridges then report their address on every start,
+  rename themselves, and remove themselves on uninstall, each with their own token.
+  These routes share the gateway's listener but serve only LAN callers the tunnel
   didn't forward, and call only LAN addresses.
 - **Agent operations.** `list_agents`, `agent_details`, `read_output`, `send_prompt`,
   `wait_for_agent`, `answer_agent`, `start_agent`, `rename_agent` and `stop_agent`.
@@ -71,11 +76,13 @@ The machine where Claude Code runs. See [agent-bridge/README.md](agent-bridge/RE
 - **Workspace management.** herdr owns the agents. Each agent started here gets its own
   herdr workspace, named after the agent; renaming renames both. Agents are addressed by
   their herdr pane id, e.g. `w1:p1`.
-- **Agent lifecycle.** Start in a project folder (only under the allowed roots, at most
-  10 agents, on the account the request names or else the one set up for that folder),
-  prompt, wait, answer a question, rename, stop. The gateway starts agents with Claude
-  Code's Remote Control on unless asked otherwise, so they also show up in the Claude app
-  (agent-bridge leaves it off when a request doesn't ask for it). Every agent can be read;
+- **Agent lifecycle.** Start in a project folder (only under the allowed roots, while
+  herdr runs fewer than `AGENT_BRIDGE_MAX_AGENTS` agents, 10 by default, counting ones
+  started by hand; on the account the request names or else the one set up for that
+  folder), prompt, wait, answer a question, rename, stop. The gateway starts agents with
+  Claude Code's Remote Control on unless asked otherwise, so they also show up in the
+  Claude app (agent-bridge leaves it off when a request doesn't ask for it, unless
+  `AGENT_BRIDGE_CLAUDE_ARGS` turns it on for every agent). Every agent can be read;
   only those in allowed folders can be changed, including ones started by hand.
 - **Claude Code sessions** run in herdr panes, each with its account's Claude config.
   With a trust root and a separate Claude config set, a new agent's folder under the

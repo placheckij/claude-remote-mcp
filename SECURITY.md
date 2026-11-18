@@ -37,7 +37,7 @@ upgrade the package and run its setup again (`mcp-gateway setup`, `agent-bridge 
   where the bridge's token ends up, the Windows firewall rule
 - the releases: the tag-triggered workflows (`.github/workflows/release.yml`,
   `release-mcp-gateway.yml`) and the packages they publish to PyPI through Trusted
-  Publishing
+  Publishing and attach to the GitHub Release
 
 ## Out of scope
 
