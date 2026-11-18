@@ -6,6 +6,7 @@ server, so running agents stay. The rest of setup is flow's.
 
 import os
 import re
+import shutil
 import subprocess
 import sys
 from collections.abc import Iterable
@@ -14,8 +15,10 @@ from importlib import resources
 from pathlib import Path
 from typing import Protocol
 
+from dotenv import dotenv_values
+
 from agent_bridge.install import flow
-from agent_bridge.install.common import Read, Refused, write_file
+from agent_bridge.install.common import PREFIX, Read, Refused, check_settings, write_file
 from agent_bridge.install.flow import Installed, Options, Plan, PosixSystem, output, stable_command
 
 __all__ = ["HERDR_UNIT", "UNIT", "LinuxService", "LinuxSystem", "Options", "setup", "stable_command", "system", "uninstall",
@@ -100,10 +103,29 @@ class LinuxService:
             self.herdr_service = options.herdr_service
         elif (self.unit_dir / UNIT).exists():
             self.herdr_service = (self.unit_dir / HERDR_UNIT).exists()
+        self._check_legacy_env(plan)
         # Refused here, before anything changes, rather than when the units are written.
         unit(UNIT, "AGENT_BRIDGE", self.system.command())
         if self.herdr_service:
             unit(HERDR_UNIT, "HERDR_BIN", plan.values[f"{flow.PREFIX}HERDR_BIN"])
+
+    def _check_legacy_env(self, plan: Plan) -> None:
+        """systemd starts a user unit in the home folder, where serve still reads a .env (the
+        env file wins): the settings are checked as it will read them both."""
+        legacy = self.system.home / ".env"
+        try:
+            values = dotenv_values(legacy) if legacy.is_file() else {}
+        except OSError as error:
+            raise Refused(f"can't read {legacy} ({error.strerror})") from None
+        older = {key.upper(): value for key, value in values.items()
+                 if value is not None and key.upper().startswith(PREFIX)}
+        if older:
+            print(f"warning: agent-bridge also reads the settings in {legacy}; move them to {self.env_file}",
+                  file=sys.stderr)
+            try:
+                check_settings({**older, **plan.values})
+            except Refused as error:
+                raise Refused(f"with the settings in {legacy}, {error}") from None
 
     def prepare(self) -> None:
         pass
@@ -222,6 +244,9 @@ class LinuxSystem(PosixSystem):
         return False
 
     def _listeners(self, port: int) -> list[str]:
+        # Without ss, every port would look free.
+        if shutil.which("ss") is None:
+            raise Refused("ss not found, which setup needs to see who holds a port; install iproute2")
         return output("ss", "-Hltnp", f"sport = :{port}").splitlines()
 
     def port_holder(self, port: int) -> str | None:

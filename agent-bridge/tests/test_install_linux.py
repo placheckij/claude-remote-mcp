@@ -47,6 +47,8 @@ class FakeLinux:
     herdr_by_hand: bool = False
     # The port agent-bridge.service listens on.
     service_port: int | None = None
+    # systemctl commands that fail, by their first two words, e.g. ("restart", UNIT).
+    failing: set[tuple[str, ...]] = field(default_factory=set)
     enroll_codes: list[int] = field(default_factory=list)
     unenroll_code: int = 0
     gateway_token: str | None = None
@@ -88,6 +90,8 @@ class FakeLinux:
 
     def systemctl(self, *args: str) -> int:
         self.calls.append(("systemctl", *args))
+        if (args[0], args[-1]) in self.failing:
+            return 1
         if args[0] in ("start", "restart"):
             self.running[args[-1]] = "100"
             # The service makes its state file when it starts.
@@ -448,6 +452,67 @@ def test_herdr_service_brings_the_herdr_unit_back(host: FakeLinux, capsys) -> No
     assert (host.units / HERDR_UNIT).exists()
 
 
+@pytest.mark.parametrize("failing", [("enable", UNIT), ("restart", UNIT)])
+def test_a_bridge_unit_that_doesnt_start_stops_the_setup(host: FakeLinux, capsys, failing: tuple[str, str]) -> None:
+    host.failing = {failing}
+
+    run = setup(host, capsys, *every_flag(host))
+
+    assert run.code == 1
+    assert f"systemctl --user couldn't start {UNIT}; see: journalctl --user -u {UNIT}" in run.out
+    assert ("enroll", ENROLLMENT) not in host.ran("agent-bridge")
+
+
+def test_a_herdr_unit_that_cant_be_enabled_stops_the_setup(host: FakeLinux, capsys) -> None:
+    host.failing = {("enable", HERDR_UNIT)}
+
+    run = setup(host, capsys, *every_flag(host))
+
+    assert run.code == 1
+    assert f"systemctl --user enable {HERDR_UNIT} failed" in run.out
+    assert ("restart", UNIT) not in host.ran("systemctl")
+
+
+def test_a_herdr_unit_that_doesnt_start_is_a_warning(host: FakeLinux, capsys) -> None:
+    host.failing = {("start", HERDR_UNIT)}
+
+    run = setup(host, capsys, *every_flag(host))
+
+    assert run.code == 0, run.out
+    assert f"warning: {HERDR_UNIT} didn't start; see: journalctl --user -u {HERDR_UNIT}" in run.out
+
+
+# --- Settings in ~/.env, which serve reads in the unit's working folder ----------------
+
+
+def test_settings_in_the_home_folders_env_are_checked_too(host: FakeLinux, capsys) -> None:
+    (host.home / ".env").write_text("AGENT_BRIDGE_MAX_AGENTS=abc\n")
+
+    run = setup(host, capsys, *every_flag(host))
+
+    assert run.code == 1
+    assert f"with the settings in {host.home / '.env'}" in run.out
+    assert not host.env_file.exists()
+
+
+def test_valid_settings_in_the_home_folders_env_are_a_warning(host: FakeLinux, capsys) -> None:
+    (host.home / ".env").write_text("AGENT_BRIDGE_MAX_AGENTS=3\nOTHER=x\n")
+
+    run = setup(host, capsys, *every_flag(host))
+
+    assert run.code == 0, run.out
+    assert f"also reads the settings in {host.home / '.env'}" in run.out
+
+
+def test_a_home_folder_env_without_settings_is_left_alone(host: FakeLinux, capsys) -> None:
+    (host.home / ".env").write_text("OTHER=x\n")
+
+    run = setup(host, capsys, *every_flag(host))
+
+    assert run.code == 0, run.out
+    assert ".env" not in run.out
+
+
 # --- Re-runs and taking over a setup.sh install ---------------------------------------
 
 
@@ -587,15 +652,42 @@ def test_uninstall_without_a_user_manager_changes_nothing(host: FakeLinux, capsy
     assert host.env_file.exists()
 
 
+def test_a_unit_that_cant_be_removed_stops_the_uninstall(host: FakeLinux, capsys,
+                                                        monkeypatch: pytest.MonkeyPatch) -> None:
+    setup(host, capsys, *every_flag(host))
+    unlink = Path.unlink
+
+    def refuse(path: Path, missing_ok: bool = False) -> None:
+        if path.name == UNIT:
+            raise PermissionError(13, "Permission denied")
+        unlink(path, missing_ok=missing_ok)
+
+    monkeypatch.setattr(Path, "unlink", refuse)
+
+    assert linux.uninstall(host) == 1
+
+    assert f"can't remove {host.units / UNIT} (Permission denied)" in capsys.readouterr().err
+    # The settings stay, so a re-run can still leave the gateway.
+    assert host.env_file.exists()
+
+
 # --- The real host, with its commands' output faked -------------------------------------
 
 
 @pytest.fixture
 def printed(monkeypatch: pytest.MonkeyPatch) -> dict[tuple[str, ...], str]:
-    """What each command prints; any other prints nothing."""
+    """What each command prints; any other prints nothing. Every command is installed."""
     outputs: dict[tuple[str, ...], str] = {}
     monkeypatch.setattr(linux, "output", lambda *argv: outputs.get(argv, ""))
+    monkeypatch.setattr(linux.shutil, "which", lambda name: f"/usr/bin/{name}")
     return outputs
+
+
+def test_without_ss_the_port_check_refuses(printed: dict, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(linux.shutil, "which", lambda name: None)
+
+    with pytest.raises(linux.Refused, match="install iproute2"):
+        linux.LinuxSystem().port_holder(8765)
 
 
 def test_finds_the_source_address_of_the_default_route(printed: dict) -> None:
