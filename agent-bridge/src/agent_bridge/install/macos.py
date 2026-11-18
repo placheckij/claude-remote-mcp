@@ -367,6 +367,12 @@ def _decide(options: Options, system: System, read: Read, paths: Paths) -> Plan:
         values[f"{PREFIX}ACCOUNTS"] = accounts
     values.update(installed.others())
     check_settings(values)
+    # Here, not where it's used: a rename on the gateway comes first.
+    if options.enrollment:
+        try:
+            parse_enrollment(options.enrollment)
+        except ValueError as error:
+            raise Refused(str(error)) from None
     enrolled_as = enrolled.name if enrolled is not None and not gone else ""
     # A new name is renamed on the gateway with the installed token. Not with a new token,
     # which needs enrolling again, and that renames it too.
@@ -584,12 +590,7 @@ def _rename(plan: Plan, system: System) -> None:
 def _enrollment(options: Options, plan: Plan, read: Read) -> str:
     """Asked for until this host is enrolled, and again with a new token or a new name."""
     if options.enrollment is not None:
-        if options.enrollment:
-            try:
-                parse_enrollment(options.enrollment)
-            except ValueError as error:
-                raise Refused(str(error)) from None
-        enrollment = options.enrollment.strip()
+        enrollment = options.enrollment.strip()  # checked in _decide
     elif not plan.enrolled_as or plan.new_token or plan.renaming:
         print("\nTo enroll with the gateway, run on the gateway host: sudo mcp-gateway enroll", file=sys.stderr)
         if plan.renaming:

@@ -850,6 +850,18 @@ def test_a_new_name_on_an_enrolled_host_renames_it_on_the_gateway(mac: FakeMac, 
     assert "as studio-2" in run.out
 
 
+def test_a_new_name_with_a_bad_enrollment_string_isnt_renamed(mac: FakeMac, capsys) -> None:
+    settings = installed(mac)
+
+    run = setup(mac, capsys, "--name", "studio-2", "--enrollment", "crm1@typo")
+
+    assert run.code == 1
+    assert "isn't an enrollment string" in run.out
+    assert "note:" not in run.out
+    assert mac.ran("agent-bridge") == [("check",)]
+    assert env(mac) == settings
+
+
 def test_a_new_name_taken_on_the_gateway_changes_nothing(mac: FakeMac, capsys) -> None:
     settings = installed(mac)
     mac.rename_codes = [3]
