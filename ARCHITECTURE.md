@@ -73,9 +73,10 @@ The machine where Claude Code runs. See [agent-bridge/README.md](agent-bridge/RE
   their herdr pane id, e.g. `w1:p1`.
 - **Agent lifecycle.** Start in a project folder (only under the allowed roots, at most
   10 agents, on the account the request names or else the one set up for that folder),
-  prompt, wait, answer a question, rename, stop. Agents start with Claude Code's Remote
-  Control on unless asked otherwise, so they also show up in the Claude app. Every agent can be read; only those in allowed folders can be
-  changed, including ones started by hand.
+  prompt, wait, answer a question, rename, stop. The gateway starts agents with Claude
+  Code's Remote Control on unless asked otherwise, so they also show up in the Claude app
+  (agent-bridge leaves it off when a request doesn't ask for it). Every agent can be read;
+  only those in allowed folders can be changed, including ones started by hand.
 - **Claude Code sessions** run in herdr panes, each with its account's Claude config.
   With a trust root and a separate Claude config set, a new agent's folder under the
   trust root is marked trusted in that config, so it starts without Claude's trust
