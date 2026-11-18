@@ -80,6 +80,7 @@ class LinuxService:
     machine: str = "host"
     runner: str = "systemd unit"
     name_fallback: str = "linux"
+    retries: str = "every 10 s"
     herdr_service: bool = True
     linger_hint: str = field(default="", init=False)
 

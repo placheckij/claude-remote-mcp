@@ -180,6 +180,8 @@ class Service(Protocol):
     runner: str
     # The name's start when the hostname doesn't start with a letter.
     name_fallback: str
+    # How often a bridge that can't listen yet tries again, as in "retries every 10 s".
+    retries: str
     env_file: Path
     state_file: Path
 
@@ -497,7 +499,7 @@ def _host(passed: str | None, installed: str, system: System, service: Service) 
     except ValueError as error:
         raise Refused(f"--host {error}, not {host}") from None
     if not system.has_address(host):
-        print(f"warning: no interface has {host} right now; agent-bridge retries every 10 s until one does",
+        print(f"warning: no interface has {host} right now; agent-bridge retries {service.retries} until one does",
               file=sys.stderr)
     return host
 

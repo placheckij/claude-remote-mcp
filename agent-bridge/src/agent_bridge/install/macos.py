@@ -58,6 +58,7 @@ class MacService:
     machine: str = "Mac"
     runner: str = "launch agent"
     name_fallback: str = "mac"
+    retries: str = "every 10 s"
 
     @property
     def support(self) -> Path:
