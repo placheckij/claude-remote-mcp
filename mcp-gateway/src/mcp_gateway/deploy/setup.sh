@@ -137,6 +137,10 @@ apt-get install -y -qq curl ca-certificates gnupg openssl python3 git >/dev/null
 if ! command -v uv >/dev/null; then
   log "Installing uv"
   curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR=/usr/local/bin UV_NO_MODIFY_PATH=1 sh
+else
+  # An older uv may not know the Python the tool runs on, which the venv below needs.
+  log "Updating uv"
+  uv self update --quiet || echo "warning: couldn't update $(command -v uv); if the venv below fails, update it"
 fi
 
 if ! command -v cloudflared >/dev/null; then

@@ -429,15 +429,16 @@ On any other system (another Linux, macOS, Windows), or to use a different tunne
 reverse proxy:
 
 1. Install [uv](https://docs.astral.sh/uv/getting-started/installation/), and the package
-   into a virtual environment the server's user can read, with its Python there too
-   (uv would otherwise use or download one in your home folder):
-   `UV_PYTHON_INSTALL_DIR=/opt/mcp-gateway/python uv venv --python 3.11 /opt/mcp-gateway/venv && uv pip install --python /opt/mcp-gateway/venv claude-remote-mcp-gateway`.
-   Its commands are in the venv's `bin/` (`Scripts\` on Windows).
+   into a virtual environment in a folder `<dir>` the server's user can read (e.g.
+   `/opt/mcp-gateway`, created as root), with its Python there too: uv would otherwise
+   use or download one in your home folder.
+   `UV_PYTHON_INSTALL_DIR=<dir>/python uv venv --python 3.11 <dir>/venv && uv pip install --python <dir>/venv claude-remote-mcp-gateway`.
+   Its commands are in `<dir>/venv/bin/` (`<dir>\venv\Scripts\` on Windows).
 2. Set the [configuration](#configuration) variables and start the server, on every
    interface for agent hosts to [enroll](#enrollment) (`--host 127.0.0.1` if they are all
    added by hand):
    ```sh
-   /opt/mcp-gateway/venv/bin/uvicorn mcp_gateway.server:main --factory --host 0.0.0.0 --port 8766 --no-server-header --no-proxy-headers
+   <dir>/venv/bin/uvicorn mcp_gateway.server:main --factory --host 0.0.0.0 --port 8766 --no-server-header --no-proxy-headers
    ```
    Keep it running with your system's service manager (systemd, launchd, NSSM, …), as
    [one process](#one-process): no `--workers`. On Windows nothing stops a second one.
@@ -453,7 +454,7 @@ reverse proxy:
    Don't publish `/healthz` or anything else. mcp-gateway needs a writable
    `MCP_GATEWAY_STATE_DIR`.
 4. As the user the server runs as, open an enrollment window for the agent hosts:
-   `/opt/mcp-gateway/venv/bin/mcp-gateway --state-dir <state dir> enroll`,
+   `<dir>/venv/bin/mcp-gateway --state-dir <state dir> enroll`,
    or add them with `… bridges add <url>`.
 
 ## Cloudflare Tunnel
