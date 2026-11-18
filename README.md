@@ -2,6 +2,8 @@
 
 [![CI](https://github.com/placheckij/claude-remote-mcp/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/placheckij/claude-remote-mcp/actions/workflows/ci.yml)
 [![CodeQL](https://github.com/placheckij/claude-remote-mcp/actions/workflows/github-code-scanning/codeql/badge.svg?branch=main)](https://github.com/placheckij/claude-remote-mcp/security/code-scanning)
+[![mcp-gateway on PyPI](https://img.shields.io/pypi/v/claude-remote-mcp-gateway?label=mcp-gateway)](https://pypi.org/project/claude-remote-mcp-gateway/)
+[![agent-bridge on PyPI](https://img.shields.io/pypi/v/claude-remote-mcp-agent-bridge?label=agent-bridge)](https://pypi.org/project/claude-remote-mcp-agent-bridge/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue.svg)](pyproject.toml)
 
@@ -16,7 +18,9 @@ Voice-driven remote orchestration for Claude Code agents. Manage and supervise A
 
 How the layers fit together, where state lives and the trust boundaries:
 [ARCHITECTURE.md](ARCHITECTURE.md). Each component has its own README with system
-requirements, configuration, deployment and tests.
+requirements, configuration, deployment and tests. Both are on PyPI, released separately:
+mcp-gateway as `claude-remote-mcp-gateway`, agent-bridge as
+`claude-remote-mcp-agent-bridge` ([releases](https://github.com/placheckij/claude-remote-mcp/releases)).
 
 | Directory | Runs on | Role |
 |---|---|---|
@@ -28,7 +32,7 @@ You need:
 - [herdr](https://github.com/herdrdev/herdr) 0.8.0+ and Claude Code on each agent
   host;
 - [uv](https://docs.astral.sh/uv/) on each host;
-- an agent host that stays awake and logged in while you use it (see
+- an agent host that stays awake while you use it, and on macOS and Windows logged in (see
   [Keeping the agent host available](agent-bridge/README.md#keeping-the-agent-host-available));
 - a Cloudflare account (the Free plan is fine) with a domain whose DNS is on Cloudflare;
 - a Claude plan with custom connectors.
@@ -68,6 +72,19 @@ separate Claude config: `agent-bridge setup` asks for it. Log in to that config 
 setup says so.
 See [Folder trust](agent-bridge/README.md#folder-trust).
 
+## Updating
+
+Upgrade the package, then run its setup again; each keeps its settings, state and
+enrollment, and restarts the service on the new version.
+
+- **Gateway host:** `uv tool upgrade claude-remote-mcp-gateway`, then `mcp-gateway setup`
+  (see [Update and rotate](mcp-gateway/README.md#update-and-rotate)).
+- **Agent hosts:** `uv tool upgrade claude-remote-mcp-agent-bridge`, then
+  `agent-bridge setup`.
+
+Update the gateway first: it calls agent-bridges at its own API version and one behind, but
+not newer ones. The agent hosts can then follow one at a time.
+
 ## Development
 
 uv workspace; each component is its own package.
@@ -76,24 +93,25 @@ uv workspace; each component is its own package.
 uv sync --all-packages
 uv run --package claude-remote-mcp-agent-bridge pytest agent-bridge
 uv run --package claude-remote-mcp-gateway pytest mcp-gateway
-uv run pytest   # both packages plus tests/ (deploy scripts, enrollment end to end)
+uv run pytest   # both packages plus tests/ (enrollment end to end)
 ```
 
-### Releasing agent-bridge
+### Releasing
 
-agent-bridge is published to PyPI as `claude-remote-mcp-agent-bridge`; its command is
-`agent-bridge`. To release:
+Each package has its own version, tag and release workflow:
 
-1. Set the version, e.g. `uv version --package claude-remote-mcp-agent-bridge 0.2.0`, and
+| Package | Tag | Workflow |
+|---|---|---|
+| `claude-remote-mcp-gateway` | `mcp-gateway-vX.Y.Z` | [release-mcp-gateway.yml](.github/workflows/release-mcp-gateway.yml) |
+| `claude-remote-mcp-agent-bridge` | `agent-bridge-vX.Y.Z` | [release.yml](.github/workflows/release.yml) |
+
+1. Set the version, e.g. `uv version --package claude-remote-mcp-agent-bridge 0.3.0`, and
    merge that to main.
 2. Tag that commit on main and push the tag:
-   `git tag agent-bridge-v0.2.0 && git push origin agent-bridge-v0.2.0`.
-3. The [release workflow](.github/workflows/release.yml) runs CI, checks that the tag is
-   the package's version, builds it, and waits for approval in the `pypi` environment.
-   Approve it in the run; it then publishes to PyPI and creates the GitHub Release.
-
-mcp-gateway is released the same way, as `claude-remote-mcp-gateway` with
-`mcp-gateway-v*` tags: see [Releasing mcp-gateway](mcp-gateway/README.md#releasing-mcp-gateway).
+   `git tag agent-bridge-v0.3.0 && git push origin agent-bridge-v0.3.0`.
+3. The workflow runs CI, checks that the tag is the package's version, builds it, and waits
+   for approval in the `pypi` environment. Approve it in the run; it then publishes to PyPI
+   through Trusted Publishing and creates the GitHub Release.
 
 ## License
 
