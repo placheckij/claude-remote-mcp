@@ -79,7 +79,7 @@ All routes require `Authorization: Bearer $AGENT_BRIDGE_TOKEN`.
 | `POST /agents/{id}/prompt` `{text, timeout_s?, lines?}` | `agent prompt --wait` | waits until idle/done/blocked (the agent includes `question`); on timeout returns `timed_out: true` with current status, and `unconfirmed: true` if the text was typed but the agent didn't react within 5 s (don't resend). Refused with `409 agent_blocked` while the agent is `blocked` (the Enter would answer its question), and with `409 agent_busy` while it is `working` or another prompt to it is running |
 | `POST /agents/{id}/wait` `{timeout_s?, lines?, expect_change?}` | `agent wait` | same result as `/prompt`, without sending anything; `expect_change` (after `/keys`) first gives the agent 5 s to leave its old `blocked` state |
 | `POST /agents/{id}/keys` `{keys}` | `agent send-keys` | answer a `blocked` agent's question; `204` |
-| `POST /agents` `{project, name?, account?, remote_control?}` | `workspace create` + `agent start --kind claude` | start an agent in a project: a folder name, looked up as `GET /projects/{name}` does, or an absolute path; `201` with the agent. `{cwd}` (an absolute path) is still taken instead of `project`, for gateways from before it. On the folder's Claude account or the one named (see below); the reply adds the `account` used. `remote_control` (default off) starts it with Remote Control (see below). `name` (by default the folder's) may be any words: it becomes a name herdr accepts (lower-case ASCII, starting with a letter, at most 32 characters, e.g. `Webapp fix!` → `webapp-fix`), with `-2`, `-3`, … if a live agent already has it |
+| `POST /agents` `{project, name?, account?, remote_control?}` | `workspace create` + `agent start --kind claude` | start an agent in a project: a folder name, looked up as `GET /projects/{name}` does, or an absolute path; `201` with the agent. `{cwd}` (an absolute path) is also taken instead of `project`, from gateways older than `project`. On the folder's Claude account or the one named (see below); the reply adds the `account` used. `remote_control` (default off) starts it with Remote Control (see below). `name` (by default the folder's) may be any words: it becomes a name herdr accepts (lower-case ASCII, starting with a letter, at most 32 characters, e.g. `Webapp fix!` → `webapp-fix`), with `-2`, `-3`, … if a live agent already has it |
 | `PATCH /agents/{id}` `{name}` | `agent rename` + `workspace rename` | give the agent and its workspace the same new name, made the way `POST /agents` makes one (`-2`, `-3`, … only if *another* live agent has it); returns the agent |
 | `DELETE /agents/{id}` | `agent get` + `pane close` | close the agent's pane; `204`, or `404` if the id isn't an agent (a shell or dev-server pane) |
 
@@ -142,8 +142,8 @@ folder. Claude Code keeps each login in a config folder: its default one (`~/.cl
 what a plain `claude` uses), or another named by `CLAUDE_CONFIG_DIR`.
 
 1. **Log in once in each config.** The default one is likely logged in already. For
-   another, run `CLAUDE_CONFIG_DIR=~/.claude-personal claude`, log in, and quit. An alias
-   such as `alias claude-personal='CLAUDE_CONFIG_DIR=$HOME/.claude-personal claude'`
+   another, run `CLAUDE_CONFIG_DIR=~/.claude-home claude`, log in, and quit. An alias
+   such as `alias claude-home='CLAUDE_CONFIG_DIR=$HOME/.claude-home claude'`
    keeps using that login by hand easy.
 2. **Name the accounts** in `AGENT_BRIDGE_ACCOUNTS`, as JSON: each with its config folder
    and the project folders it's for. Names are lower-case; paths are full paths.
@@ -152,7 +152,7 @@ what a plain `claude` uses), or another named by `CLAUDE_CONFIG_DIR`.
    ```json
    {
      "work": {"config_dir": null, "folders": ["/Users/me/projects/work"]},
-     "personal": {"config_dir": "/Users/me/.claude-personal", "folders": ["/Users/me/projects/own"]}
+     "personal": {"config_dir": "/Users/me/.claude-home", "folders": ["/Users/me/projects/own"]}
    }
    ```
 3. **Apply it.** With `agent-bridge setup`, pass it in once as `--accounts`; re-runs keep

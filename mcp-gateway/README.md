@@ -100,7 +100,7 @@ asks for it. The
 running gateway picks up each change before its next request.
 
 - **Agent ids** carry their host, e.g. `mac/w1:p1`. While only one host is set up, bare
-  ids (`w1:p1`) are shown and accepted, as before.
+  ids (`w1:p1`) are shown and accepted.
 - **Versions:** the gateway calls bridges at its own API version (2) and one behind. Any
   other shows in `list_agents` as needing an update and isn't called.
 - **Upgrading from one bridge:** if `MCP_GATEWAY_BRIDGE_URL` and `_TOKEN` are set and
@@ -281,7 +281,7 @@ PUBLIC_HOST=mcp.example.com mcp-gateway setup
 
 It must be 16+ characters from letters, digits, spaces and `. _ ~ + / = : , ! ? @ # % ^ & * ( ) -`.
 
-No static token is made any more. One already in `/etc/mcp-gateway/env` is kept, so a
+The script makes no static token. One already in `/etc/mcp-gateway/env` is kept, so a
 connector added with request headers keeps working until it is replaced (see
 [Move a connector to OAuth](#move-a-connector-to-oauth)); `MCP_GATEWAY_TOKEN` passed the
 same way sets one.
