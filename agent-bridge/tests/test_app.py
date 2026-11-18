@@ -939,19 +939,19 @@ def rename_responses(root: Path, others: list[dict] = ()) -> dict:
 
 def test_rename_names_the_agent_and_its_workspace_alike(root: Path) -> None:
     runner = FakeRunner(rename_responses(root))
-    response = client(runner, root).patch("/agents/w1:p1", headers=AUTH, json={"name": "Grafik fix!"})
+    response = client(runner, root).patch("/agents/w1:p1", headers=AUTH, json={"name": "Webapp fix!"})
     assert response.status_code == 200, response.text
     assert response.json()["name"] == "renamed"
-    assert runner.called("agent", "rename") == [["agent", "rename", "w1:p1", "grafik-fix"]]
-    assert runner.called("workspace", "rename") == [["workspace", "rename", "w1", "grafik-fix"]]
+    assert runner.called("agent", "rename") == [["agent", "rename", "w1:p1", "webapp-fix"]]
+    assert runner.called("workspace", "rename") == [["workspace", "rename", "w1", "webapp-fix"]]
 
 
 def test_rename_picks_a_free_name_but_may_keep_its_own(root: Path) -> None:
-    others = [{**agent("w2:p1"), "name": "grafik"}]
+    others = [{**agent("w2:p1"), "name": "webapp"}]
     runner = FakeRunner(rename_responses(root, others))
     c = client(runner, root)
-    c.patch("/agents/w1:p1", headers=AUTH, json={"name": "grafik"})
-    assert runner.called("agent", "rename")[-1][-1] == "grafik-2"
+    c.patch("/agents/w1:p1", headers=AUTH, json={"name": "webapp"})
+    assert runner.called("agent", "rename")[-1][-1] == "webapp-2"
 
     # Renaming an agent to the name it already has is not a clash with itself.
     runner.responses[("agent", "list")] = ok({"agents": [{**agent(cwd=str(root / "project")), "name": "probe"}]})
@@ -1189,7 +1189,7 @@ def projects_in(config_dir: Path) -> dict:
 @pytest.mark.parametrize(
     ("spoken", "herdr_name"),
     [
-        ("Grafik fix!", "grafik-fix"), ("my.app", "my-app"), ("łódź", "lodz"), ("Żaba", "zaba"),
+        ("Webapp fix!", "webapp-fix"), ("my.app", "my-app"), ("łódź", "lodz"), ("Żółw", "zolw"),
         ("1abc", "agent-1abc"), ("...", "agent"), ("x" * 40, "x" * 32), ("a b", "a-b"),
         ("../x", "x"), ("x;rm -rf", "x-rm-rf"), ("snake_case", "snake_case"),
     ],
@@ -1212,14 +1212,14 @@ def test_start_picks_a_free_name_when_it_is_taken(root: Path) -> None:
     # herdr names must be unique among live agents.
     responses = start_responses(trust_dialog=False)
     responses[("agent", "list")] = ok(
-        {"agents": [{**agent("w1:p1"), "name": "grafik"}, {**agent("w2:p1"), "name": "grafik-2"}]}
+        {"agents": [{**agent("w1:p1"), "name": "webapp"}, {**agent("w2:p1"), "name": "webapp-2"}]}
     )
     runner = FakeRunner(responses)
     response = client(runner, root).post(
-        "/agents", headers=AUTH, json={"cwd": str(root / "project"), "name": "Grafik"}
+        "/agents", headers=AUTH, json={"cwd": str(root / "project"), "name": "Webapp"}
     )
     assert response.status_code == 201
-    assert runner.called("agent", "start")[0][2] == "grafik-3"
+    assert runner.called("agent", "start")[0][2] == "webapp-3"
 
 
 def test_prompt_to_a_working_agent_is_refused_without_typing(root: Path) -> None:
@@ -1439,9 +1439,9 @@ def test_text_that_cannot_go_into_herdrs_argv_is_refused(root: Path, path: str, 
 
 def two_roots(tmp_path: Path) -> tuple[Path, Path]:
     first, second = tmp_path / "projects", tmp_path / "work"
-    (first / "grafik" / "api").mkdir(parents=True)
+    (first / "webapp" / "api").mkdir(parents=True)
     (second / "billing").mkdir(parents=True)
-    (second / "grafik").mkdir()
+    (second / "webapp").mkdir()
     return first.resolve(), second.resolve()
 
 
@@ -1513,7 +1513,7 @@ def test_platforms_are_named_alike(monkeypatch: pytest.MonkeyPatch, sys_platform
 
 @pytest.mark.parametrize(
     ("name", "folder"),
-    [("grafik", "projects/grafik"), ("billing", "work/billing"), ("api", None), ("missing", None)],
+    [("webapp", "projects/webapp"), ("billing", "work/billing"), ("api", None), ("missing", None)],
 )
 def test_projects_are_looked_up_under_each_root_in_turn(
     tmp_path: Path, name: str, folder: str | None
@@ -1529,7 +1529,7 @@ def test_projects_are_looked_up_under_each_root_in_turn(
 
 @pytest.mark.parametrize(
     "name",
-    [".", "x..y", "~grafik", "a\\b", "C:grafik", " ", "a%00b", "grafik/api", "grafik%2Fapi", "", "a" * 300],
+    [".", "x..y", "~webapp", "a\\b", "C:webapp", " ", "a%00b", "webapp/api", "webapp%2Fapi", "", "a" * 300],
 )
 def test_project_lookups_refuse_anything_but_a_folder_name(tmp_path: Path, name: str) -> None:
     response = roots_client(FakeRunner({}), two_roots(tmp_path)).get(f"/projects/{name}", headers=AUTH)
@@ -1574,14 +1574,14 @@ def test_start_names_the_agent_after_the_project_as_given(
 ) -> None:
     # Not after the folder a link leads to: the user said "alias".
     roots = two_roots(tmp_path)
-    symlink(roots[0] / "alias", roots[0] / "grafik")
+    symlink(roots[0] / "alias", roots[0] / "webapp")
     runner = FakeRunner(start_responses(trust_dialog=False))
     response = roots_client(runner, roots).post(
         "/agents", headers=AUTH, json={"project": given.format(root=roots[0])}
     )
     assert response.status_code == 201, response.text
     created = runner.called("workspace", "create")[0]
-    assert created[created.index("--cwd") + 1] == str((roots[0] / "grafik").resolve())
+    assert created[created.index("--cwd") + 1] == str((roots[0] / "webapp").resolve())
     assert runner.called("agent", "start")[0][2] == "alias"
 
 
@@ -1589,11 +1589,11 @@ def test_start_takes_an_absolute_project_path(tmp_path: Path) -> None:
     roots = two_roots(tmp_path)
     runner = FakeRunner(start_responses(trust_dialog=False))
     response = roots_client(runner, roots).post(
-        "/agents", headers=AUTH, json={"project": str(roots[0] / "grafik" / "api"), "name": "x"}
+        "/agents", headers=AUTH, json={"project": str(roots[0] / "webapp" / "api"), "name": "x"}
     )
     assert response.status_code == 201, response.text
     created = runner.called("workspace", "create")[0]
-    assert created[created.index("--cwd") + 1] == str(roots[0] / "grafik" / "api")
+    assert created[created.index("--cwd") + 1] == str(roots[0] / "webapp" / "api")
 
 
 @pytest.mark.parametrize(
@@ -1613,7 +1613,7 @@ def test_start_refuses_an_absolute_project_path_it_may_not_use(
     assert runner.calls == []
 
 
-@pytest.mark.parametrize("project", ["..",".", "grafik/api", "x..y", "~", "a\\b", "C:grafik"])
+@pytest.mark.parametrize("project", ["..",".", "webapp/api", "x..y", "~", "a\\b", "C:webapp"])
 def test_start_refuses_a_project_that_is_neither_name_nor_absolute_path(
     tmp_path: Path, project: str
 ) -> None:
@@ -1624,7 +1624,7 @@ def test_start_refuses_a_project_that_is_neither_name_nor_absolute_path(
     assert response.status_code == 422
     error = response.json()["error"]
     assert error["code"] == "bad_project"
-    assert error["message"] == 'Give the project as one folder name, like "grafik", or as an absolute path.'
+    assert error["message"] == 'Give the project as one folder name, like "webapp", or as an absolute path.'
     assert runner.calls == []
 
 
@@ -1639,7 +1639,7 @@ def test_start_in_an_unknown_project_says_where_it_looked(tmp_path: Path) -> Non
     assert runner.calls == []
 
 
-@pytest.mark.parametrize("body", [{"name": "x"}, {"project": "grafik", "cwd": "/tmp", "name": "x"}])
+@pytest.mark.parametrize("body", [{"name": "x"}, {"project": "webapp", "cwd": "/tmp", "name": "x"}])
 def test_start_needs_exactly_one_of_project_and_cwd(tmp_path: Path, body: dict) -> None:
     runner = FakeRunner({})
     response = roots_client(runner, two_roots(tmp_path)).post("/agents", headers=AUTH, json=body)
@@ -1649,18 +1649,18 @@ def test_start_needs_exactly_one_of_project_and_cwd(tmp_path: Path, body: dict) 
 
 def test_agents_say_which_project_they_work_in(tmp_path: Path) -> None:
     roots = two_roots(tmp_path)
-    cwds = [roots[0] / "grafik" / "api", roots[1] / "billing", roots[1], Path("/elsewhere/repo")]
+    cwds = [roots[0] / "webapp" / "api", roots[1] / "billing", roots[1], Path("/elsewhere/repo")]
     working = [agent(f"w{i}:p1", status="working", cwd=str(cwd)) for i, cwd in enumerate(cwds)]
     runner = FakeRunner({("agent", "list"): ok({"agents": working})})
     listed = roots_client(runner, roots).get("/agents", headers=AUTH).json()
-    assert [a["project"] for a in listed] == ["grafik/api", "billing", None, None]
+    assert [a["project"] for a in listed] == ["webapp/api", "billing", None, None]
 
 
 @pytest.mark.parametrize(
     ("cwd", "roots", "project"),
     [
-        ("/home/me/projects/grafik/api", ("/home/me/projects",), "grafik/api"),
-        ("/home/me/projects/grafik", ("/home/me/projects",), "grafik"),
+        ("/home/me/projects/webapp/api", ("/home/me/projects",), "webapp/api"),
+        ("/home/me/projects/webapp", ("/home/me/projects",), "webapp"),
         ("/home/me/projects", ("/home/me/projects",), None),
         ("/home/me/projects-old/x", ("/home/me/projects",), None),
         ("/home/me/projects/work/billing", ("/home/me/projects", "/home/me/projects/work"), "billing"),
@@ -1677,11 +1677,11 @@ def test_projects_of_posix_folders(cwd: str | None, roots: tuple[str, ...], proj
     ("cwd", "project"),
     [
         # Joined with "/" on every platform: it is a name to read out, not a path.
-        ("C:\\Users\\me\\projects\\grafik\\api", "grafik/api"),
-        ("c:\\users\\ME\\Projects\\grafik", "grafik"),
+        ("C:\\Users\\me\\projects\\webapp\\api", "webapp/api"),
+        ("c:\\users\\ME\\Projects\\webapp", "webapp"),
         ("C:\\Users\\me\\projects", None),
-        ("D:\\projects\\grafik", None),
-        ("C:\\Users\\me\\projects-old\\grafik", None),
+        ("D:\\projects\\webapp", None),
+        ("C:\\Users\\me\\projects-old\\webapp", None),
     ],
 )
 def test_projects_of_windows_folders(cwd: str, project: str | None) -> None:
@@ -1690,7 +1690,7 @@ def test_projects_of_windows_folders(cwd: str, project: str | None) -> None:
 
 @pytest.mark.parametrize(
     ("name", "valid"),
-    [("grafik", True), ("my-app.v2", True), ("łódź", True), ("..", False), (".", False),
+    [("webapp", True), ("my-app.v2", True), ("łódź", True), ("..", False), (".", False),
      ("", False), (" ", False), ("a/b", False), ("a\\b", False), ("~", False), ("C:x", False),
      ("x..y", False), ("a\0b", False)],
 )

@@ -229,7 +229,7 @@ class AgentService:
             raise BridgeError(
                 422,
                 "bad_project",
-                'Give the project as one folder name, like "grafik", or as an absolute path.',
+                'Give the project as one folder name, like "webapp", or as an absolute path.',
             )
         folder = self.find_project(project)
         if folder is None:
@@ -459,7 +459,7 @@ def is_project_name(name: str) -> bool:
 
 def project_of(cwd: str | None, roots: Sequence[PurePath]) -> str | None:
     """`cwd` under the closest root, joined with "/" on every platform since it is read
-    out rather than used as a path, e.g. "grafik/api" for <root>/grafik/api; None at a
+    out rather than used as a path, e.g. "webapp/api" for <root>/webapp/api; None at a
     root itself or outside every root. `cwd` is read as the roots' kind of path, so
     Windows paths compare as Windows does (ignoring case)."""
     if not cwd:
@@ -481,7 +481,7 @@ HERDR_NAME_MAX = 32
 
 
 def herdr_name(spoken: str, taken: set[str | None]) -> str:
-    """A name herdr accepts for `spoken` (e.g. "Grafik fix!" → "grafik-fix"), made unique
+    """A name herdr accepts for `spoken` (e.g. "Webapp fix!" → "webapp-fix"), made unique
     among the `taken` names of live agents by a "-2", "-3", … suffix."""
     # NFKD splits accents off most letters; ł has no decomposition, so map it by hand.
     ascii_name = (

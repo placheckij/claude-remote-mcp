@@ -47,7 +47,7 @@ def test_drops_the_input_box_while_it_holds_draft_text() -> None:
 def test_drops_the_input_box_of_a_named_session() -> None:
     # A session renamed with /rename shows its name in the box's top rule; the box and the
     # status lines used to come back as output.
-    snapshot = SNAPSHOT.replace(f"{RULE}\n❯", f"{RULE} grafik-loop ─\n❯")
+    snapshot = SNAPSHOT.replace(f"{RULE}\n❯", f"{RULE} webapp-loop ─\n❯")
     assert last_lines(snapshot, 3) == "  3\n  PONG\n✻ Sautéed for 2s"
 
 

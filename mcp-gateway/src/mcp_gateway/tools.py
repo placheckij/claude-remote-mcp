@@ -162,7 +162,7 @@ def build_server(settings: Settings, hosts: Hosts, oauth: GatewayOAuth) -> MCPSe
         project: Annotated[
             str | None,
             # Not blank: a filter that strips to nothing would quietly list everything.
-            Field(min_length=1, max_length=200, pattern=r"\S", description='Only agents in this project folder, e.g. "grafik".'),
+            Field(min_length=1, max_length=200, pattern=r"\S", description='Only agents in this project folder, e.g. "webapp".'),
         ] = None,
         account: Annotated[
             str | None,
@@ -322,7 +322,7 @@ def build_server(settings: Settings, hosts: Hosts, oauth: GatewayOAuth) -> MCPSe
             Field(
                 min_length=1,
                 description="Project folder: one folder name in an agent host's project folders "
-                "(e.g. \"grafik\") or an absolute path on the agent host.",
+                "(e.g. \"webapp\") or an absolute path on the agent host.",
             ),
         ],
         host: Annotated[
@@ -480,11 +480,11 @@ def _platform(host: Host) -> str | None:
 
 
 class _Wanted:
-    """list_agents' project and account filters; reads as their words, e.g. " in grafik"."""
+    """list_agents' project and account filters; reads as their words, e.g. " in webapp"."""
 
     def __init__(self, project: str | None, account: str | None):
         project, account = (project or "").strip(), (account or "").strip()
-        # "grafik/" is grafik; "/" stays, as an absolute path outside every project starts with
+        # "webapp/" is webapp; "/" stays, as an absolute path outside every project starts with
         # it. Windows paths are compared with "/" too.
         slashed = project.replace("\\", "/")
         self.project = (slashed.rstrip("/") or slashed).lower() or None
@@ -501,7 +501,7 @@ class _Wanted:
     def in_project(self, agent: dict, projects_root: str | None) -> bool:
         if self.project is None:
             return True
-        # As listed (the project, e.g. "grafik") or as its full path.
+        # As listed (the project, e.g. "webapp") or as its full path.
         below = self.project if self.project.endswith("/") else f"{self.project}/"
         places = [folder(agent, projects_root), agent.get("cwd") or ""]
         places = [place.replace("\\", "/").lower() for place in places]
@@ -579,7 +579,7 @@ def _project_folder(projects_root: str | None, project: str) -> str:
     # ".." would climb out of the root, "." would be the root itself (an agent over every
     # project), and "~" is not expanded on the agent host.
     if any(part in project for part in ("..", "/", "~")) or project.strip() == ".":
-        raise ToolError('Give the project as one folder name, like "grafik", or as an absolute path.')
+        raise ToolError('Give the project as one folder name, like "webapp", or as an absolute path.')
     if projects_root is None:
         raise ToolError("This agent host can't look up project names; give the project as an absolute path.")
     return posixpath.join(projects_root, project)
