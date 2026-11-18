@@ -1011,6 +1011,20 @@ def test_rotate_token_puts_the_installed_token_back_when_launchd_wont_start_it(m
     assert env(mac)["AGENT_BRIDGE_TOKEN"] == TOKEN
 
 
+def test_rotate_token_puts_the_installed_token_back_when_the_plist_cant_be_written(mac: FakeMac, capsys) -> None:
+    installed(mac)
+    mac.plist.unlink()
+    mac.plist.parent.rmdir()
+    mac.plist.parent.write_text("not a folder")
+
+    run = setup(mac, capsys, "--rotate-token", "--enrollment", ENROLLMENT)
+
+    assert run.code == 1
+    assert f"can't write {mac.plist}" in run.out
+    assert "the installed one is back" in run.out
+    assert env(mac)["AGENT_BRIDGE_TOKEN"] == TOKEN
+
+
 def test_rotate_token_puts_the_installed_token_back_on_ctrl_c(mac: FakeMac, capsys) -> None:
     installed(mac)
     mac.enroll_codes = [1]

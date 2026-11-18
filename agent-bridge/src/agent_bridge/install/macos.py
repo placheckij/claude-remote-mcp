@@ -209,9 +209,9 @@ def setup(options: Options, system: System, read: Read) -> int:
         plan = _decide(options, system, read, paths)
         _rename(plan, system)
         plan.enrollment = _enrollment(options, plan, read)
-        _write(plan, system, paths)
         enrolled = Enrolled()
         try:
+            _write(plan, system, paths)
             _start(system, paths)
             _enroll(plan, enrolled, system, read, paths)
         except (Refused, KeyboardInterrupt):
