@@ -6,9 +6,10 @@ into `herdr` CLI calls and returns trimmed results. herdr owns the agents, which
 addressed by their herdr pane id (e.g. `w1:p1`); agent-bridge's own state is only its id
 and the gateway it [enrolled](#enroll-with-the-gateway) with.
 
-```
-mcp-gateway ──LAN, bearer token──> agent-bridge :8765 ──> herdr CLI ──> Claude Code agents
-```
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/placheckij/claude-remote-mcp/main/docs/assets/architecture-dark.svg">
+  <img src="https://raw.githubusercontent.com/placheckij/claude-remote-mcp/main/docs/assets/architecture-light.svg" width="100%" alt="Three layers and four trust boundaries. The Claude app reaches mcp-gateway on the gateway host over MCP over HTTPS, through a Cloudflare Tunnel, with an OAuth access token; mcp-gateway keeps clients and token hashes in oauth.json, its agent hosts in bridges.json and the enrollment window in enrollment.json. mcp-gateway reaches agent-bridge on each agent host (macOS, Linux, Windows) over HTTP on the LAN with that host's bearer token, and agent hosts enroll with the gateway over the LAN with the window's secret. Each agent-bridge keeps its id and gateway in state.json, only changes agents under its allowed roots, and drives herdr through the herdr CLI; herdr runs Claude Code sessions, one per pane, each on the Claude account set up for its folder, with ids that name the host, such as mac/w1:p1.">
+</picture>
 
 It sees every herdr agent of its user, including ones started by hand, and controls those
 whose folder is under the allowed roots.
@@ -21,7 +22,7 @@ whose folder is under the allowed roots.
 | herdr | 0.8.0 or newer (tested with 0.8.0 and 0.9.5); its server must be running for the same user (it is whenever herdr is open, and keeps running after you detach) |
 | Claude Code | the `claude` CLI, installed and logged in for that user |
 | Python | 3.11+, via [uv](https://docs.astral.sh/uv/) (uv installs it if needed); on Windows, uv 0.12.4 or newer, as older ones install a windowless agent-bridge that opens a console window |
-| Network | reachable from the gateway host on one TCP port (default 8765), and able to reach the gateway on its port (8766) to enroll. Give the host a fixed LAN address, e.g. a DHCP reservation. Nothing is exposed to the internet. |
+| Network | reachable from the gateway host on one TCP port (default 8765), and able to reach the gateway on its port (8766) to enroll and, at every start, to report its address. Give the host a fixed LAN address, e.g. a DHCP reservation. Nothing is exposed to the internet. |
 | Always on | the agents and agent-bridge only answer while the host is awake and, on macOS and Windows, the user is logged in; see [Keeping the agent host available](#keeping-the-agent-host-available) |
 
 ## Keeping the agent host available
@@ -34,8 +35,9 @@ answers "The agent host is not reachable". The gateway host can't wake it: macOS
 **macOS**
 
 - Keep it awake on power: `sudo pmset -c sleep 0` (the display can still sleep), or
-  System Settings → Energy (on a laptop: Battery → Options) → turn on "Prevent
-  automatic sleeping when the display is off". For a single trip, `caffeinate -s` in a
+  System Settings → Energy → turn on "Prevent automatic sleeping when the display is
+  off" (on a laptop: Battery → Options → "Prevent automatic sleeping on power adapter
+  when the display is off"). For a single trip, `caffeinate -s` in a
   terminal does the same until you stop it.
 - A laptop with the lid closed sleeps anyway, unless it's on power with an external
   display. `sudo pmset -c disablesleep 1` keeps it awake with the lid closed too (an
@@ -76,15 +78,22 @@ All routes require `Authorization: Bearer $AGENT_BRIDGE_TOKEN`.
 | `GET /agents/{id}/output?lines=40&source=recent` | `agent read` | last N (1-500) meaningful lines: padding, input box (also when it shows the session's name) and status bar dropped; the visible screen only while the agent is working or blocked (herdr can't scroll its history then). `source=visible` reads only the screen; `recent-unwrapped` reads herdr's history of that name |
 | `POST /agents/{id}/prompt` `{text, timeout_s?, lines?}` | `agent prompt --wait` | waits until idle/done/blocked (the agent includes `question`); on timeout returns `timed_out: true` with current status, and `unconfirmed: true` if the text was typed but the agent didn't react within 5 s (don't resend). Refused with `409 agent_blocked` while the agent is `blocked` (the Enter would answer its question), and with `409 agent_busy` while it is `working` or another prompt to it is running |
 | `POST /agents/{id}/wait` `{timeout_s?, lines?, expect_change?}` | `agent wait` | same result as `/prompt`, without sending anything; `expect_change` (after `/keys`) first gives the agent 5 s to leave its old `blocked` state |
-| `POST /agents/{id}/keys` `{keys}` | `agent send-keys` | answer a `blocked` agent's question |
-| `POST /agents` `{project, name?, account?}` | `workspace create` + `agent start --kind claude` | start an agent in a project: a folder name, looked up as `GET /projects/{name}` does, or an absolute path. `{cwd}` (an absolute path) is still taken instead of `project`, for gateways from before it. On the folder's Claude account or the one named (see below); the reply adds the `account` used. `name` (by default the folder's) may be any words: it becomes a name herdr accepts (lower-case ASCII, starting with a letter, at most 32 characters, e.g. `Webapp fix!` → `webapp-fix`), with `-2`, `-3`, … if a live agent already has it |
+| `POST /agents/{id}/keys` `{keys}` | `agent send-keys` | answer a `blocked` agent's question; `204` |
+| `POST /agents` `{project, name?, account?, remote_control?}` | `workspace create` + `agent start --kind claude` | start an agent in a project: a folder name, looked up as `GET /projects/{name}` does, or an absolute path; `201` with the agent. `{cwd}` (an absolute path) is also taken instead of `project`, from gateways older than `project`. On the folder's Claude account or the one named (see below); the reply adds the `account` used. `remote_control` (default off) starts it with Remote Control (see below). `name` (by default the folder's) may be any words: it becomes a name herdr accepts (lower-case ASCII, starting with a letter, at most 32 characters, e.g. `Webapp fix!` → `webapp-fix`), with `-2`, `-3`, … if a live agent already has it |
 | `PATCH /agents/{id}` `{name}` | `agent rename` + `workspace rename` | give the agent and its workspace the same new name, made the way `POST /agents` makes one (`-2`, `-3`, … only if *another* live agent has it); returns the agent |
-| `DELETE /agents/{id}` | `agent get` + `pane close` | close the agent's pane; `404` if the id isn't an agent (a shell or dev-server pane) |
+| `DELETE /agents/{id}` | `agent get` + `pane close` | close the agent's pane; `204`, or `404` if the id isn't an agent (a shell or dev-server pane) |
+
+Request limits, refused with `422`: `{id}` must look like a herdr pane id (`w1:p1`);
+`text` 1-20,000 characters with no NUL character; `timeout_s` 1-3600 and `lines` 1-500
+(default 40) for `/prompt` and `/wait`; `keys` 1-20 entries; `name` 1-200 characters;
+`account` 1-64. On Windows a prompt whose quoted command line for herdr is longer than
+Windows allows is refused with `422 prompt_too_long`.
 
 Every error comes back as `{"error": {"code", "message"}}` with a matching status
 (`unauthorized` → 401, `path_not_allowed` → 403, `agent_not_found` → 404,
 `agent_limit_reached` → 409, `timeout` → 504, …); the message is written to be read
-aloud. Only request validation failures keep FastAPI's `{"detail": [...]}` shape (422).
+aloud. Only request validation failures (422) and unknown routes or methods (404, 405)
+keep FastAPI's `{"detail": ...}` shape.
 
 Reading (list, details, output, wait) works for every agent. Changing one (`/prompt`,
 `/keys`, `PATCH`, `DELETE`) only works for agents whose folder is under
@@ -99,9 +108,9 @@ allowed roots.
 
 1. `422 bad_project` if `project` is neither one folder name nor an absolute path, and
    `404 project_not_found` if no allowed root has a folder of that name.
-2. `403` if an absolute path is outside `AGENT_BRIDGE_ALLOWED_ROOTS` (symlinks and `..`
-   are resolved first).
-3. `404` if the folder doesn't exist.
+2. `403 path_not_allowed` if an absolute path is outside `AGENT_BRIDGE_ALLOWED_ROOTS`
+   (symlinks and `..` are resolved first).
+3. `404 not_a_directory` if the folder doesn't exist.
 4. `422 unknown_account` if the named account isn't in `AGENT_BRIDGE_ACCOUNTS`.
 5. `409 agent_limit_reached` if `AGENT_BRIDGE_MAX_AGENTS` (10) or more herdr agents
    already exist: *"Refusing to start a new agent: 10 agents are already running and the
@@ -122,7 +131,8 @@ left out, it is off. If `AGENT_BRIDGE_CLAUDE_ARGS` already has `--remote-control
 isn't passed again, and every agent has it. The answer says which in `remote_control`:
 `on`, `off`, or `blocked` when Claude Code showed *"Remote Control is disabled by your
 organization's policy"* within the 5 s the start looks for the trust dialog (e.g. on a
-Claude Team account); the agent then runs without it.
+Team or Enterprise account whose Owner hasn't turned Remote Control on); the agent then
+runs without it.
 
 ### Claude accounts
 
@@ -132,8 +142,8 @@ folder. Claude Code keeps each login in a config folder: its default one (`~/.cl
 what a plain `claude` uses), or another named by `CLAUDE_CONFIG_DIR`.
 
 1. **Log in once in each config.** The default one is likely logged in already. For
-   another, run `CLAUDE_CONFIG_DIR=~/.claude-personal claude`, log in, and quit. An alias
-   such as `alias claude-personal='CLAUDE_CONFIG_DIR=$HOME/.claude-personal claude'`
+   another, run `CLAUDE_CONFIG_DIR=~/.claude-agents claude`, log in, and quit. An alias
+   such as `alias claude-agents='CLAUDE_CONFIG_DIR=$HOME/.claude-agents claude'`
    keeps using that login by hand easy.
 2. **Name the accounts** in `AGENT_BRIDGE_ACCOUNTS`, as JSON: each with its config folder
    and the project folders it's for. Names are lower-case; paths are full paths.
@@ -142,7 +152,7 @@ what a plain `claude` uses), or another named by `CLAUDE_CONFIG_DIR`.
    ```json
    {
      "work": {"config_dir": null, "folders": ["/Users/me/projects/work"]},
-     "personal": {"config_dir": "/Users/me/.claude-personal", "folders": ["/Users/me/projects/own"]}
+     "personal": {"config_dir": "/Users/me/.claude-agents", "folders": ["/Users/me/projects/own"]}
    }
    ```
 3. **Apply it.** With `agent-bridge setup`, pass it in once as `--accounts`; re-runs keep
@@ -182,9 +192,10 @@ one.
 
 ### Folder trust
 
-Claude's "Do you trust this folder?" dialog defaults to "No, exit", so a prompt sent
-into it would quit Claude. If the dialog shows after a start, the start fails with
-`409 folder_not_trusted` and the new workspace is closed.
+Claude Code's folder-trust dialog ("Is this a project you created or one you trust?")
+defaults to "No, exit", so a prompt sent into it would quit Claude. If the dialog shows
+after a start, the start fails with `409 folder_not_trusted` and the new workspace is
+closed.
 
 So either trust each project folder once by hand (open `claude` in it and accept), or
 let agent-bridge do it. In a git repository Claude Code checks the repository's own
@@ -193,7 +204,7 @@ count, so the dialog still shows. To let agent-bridge do it, set both:
 
 - `AGENT_BRIDGE_CLAUDE_CONFIG_DIR`: a separate Claude config for the agents, e.g.
   `~/.claude-agents` (run `CLAUDE_CONFIG_DIR=~/.claude-agents claude` once to log in;
-  until then starts fail with `409 trust_refused` saying so);
+  until then starts under the trust root fail with `409 trust_refused` saying so);
 - `AGENT_BRIDGE_TRUST_ROOT`: the folder under which new agents' folders are marked
   trusted in the agent's Claude config (`<config dir>/.claude.json`).
 
@@ -214,7 +225,8 @@ The file is written atomically and left alone if the folder itself is already tr
 
 Read from the environment, or from the env file (the environment wins), one
 `AGENT_BRIDGE_…=value` per line. An invalid setting stops startup with one line per
-problem, naming the variable. Enrolling adds a state file. Both must be readable only by
+problem, naming the variable. The first start creates a state file with this host's id;
+enrolling adds the gateway to it. Both must be readable only by
 you (`chmod 600`):
 
 | Platform | Settings (env file) | State |
@@ -236,7 +248,7 @@ the working folder is read too, under the env file, with a warning.
 | `AGENT_BRIDGE_CLAUDE_CONFIG_DIR` | unset | `CLAUDE_CONFIG_DIR` for new agents whose folder has no [account](#claude-accounts); unset uses Claude Code's default config |
 | `AGENT_BRIDGE_ACCOUNTS` | none | named Claude logins and the folders they're for, as JSON (see [Claude accounts](#claude-accounts)); names are lower-case, e.g. `work` |
 | `AGENT_BRIDGE_CLAUDE_ARGS` | `--permission-mode auto` | extra `claude` arguments, shell-quoted; set it empty for none |
-| `AGENT_BRIDGE_HERDR_BIN` | `herdr` | the full path, e.g. `~/.local/bin/herdr`; `serve`, `enroll`, `rename` and `check` need it set |
+| `AGENT_BRIDGE_HERDR_BIN` | `herdr` | the full path, e.g. `/Users/me/.local/bin/herdr` (a `~` isn't expanded); `serve`, `enroll`, `rename` and `check` need it set |
 | `AGENT_BRIDGE_TRUST_ROOT` | unset | auto-trust folders under it; needs `AGENT_BRIDGE_CLAUDE_CONFIG_DIR`; absolute, and like the allowed roots never `/` or the home folder |
 | `AGENT_BRIDGE_MAX_AGENTS` | `10` | no new agents while this many or more exist (all herdr agents count) |
 | `AGENT_BRIDGE_MAX_OUTPUT_CHARS` | `8000` | terminal output beyond this is cut from the front (`truncated: true`) |
@@ -245,26 +257,29 @@ the working folder is read too, under the env file, with a warning.
 ## Run
 
 The herdr server must be running in the same user session. To try it in the foreground,
-write the [env file](#configuration) and start it from the checkout. To keep it running,
-set it up as a service instead (below).
+write the [env file](#configuration) and start it. To keep it running, set it up as a
+service instead (below).
 
 ```sh
-uv sync --all-packages
-uv run --package claude-remote-mcp-agent-bridge agent-bridge serve
+uv tool install claude-remote-mcp-agent-bridge
+agent-bridge serve
 ```
+
+From a checkout: `uv sync --all-packages`, then
+`uv run --package claude-remote-mcp-agent-bridge agent-bridge serve`.
 
 ### Commands
 
 | Command | Does | Exit codes |
 |---|---|---|
-| `agent-bridge serve` | runs the service from the env and state files, and tells the gateway its address | |
+| `agent-bridge serve [--log-file PATH]` | runs the service from the env and state files, and tells the gateway its address. `--log-file` appends the log to `PATH` instead of stderr, moved to `PATH.1` once past 1 MB | 0 when it stops, 1 if the settings, the state file or the log file are refused (it says why), 3 if it can't start serving (e.g. the port is taken, or the address isn't this host's yet) |
 | `agent-bridge enroll <string>` | joins the gateway that printed the string (below) | 0 enrolled, 3 name taken, 4 gateway unreachable (prints the command to retry), 5 enrolled but the state file couldn't be saved, 1 otherwise |
 | `agent-bridge rename <name>` | renames this host on that gateway | 0 renamed, 2 name won't do, 3 name taken, 4 gateway unreachable, 5 renamed but the state file couldn't be saved, 6 gateway too old to rename hosts, 1 otherwise (e.g. not enrolled); 4, 6 and a refusal from the gateway print the gateway's command, but a gateway without this host says to enroll again |
 | `agent-bridge unenroll` | leaves that gateway | 0, also when the gateway can't be reached or refuses (prints the gateway's command); 1 if the state file can't be read or written |
 | `agent-bridge check` | checks the settings, the files' modes, herdr, the running service and the gateway, one line each | 0 all passed, 1 one failed |
 | `agent-bridge check --token-format <token>`, `--name-format <name>` | checks a value before it goes in the env file | 0 fine, 2 not (why, on stderr) |
 | `agent-bridge setup` | installs or updates the service and enrolls it ([macOS](#with-agent-bridge-setup), [Linux](#as-a-service-on-linux-systemd-user-unit), [Windows](#as-a-service-on-windows-task-scheduler)) | 0 installed (enrolled or not), 1 refused or failed |
-| `agent-bridge uninstall` | leaves the gateway, then removes the service, its settings, state and log (on Windows, also the firewall rule) | 0 removed, also when leaving the gateway failed (prints the gateway's command); 1 run with sudo, or the service couldn't be removed (Linux: also no systemd user manager; Windows: also run as another account than the desktop's; nothing is removed then) |
+| `agent-bridge uninstall` | leaves the gateway, then removes the service, its settings, state and log (on Windows, also the firewall rule) | 0 removed, also when leaving the gateway failed (prints the gateway's command); 1 run with sudo, on Linux without a systemd user manager, or on Windows as another account than the desktop's (nothing is removed then); 1 also if the service couldn't be removed, after the host has left the gateway |
 | `agent-bridge --version` | prints the installed version | 0 |
 
 ### Enroll with the gateway
@@ -272,8 +287,10 @@ uv run --package claude-remote-mcp-agent-bridge agent-bridge serve
 With agent-bridge running, run `sudo mcp-gateway enroll` on the gateway host, then here:
 
 ```sh
-uv run --package claude-remote-mcp-agent-bridge agent-bridge enroll 'crm1@192.168.1.10:8766#…'
+agent-bridge enroll 'crm1@192.168.1.10:8766#…'
 ```
+
+(From a checkout: `uv run --package claude-remote-mcp-agent-bridge agent-bridge enroll …`.)
 
 The gateway checks that the address in `AGENT_BRIDGE_HOST` and `AGENT_BRIDGE_PORT`
 answers as this bridge, and adds it under `AGENT_BRIDGE_NAME`. From then on, every start
@@ -281,8 +298,7 @@ tells the gateway the current address; if it can't be reached, agent-bridge logs
 enroll again and serves on. A bridge can also be added by hand on the gateway host with
 `sudo mcp-gateway bridges add <url>`, which asks for the token.
 
-The examples below use `/path/to/claude-remote-mcp` for the checkout, `192.168.1.20` for
-the LAN address and `~/projects` for the projects folder; replace them with yours.
+The examples below use `/Users/me` for your home folder; replace it with yours.
 
 ### As a service on macOS (launchd)
 
@@ -332,8 +348,9 @@ and the enrollment. If setup stops partway, run it again: it picks up from there
 To skip the questions or change an installed value, pass it: `--roots`, `--name`,
 `--host`, `--port`, `--herdr-bin`, `--claude-config-dir` and `--trust-root` (`''` for no
 folder trust), `--enrollment` (`''` to enroll later), and `--accounts` (never asked for;
-`''` removes it). `--rotate-token` replaces the token and needs `--enrollment` (if
-enrolling fails, the old token is put back). A new `--name` on an enrolled host renames
+`''` removes it). `--rotate-token` replaces the token and needs an enrollment string
+(`--enrollment`, or typed when asked; if enrolling fails, the old token is put back). A
+new `--name` on an enrolled host renames
 it on the gateway (`agent-bridge rename`); a gateway too old for that, or one that can't
 be reached, is asked for an enrollment string instead, as enrolling again renames it too.
 For any other setting, edit the env file and re-run setup. See `agent-bridge setup --help`.

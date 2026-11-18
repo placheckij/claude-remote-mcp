@@ -116,7 +116,7 @@
   <text class="mono sub" x="644" y="344" text-anchor="end">hosts · tokens</text>
   <path class="store" d="M404,360 H656 V380 L648,388 H396 V368 Z"/>
   <text class="mono storetitle" x="408" y="379">enrollment.json</text>
-  <text class="mono sub" x="644" y="379" text-anchor="end">window · secret</text>
+  <text class="mono sub" x="644" y="379" text-anchor="end">secret hash</text>
   <path class="dotted" d="M370,339 H387 M387,304 V374 M387,304 H396 M387,339 H396 M387,374 H396"/>
   <path class="bracket" d="M676,298 V290 H684"/>
   <path class="bracket" d="M892,290 H900 V298"/>

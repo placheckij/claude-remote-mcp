@@ -192,7 +192,7 @@ dev = [
 
 [[package]]
 name = "claude-remote-mcp-agent-bridge"
-version = "0.2.0"
+version = "0.2.1"
 source = { editable = "agent-bridge" }
 dependencies = [
     { name = "fastapi" },
@@ -229,7 +229,7 @@ dev = [
 
 [[package]]
 name = "claude-remote-mcp-gateway"
-version = "0.1.1"
+version = "0.1.2"
 source = { editable = "mcp-gateway" }
 dependencies = [
     { name = "httpx" },
