@@ -619,7 +619,7 @@ class WindowsSystem:
 
     def user(self) -> str:
         """This account's SID."""
-        output = _output("whoami", "/user", "/fo", "csv", "/nh")
+        output = _output(_system32("whoami.exe"), "/user", "/fo", "csv", "/nh")
         return output.strip().rsplit(",", 1)[-1].strip().strip('"')
 
     def desktop_owner(self) -> str | None:
@@ -732,8 +732,8 @@ class WindowsSystem:
     def excluded_ranges(self) -> list[tuple[int, int]]:
         """The TCP ports Windows keeps for itself (Hyper-V, WSL and Docker reserve them), IPv4's
         and IPv6's: nothing can listen there although nothing does."""
-        return [*excluded_ranges(_output("netsh", "int", "ipv4", "show", "excludedportrange", "protocol=tcp")),
-                *excluded_ranges(_output("netsh", "int", "ipv6", "show", "excludedportrange", "protocol=tcp"))]
+        return [*excluded_ranges(_output(_system32("netsh.exe"), "int", "ipv4", "show", "excludedportrange", "protocol=tcp")),
+                *excluded_ranges(_output(_system32("netsh.exe"), "int", "ipv6", "show", "excludedportrange", "protocol=tcp"))]
 
     def network(self, address: str) -> tuple[int, str, str] | None:
         """The interface index, connection category (Public, Private, DomainAuthenticated) and
@@ -815,7 +815,7 @@ class WindowsSystem:
 
     def schtasks(self, *args: str) -> int:
         try:
-            return subprocess.run(["schtasks", *args], capture_output=True,
+            return subprocess.run([_system32("schtasks.exe"), *args], capture_output=True,
                                   creationflags=subprocess.CREATE_NO_WINDOW).returncode
         except OSError:
             return -1
@@ -823,7 +823,7 @@ class WindowsSystem:
     def task(self) -> str | None:
         """The installed task's XML, or None when there is no task."""
         try:
-            result = subprocess.run(["schtasks", "/Query", "/TN", f"\\{TASK}", "/XML"], capture_output=True,
+            result = subprocess.run([_system32("schtasks.exe"), "/Query", "/TN", f"\\{TASK}", "/XML"], capture_output=True,
                                     creationflags=subprocess.CREATE_NO_WINDOW)
         except OSError:
             return None
@@ -910,9 +910,14 @@ def _oem() -> str:
         return locale.getpreferredencoding(False)
 
 
+def _system32(*parts: str) -> str:
+    """Windows' own program, by its full path: by name alone, Windows would look in the current
+    folder first."""
+    return str(Path(os.environ.get("SystemRoot", r"C:\Windows"), "System32", *parts))
+
+
 def _powershell() -> str:
-    return str(Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32" / "WindowsPowerShell" / "v1.0"
-               / "powershell.exe")
+    return _system32("WindowsPowerShell", "v1.0", "powershell.exe")
 
 
 def _session(pid: int) -> int | None:

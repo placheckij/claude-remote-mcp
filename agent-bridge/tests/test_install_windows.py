@@ -947,6 +947,28 @@ def test_pe_subsystem(tmp_path: Path, data: bytes, subsystem: int) -> None:
     assert windows.pe_subsystem(tmp_path / "missing.exe") == 0
 
 
+def test_windows_own_programs_run_by_their_full_path(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("SystemRoot", str(tmp_path))
+    ran: list[list[str]] = []
+
+    def run(argv: list[str], **_: object) -> object:
+        ran.append(argv)
+        return type("Result", (), {"returncode": 0, "stdout": b""})()
+
+    monkeypatch.setattr(windows.subprocess, "run", run)
+    monkeypatch.setattr(windows.subprocess, "CREATE_NO_WINDOW", 0, raising=False)
+    monkeypatch.setattr(windows, "_oem", lambda: "ascii")
+    system = windows.WindowsSystem()
+
+    system.user()
+    system.excluded_ranges()
+    system.schtasks("/End", "/TN", "\\agent-bridge")
+    system.task()
+
+    assert [argv[0] for argv in ran] == [str(tmp_path / "System32" / name) for name in (
+        "whoami.exe", "netsh.exe", "netsh.exe", "schtasks.exe", "schtasks.exe")]
+
+
 @pytest.mark.skipif(sys.platform != "win32", reason="Windows' own session")
 def test_the_desktop_owner_is_whoever_runs_the_tests() -> None:
     # None where no one is logged on to the session, as on a CI runner's service session.
