@@ -1,14 +1,15 @@
 <?xml version="1.0" encoding="UTF-16"?>
 <!--
   The scheduled task that runs agent-bridge: at logon, as you, in your session (where the
-  herdr server runs), with no window. setup.ps1 fills in the {{...}} fields and registers it.
+  herdr server runs), with no window. agent-bridge setup (install/windows.py) fills in the
+  fields in double braces and registers it.
 
   The action runs agent-bridgew.exe, the windowless agent-bridge, to serve and append to its
   log, with nothing in between: ending the task ends it and the python.exe it runs.
 -->
 <Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
   <RegistrationInfo>
-    <Description>agent-bridge: lets mcp-gateway drive your herdr agents. Installed by agent-bridge\deploy\windows\setup.ps1; remove it with uninstall.ps1 from the same folder.</Description>
+    <Description>agent-bridge: lets mcp-gateway drive your herdr agents. Installed by agent-bridge setup; remove it with agent-bridge uninstall.</Description>
     <URI>\agent-bridge</URI>
   </RegistrationInfo>
   <!-- Both triggers repeat every minute while you are logged on, which is ignored while it
