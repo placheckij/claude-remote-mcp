@@ -145,11 +145,18 @@ what a plain `claude` uses), or another named by `CLAUDE_CONFIG_DIR`.
      "personal": {"config_dir": "/Users/me/.claude-personal", "folders": ["/Users/me/projects/own"]}
    }
    ```
-3. **Apply it.** With `agent-bridge setup` on macOS or Linux, pass it in once as
-   `--accounts`; re-runs keep it, and an empty value removes it:
+3. **Apply it.** With `agent-bridge setup`, pass it in once as `--accounts`; re-runs keep
+   it, and an empty value removes it:
 
    ```sh
    agent-bridge setup --accounts '{"work": {"config_dir": null, "folders": ["/Users/me/projects/work"]}}'
+   ```
+
+   In Windows PowerShell 5.1, write each `"` inside it as `\"`: it drops them otherwise
+   when it passes the value on:
+
+   ```powershell
+   agent-bridge setup --accounts '{\"work\": {\"config_dir\": null, \"folders\": [\"C:\\Users\\me\\work\"]}}'
    ```
 
    By hand, add it to the [env file](#configuration) in single quotes, and restart
