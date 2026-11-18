@@ -40,7 +40,7 @@ Cloudflare Tunnel. See [mcp-gateway/README.md](mcp-gateway/README.md).
 - **Tool routing.** The gateway keeps its agent hosts in `bridges.json`, each with its own
   token. An agent id names its host (`mac/w1:p1`, bare while there is one host), and
   each tool becomes a call to that host's agent-bridge. `list_agents` asks every host at
-  once, and `start_agent` without a host asks each one for the project
+  once, and `start_agent` without a host, among several, asks each one for the project
   (`GET /projects/{name}`). Hosts first say about themselves (`GET /info`), and only
   those at the gateway's API version or one behind are called (one that hasn't answered
   yet is tried; one recorded at another version is asked again before it is refused).
