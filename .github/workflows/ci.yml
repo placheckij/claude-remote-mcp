@@ -4,8 +4,14 @@ on:
   pull_request:
   push:
     branches: [main]
-  # The release runs it before publishing.
+  # The releases run it before publishing, each without the other package's own tests; the
+  # root tests, which run both packages together, always run.
   workflow_call:
+    inputs:
+      component:
+        description: "agent-bridge or mcp-gateway: the package being released"
+        type: string
+        required: true
 
 permissions:
   contents: read
@@ -34,9 +40,12 @@ jobs:
         run: pipx install uv==0.13.9
       - name: Install dependencies
         run: uv sync --all-packages --frozen
+      # inputs.component is empty outside a release, so both run.
       - name: agent-bridge tests
+        if: inputs.component != 'mcp-gateway'
         run: uv run --frozen --package claude-remote-mcp-agent-bridge pytest agent-bridge
       - name: mcp-gateway tests
+        if: inputs.component != 'agent-bridge'
         run: uv run --frozen --package claude-remote-mcp-gateway pytest mcp-gateway
       # Exact, so packages the steps above installed from member dev groups are gone and the
       # root dev group alone has to cover this run. Keep it last for the same reason.
@@ -46,6 +55,7 @@ jobs:
   # Native Windows, for the agent-bridge only: the gateway runs on Linux.
   windows:
     name: agent-bridge tests (windows-latest, Python ${{ matrix.python }})
+    if: inputs.component != 'mcp-gateway'
     runs-on: windows-latest
     strategy:
       fail-fast: false
@@ -66,6 +76,7 @@ jobs:
 
   shellcheck:
     name: shellcheck
+    if: inputs.component != 'agent-bridge'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
