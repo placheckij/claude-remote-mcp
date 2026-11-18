@@ -55,6 +55,8 @@ class FakeWindows:
     rule: tuple | None = None
     category: str = "Private"
     uac: bool = True
+    # Bits for the elevated commands that fail, as elevated() returns them.
+    elevated_fails: int = 0
     block: bool = False
     enroll_codes: list[int] = field(default_factory=list)
     unenroll_code: int = 0
@@ -162,7 +164,9 @@ class FakeWindows:
         self.calls.append(("elevated", *commands))
         if not self.uac:
             return -1
-        for command in commands:
+        for i, command in enumerate(commands):
+            if self.elevated_fails & (1 << i):
+                continue
             if "New-NetFirewallRule" in command:
                 port = re.search(r"-LocalPort (\d+)", command).group(1)
                 self.rule = (True, "Inbound", "Allow", "Private", "TCP", port)
@@ -170,7 +174,7 @@ class FakeWindows:
                 self.rule = None
             elif "Set-NetConnectionProfile" in command:
                 self.category = "Private"
-        return 0
+        return self.elevated_fails
 
     def schtasks(self, *args: str) -> int:
         self.calls.append(("schtasks", *args))
@@ -390,6 +394,17 @@ def test_lasting_settings_in_your_environment_are_refused_with_how_to_remove_the
     assert host.ran("register") == []
 
 
+def test_lasting_settings_in_the_machines_environment_need_an_administrator(host: FakeWindows, capsys) -> None:
+    host.lasting = {"machine": ["AGENT_BRIDGE_HOST", "AGENT_BRIDGE_PORT"]}
+
+    run = setup(host, capsys, *every_flag(host))
+
+    assert run.code == 1
+    assert "AGENT_BRIDGE_HOST, AGENT_BRIDGE_PORT set in your machine environment" in run.out
+    assert "Remove them as administrator" in run.out
+    assert "[Environment]::SetEnvironmentVariable('AGENT_BRIDGE_PORT', $null, 'Machine')" in run.out
+
+
 def test_without_the_windowless_agent_bridge_nothing_changes(host: FakeWindows, capsys) -> None:
     (host.bin / "agent-bridgew.exe").unlink()
 
@@ -487,6 +502,29 @@ def test_a_declined_uac_prompt_still_installs_and_says_what_to_run(host: FakeWin
     assert f"  {windows.firewall_rule_commands(8765)}" in run.out
     assert "The firewall step wasn't done" in run.out
     assert host.ran("register")
+
+
+def test_only_the_step_that_failed_is_left_to_run_by_hand(host: FakeWindows, capsys) -> None:
+    host.category = "Public"
+    host.elevated_fails = 2
+
+    run = setup(host, capsys, *every_flag(host), answers=("y",))
+
+    assert run.code == 0, run.out
+    assert host.rule == RULE
+    by_hand = run.out.split("In a PowerShell run as administrator:", 1)[1]
+    assert "  Set-NetConnectionProfile -InterfaceIndex 16 -NetworkCategory Private" in by_hand
+    assert "New-NetFirewallRule" not in by_hand
+
+
+def test_a_domain_network_is_warned_about(host: FakeWindows, capsys) -> None:
+    host.category = "DomainAuthenticated"
+
+    run = setup(host, capsys, *every_flag(host))
+
+    assert run.code == 0, run.out
+    assert "the network 192.168.1.20 is on is DomainAuthenticated; the rule applies only on Private networks" in run.out
+    assert host.ran("elevated") == [(windows.firewall_rule_commands(8765),)]
 
 
 def test_a_rule_that_blocks_python_is_said_at_the_end(host: FakeWindows, capsys) -> None:
@@ -742,6 +780,24 @@ def test_a_path_with_a_space_says_how_to_run_it_in_powershell(host: FakeWindows,
     assert f"run agent-bridge as & '{host.bin / 'agent-bridge.exe'}'" in run.out
 
 
+def test_a_restore_that_cant_write_its_file_warns_once_and_keeps_the_marker(host: FakeWindows, capsys,
+                                                                           tmp_path: Path) -> None:
+    installed_by_setup_ps1(host, tmp_path / "claude-remote-mcp")
+
+    def register(xml: str, file: Path) -> bool:
+        raise Refused(f"can't write {file} (No space left on device)")
+
+    host.register = register  # type: ignore[method-assign]
+
+    run = setup(host, capsys)
+
+    assert run.code == 1
+    assert run.out.count("couldn't start the agent-bridge task again") == 1
+    assert "task-before-setup.xml (No space left on device)" in run.out
+    # The next setup brings it back.
+    assert host.paths.disabled_marker.exists()
+
+
 def test_a_task_you_turned_off_stays_off_when_setup_stops(host: FakeWindows, capsys, tmp_path: Path) -> None:
     installed_by_setup_ps1(host, tmp_path / "claude-remote-mcp")
     host.task_on = False
@@ -889,6 +945,13 @@ def test_pe_subsystem(tmp_path: Path, data: bytes, subsystem: int) -> None:
     (tmp_path / "program.exe").write_bytes(data)
     assert windows.pe_subsystem(tmp_path / "program.exe") == subsystem
     assert windows.pe_subsystem(tmp_path / "missing.exe") == 0
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows' own session")
+def test_the_desktop_owner_is_whoever_runs_the_tests() -> None:
+    # None where no one is logged on to the session, as on a CI runner's service session.
+    owner = windows.WindowsSystem().desktop_owner()
+    assert owner is None or owner.lower() == windows.WindowsSystem().me().lower()
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="Windows' own programs")

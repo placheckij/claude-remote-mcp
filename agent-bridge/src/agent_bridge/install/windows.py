@@ -353,6 +353,8 @@ class WindowsService:
     installed_port: int = 0
     # The task as it was, to put back when setup stops after stopping it.
     previous: str | None = None
+    # abandon() ran: flow's refusal handler and setup()'s finally both call it.
+    abandoned: bool = False
     # Lines for the end: what setup couldn't do.
     notes: list[str] = field(default_factory=list)
 
@@ -405,18 +407,25 @@ class WindowsService:
     def abandon(self) -> None:
         """Puts back the task setup stopped (this one, or one killed before), so a setup that
         stops halfway doesn't leave the bridge off. Registering it, enabled, starts it."""
-        if not self.paths.disabled_marker.exists():
+        if self.abandoned or not self.paths.disabled_marker.exists():
             return
+        self.abandoned = True
         xml = self.previous if self.previous is not None else self.system.task()
         if xml is None:
             # Unregistered since: nothing to bring back.
             with contextlib.suppress(OSError):
                 self.paths.disabled_marker.unlink()
             return
-        if self.system.register(enabled(xml), self.paths.state / "task-before-setup.xml"):
+        try:
+            registered = self.system.register(enabled(xml), self.paths.state / "task-before-setup.xml")
+        except Refused as error:
+            print(f"warning: {error}", file=sys.stderr)
+            registered = False
+        if registered:
             with contextlib.suppress(OSError):
                 self.paths.disabled_marker.unlink()
         else:
+            # The marker stays, so the next setup brings it back.
             print("warning: couldn't start the agent-bridge task again; run setup again", file=sys.stderr)
 
     def legacy(self) -> Installed | None:
@@ -614,16 +623,14 @@ class WindowsSystem:
         return output.strip().rsplit(",", 1)[-1].strip().strip('"')
 
     def desktop_owner(self) -> str | None:
-        """Whose desktop this session is (DOMAIN\\user), when it can be told; None otherwise.
-        Another account than the one running setup is one typed in at a UAC prompt."""
+        """Who is logged on to this session (DOMAIN\\user), as Windows' session list has it, also
+        over Remote Desktop; None when it can't be told. Another account than the one running
+        setup is one typed in at a UAC prompt, or with runas."""
         session = _session(os.getpid())
-        owners = set()
-        for process in _processes("explorer.exe"):
-            if _session(process.pid) != session:
-                continue
-            with contextlib.suppress(Exception):
-                owners.add(process.username())
-        return owners.pop() if len(owners) == 1 else None
+        if session is None:
+            return None
+        domain, user = _session_info(session, WTS_DOMAIN_NAME), _session_info(session, WTS_USER_NAME)
+        return f"{domain}\\{user}" if user else None
 
     def me(self) -> str:
         return f"{os.environ.get('USERDOMAIN', '')}\\{os.environ.get('USERNAME', '')}"
@@ -915,10 +922,22 @@ def _session(pid: int) -> int | None:
     return None
 
 
-def _processes(name: str) -> list:
-    import psutil
+# WTS_INFO_CLASS values.
+WTS_USER_NAME, WTS_DOMAIN_NAME = 5, 7
 
-    return [process for process in psutil.process_iter(["name"]) if (process.info.get("name") or "").lower() == name]
+
+def _session_info(session: int, info: int) -> str:
+    from ctypes import wintypes
+
+    buffer, size = wintypes.LPWSTR(), wintypes.DWORD()
+    wts = ctypes.windll.wtsapi32
+    # None: this server (WTS_CURRENT_SERVER_HANDLE).
+    if not wts.WTSQuerySessionInformationW(None, session, info, ctypes.byref(buffer), ctypes.byref(size)):
+        return ""
+    try:
+        return buffer.value or ""
+    finally:
+        wts.WTSFreeMemory(buffer)
 
 
 def system() -> WindowsSystem:
