@@ -281,6 +281,11 @@ class System(flow.System, Protocol):
 
 
 def setup(options: Options, system: System, read: Read) -> int:
+    # Before any question.
+    if options.herdr_service is not None:
+        print("error: --herdr-service and --no-herdr-service are for Linux; on Windows you start herdr's server",
+              file=sys.stderr)
+        return flow.FAILED
     if (refusal := _other_account(system)) is not None:
         print(f"error: {refusal}", file=sys.stderr)
         return flow.FAILED

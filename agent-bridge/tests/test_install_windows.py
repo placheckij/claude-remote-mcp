@@ -371,6 +371,16 @@ def test_the_default_name_starts_with_pc_when_the_computer_name_doesnt_start_wit
     assert host.env("NAME") == "pc-7-desktop"
 
 
+@pytest.mark.parametrize("flag", ["--herdr-service", "--no-herdr-service"])
+def test_the_herdr_service_flags_are_refused(host: FakeWindows, capsys, flag: str) -> None:
+    run = setup(host, capsys, *every_flag(host), flag)
+
+    assert run.code == 1
+    assert "--herdr-service and --no-herdr-service are for Linux" in run.out
+    assert host.calls == []
+    assert not host.env_file.exists()
+
+
 def test_another_account_than_the_desktops_is_refused_before_anything(host: FakeWindows, capsys) -> None:
     host.desktop = "PC\\admin"
 
