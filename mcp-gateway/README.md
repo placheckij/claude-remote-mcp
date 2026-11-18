@@ -164,9 +164,9 @@ What stands between the internet and an agent:
    `GET /mcp` answers `405`: the server is stateless and never pushes anything on a GET
    stream, so clients use POST only, as the MCP spec allows.
 
-5. **agent-bridge's own limits.** A separate token, a project-folder allowlist, the
-   10-agent limit, and folder trust only under its trust root, never in the default
-   Claude config.
+5. **agent-bridge's own limits.** A separate token, a project-folder allowlist, an agent
+   limit (`AGENT_BRIDGE_MAX_AGENTS`, 10 by default), and folder trust only under its
+   trust root, never in the default Claude config.
 6. **Optional: Cloudflare Access** with a service token in front of the hostname (see
    below).
 
@@ -313,6 +313,8 @@ the tunnel checks fail, try again shortly:
 | `/var/lib/mcp-gateway/` | `oauth.json`: signed-in clients and token hashes, and `oauth.lock`; `bridges.json`: the [agent hosts](#agent-hosts), and `bridges.lock`; `enrollment.json`: the gateway's id and the [enrollment](#enrollment) window, and `enrollment.lock` (systemd `StateDirectory`, owned by `mcp-gateway`, mode 700) |
 | `/usr/local/bin/mcp-gateway` | runs `mcp-gateway enroll`, `bridges …` and `--version` from `/opt/mcp-gateway` as the `mcp-gateway` user on its state folder; `setup` stays the tool's |
 | `/etc/systemd/system/mcp-gateway.service` | runs as the `mcp-gateway` system user on `0.0.0.0:8766`, sandboxed |
+| `/usr/local/bin/uv`, `/usr/local/bin/uvx` | root's uv, only if it had none (updated on later runs) |
+| `/etc/apt/sources.list.d/cloudflared.list`, `/usr/share/keyrings/cloudflare-main.gpg` | Cloudflare's apt repository and its key, only if cloudflared wasn't installed |
 | `/etc/cloudflared/cert.pem` | Cloudflare account cert from `tunnel login`; only needed to manage tunnels, root-only |
 | `/etc/cloudflared/claude-remote.json` | the tunnel's credentials (owned by the `cloudflared` user) |
 | `/etc/cloudflared/claude-remote.yml` | tunnel config with the ingress rules |

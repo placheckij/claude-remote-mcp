@@ -82,11 +82,11 @@ All routes require `Authorization: Bearer $AGENT_BRIDGE_TOKEN`.
 | `PATCH /agents/{id}` `{name}` | `agent rename` + `workspace rename` | give the agent and its workspace the same new name, made the way `POST /agents` makes one (`-2`, `-3`, … only if *another* live agent has it); returns the agent |
 | `DELETE /agents/{id}` | `agent get` + `pane close` | close the agent's pane; `204`, or `404` if the id isn't an agent (a shell or dev-server pane) |
 
-Request limits, refused with `422`: `text` 1-20,000 characters with no NUL character;
-`timeout_s` 1-3600 and `lines` 1-500 (default 40) for `/prompt` and `/wait`; `keys` 1-20
-entries; `name` 1-200 characters; `account` 1-64. On Windows a prompt whose quoted
-command line for herdr is longer than Windows allows is refused with
-`422 prompt_too_long`.
+Request limits, refused with `422`: `{id}` must look like a herdr pane id (`w1:p1`);
+`text` 1-20,000 characters with no NUL character; `timeout_s` 1-3600 and `lines` 1-500
+(default 40) for `/prompt` and `/wait`; `keys` 1-20 entries; `name` 1-200 characters;
+`account` 1-64. On Windows a prompt whose quoted command line for herdr is longer than
+Windows allows is refused with `422 prompt_too_long`.
 
 Every error comes back as `{"error": {"code", "message"}}` with a matching status
 (`unauthorized` → 401, `path_not_allowed` → 403, `agent_not_found` → 404,
@@ -107,9 +107,9 @@ allowed roots.
 
 1. `422 bad_project` if `project` is neither one folder name nor an absolute path, and
    `404 project_not_found` if no allowed root has a folder of that name.
-2. `403` if an absolute path is outside `AGENT_BRIDGE_ALLOWED_ROOTS` (symlinks and `..`
-   are resolved first).
-3. `404` if the folder doesn't exist.
+2. `403 path_not_allowed` if an absolute path is outside `AGENT_BRIDGE_ALLOWED_ROOTS`
+   (symlinks and `..` are resolved first).
+3. `404 not_a_directory` if the folder doesn't exist.
 4. `422 unknown_account` if the named account isn't in `AGENT_BRIDGE_ACCOUNTS`.
 5. `409 agent_limit_reached` if `AGENT_BRIDGE_MAX_AGENTS` (10) or more herdr agents
    already exist: *"Refusing to start a new agent: 10 agents are already running and the
@@ -254,19 +254,22 @@ the working folder is read too, under the env file, with a warning.
 ## Run
 
 The herdr server must be running in the same user session. To try it in the foreground,
-write the [env file](#configuration) and start it from the checkout. To keep it running,
-set it up as a service instead (below).
+write the [env file](#configuration) and start it. To keep it running, set it up as a
+service instead (below).
 
 ```sh
-uv sync --all-packages
-uv run --package claude-remote-mcp-agent-bridge agent-bridge serve
+uv tool install claude-remote-mcp-agent-bridge
+agent-bridge serve
 ```
+
+From a checkout: `uv sync --all-packages`, then
+`uv run --package claude-remote-mcp-agent-bridge agent-bridge serve`.
 
 ### Commands
 
 | Command | Does | Exit codes |
 |---|---|---|
-| `agent-bridge serve [--log-file PATH]` | runs the service from the env and state files, and tells the gateway its address. `--log-file` appends the log to `PATH` instead of stderr, moved to `PATH.1` once past 1 MB | |
+| `agent-bridge serve [--log-file PATH]` | runs the service from the env and state files, and tells the gateway its address. `--log-file` appends the log to `PATH` instead of stderr, moved to `PATH.1` once past 1 MB | 0 when it stops, 1 if the settings or the state file are refused (it says why) |
 | `agent-bridge enroll <string>` | joins the gateway that printed the string (below) | 0 enrolled, 3 name taken, 4 gateway unreachable (prints the command to retry), 5 enrolled but the state file couldn't be saved, 1 otherwise |
 | `agent-bridge rename <name>` | renames this host on that gateway | 0 renamed, 2 name won't do, 3 name taken, 4 gateway unreachable, 5 renamed but the state file couldn't be saved, 6 gateway too old to rename hosts, 1 otherwise (e.g. not enrolled); 4, 6 and a refusal from the gateway print the gateway's command, but a gateway without this host says to enroll again |
 | `agent-bridge unenroll` | leaves that gateway | 0, also when the gateway can't be reached or refuses (prints the gateway's command); 1 if the state file can't be read or written |
@@ -281,8 +284,10 @@ uv run --package claude-remote-mcp-agent-bridge agent-bridge serve
 With agent-bridge running, run `sudo mcp-gateway enroll` on the gateway host, then here:
 
 ```sh
-uv run --package claude-remote-mcp-agent-bridge agent-bridge enroll 'crm1@192.168.1.10:8766#…'
+agent-bridge enroll 'crm1@192.168.1.10:8766#…'
 ```
+
+(From a checkout: `uv run --package claude-remote-mcp-agent-bridge agent-bridge enroll …`.)
 
 The gateway checks that the address in `AGENT_BRIDGE_HOST` and `AGENT_BRIDGE_PORT`
 answers as this bridge, and adds it under `AGENT_BRIDGE_NAME`. From then on, every start

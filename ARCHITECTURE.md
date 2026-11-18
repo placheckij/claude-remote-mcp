@@ -50,7 +50,7 @@ Cloudflare Tunnel. See [mcp-gateway/README.md](mcp-gateway/README.md).
   `MCP_GATEWAY_PROJECTS_ROOT`.
 - **Enrollment.** Agent hosts add themselves, or are added by hand on the gateway host
   (`sudo mcp-gateway bridges add <url>`; `bridges list`, `rename` and `remove` manage
-  them). `mcp-gateway enroll` opens a 30-minute window and prints a string with the
+  them). `sudo mcp-gateway enroll` opens a 30-minute window and prints a string with the
   gateway's LAN address and a secret; each agent-bridge sends that secret with its id,
   address, token and name to `POST /enroll`. The gateway adds it once the address's
   `/info` answers with the same id. Bridges then report their address on every start,
@@ -95,7 +95,7 @@ The machine where Claude Code runs. See [agent-bridge/README.md](agent-bridge/RE
 |---|---|
 | The connector's access and refresh tokens | claude.ai |
 | Signed-in clients and hashes of their tokens | `oauth.json` on the gateway host |
-| Sign-ins in progress, authorization codes, wrong-passphrase counts | mcp-gateway's memory |
+| Registrations that haven't signed in yet, sign-ins in progress, authorization codes, wrong-passphrase counts | mcp-gateway's memory |
 | Agent hosts: URL, token and what each last said about itself | `bridges.json` on the gateway host |
 | The gateway's id and the enrollment window: a hash of its secret, its expiry, wrong tries | `enrollment.json` on the gateway host |
 | Wrong enrollment strings per address | mcp-gateway's memory |
@@ -110,8 +110,8 @@ agent-bridge holds no agents: after a restart it sees the same ones through herd
 ## Trust boundaries
 
 1. **Internet to gateway:** Cloudflare terminates TLS. The tunnel forwards only `/mcp`
-   and the OAuth paths, and `/mcp` needs an access token that only the passphrase
-   sign-in produces.
+   and the OAuth paths, and `/mcp` needs an access token from the passphrase sign-in (or
+   the static `MCP_GATEWAY_TOKEN`, while it is set).
 2. **Gateway to agent host:** a separate bearer token, over the LAN only. agent-bridge
    isn't reachable from the internet.
 3. **LAN to gateway:** the gateway listens on the LAN for enrollment only; everything

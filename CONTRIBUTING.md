@@ -17,13 +17,16 @@ invitation**: only the people listed below can open them.
 - Work on a branch and open a pull request against `main`. Keep each one to one change.
 - Every pull request needs the maintainer's approval and passing CI (tests on Linux and
   macOS, plus agent-bridge's on Windows, each on Python 3.11 and 3.13; `shellcheck` on
-  the gateway's setup script; and for changes between the gateway and the bridge, the
-  mixed-versions check in `.github/compat/` against the last releases). New commits after
-  an approval need a new one.
+  the gateway's setup script; and for pull requests that touch `agent-bridge/src/` or the
+  gateway's modules that talk to it, the mixed-versions check in `.github/compat/` against
+  the last releases, which `.github/compat/check.py` says how to run locally). New commits
+  after an approval need a new one.
 - Add or update tests with the change: a bug fix comes with a test that fails without it.
-  A new test dependency goes in the package's dev group and in the root `pyproject.toml`
-  dev group: CI runs the root tests with `uv run --frozen --exact pytest`, which installs
-  the root group alone.
+  A new dependency goes in the right `pyproject.toml`, with the updated `uv.lock`
+  committed (`uv lock`): CI installs with `--frozen`. A test dependency goes in the
+  package's dev group and in the root dev group too: CI runs the root tests with
+  `uv run --frozen --exact pytest`, which installs the root group alone; run that locally
+  to check.
 - Set up and run the tests as in the README's [Development](README.md#development)
   section. After changing `mcp-gateway/src/mcp_gateway/deploy/setup.sh`, also run
   `shellcheck` on it.
