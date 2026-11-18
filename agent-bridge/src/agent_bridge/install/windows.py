@@ -285,11 +285,14 @@ def setup(options: Options, system: System, read: Read) -> int:
         print(f"error: {refusal}", file=sys.stderr)
         return flow.FAILED
     service = WindowsService(system, read)
-    code = flow.setup(_setup_ps1_answers(options, system.paths), system, service, read)
-    if code != flow.OK:
-        # Also when it stopped before stopping anything, after an earlier setup was killed
-        # with the task disabled.
-        service.abandon()
+    code = flow.FAILED
+    try:
+        code = flow.setup(_setup_ps1_answers(options, system.paths), system, service, read)
+    finally:
+        # However it stopped (a refusal, Ctrl+C), and also before it stopped anything, after
+        # an earlier setup was killed with the task disabled.
+        if code != flow.OK:
+            service.abandon()
     return code
 
 
@@ -388,6 +391,10 @@ class WindowsService:
                           "claude-remote-mcp-agent-bridge), then run agent-bridge setup again")
         # Refused here, before anything changes, rather than when the task is registered.
         self._xml()
+        if plan.login_hint:
+            config = plan.values[f"{PREFIX}CLAUDE_CONFIG_DIR"]
+            plan.login_hint = ("Log in to Claude once in the agents' config, or new agents can't start. In "
+                               f"PowerShell:\n  $env:CLAUDE_CONFIG_DIR = {quoted(config)}; claude")
         self.host = plan.values[f"{PREFIX}HOST"]
         self.port = int(plan.values[f"{PREFIX}PORT"])
 
@@ -457,8 +464,11 @@ class WindowsService:
         self._stop((self.port, self.installed_port))
         print("If Windows asks whether to let Python through the firewall, allow it on Private networks: Cancel "
               "adds a rule that blocks Python, which wins over setup's rule.")
-        if not self.system.register(self._xml(), self.paths.task_file):
+        xml = self._xml()
+        if not self.system.register(xml, self.paths.task_file):
             raise Refused(f"schtasks couldn't register the task {TASK}")
+        # What a later stop (another name, a token put back) puts back, not the old one.
+        self.previous = xml
         with contextlib.suppress(OSError):
             self.paths.disabled_marker.unlink()
         # What setup.ps1 used and the package's setup doesn't; only now, as the task it had,
@@ -527,6 +537,8 @@ class WindowsService:
                       "PowerShell run as administrator:",
                       f"  Get-NetFirewallApplicationFilter -Program {quoted(program)} | Get-NetFirewallRule | "
                       "Where-Object Action -eq Block | Remove-NetFirewallRule"]
+        if " " in (command := self.system.command()):
+            lines.append(f"In PowerShell, run agent-bridge as & {quoted(command)} (its path has a space).")
         return lines + self.notes
 
     def remove(self) -> None:

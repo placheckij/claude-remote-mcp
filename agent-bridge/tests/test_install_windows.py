@@ -675,6 +675,73 @@ def test_a_console_pythonw_is_refused_before_anything(host: FakeWindows, capsys)
     assert not host.env_file.exists()
 
 
+def test_setup_stopped_by_ctrl_c_puts_the_task_back_on(host: FakeWindows, capsys, tmp_path: Path) -> None:
+    installed_by_setup_ps1(host, tmp_path / "claude-remote-mcp")
+    before = host.task_xml
+    real = host.register
+
+    def interrupted(xml: str, file: Path) -> bool:
+        host.register = real  # type: ignore[method-assign]
+        raise KeyboardInterrupt
+
+    host.register = interrupted  # type: ignore[method-assign]
+
+    with pytest.raises(KeyboardInterrupt):
+        setup(host, capsys)
+
+    assert host.task_xml == before
+    assert host.task_on
+    assert SERVER in host.pids()
+    assert not host.paths.disabled_marker.exists()
+
+
+def test_a_failed_restart_after_the_takeover_puts_back_the_new_task(host: FakeWindows, capsys,
+                                                                     tmp_path: Path) -> None:
+    installed_by_setup_ps1(host, tmp_path / "claude-remote-mcp")
+    # The gateway has another host by that name; the restart with the new one fails.
+    host.enroll_codes = [3]
+    registered = iter([True, False, True])
+    real = host.register
+
+    def register(xml: str, file: Path) -> bool:
+        if next(registered):
+            return real(xml, file)
+        host.calls.append(("register", windows.Task.parse(xml).command))
+        return False
+
+    host.register = register  # type: ignore[method-assign]
+
+    run = setup(host, capsys, "--enrollment", ENROLLMENT, answers=("dell2",))
+
+    assert run.code == 1
+    # The package's task, not setup.ps1's, whose files are gone.
+    assert windows.Task.parse(host.task_xml).command == host.service_command()
+    assert host.task_on
+    assert SERVER in host.pids()
+
+
+def test_the_login_hint_is_for_powershell(host: FakeWindows, capsys) -> None:
+    config = host.home / ".claude-agents"
+
+    run = setup(host, capsys, *every_flag(host, claude_config_dir=str(config)))
+
+    assert run.code == 0, run.out
+    assert f"$env:CLAUDE_CONFIG_DIR = '{config}'; claude" in run.out
+    assert f"CLAUDE_CONFIG_DIR={config} claude" not in run.out
+
+
+def test_a_path_with_a_space_says_how_to_run_it_in_powershell(host: FakeWindows, capsys, tmp_path: Path) -> None:
+    host.bin = tmp_path / "Jan Kowalski" / "bin"
+    host.bin.mkdir(parents=True)
+    for program in ("agent-bridge.exe", "agent-bridgew.exe"):
+        (host.bin / program).write_text("")
+
+    run = setup(host, capsys, *every_flag(host))
+
+    assert run.code == 0, run.out
+    assert f"run agent-bridge as & '{host.bin / 'agent-bridge.exe'}'" in run.out
+
+
 def test_a_task_you_turned_off_stays_off_when_setup_stops(host: FakeWindows, capsys, tmp_path: Path) -> None:
     installed_by_setup_ps1(host, tmp_path / "claude-remote-mcp")
     host.task_on = False
