@@ -28,8 +28,8 @@ SETTINGS = Settings(
     projects_root="/home/me/projects",
 )
 AGENT = {
-    "id": "w1:p1", "name": "grafik", "title": "repo-1", "status": "idle", "cwd": "/home/me/projects/grafik",
-    "workspace_id": "w1", "project": "grafik",
+    "id": "w1:p1", "name": "webapp", "title": "repo-1", "status": "idle", "cwd": "/home/me/projects/webapp",
+    "workspace_id": "w1", "project": "webapp",
 }
 INFO = {
     "api_version": 2, "name": "mac", "platform": "darwin", "bridge_version": "0.1.0", "herdr_version": "0.9.5",
@@ -155,10 +155,10 @@ def test_list_agents_groups_by_host_and_names_the_ones_that_failed(
     assert gateway.call("list_agents") == (False, (
         "3 agents on 6 hosts.\n"
         "mac, 2 agents:\n"
-        "mac/w1:p1 · grafik · idle · grafik\n"
-        "mac/w2:p1 · grafik · idle · grafik\n"
+        "mac/w1:p1 · webapp · idle · webapp\n"
+        "mac/w2:p1 · webapp · idle · webapp\n"
         "linux, 1 agent:\n"
-        "linux/w1:p1 · grafik · idle · grafik\n"
+        "linux/w1:p1 · webapp · idle · webapp\n"
         "No agents on pc.\n"
         "slow didn't answer: It didn't answer within 0.5 s.\n"
         "down didn't answer: The agent host is not reachable (ConnectError). It may be asleep or offline.\n"
@@ -169,7 +169,7 @@ def test_list_agents_groups_by_host_and_names_the_ones_that_failed(
 def test_list_agents_on_one_host_asks_only_it(make) -> None:
     gateway = make(["mac", "linux"])
     gateway.route("linux", "GET", "/agents", agents("w1:p1"))
-    assert gateway.call("list_agents", host="linux") == (False, "1 agent on linux:\nlinux/w1:p1 · grafik · idle · grafik")
+    assert gateway.call("list_agents", host="linux") == (False, "1 agent on linux:\nlinux/w1:p1 · webapp · idle · webapp")
     assert gateway.paths("mac") == []
 
 
@@ -183,7 +183,7 @@ def test_list_agents_on_one_host_that_is_down_fails(make, monkeypatch: pytest.Mo
 
     gateway = make(["mac", "linux"])
     gateway.route("linux", "GET", "/agents", slow)
-    assert gateway.call("list_agents", host="linux") == (False, "1 agent on linux:\nlinux/w1:p1 · grafik · idle · grafik")
+    assert gateway.call("list_agents", host="linux") == (False, "1 agent on linux:\nlinux/w1:p1 · webapp · idle · webapp")
     gateway.fakes["linux"].down = True
     is_error, text = gateway.call("list_agents", host="linux")
     assert is_error and "not reachable" in text
@@ -195,7 +195,7 @@ def test_list_agents_on_a_host_with_none_names_it(make) -> None:
     gateway.route("linux", "GET", "/agents", agents())
     says(gateway, "linux", {**info("linux"), "platform": "linux"})
     assert gateway.call("list_agents", host="linux") == (False, "No agents on linux.")
-    assert gateway.call("list_agents", platform="linux", project="grafik") == (False, "No agents in grafik on linux.")
+    assert gateway.call("list_agents", platform="linux", project="webapp") == (False, "No agents in webapp on linux.")
 
 
 def test_list_agents_on_an_unknown_host_names_the_hosts(make) -> None:
@@ -222,7 +222,7 @@ def test_list_agents_by_platform_asks_only_hosts_that_run_it(make) -> None:
     assert gateway.call("list_agents", platform="linux") == (False, (
         "1 agent on 2 hosts.\n"
         "linux, 1 agent:\n"
-        "linux/w1:p1 · grafik · idle · grafik\n"
+        "linux/w1:p1 · webapp · idle · webapp\n"
         "No agents on box.\n"
         "old can't say which system it runs: update its agent-bridge."
     ))
@@ -265,7 +265,7 @@ def test_list_agents_by_platform_on_a_host_that_cant_say(make) -> None:
 
 @pytest.mark.parametrize(
     ("platform", "expected"),
-    [("linux", "1 agent on box:\nbox/w1:p1 · grafik · idle · grafik"), ("macos", "No agents on mac.")],
+    [("linux", "1 agent on box:\nbox/w1:p1 · webapp · idle · webapp"), ("macos", "No agents on mac.")],
 )
 def test_list_agents_by_platform_goes_by_what_a_host_says_when_asked(make, platform: str, expected: str) -> None:
     # Recorded before it could say (updated since): asked, then kept or left out by its answer.
@@ -296,7 +296,7 @@ def test_list_agents_by_platform_names_a_host_that_never_said_and_is_down(make) 
     gateway.fakes["pc"].down = True
     is_error, text = gateway.call("list_agents", platform="macos")
     assert not is_error
-    assert text.startswith("1 agent on 2 hosts.\nmac, 1 agent:\nmac/w1:p1 · grafik · idle · grafik\n")
+    assert text.startswith("1 agent on 2 hosts.\nmac, 1 agent:\nmac/w1:p1 · webapp · idle · webapp\n")
     assert text.endswith("pc didn't answer: The agent host is not reachable (ConnectError). It may be asleep or offline.")
 
 
@@ -309,7 +309,7 @@ def test_list_agents_by_account_on_several_hosts_says_why_some_cant_have_it(make
     assert gateway.call("list_agents", account="work") == (False, (
         "1 agent on the work account on 3 hosts.\n"
         "linux, 1 agent:\n"
-        "linux/w1:p1 · grafik · idle · grafik · work account\n"
+        "linux/w1:p1 · webapp · idle · webapp · work account\n"
         "No agents on the work account on mac and pc.\n"
         "mac can't tell agents' accounts: update its agent-bridge.\n"
         "pc has no work account."
@@ -320,11 +320,11 @@ def test_list_agents_by_project_on_several_hosts(make) -> None:
     gateway = make(["mac", "linux"])
     gateway.route("mac", "GET", "/agents", httpx.Response(200, json=[AGENT, {**AGENT, "id": "w2:p1", "project": "notes"}]))
     gateway.route("linux", "GET", "/agents", httpx.Response(200, json=[{**AGENT, "project": "notes"}]))
-    assert gateway.call("list_agents", project="grafik") == (False, (
-        "1 agent in grafik on 2 hosts.\n"
+    assert gateway.call("list_agents", project="webapp") == (False, (
+        "1 agent in webapp on 2 hosts.\n"
         "mac, 1 agent:\n"
-        "mac/w1:p1 · grafik · idle · grafik\n"
-        "No agents in grafik on linux."
+        "mac/w1:p1 · webapp · idle · webapp\n"
+        "No agents in webapp on linux."
     ))
 
 
@@ -360,7 +360,7 @@ def test_list_agents_with_one_host_waits_past_the_several_host_limit(make, monke
 
     gateway = make(["mac"])
     gateway.route("mac", "GET", "/agents", slow)
-    assert gateway.call("list_agents") == (False, "1 agent:\nw1:p1 · grafik · idle · grafik")
+    assert gateway.call("list_agents") == (False, "1 agent:\nw1:p1 · webapp · idle · webapp")
 
 
 def test_one_version_behind_is_still_called(make) -> None:
@@ -369,7 +369,7 @@ def test_one_version_behind_is_still_called(make) -> None:
     gateway.route("mac", "GET", "/agents", agents())
     gateway.route("old", "GET", "/info", NO_INFO)
     gateway.route("old", "GET", "/agents", agents("w1:p1"))
-    assert "old/w1:p1 · grafik" in gateway.call("list_agents")[1]
+    assert "old/w1:p1 · webapp" in gateway.call("list_agents")[1]
 
 
 def test_list_agents_with_no_hosts_says_how_to_add_one(make) -> None:
@@ -383,7 +383,7 @@ def test_list_agents_with_no_hosts_says_how_to_add_one(make) -> None:
 def test_a_qualified_id_reaches_its_host_with_the_bare_id(make) -> None:
     gateway = make(["mac", "linux"])
     gateway.route("linux", "GET", "/agents/w1:p1", httpx.Response(200, json=AGENT))
-    assert gateway.call("agent_details", agent_id="linux/w1:p1") == (False, "linux/w1:p1 · grafik · idle · grafik")
+    assert gateway.call("agent_details", agent_id="linux/w1:p1") == (False, "linux/w1:p1 · webapp · idle · webapp")
     assert gateway.paths("mac") == []
 
 
@@ -420,7 +420,7 @@ def test_replies_qualify_the_agent_id(make) -> None:
     gateway.route("linux", "POST", "/agents/w1:p1/wait", httpx.Response(
         200, json={"agent": AGENT, "output": {"text": "done", "truncated": False}, "timed_out": False}
     ))
-    assert "\nlinux/w1:p1 · grafik · idle · grafik\n" in gateway.call("wait_for_agent", agent_id="linux/w1:p1")[1]
+    assert "\nlinux/w1:p1 · webapp · idle · webapp\n" in gateway.call("wait_for_agent", agent_id="linux/w1:p1")[1]
 
 
 def test_a_host_out_of_range_is_refused_unless_it_was_updated(make) -> None:
@@ -447,7 +447,7 @@ def test_an_outdated_host_that_is_down_says_so(make) -> None:
 # --- start_agent ----------------------------------------------------------------------
 
 
-def started(name: str = "grafik") -> httpx.Response:
+def started(name: str = "webapp") -> httpx.Response:
     return httpx.Response(201, json={**AGENT, "id": "w9:p1", "name": name, "remote_control": "on"})
 
 
@@ -459,13 +459,13 @@ def project(cwd: str | None) -> httpx.Response:
 
 def test_start_agent_starts_on_the_one_host_that_has_the_project(make) -> None:
     gateway = make(["mac", "linux", "down"])
-    gateway.route("mac", "GET", "/projects/grafik", project(None))
-    gateway.route("linux", "GET", "/projects/grafik", project("/home/me/grafik"))
+    gateway.route("mac", "GET", "/projects/webapp", project(None))
+    gateway.route("linux", "GET", "/projects/webapp", project("/home/me/webapp"))
     gateway.route("linux", "POST", "/agents", started())
     gateway.fakes["down"].down = True
-    # Starts on the one host found, and says which it couldn't ask: it may have grafik too.
-    assert gateway.call("start_agent", project="grafik") == (
-        False, "Started linux/w9:p1 · grafik · idle · grafik\nCouldn't ask down, which may have grafik too."
+    # Starts on the one host found, and says which it couldn't ask: it may have webapp too.
+    assert gateway.call("start_agent", project="webapp") == (
+        False, "Started linux/w9:p1 · webapp · idle · webapp\nCouldn't ask down, which may have webapp too."
     )
     assert "/agents" not in gateway.paths("mac")
 
@@ -473,27 +473,27 @@ def test_start_agent_starts_on_the_one_host_that_has_the_project(make) -> None:
 def test_start_agent_asks_which_host_when_several_have_the_project(make) -> None:
     gateway = make(["mac", "linux", "pc"])
     for name in ("mac", "linux", "pc"):
-        gateway.route(name, "GET", "/projects/grafik", project("/somewhere/grafik"))
-    assert gateway.call("start_agent", project="grafik") == (
-        False, "grafik is on mac, linux and pc; which one? Start it again with that host."
+        gateway.route(name, "GET", "/projects/webapp", project("/somewhere/webapp"))
+    assert gateway.call("start_agent", project="webapp") == (
+        False, "webapp is on mac, linux and pc; which one? Start it again with that host."
     )
     assert not any("/agents" in gateway.paths(name) for name in ("mac", "linux", "pc"))
 
 
 def test_start_agent_says_when_no_host_has_the_project(make) -> None:
     gateway = make(["mac", "linux", "down"])
-    gateway.route("mac", "GET", "/projects/grafik", project(None))
-    gateway.route("linux", "GET", "/projects/grafik", project(None))
+    gateway.route("mac", "GET", "/projects/webapp", project(None))
+    gateway.route("linux", "GET", "/projects/webapp", project(None))
     gateway.fakes["down"].down = True
-    is_error, text = gateway.call("start_agent", project="grafik")
-    assert is_error and text.endswith("No host has a folder grafik. Couldn't ask down.")
+    is_error, text = gateway.call("start_agent", project="webapp")
+    assert is_error and text.endswith("No host has a folder webapp. Couldn't ask down.")
 
 
 @pytest.mark.parametrize("api_version", [0, 3])
 def test_start_agent_refuses_a_host_out_of_range(make, api_version: int) -> None:
     gateway = make(["mac", "old"])
     gateway.route("old", "GET", "/info", httpx.Response(200, json=info("old", api_version)))
-    is_error, text = gateway.call("start_agent", project="grafik", host="old")
+    is_error, text = gateway.call("start_agent", project="webapp", host="old")
     assert is_error and "old needs an update" in text
     assert gateway.paths("old") == ["/info"]
 
@@ -501,24 +501,24 @@ def test_start_agent_refuses_a_host_out_of_range(make, api_version: int) -> None
 def test_start_agent_names_the_hosts_it_couldnt_ask_for_the_project(make) -> None:
     # One needs an update; one is from before /info, so it can't look project names up.
     gateway = make(["mac", "new", "old"])
-    gateway.route("mac", "GET", "/projects/grafik", project(None))
+    gateway.route("mac", "GET", "/projects/webapp", project(None))
     gateway.route("new", "GET", "/info", httpx.Response(200, json=info("new", 3)))
     gateway.route("old", "GET", "/info", NO_INFO)
-    is_error, text = gateway.call("start_agent", project="grafik")
-    assert is_error and text.endswith("No host has a folder grafik. Couldn't ask new and old.")
+    is_error, text = gateway.call("start_agent", project="webapp")
+    assert is_error and text.endswith("No host has a folder webapp. Couldn't ask new and old.")
     assert gateway.paths("new") == gateway.paths("old") == ["/info"]
 
 
 def test_start_agent_on_a_named_host_asks_no_other(make) -> None:
     gateway = make(["mac", "linux"])
     gateway.route("mac", "POST", "/agents", started())
-    assert gateway.call("start_agent", project="grafik", host="mac") == (False, "Started mac/w9:p1 · grafik · idle · grafik")
+    assert gateway.call("start_agent", project="webapp", host="mac") == (False, "Started mac/w9:p1 · webapp · idle · webapp")
     assert gateway.paths("linux") == []
-    is_error, text = gateway.call("start_agent", project="grafik", host="pi")
+    is_error, text = gateway.call("start_agent", project="webapp", host="pi")
     assert is_error and text.endswith("No host named pi; hosts: mac, linux.")
 
 
-@pytest.mark.parametrize("path", ["/srv/grafik", "C:\\work\\grafik", "\\\\server\\share\\grafik"])
+@pytest.mark.parametrize("path", ["/srv/webapp", "C:\\work\\webapp", "\\\\server\\share\\webapp"])
 def test_an_absolute_path_needs_a_host_when_there_are_several(make, path: str) -> None:
     gateway = make(["mac", "linux"])
     is_error, text = gateway.call("start_agent", project=path)
@@ -530,7 +530,7 @@ def test_an_absolute_path_needs_a_host_when_there_are_several(make, path: str) -
 def test_an_absolute_path_needs_no_host_when_there_is_one(make) -> None:
     gateway = make(["mac"])
     gateway.route("mac", "POST", "/agents", started())
-    assert gateway.call("start_agent", project="/srv/grafik") == (False, "Started w9:p1 · grafik · idle · grafik")
+    assert gateway.call("start_agent", project="/srv/webapp") == (False, "Started w9:p1 · webapp · idle · webapp")
 
 
 def test_project_names_are_sent_as_one_path_segment(make) -> None:
@@ -607,7 +607,7 @@ def test_the_first_start_imports_the_legacy_bridge_by_its_name(
         (bridge,) = saved(tmp_path)
         assert (bridge["name"], bridge["url"], bridge["token"], bridge["info"]) == ("mac", url("mac"), TOKEN, INFO)
         # Bare ids, as before.
-        assert call_tool(client, "list_agents") == (False, "1 agent:\nw1:p1 · grafik · idle · grafik")
+        assert call_tool(client, "list_agents") == (False, "1 agent:\nw1:p1 · webapp · idle · webapp")
     assert "MCP_GATEWAY_BRIDGE_URL and MCP_GATEWAY_BRIDGE_TOKEN are no longer needed" in caplog.text
 
 
@@ -668,13 +668,13 @@ def test_an_unexpected_failure_at_the_legacy_import_still_serves_mcp(
     assert "Couldn't import MCP_GATEWAY_BRIDGE_URL" in caplog.text
 
 
-@pytest.mark.parametrize("answer", [{}, {"cwd": 5}, ["/srv/grafik"]])
+@pytest.mark.parametrize("answer", [{}, {"cwd": 5}, ["/srv/webapp"]])
 def test_a_projects_answer_without_a_folder_is_a_host_failing(answer) -> None:
-    fake = FakeAgentBridge({("GET", "/projects/grafik"): httpx.Response(200, json=answer)})
+    fake = FakeAgentBridge({("GET", "/projects/webapp"): httpx.Response(200, json=answer)})
     bridge = AgentBridge(httpx.AsyncClient(base_url=url("mac"), transport=httpx.MockTransport(fake),
                                            headers={"Authorization": f"Bearer {TOKEN}"}))
     with pytest.raises(BridgeError, match="answered /projects without a folder"):
-        asyncio.run(bridge.find_project("grafik"))
+        asyncio.run(bridge.find_project("webapp"))
 
 
 def test_the_legacy_bridge_stays_removed(tmp_path: Path) -> None:
@@ -765,15 +765,15 @@ def test_an_odd_answer_from_one_host_fails_that_host_only(make) -> None:
     gateway.route("odd", "GET", "/agents", httpx.Response(200, json={"agents": []}))
     gateway.route("linux", "GET", "/agents", agents())
     is_error, text = gateway.call("list_agents")
-    assert not is_error and "mac/w1:p1 · grafik" in text
+    assert not is_error and "mac/w1:p1 · webapp" in text
     assert text.endswith("odd didn't answer: The agent host answered /agents with something other than a list of agents.")
     # The same for the project lookup: the host with an odd answer counts as not asked.
-    gateway.route("mac", "GET", "/projects/grafik", httpx.Response(200, json={}))
-    gateway.route("odd", "GET", "/projects/grafik", project(None))
-    gateway.route("linux", "GET", "/projects/grafik", project("/home/me/grafik"))
+    gateway.route("mac", "GET", "/projects/webapp", httpx.Response(200, json={}))
+    gateway.route("odd", "GET", "/projects/webapp", project(None))
+    gateway.route("linux", "GET", "/projects/webapp", project("/home/me/webapp"))
     gateway.route("linux", "POST", "/agents", started())
-    assert gateway.call("start_agent", project="grafik") == (
-        False, "Started linux/w9:p1 · grafik · idle · grafik\nCouldn't ask mac, which may have grafik too."
+    assert gateway.call("start_agent", project="webapp") == (
+        False, "Started linux/w9:p1 · webapp · idle · webapp\nCouldn't ask mac, which may have webapp too."
     )
 
 
@@ -786,7 +786,7 @@ def test_an_agent_that_cant_be_described_fails_its_host_only(
     gateway.route("odd", "GET", "/agents", httpx.Response(200, json=[{"id": "w1:p1"}]))
     with caplog.at_level(logging.ERROR):
         is_error, text = gateway.call("list_agents")
-    assert not is_error and "mac/w1:p1 · grafik" in text
+    assert not is_error and "mac/w1:p1 · webapp" in text
     assert text.endswith("odd didn't answer: Its answer couldn't be used (KeyError).")
     assert "Asking odd failed unexpectedly" in caplog.text
 

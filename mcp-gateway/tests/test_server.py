@@ -34,12 +34,12 @@ MCP_HEADERS = {
 
 AGENT = {
     "id": "w1:p1",
-    "name": "grafik",
+    "name": "webapp",
     "title": "repo-1",
     "status": "idle",
-    "cwd": "/home/me/projects/grafik",
+    "cwd": "/home/me/projects/webapp",
     "workspace_id": "w1",
-    "project": "grafik",
+    "project": "webapp",
 }
 INFO = {
     "api_version": 2,
@@ -231,7 +231,7 @@ def test_list_agents_is_one_line_per_agent(client: TestClient, fake: FakeAgentBr
     fake.routes[("GET", "/agents")] = httpx.Response(200, json=[AGENT])
     assert call_tool(client, "list_agents") == (
         False,
-        "1 agent:\nw1:p1 · grafik · idle · grafik",
+        "1 agent:\nw1:p1 · webapp · idle · webapp",
     )
 
 
@@ -239,24 +239,24 @@ def test_list_agents_says_each_agents_account(client: TestClient, fake: FakeAgen
     fake.routes[("GET", "/agents")] = httpx.Response(200, json=[{**AGENT, "account": "work"}, {**AGENT, "id": "w2:p1", "account": None}])
     assert call_tool(client, "list_agents") == (
         False,
-        "2 agents:\nw1:p1 · grafik · idle · grafik · work account\nw2:p1 · grafik · idle · grafik",
+        "2 agents:\nw1:p1 · webapp · idle · webapp · work account\nw2:p1 · webapp · idle · webapp",
     )
 
 
 LISTED = [
     {**AGENT, "account": "work"},
-    {**AGENT, "id": "w2:p1", "name": "api", "project": "Grafik/api", "account": "personal"},
+    {**AGENT, "id": "w2:p1", "name": "api", "project": "Webapp/api", "account": "personal"},
     {**AGENT, "id": "w3:p1", "name": "notes", "project": "notes", "account": "work"},
-    {**AGENT, "id": "w4:p1", "name": "grafika", "project": "grafika", "account": None},
+    {**AGENT, "id": "w4:p1", "name": "webapps", "project": "webapps", "account": None},
 ]
 
 
 @pytest.mark.parametrize(
     ("filters", "expected"),
     [
-        ({"project": "grafik"}, "2 agents in grafik:\nw1:p1 · grafik · idle · grafik · work account\n"
-                                "w2:p1 · api · idle · Grafik/api · personal account"),
-        ({"account": "Work"}, "2 agents on the Work account:\nw1:p1 · grafik · idle · grafik · work account\n"
+        ({"project": "webapp"}, "2 agents in webapp:\nw1:p1 · webapp · idle · webapp · work account\n"
+                                "w2:p1 · api · idle · Webapp/api · personal account"),
+        ({"account": "Work"}, "2 agents on the Work account:\nw1:p1 · webapp · idle · webapp · work account\n"
                               "w3:p1 · notes · idle · notes · work account\n"
                               "mac has 1 agent not known to be on any account."),
         ({"project": "notes", "account": "personal"}, "No agents in notes on the personal account."),
@@ -286,16 +286,16 @@ def test_list_agents_by_account_counts_agents_whose_account_is_unknown(client: T
     fake.routes[("GET", "/agents")] = httpx.Response(200, json=[
         {**AGENT, "account": None}, {**AGENT, "id": "w2:p1", "account": None}, {**AGENT, "id": "w3:p1", "project": "notes", "account": None},
     ])
-    assert call_tool(client, "list_agents", account="work", project="grafik") == (
-        False, "No agents in grafik on the work account.\nmac has 2 agents not known to be on any account.",
+    assert call_tool(client, "list_agents", account="work", project="webapp") == (
+        False, "No agents in webapp on the work account.\nmac has 2 agents not known to be on any account.",
     )
 
 
 def test_list_agents_by_a_projects_full_path(client: TestClient, fake: FakeAgentBridge) -> None:
-    # Listed as "grafik"; its path names it too, and the projects root every agent under it.
+    # Listed as "webapp"; its path names it too, and the projects root every agent under it.
     fake.routes[("GET", "/agents")] = httpx.Response(200, json=[AGENT, {**AGENT, "id": "w2:p1", "cwd": "/srv/x", "project": None}])
-    assert call_tool(client, "list_agents", project="/home/me/projects/grafik") == (
-        False, "1 agent in /home/me/projects/grafik:\nw1:p1 · grafik · idle · grafik",
+    assert call_tool(client, "list_agents", project="/home/me/projects/webapp") == (
+        False, "1 agent in /home/me/projects/webapp:\nw1:p1 · webapp · idle · webapp",
     )
     assert call_tool(client, "list_agents", project="/home/me/projects")[1].startswith("1 agent in /home/me/projects:\nw1:p1")
 
@@ -321,7 +321,7 @@ def test_send_prompt_says_the_agents_account(client: TestClient, fake: FakeAgent
                    "output": {"text": "⏺ PONG", "truncated": False}, "timed_out": False},
     )
     text = call_tool(client, "send_prompt", agent_id="w1:p1", text="say pong")[1]
-    assert text.startswith("Agent is done.\nw1:p1 · grafik · done · grafik · work account\n---\n")
+    assert text.startswith("Agent is done.\nw1:p1 · webapp · done · webapp · work account\n---\n")
 
 
 def test_list_agents_by_account_says_an_old_host_cant_tell(client: TestClient, fake: FakeAgentBridge) -> None:
@@ -349,10 +349,10 @@ def test_an_agent_that_asked_something_is_waiting_for_an_answer(
     # Herdr calls it idle or done, which made a question nobody had heard sound finished.
     fake.routes[("GET", "/agents")] = httpx.Response(200, json=[ASKING, {**AGENT, "id": "w2:p1"}])
     fake.routes[("GET", "/agents/w1:p1")] = httpx.Response(200, json=ASKING)
-    expected = "w1:p1 · grafik · waiting for an answer · grafik\n  Asked: Do you want me to commit it?"
+    expected = "w1:p1 · webapp · waiting for an answer · webapp\n  Asked: Do you want me to commit it?"
     assert call_tool(client, "list_agents") == (
         False,
-        f"2 agents:\n{expected}\nw2:p1 · grafik · idle · grafik",
+        f"2 agents:\n{expected}\nw2:p1 · webapp · idle · webapp",
     )
     assert call_tool(client, "agent_details", agent_id="w1:p1") == (False, expected)
 
@@ -365,7 +365,7 @@ def test_a_prompt_that_ends_in_a_question_says_to_relay_it(client: TestClient, f
     assert not is_error
     assert text.startswith(
         "The agent asked a question. Tell the user, then send their answer with send_prompt.\n"
-        "w1:p1 · grafik · waiting for an answer · grafik\n  Asked: Do you want me to commit it?"
+        "w1:p1 · webapp · waiting for an answer · webapp\n  Asked: Do you want me to commit it?"
     )
 
 
@@ -527,7 +527,7 @@ def test_a_late_answer_to_a_wait_is_not_called_unreachable(client: TestClient, f
 
 
 @pytest.mark.parametrize(
-    "project", ["grafik", "/home/me/projects/grafik/", "C:\\Users\\me\\projects\\grafik", "../x"]
+    "project", ["webapp", "/home/me/projects/webapp/", "C:\\Users\\me\\projects\\webapp", "../x"]
 )
 def test_start_agent_leaves_the_project_to_the_agent_host(
     client: TestClient, fake: FakeAgentBridge, project: str
@@ -541,7 +541,7 @@ def test_start_agent_leaves_the_project_to_the_agent_host(
 
 
 def test_start_agent_passes_a_bad_project_refusal_through(client: TestClient, fake: FakeAgentBridge) -> None:
-    message = 'Give the project as one folder name, like "grafik", or as an absolute path.'
+    message = 'Give the project as one folder name, like "webapp", or as an absolute path.'
     fake.routes[("POST", "/agents")] = httpx.Response(
         422, json={"error": {"code": "bad_project", "message": message}}
     )
@@ -557,14 +557,14 @@ def test_start_agent_starts_nothing_when_the_host_cannot_describe_itself(
 ) -> None:
     # Only a 404 means an agent-bridge from before /info; anything else is a failed start.
     fake.routes[("GET", "/info")] = answer
-    is_error, _ = call_tool(client, "start_agent", project="grafik")
+    is_error, _ = call_tool(client, "start_agent", project="webapp")
     assert is_error and [r.url.path for r in fake.requests] == ["/info"]
 
 
 def test_a_start_ends_before_claude_gives_up(client: TestClient, fake: FakeAgentBridge) -> None:
     # It used to wait 120 s for agent-bridge, long after voice mode had dropped the call.
     fake.routes[("POST", "/agents")] = httpx.Response(201, json={**AGENT, "id": "w9:p1"})
-    call_tool(client, "start_agent", project="grafik")
+    call_tool(client, "start_agent", project="webapp")
     assert fake.requests[-1].extensions["timeout"]["read"] <= CLIENT_PATIENCE_S
 
 
@@ -581,14 +581,14 @@ def test_asking_the_host_about_itself_counts_against_the_start(
 
     fake.routes[("GET", "/info")] = slow_info
     fake.routes[("POST", "/agents")] = httpx.Response(201, json={**AGENT, "id": "w9:p1"})
-    call_tool(client, "start_agent", project="grafik")
+    call_tool(client, "start_agent", project="webapp")
     info, start = (request.extensions["timeout"]["read"] for request in fake.requests)
     assert info <= 5 and start <= CLIENT_PATIENCE_S - 4
 
 
 def test_a_slow_start_is_not_started_again(client: TestClient, fake: FakeAgentBridge) -> None:
     fake.routes[("POST", "/agents")] = httpx.ReadTimeout("read timed out")
-    is_error, text = call_tool(client, "start_agent", project="grafik")
+    is_error, text = call_tool(client, "start_agent", project="webapp")
     # Not an error: the agent may still come up, and a retry would start a second one.
     assert not is_error
     assert text == (
@@ -601,21 +601,21 @@ def test_start_agent_passes_the_account_and_says_which_it_got(client: TestClient
     fake.routes[("POST", "/agents")] = httpx.Response(
         201, json={**AGENT, "id": "w9:p1", "account": "work", "remote_control": "on"}
     )
-    is_error, text = call_tool(client, "start_agent", project="grafik", account="work")
-    assert (is_error, text) == (False, "Started on the work account: w9:p1 · grafik · idle · grafik")
+    is_error, text = call_tool(client, "start_agent", project="webapp", account="work")
+    assert (is_error, text) == (False, "Started on the work account: w9:p1 · webapp · idle · webapp")
     assert start_body(fake)["account"] == "work"
 
 
 def test_start_agent_turns_on_remote_control_without_a_word(client: TestClient, fake: FakeAgentBridge) -> None:
     fake.routes[("POST", "/agents")] = httpx.Response(201, json={**AGENT, "id": "w9:p1", "remote_control": "on"})
-    assert call_tool(client, "start_agent", project="grafik") == (False, "Started w9:p1 · grafik · idle · grafik")
+    assert call_tool(client, "start_agent", project="webapp") == (False, "Started w9:p1 · webapp · idle · webapp")
     assert start_body(fake)["remote_control"] is True
 
 
 def test_start_agent_leaves_remote_control_off_when_asked(client: TestClient, fake: FakeAgentBridge) -> None:
     fake.routes[("POST", "/agents")] = httpx.Response(201, json={**AGENT, "id": "w9:p1", "remote_control": "off"})
-    text = call_tool(client, "start_agent", project="grafik", remote_control=False)[1]
-    assert text == "Started w9:p1 · grafik · idle · grafik"
+    text = call_tool(client, "start_agent", project="webapp", remote_control=False)[1]
+    assert text == "Started w9:p1 · webapp · idle · webapp"
     assert "remote_control" not in start_body(fake)
 
 
@@ -632,13 +632,13 @@ def test_start_agent_says_when_remote_control_is_not_as_asked(
 ) -> None:
     answer = {**AGENT, "id": "w9:p1"} if state is None else {**AGENT, "id": "w9:p1", "remote_control": state}
     fake.routes[("POST", "/agents")] = httpx.Response(201, json=answer)
-    is_error, text = call_tool(client, "start_agent", project="grafik", remote_control=asked)
-    assert (is_error, text) == (False, f"Started w9:p1 · grafik · idle · grafik\n{note}")
+    is_error, text = call_tool(client, "start_agent", project="webapp", remote_control=asked)
+    assert (is_error, text) == (False, f"Started w9:p1 · webapp · idle · webapp\n{note}")
 
 
 def test_start_agent_leaves_the_account_to_the_agent_host(client: TestClient, fake: FakeAgentBridge) -> None:
     fake.routes[("POST", "/agents")] = httpx.Response(201, json={**AGENT, "id": "w9:p1", "account": "personal"})
-    is_error, text = call_tool(client, "start_agent", project="grafik")
+    is_error, text = call_tool(client, "start_agent", project="webapp")
     assert text.startswith("Started on the personal account: w9:p1")
     assert "account" not in start_body(fake)
 
@@ -648,7 +648,7 @@ def test_start_agent_passes_an_unknown_account_refusal_through(client: TestClien
     fake.routes[("POST", "/agents")] = httpx.Response(
         422, json={"error": {"code": "unknown_account", "message": message}}
     )
-    is_error, text = call_tool(client, "start_agent", project="grafik", account="private")
+    is_error, text = call_tool(client, "start_agent", project="webapp", account="private")
     assert is_error and text.endswith(message)
 
 
@@ -661,7 +661,7 @@ def test_start_agent_turns_spoken_names_into_slugs(
     client: TestClient, fake: FakeAgentBridge, name: str, slug: str
 ) -> None:
     fake.routes[("POST", "/agents")] = httpx.Response(201, json={**AGENT, "id": "w9:p1"})
-    response = rpc(client, "tools/call", {"name": "start_agent", "arguments": {"project": "grafik", "name": name}})
+    response = rpc(client, "tools/call", {"name": "start_agent", "arguments": {"project": "webapp", "name": name}})
     assert not response.json()["result"].get("isError")
     assert start_body(fake)["name"] == slug
 
@@ -676,12 +676,12 @@ def test_rename_agent_passes_the_spoken_name_and_reports_the_slug(
     client: TestClient, fake: FakeAgentBridge
 ) -> None:
     # The slug is agent-bridge's to pick, since only it knows which names are taken.
-    fake.routes[("PATCH", "/agents/w1:p1")] = httpx.Response(200, json={**AGENT, "name": "grafik-fix-2"})
-    assert rename(client, agent_id="w1:p1", name="Grafik fix!") == (
+    fake.routes[("PATCH", "/agents/w1:p1")] = httpx.Response(200, json={**AGENT, "name": "webapp-fix-2"})
+    assert rename(client, agent_id="w1:p1", name="Webapp fix!") == (
         False,
-        "Renamed w1:p1 to grafik-fix-2.",
+        "Renamed w1:p1 to webapp-fix-2.",
     )
-    assert json.loads(fake.requests[0].content) == {"name": "Grafik fix!"}
+    assert json.loads(fake.requests[0].content) == {"name": "Webapp fix!"}
 
 
 def test_rename_agent_passes_refusals_through(client: TestClient, fake: FakeAgentBridge) -> None:
@@ -771,7 +771,7 @@ def test_refusals_from_the_bridge_reach_the_model_verbatim(client: TestClient, f
     fake.routes[("POST", "/agents")] = httpx.Response(
         409, json={"error": {"code": "agent_limit_reached", "message": message}}
     )
-    is_error, text = call_tool(client, "start_agent", project="grafik")
+    is_error, text = call_tool(client, "start_agent", project="webapp")
     assert is_error and text.endswith(message)
 
     fake.routes[("POST", "/agents")] = httpx.Response(
@@ -918,17 +918,17 @@ def test_closes_the_agent_bridge_client_on_shutdown(tmp_path: Path) -> None:
 
 
 def test_folders_are_named_by_their_project(client: TestClient, fake: FakeAgentBridge) -> None:
-    # Read aloud, "/home/me/projects/grafik" after every agent is noise; the project is
+    # Read aloud, "/home/me/projects/webapp" after every agent is noise; the project is
     # what the user said when starting it. Folders outside every project keep their path.
     fake.routes[("GET", "/agents")] = httpx.Response(200, json=[
-        {**AGENT, "cwd": "/home/me/projects/grafik/api", "project": "grafik/api"},
+        {**AGENT, "cwd": "/home/me/projects/webapp/api", "project": "webapp/api"},
         {**AGENT, "id": "w2:p1", "name": "notes", "cwd": "C:\\Users\\me\\notes", "project": None},
         {**AGENT, "id": "w3:p1", "name": "lost", "cwd": None, "project": None},
     ])
     assert call_tool(client, "list_agents") == (
         False,
         "3 agents:\n"
-        "w1:p1 · grafik · idle · grafik/api\n"
+        "w1:p1 · webapp · idle · webapp/api\n"
         "w2:p1 · notes · idle · C:\\Users\\me\\notes\n"
         "w3:p1 · lost · idle · ?",
     )
@@ -937,7 +937,7 @@ def test_folders_are_named_by_their_project(client: TestClient, fake: FakeAgentB
 # --- An agent-bridge from before /info ------------------------------------------------
 
 
-@pytest.mark.parametrize("project", ["..", "../../../etc", ".", "./", "~/foo", "~", "grafik/../..", "a/b", "x..y"])
+@pytest.mark.parametrize("project", ["..", "../../../etc", ".", "./", "~/foo", "~", "webapp/../..", "a/b", "x..y"])
 def test_start_agent_refuses_project_names_that_leave_the_projects_root(
     client: TestClient, fake: FakeAgentBridge, project: str
 ) -> None:
@@ -946,12 +946,12 @@ def test_start_agent_refuses_project_names_that_leave_the_projects_root(
     fake.routes[("GET", "/info")] = NO_INFO
     is_error, text = call_tool(client, "start_agent", project=project)
     assert is_error and [r.url.path for r in fake.requests] == ["/info"]
-    assert text.endswith('Give the project as one folder name, like "grafik", or as an absolute path.')
+    assert text.endswith('Give the project as one folder name, like "webapp", or as an absolute path.')
 
 
 @pytest.mark.parametrize(
     ("project", "cwd", "name"),
-    [("/home/me/projects/grafik", "/home/me/projects/grafik", "grafik"),
+    [("/home/me/projects/webapp", "/home/me/projects/webapp", "webapp"),
      ("/srv/work/app/", "/srv/work/app", "app"), ("my-app.v2", "/home/me/projects/my-app.v2", "my-app.v2"),
      # Such a bridge needs a name; it refuses the folder itself.
      ("/", "/", "agent")],
@@ -971,39 +971,39 @@ def test_without_a_projects_root_only_absolute_paths_start(fake: FakeAgentBridge
     fake.routes[("POST", "/agents")] = httpx.Response(201, json={**AGENT, "id": "w9:p1"})
     gateway = app(bridge_for(fake), tmp_path, projects_root=None)
     with TestClient(gateway, base_url=f"https://{HOST}", client=CLOUDFLARED) as c:
-        is_error, text = call_tool(c, "start_agent", project="grafik")
+        is_error, text = call_tool(c, "start_agent", project="webapp")
         assert is_error and text.endswith(
             "This agent host can't look up project names; give the project as an absolute path."
         )
-        assert not call_tool(c, "start_agent", project="/srv/grafik")[0]
-    assert start_body(fake) == {"cwd": "/srv/grafik", "name": "grafik", "remote_control": True}
+        assert not call_tool(c, "start_agent", project="/srv/webapp")[0]
+    assert start_body(fake) == {"cwd": "/srv/webapp", "name": "webapp", "remote_control": True}
 
 
 def test_folders_are_named_relative_to_the_projects_root(client: TestClient, fake: FakeAgentBridge) -> None:
     # Agents from an agent-bridge before /info say nothing of their project.
     fake.routes[("GET", "/agents")] = httpx.Response(200, json=[
-        {**OLD_AGENT, "cwd": "/home/me/projects/grafik/api"},
+        {**OLD_AGENT, "cwd": "/home/me/projects/webapp/api"},
         {**OLD_AGENT, "id": "w2:p1", "name": "notes", "cwd": "/home/me/projects-old/notes"},
         {**OLD_AGENT, "id": "w3:p1", "name": "root", "cwd": "/home/me/projects"},
     ])
     assert call_tool(client, "list_agents") == (
         False,
         "3 agents:\n"
-        "w1:p1 · grafik · idle · grafik/api\n"
+        "w1:p1 · webapp · idle · webapp/api\n"
         "w2:p1 · notes · idle · /home/me/projects-old/notes\n"
         "w3:p1 · root · idle · /home/me/projects",
     )
     fake.routes[("POST", "/agents/w1:p1/wait")] = httpx.Response(
         200, json={"agent": OLD_AGENT, "output": {"text": "", "truncated": False}, "timed_out": False}
     )
-    assert "\nw1:p1 · grafik · idle · grafik\n" in call_tool(client, "wait_for_agent", agent_id="w1:p1")[1]
+    assert "\nw1:p1 · webapp · idle · webapp\n" in call_tool(client, "wait_for_agent", agent_id="w1:p1")[1]
 
 
 def test_without_a_projects_root_old_agents_show_their_folder(fake: FakeAgentBridge, tmp_path: Path) -> None:
     fake.routes[("GET", "/agents")] = httpx.Response(200, json=[OLD_AGENT])
     gateway = app(bridge_for(fake), tmp_path, projects_root=None)
     with TestClient(gateway, base_url=f"https://{HOST}", client=CLOUDFLARED) as c:
-        assert call_tool(c, "list_agents")[1].endswith("· /home/me/projects/grafik")
+        assert call_tool(c, "list_agents")[1].endswith("· /home/me/projects/webapp")
 
 
 @pytest.mark.parametrize(

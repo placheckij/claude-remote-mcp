@@ -32,7 +32,7 @@ class AgentSummary(BaseModel):
     # The question an idle or done agent ended its turn with, if any: it is waiting for
     # the user's answer, though herdr can't tell that from any other finished turn.
     question: str | None = None
-    # `cwd` under the closest allowed root, e.g. "grafik/api" (agents.project_of); None at
+    # `cwd` under the closest allowed root, e.g. "webapp/api" (agents.project_of); None at
     # a root itself or outside every root.
     project: str | None = None
     # The account (AGENT_BRIDGE_ACCOUNTS) whose config its Claude Code runs on: the one it

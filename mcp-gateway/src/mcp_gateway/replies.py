@@ -17,7 +17,7 @@ def describe(agent: dict, projects_root: str | None) -> str:
 
 
 def folder(agent: dict, projects_root: str | None) -> str:
-    """Where the agent works: its project, as the user said it to start_agent ("grafik"),
+    """Where the agent works: its project, as the user said it to start_agent ("webapp"),
     not the whole path; outside every project, its full path."""
     cwd = agent.get("cwd")
     if "project" in agent:
