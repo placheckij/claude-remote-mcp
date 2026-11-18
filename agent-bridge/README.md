@@ -257,6 +257,8 @@ uv run --package claude-remote-mcp-agent-bridge agent-bridge serve
 | `agent-bridge unenroll` | leaves that gateway | 0, also when the gateway can't be reached or refuses (prints the gateway's command); 1 if the state file can't be read or written |
 | `agent-bridge check` | checks the settings, the files' modes, herdr, the running service and the gateway, one line each | 0 all passed, 1 one failed |
 | `agent-bridge check --token-format <token>`, `--name-format <name>` | checks a value before it goes in the env file | 0 fine, 2 not (why, on stderr) |
+| `agent-bridge setup` | macOS: installs the service on a Mac without one and enrolls it ([below](#from-the-package)) | 0 installed (enrolled or not), 1 refused or failed |
+| `agent-bridge --version` | prints the installed version | 0 |
 
 ### Enroll with the gateway
 
@@ -281,6 +283,30 @@ launchd, macOS's service manager, starts agent-bridge at login and restarts it i
 stops. It is configured by a *plist* file in `~/Library/LaunchAgents`, which runs
 `agent-bridge serve`; the settings are in the [env file](#configuration). The setup
 script writes both and enrolls the bridge.
+
+#### From the package
+
+On a Mac without an install, agent-bridge installs from PyPI, no checkout needed. Run
+`sudo mcp-gateway enroll` on the gateway host for an enrollment string, then, as your own
+user:
+
+```sh
+uv tool install claude-remote-mcp-agent-bridge
+agent-bridge setup
+```
+
+It asks the same questions as the setup script below, finds the LAN address and `herdr`,
+checks the port, generates the token, writes the env file and the plist, starts the
+service and enrolls it. The plist runs `~/.local/bin/agent-bridge`, which `uv tool upgrade
+claude-remote-mcp-agent-bridge` keeps; restart the service after upgrading (below). Pass
+values to skip the questions: `--roots`, `--name`, `--host`, `--port`, `--herdr-bin`,
+`--claude-config-dir` and `--trust-root` (`''` for no folder trust), `--enrollment`
+(`''` to enroll later); see `agent-bridge setup --help`.
+
+It refuses on a Mac that has an install already, and when run from a checkout: to change
+an install, re-run the setup script. It refuses under `uvx` too, whose copy uv cleans away.
+If it fails after writing the env file and before the gateway enrolls it, it removes what
+it wrote, so it can run again.
 
 #### With the setup script
 

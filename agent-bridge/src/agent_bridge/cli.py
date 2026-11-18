@@ -63,6 +63,8 @@ def main(argv: list[str] | None = None, *, run: Callable[..., None] = uvicorn.ru
             return _rename(args.name)
         if args.command == "unenroll":
             return _unenroll()
+        if args.command == "setup":
+            return _setup(args)
         if args.token_format is not None:
             return _format(check_token_format, args.token_format, "The token")
         if args.name_format is not None:
@@ -88,6 +90,17 @@ def _parser() -> argparse.ArgumentParser:
     formats = check.add_mutually_exclusive_group()
     formats.add_argument("--token-format", metavar="TOKEN", help="exit 0 if TOKEN can be AGENT_BRIDGE_TOKEN, else 2")
     formats.add_argument("--name-format", metavar="NAME", help="exit 0 if NAME can be AGENT_BRIDGE_NAME, else 2")
+    setup = commands.add_parser(
+        "setup", help="install the service on this Mac and enroll it; asks for what isn't passed",
+    )
+    setup.add_argument("--roots", metavar="DIRS", help="the :-separated folders agents may start in")
+    setup.add_argument("--name", help="this host's name in agent ids (default: the hostname)")
+    setup.add_argument("--host", metavar="ADDRESS", help="the LAN address to listen on (default: found)")
+    setup.add_argument("--port", help="the port to listen on (default: 8765)")
+    setup.add_argument("--herdr-bin", metavar="PATH", help="herdr (default: found)")
+    setup.add_argument("--claude-config-dir", metavar="DIR", help="a separate Claude config for agents; '' for none")
+    setup.add_argument("--trust-root", metavar="DIR", help="trust agents' folders under DIR in that config; '' for none")
+    setup.add_argument("--enrollment", metavar="STRING", help="what `sudo mcp-gateway enroll` printed; '' to enroll later")
     return parser
 
 
@@ -300,6 +313,16 @@ def _unenroll() -> int:
     save(path, state.model_copy(update={"gateway": None}))
     print(f"Left the gateway at {gateway.url}; {gateway.name} is no longer one of its hosts.")
     return OK
+
+
+def _setup(args: argparse.Namespace) -> int:
+    if sys.platform != "darwin":
+        print("agent-bridge setup is for macOS for now. From a checkout, run agent-bridge/deploy/linux/setup.sh "
+              "on Linux, or agent-bridge\\deploy\\windows\\setup.ps1 on Windows.", file=sys.stderr)
+        return FAILED
+    from agent_bridge.install import macos
+
+    return macos.setup(macos.Options.from_args(args), macos.MacSystem(), lambda: sys.stdin.readline() or None)
 
 
 def _format(check: Callable[[str], str], value: str, what: str) -> int:
