@@ -116,8 +116,8 @@ class LinuxService:
         legacy = self.system.home / ".env"
         try:
             values = dotenv_values(legacy) if legacy.is_file() else {}
-        except OSError as error:
-            raise Refused(f"can't read {legacy} ({error.strerror})") from None
+        except (OSError, UnicodeDecodeError):
+            values = {}  # as serve, which reads no settings from it then
         older = {key.upper(): value for key, value in values.items()
                  if value is not None and key.upper().startswith(PREFIX)}
         if older:

@@ -527,6 +527,15 @@ def test_valid_settings_in_the_home_folders_env_are_a_warning(host: FakeLinux, c
     assert f"also reads the settings in {host.home / '.env'}" in run.out
 
 
+def test_a_home_folder_env_that_isnt_utf_8_is_left_alone(host: FakeLinux, capsys) -> None:
+    (host.home / ".env").write_bytes(b"NAME=caf\xe9\n")
+
+    run = setup(host, capsys, *every_flag(host))
+
+    assert run.code == 0, run.out
+    assert ".env" not in run.out
+
+
 def test_a_home_folder_env_without_settings_is_left_alone(host: FakeLinux, capsys) -> None:
     (host.home / ".env").write_text("OTHER=x\n")
 
