@@ -811,6 +811,21 @@ def test_a_restore_that_cant_write_its_file_warns_once_and_keeps_the_marker(host
     assert host.paths.disabled_marker.exists()
 
 
+def test_a_rotation_the_gateway_didnt_take_restarts_the_task_with_the_installed_token(host: FakeWindows, capsys) -> None:
+    setup(host, capsys, *every_flag(host))
+    token = host.env("TOKEN")
+    host.enroll_codes = [1]
+
+    run = setup(host, capsys, "--rotate-token", "--enrollment", ENROLLMENT, answers=("",))
+
+    assert run.code == 1
+    assert "the installed one is back" in run.out
+    assert host.env("TOKEN") == token
+    assert host.task_on
+    assert SERVER in host.pids()
+    assert not host.paths.disabled_marker.exists()
+
+
 def test_a_task_you_turned_off_stays_off_when_setup_stops(host: FakeWindows, capsys, tmp_path: Path) -> None:
     installed_by_setup_ps1(host, tmp_path / "claude-remote-mcp")
     host.task_on = False
