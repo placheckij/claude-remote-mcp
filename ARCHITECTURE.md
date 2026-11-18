@@ -98,8 +98,8 @@ The machine where Claude Code runs. See [agent-bridge/README.md](agent-bridge/RE
 | The connector's access and refresh tokens | claude.ai |
 | Signed-in clients and hashes of their tokens | `oauth.json` on the gateway host |
 | Registrations that haven't signed in yet, sign-ins in progress, authorization codes, wrong-passphrase counts | mcp-gateway's memory |
-| Agent hosts: URL, token and what each last said about itself | `bridges.json` on the gateway host |
-| The gateway's id and the enrollment window: a hash of its secret, its expiry, wrong tries | `enrollment.json` on the gateway host |
+| Agent hosts and their tokens | `bridges.json` on the gateway host |
+| The gateway's id and the enrollment window | `enrollment.json` on the gateway host |
 | Wrong enrollment strings per address | mcp-gateway's memory |
 | mcp-gateway's settings: the passphrase, the public hostname | its env file on the gateway host (`/etc/mcp-gateway/env` from `mcp-gateway setup`) |
 | agent-bridge's settings | its env file on the agent host |
@@ -108,6 +108,8 @@ The machine where Claude Code runs. See [agent-bridge/README.md](agent-bridge/RE
 | Claude logins and trusted folders | each account's Claude config on the agent host |
 
 agent-bridge holds no agents: after a restart it sees the same ones through herdr.
+What each file holds and where it is: [mcp-gateway](mcp-gateway/README.md#what-it-creates),
+[agent-bridge](agent-bridge/README.md#configuration).
 
 ## Trust boundaries
 
