@@ -41,6 +41,8 @@ SETUP_VARIABLES = (
     "PUBLIC_HOST", "PROJECTS_ROOT", "TUNNEL_NAME", "PORT", "AGENT_BRIDGE_URL", "AGENT_BRIDGE_TOKEN",
     "MCP_GATEWAY_OAUTH_PASSPHRASE", "ROTATE_PASSPHRASE", "MCP_GATEWAY_TOKEN", "REMOVE_TOKEN",
 )
+# Named, never printed.
+SECRET_VARIABLES = ("AGENT_BRIDGE_TOKEN", "MCP_GATEWAY_OAUTH_PASSPHRASE", "MCP_GATEWAY_TOKEN")
 
 
 class _StateDir(BaseSettings):
@@ -137,6 +139,10 @@ def _setup(run: Callable[[list[str]], int], site_packages: list[str]) -> int:
         raise _Refused(f"No {PACKAGE} here to install for the service. Install it with: uv tool install {PACKAGE}")
     requirements = sorted(_requirement(dist) for dist in installed)
     python = f"{sys.version_info.major}.{sys.version_info.minor}"
+    # Exported for something else, e.g. PORT for a dev server, one would move the service.
+    if given := [name if name in SECRET_VARIABLES else f"{name}={os.environ[name]}"
+                 for name in SETUP_VARIABLES if os.environ.get(name)]:
+        print(f"Passing on from your environment: {', '.join(given)}")
     with as_file(files("mcp_gateway") / "deploy" / "setup.sh") as script:
         command = ["bash", str(script), python, *requirements]
         if os.geteuid() != 0:

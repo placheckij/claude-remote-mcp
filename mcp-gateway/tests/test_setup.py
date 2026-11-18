@@ -50,6 +50,8 @@ class Setup:
         self.code = 0
         monkeypatch.setattr(sys, "platform", "linux")
         monkeypatch.setattr(os, "geteuid", lambda: 1000)
+        for name in cli.SETUP_VARIABLES:
+            monkeypatch.delenv(name, raising=False)
 
     def run(self, command: list[str]) -> int:
         self.runs.append(command)
@@ -85,6 +87,21 @@ def test_setup_passes_on_every_variable_the_script_reads() -> None:
     assert used == set(cli.SETUP_VARIABLES)
     for name in ("PUBLIC_HOST", "AGENT_BRIDGE_TOKEN", "MCP_GATEWAY_OAUTH_PASSPHRASE", "PORT", "TUNNEL_NAME"):
         assert name in cli.SETUP_VARIABLES
+
+
+def test_setup_says_which_variables_it_passes_on_without_their_secrets(
+    setup: Setup, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # One exported for something else, e.g. PORT for a dev server, would move the service.
+    monkeypatch.setenv("PORT", "3000")
+    monkeypatch.setenv("AGENT_BRIDGE_TOKEN", "t" * 32)
+    monkeypatch.setenv("TUNNEL_NAME", "")
+    setup.site.add("claude-remote-mcp-gateway", "0.3.0")
+
+    code, output = setup()
+
+    assert code == 0
+    assert output == "Passing on from your environment: PORT=3000, AGENT_BRIDGE_TOKEN\n"
 
 
 def test_setup_run_as_root_runs_the_script_without_sudo(setup: Setup, monkeypatch: pytest.MonkeyPatch) -> None:

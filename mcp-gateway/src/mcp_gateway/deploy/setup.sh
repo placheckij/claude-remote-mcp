@@ -165,10 +165,16 @@ venv_python="$("$VENV/bin/python" -c 'import sys; print("%d.%d" % sys.version_in
 if [[ $venv_python != "$PYTHON_VERSION" ]]; then
   uv venv --quiet --clear --python "$PYTHON_VERSION" "$VENV"
 fi
+# A build from a path or URL may have changed under the same version, which uv would
+# take as installed: those are installed again every time.
+rebuild=()
+for requirement in "${REQUIREMENTS[@]}"; do
+  [[ $requirement != *" @ "* ]] || rebuild+=(--reinstall-package "${requirement%% @ *}")
+done
 # Exactly these packages, so an upgrade also drops the ones no longer needed. Bytecode is
 # compiled now: the sandboxed service can't write it into $APP_DIR, so without it every
 # start compiles the dependencies again, which takes seconds on a small board.
-uv pip sync --quiet --python "$VENV/bin/python" --compile-bytecode "$STAGE/requirements.txt"
+uv pip sync --quiet --python "$VENV/bin/python" --compile-bytecode "${rebuild[@]}" "$STAGE/requirements.txt"
 echo "Installed $("$VENV/bin/mcp-gateway" --version)"
 
 log "Writing $ENV_FILE"
