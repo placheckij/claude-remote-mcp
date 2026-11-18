@@ -216,7 +216,7 @@ def setup(options: Options, system: System, service: Service, read: Read) -> int
             service.prepare()
             _write_env(plan, service)
             service.install(plan)
-            _start(system, service)
+            _start(system, service, plan.gone)
             _enroll(plan, enrolled, system, service, read)
         except (Refused, KeyboardInterrupt):
             # However setup stops, a new token the gateway didn't confirm doesn't stay.
@@ -620,7 +620,9 @@ def _write_env(plan: Plan, service: Service) -> None:
     write_file(service.env_file, env_text(plan.values).encode(), 0o600, folder_mode=0o700)
 
 
-def _start(system: System, service: Service) -> None:
+def _start(system: System, service: Service, gone: bool) -> None:
+    """Starts the service and prints its checks; `gone`: the gateway lost this host, which
+    setup has warned about and enrolls again, or says how at the end."""
     service.start()
     print("\n==> Checks")
     for _ in range(CHECKS):
@@ -628,8 +630,7 @@ def _start(system: System, service: Service) -> None:
         if "FAIL  agent-bridge answers" not in result:
             break
         system.sleep(0.5)
-    # Setup enrolls next, or says how at the end.
-    print(result.replace(f" {ENROLL_AGAIN}", ""), end="")
+    print(result.replace(f" {ENROLL_AGAIN}", "") if gone else result, end="")
 
 
 def _enroll(plan: Plan, enrolled: Enrolled, system: System, service: Service, read: Read) -> None:
@@ -658,7 +659,7 @@ def _enroll(plan: Plan, enrolled: Enrolled, system: System, service: Service, re
                 break
             plan.values[f"{PREFIX}NAME"] = name
             _write_env(plan, service)
-            _start(system, service)
+            _start(system, service, plan.gone)
             continue
         plan.enrollment = _ask_enrollment(read, "Enrollment string, crm1@…")
 
@@ -691,7 +692,7 @@ def _put_token_back(plan: Plan, enrolled: Enrolled, system: System, service: Ser
     _write_env(plan, service)
     # A service that wouldn't start before may not now either; its next start reads it.
     with contextlib.suppress(Refused):
-        _start(system, service)
+        _start(system, service, plan.gone)
     return True
 
 

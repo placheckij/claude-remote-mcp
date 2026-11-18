@@ -885,6 +885,27 @@ def test_a_host_the_gateway_lost_is_asked_to_enroll_again(mac: FakeMac, capsys, 
     assert "It is enrolled with the gateway" in run.out
 
 
+def test_a_host_the_gateway_lost_after_setup_asked_keeps_checks_advice(
+        mac: FakeMac, capsys, monkeypatch: pytest.MonkeyPatch) -> None:
+    # Unreachable when setup asks first, so it keeps the enrollment; reinstalled by the checks.
+    installed(mac)
+    mac.gateway_token = None
+    mac.gateway_down = True
+    asked = mac._gateway_check
+
+    def back_after_the_first() -> str:
+        answer = asked()
+        mac.gateway_down = False
+        return answer
+
+    monkeypatch.setattr(mac, "_gateway_check", back_after_the_first)
+
+    run = setup(mac, capsys)
+
+    assert run.code == 0, run.out
+    assert f"isn't enrolled with the gateway. {ENROLL_AGAIN}" in run.out
+
+
 def test_a_host_the_gateway_lost_and_left_unenrolled_says_so(mac: FakeMac, capsys) -> None:
     installed(mac)
     mac.gateway_token = None
