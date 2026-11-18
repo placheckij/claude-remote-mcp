@@ -7,6 +7,7 @@ import subprocess
 import sys
 import tomllib
 import zipfile
+from importlib.metadata import distributions
 from pathlib import Path
 
 import pytest
@@ -155,6 +156,12 @@ def test_setup_refuses_where_there_is_no_mcp_gateway_package(setup: Setup) -> No
 
     assert code == 1 and setup.runs == []
     assert "uv tool install claude-remote-mcp-gateway" in output
+
+
+def test_the_packages_come_from_the_running_environment() -> None:
+    names = {cli._name(dist) for dist in distributions(path=cli._site_packages())}
+
+    assert {"claude-remote-mcp-gateway", "httpx", "uvicorn"} <= names
 
 
 def test_setup_is_for_linux_only(setup: Setup, monkeypatch: pytest.MonkeyPatch) -> None:

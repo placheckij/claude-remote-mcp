@@ -326,7 +326,9 @@ the tunnel checks fail, try again shortly:
   first of `AGENT_BRIDGE_ALLOWED_ROOTS` that has the folder, so check those hold the
   projects you mean.
 - **Move an install from a checkout** (one set up with `mcp-gateway/deploy/setup.sh`):
-  `uv tool install claude-remote-mcp-gateway`, then `mcp-gateway setup` as above. It
+  `uv tool install claude-remote-mcp-gateway`, then `~/.local/bin/mcp-gateway setup`
+  with its full path: until this run, `mcp-gateway` may be the old install's
+  `/usr/local/bin/mcp-gateway`, which has no `setup` (*invalid choice: 'setup'*). It
   keeps the same settings, state and tunnel, and once the gateway answers from
   `/opt/mcp-gateway`, removes `/opt/claude-remote-mcp`. The checkout isn't used after that.
 - **Run a build that isn't released:** install it as a tool from a path, a wheel or a git
