@@ -441,10 +441,11 @@ check "tunnel hides enrollment" 404 -X POST "https://$PUBLIC_HOST/enroll"
 if [[ ${#FAILED[@]} -eq 0 ]]; then
   cat <<EOF
 
-Done. Add the connector in claude.ai -> Customize -> Connectors -> Add -> Add custom connector:
+Done. Add the connector in claude.ai -> Customize -> Connectors -> Add -> Add custom connector
+(on Team and Enterprise, an Owner adds it in Organization settings -> Connectors):
   URL:  https://$PUBLIC_HOST/mcp
-  OAuth client: Register automatically (or leave the client ID and secret empty). Then
-  click Connect and sign in with the passphrase below.
+  Authentication: Sign in now. OAuth client: Register automatically (or leave the client
+  ID and secret empty). Then click Add, then Connect, and sign in with the passphrase below.
 EOF
 else
   printf '\nNot working yet: %d check(s) failed:\n' "${#FAILED[@]}"

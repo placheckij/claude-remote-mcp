@@ -15,9 +15,10 @@ invitation**: only the people listed below can open them.
 ## Invited contributors
 
 - Work on a branch and open a pull request against `main`. Keep each one to one change.
-- Every pull request needs the maintainer's approval and passing CI (tests on Linux and
-  macOS, plus agent-bridge's on Windows, each on Python 3.11 and 3.13; `shellcheck` on
-  the gateway's setup script). New commits after an approval need a new one.
+- Every pull request needs the maintainer's approval, resolved review conversations and
+  passing CI (tests on Linux and macOS, plus agent-bridge's on Windows, each on Python
+  3.11 and 3.13; `shellcheck` on the gateway's setup script). New commits after an
+  approval need a new one.
 - Pull requests that touch `agent-bridge/src/` or the gateway's modules that talk to it
   also run the mixed-versions check in `.github/compat/` against the last releases
   (`.github/compat/check.py` says how to run it locally). GitHub doesn't require it, as

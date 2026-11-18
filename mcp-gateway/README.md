@@ -28,7 +28,7 @@ or with a NUL character) come back the same way as one sentence.
 |---|---|
 | OS | anything that runs Python 3.11+; tested on Linux and macOS, Windows should work but is untested. [`mcp-gateway setup`](#install-with-mcp-gateway-setup) needs a Debian-based Linux with systemd (e.g. Debian 12+, Ubuntu 22.04+); elsewhere, [install by hand](#install-by-hand). |
 | Hardware | very light: one small Python process plus cloudflared. A single-board computer, a small home server, a VPS (if it can reach agent-bridge, e.g. over a VPN) or the agent host itself is enough. 64-bit recommended. |
-| Software | [uv](https://docs.astral.sh/uv/) (installs Python 3.11+ itself if needed); [cloudflared](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/) for the tunnel |
+| Software | [uv](https://docs.astral.sh/uv/) (installs Python 3.11+ itself if needed); [cloudflared](https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/downloads/) for the tunnel |
 | Network | outbound HTTPS to Cloudflare; a route to agent-bridge's URL; agent hosts on the LAN reach port 8766 to [enroll](#enrollment) and, afterwards, to report their address, rename and unenroll. No port needs to be open to the internet. |
 | Accounts | a Cloudflare account with a domain whose DNS is on Cloudflare (Free plan is fine); a Claude plan with custom connectors (all plans have them; Free allows one, and on Team and Enterprise an Owner adds it) |
 | Always on | yes: the connector only works while this host is up |
@@ -73,7 +73,7 @@ unset. An invalid setting stops startup with one line per problem, naming the va
 | `MCP_GATEWAY_OAUTH_PASSPHRASE` | required, 16+ chars; typed on the [sign-in page](#oauth-sign-in) when the connector is added |
 | `MCP_GATEWAY_STATE_DIR` | required; where the gateway keeps its state, all mode 600: signed-in clients and token hashes (`oauth.json`), agent hosts (`bridges.json`) and the enrollment window (`enrollment.json`), e.g. `/var/lib/mcp-gateway`. The running gateway locks it (`oauth.lock`); see [One process](#one-process) |
 | `MCP_GATEWAY_TOKEN` | optional, 32+ chars; the static token from before OAuth, still accepted as `Authorization: Bearer …` while set. Leave it unset unless a connector added with request headers still uses it |
-| `MCP_GATEWAY_PUBLIC_HOST` | required; the tunnel hostname, e.g. `mcp.example.com` (requests with any other `Host` are refused). The OAuth issuer is `https://<host>` and the connector URL `https://<host>/mcp` |
+| `MCP_GATEWAY_PUBLIC_HOST` | required; the tunnel hostname, e.g. `mcp.example.com` (`/mcp` requests with any other `Host` are refused). The OAuth issuer is `https://<host>` and the connector URL `https://<host>/mcp` |
 | `MCP_GATEWAY_BRIDGE_URL`, `MCP_GATEWAY_BRIDGE_TOKEN` | legacy, both or neither; see [Agent hosts](#agent-hosts) |
 | `MCP_GATEWAY_PORT` | optional, CLI only, and read from the environment only, not from `.env`; the port `mcp-gateway enroll` puts in the enrollment string (default 8766; the setup script's wrapper sets it to `PORT`) |
 | `MCP_GATEWAY_PROJECTS_ROOT` | optional; only for an agent-bridge without `GET /info`, which can't look up project names: where `start_agent` finds them, as a path on the agent host, e.g. `/home/me/projects`. Unset, such a host takes absolute paths only |
@@ -155,7 +155,7 @@ What stands between the internet and an agent:
    from which claude.ai starts the sign-in, and each refusal is logged with the request's
    headers, secrets redacted.
 4. **Host and Origin check.** Only `MCP_GATEWAY_PUBLIC_HOST` (and `localhost` or
-   `127.0.0.1` with a port) is accepted as `Host`, and only `https://claude.ai` or `https://claude.com` as `Origin`
+   `127.0.0.1` with a port) is accepted as `Host` on `/mcp`, and only `https://claude.ai` or `https://claude.com` as `Origin`
    (a request without one is fine). This is DNS-rebinding protection from the SDK. A
    refused Origin with a valid token is logged as an error: if it is the Claude app,
    every call fails until that Origin is added to `ALLOWED_ORIGINS` in
@@ -411,7 +411,8 @@ Then:
 
 - **DNS:** `tunnel delete` leaves the hostname's CNAME behind. Delete it in the
   Cloudflare dashboard (your domain → DNS → Records → the `mcp` record).
-- **claude.ai:** remove the custom connector (Customize → Connectors).
+- **claude.ai:** remove the custom connector (Customize → Connectors; on Team and
+  Enterprise, an Owner removes it in Organization settings → Connectors).
 - **Cloudflare Access**, if you set it up: delete the application and the service token
   in Zero Trust.
 - **Only if nothing else on the host uses them:** the Cloudflare login cert, the
@@ -440,7 +441,7 @@ reverse proxy:
    into a virtual environment in a folder `<dir>` the server's user can read (e.g.
    `/opt/mcp-gateway`, created as root), with its Python there too: uv would otherwise
    use or download one in your home folder.
-   `UV_PYTHON_INSTALL_DIR=<dir>/python uv venv --python 3.11 <dir>/venv && uv pip install --python <dir>/venv claude-remote-mcp-gateway`.
+   `UV_PYTHON_INSTALL_DIR=<dir>/python uv venv --managed-python --python 3.11 <dir>/venv && uv pip install --python <dir>/venv claude-remote-mcp-gateway`.
    Its commands are in `<dir>/venv/bin/` (`<dir>\venv\Scripts\` on Windows).
 2. Set the [configuration](#configuration) variables and start the server, on every
    interface for agent hosts to [enroll](#enrollment) (`--host 127.0.0.1` if they are all
@@ -504,7 +505,8 @@ cloudflared --no-autoupdate tunnel --config /etc/cloudflared/claude-remote.yml r
 
 Updates to cloudflared arrive through apt (`sudo apt upgrade`), which is why the
 service runs with `--no-autoupdate`. In the dashboard the tunnel shows up under
-**Zero Trust → Networks → Tunnels**, where its connection status is visible.
+**Networking → Tunnels** (or **Zero Trust → Networks → Connectors**), where its connection
+status is visible.
 
 ### Optional: Cloudflare Access with a service token
 
@@ -517,11 +519,11 @@ which has no service token, so those two paths need an Access **Bypass** policy,
 connector still needs request headers (below) for the rest. With OAuth on, leave Access
 off unless you need it.
 
-1. Zero Trust → **Access → Service auth → Service tokens → Create**. Copy the Client
-   ID and Client Secret.
-2. Zero Trust → **Access → Applications → Add → Self-hosted**, domain
-   `mcp.example.com`, with one policy: action **Service Auth**, include **Service
-   Token** = the token from step 1.
+1. Zero Trust → **Access controls → Service credentials → Service Tokens → Create
+   Service Token**. Copy the Client ID and Client Secret.
+2. Zero Trust → **Access controls → Applications → Create new application →
+   Self-hosted and private**, public hostname `mcp.example.com`, with one policy: action
+   **Service Auth**, include **Service Token** = the token from step 1.
 3. In the claude.ai connector, add two more request headers:
    `CF-Access-Client-Id` and `CF-Access-Client-Secret`.
 
@@ -540,9 +542,10 @@ claude.ai → **Customize → Connectors → Add → Add custom connector**:
 |---|---|
 | Name | any, e.g. `claude-remote` |
 | URL | `https://mcp.example.com/mcp` |
+| Authentication | where the dialog asks, **Sign in now** (not **No sign-in**, which hides the OAuth client) |
 | OAuth client | **Register automatically** (dynamic client registration), or, where the dialog shows a client ID and secret under advanced settings, leave them empty: claude.ai registers itself. The gateway doesn't take Claude's published identity |
 
-Then click **Connect**. A page from your gateway asks for the passphrase
+Then click **Add**, then **Connect**. A page from your gateway asks for the passphrase
 (`MCP_GATEWAY_OAUTH_PASSPHRASE`); after **Allow** you are back in claude.ai, connected.
 claude.ai keeps the connector signed in by refreshing its token; if it was signed out
 (e.g. after 90 days unused, or `oauth.json` was deleted, by hand or after a revocation
@@ -561,7 +564,7 @@ be edited. To move it over:
 3. Re-run the setup script with `REMOVE_TOKEN=1`, so the static token stops working.
 
 Connectors added on claude.ai are available in the Claude apps on the same account,
-including the mobile app (and with it CarPlay).
+including the mobile app (and with it, on iPhone, CarPlay).
 
 ## Development
 

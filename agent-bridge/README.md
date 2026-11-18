@@ -35,8 +35,9 @@ answers "The agent host is not reachable". The gateway host can't wake it: macOS
 **macOS**
 
 - Keep it awake on power: `sudo pmset -c sleep 0` (the display can still sleep), or
-  System Settings → Energy (on a laptop: Battery → Options) → turn on "Prevent
-  automatic sleeping when the display is off". For a single trip, `caffeinate -s` in a
+  System Settings → Energy → turn on "Prevent automatic sleeping when the display is
+  off" (on a laptop: Battery → Options → "Prevent automatic sleeping on power adapter
+  when the display is off"). For a single trip, `caffeinate -s` in a
   terminal does the same until you stop it.
 - A laptop with the lid closed sleeps anyway, unless it's on power with an external
   display. `sudo pmset -c disablesleep 1` keeps it awake with the lid closed too (an
@@ -130,7 +131,8 @@ left out, it is off. If `AGENT_BRIDGE_CLAUDE_ARGS` already has `--remote-control
 isn't passed again, and every agent has it. The answer says which in `remote_control`:
 `on`, `off`, or `blocked` when Claude Code showed *"Remote Control is disabled by your
 organization's policy"* within the 5 s the start looks for the trust dialog (e.g. on a
-Claude Team account); the agent then runs without it.
+Team or Enterprise account whose Owner hasn't turned Remote Control on); the agent then
+runs without it.
 
 ### Claude accounts
 
@@ -190,9 +192,10 @@ one.
 
 ### Folder trust
 
-Claude's "Do you trust this folder?" dialog defaults to "No, exit", so a prompt sent
-into it would quit Claude. If the dialog shows after a start, the start fails with
-`409 folder_not_trusted` and the new workspace is closed.
+Claude Code's folder-trust dialog ("Is this a project you created or one you trust?")
+defaults to "No, exit", so a prompt sent into it would quit Claude. If the dialog shows
+after a start, the start fails with `409 folder_not_trusted` and the new workspace is
+closed.
 
 So either trust each project folder once by hand (open `claude` in it and accept), or
 let agent-bridge do it. In a git repository Claude Code checks the repository's own
@@ -201,7 +204,7 @@ count, so the dialog still shows. To let agent-bridge do it, set both:
 
 - `AGENT_BRIDGE_CLAUDE_CONFIG_DIR`: a separate Claude config for the agents, e.g.
   `~/.claude-agents` (run `CLAUDE_CONFIG_DIR=~/.claude-agents claude` once to log in;
-  until then starts fail with `409 trust_refused` saying so);
+  until then starts under the trust root fail with `409 trust_refused` saying so);
 - `AGENT_BRIDGE_TRUST_ROOT`: the folder under which new agents' folders are marked
   trusted in the agent's Claude config (`<config dir>/.claude.json`).
 
@@ -245,7 +248,7 @@ the working folder is read too, under the env file, with a warning.
 | `AGENT_BRIDGE_CLAUDE_CONFIG_DIR` | unset | `CLAUDE_CONFIG_DIR` for new agents whose folder has no [account](#claude-accounts); unset uses Claude Code's default config |
 | `AGENT_BRIDGE_ACCOUNTS` | none | named Claude logins and the folders they're for, as JSON (see [Claude accounts](#claude-accounts)); names are lower-case, e.g. `work` |
 | `AGENT_BRIDGE_CLAUDE_ARGS` | `--permission-mode auto` | extra `claude` arguments, shell-quoted; set it empty for none |
-| `AGENT_BRIDGE_HERDR_BIN` | `herdr` | the full path, e.g. `~/.local/bin/herdr`; `serve`, `enroll`, `rename` and `check` need it set |
+| `AGENT_BRIDGE_HERDR_BIN` | `herdr` | the full path, e.g. `/Users/me/.local/bin/herdr` (a `~` isn't expanded); `serve`, `enroll`, `rename` and `check` need it set |
 | `AGENT_BRIDGE_TRUST_ROOT` | unset | auto-trust folders under it; needs `AGENT_BRIDGE_CLAUDE_CONFIG_DIR`; absolute, and like the allowed roots never `/` or the home folder |
 | `AGENT_BRIDGE_MAX_AGENTS` | `10` | no new agents while this many or more exist (all herdr agents count) |
 | `AGENT_BRIDGE_MAX_OUTPUT_CHARS` | `8000` | terminal output beyond this is cut from the front (`truncated: true`) |

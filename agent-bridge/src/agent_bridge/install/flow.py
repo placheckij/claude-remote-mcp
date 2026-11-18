@@ -51,8 +51,8 @@ MANAGED = ("TOKEN", "ALLOWED_ROOTS", "HOST", "PORT", "NAME", "HERDR_BIN", "CLAUD
            "ACCOUNTS")
 
 TRUST_EXPLAINED = """
-Folder trust (optional). The first time Claude opens in a folder it asks "Do you trust
-this folder?", and an agent started remotely would quit there. agent-bridge can mark
+Folder trust (optional). The first time Claude opens in a folder it asks "Is this a
+project you created or one you trust?", and an agent started remotely would quit there. agent-bridge can mark
 folders under a trust root as trusted beforehand, but only in a separate Claude config
 for the agents, never in your own. Answer - to skip this if you have already trusted your
 project folders by opening claude in each one.

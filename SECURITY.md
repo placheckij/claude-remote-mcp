@@ -26,9 +26,9 @@ the gateway first, see [Updating](README.md#updating)).
   their storage), the token check, the Host and Origin checks, the rule that everything
   but the enrollment routes answers loopback (the tunnel's cloudflared) only, and
   anything that lets a tool call do more than its description says
-- enrollment: the window's secret and its limits, the checks on who may call the
-  enrollment routes (LAN only, nothing the tunnel forwarded), and on which addresses the
-  gateway will call (LAN IP addresses that answer as the bridge enrolling)
+- enrollment: the window's secret and its limits, and the checks that only private,
+  loopback or link-local IP addresses may call the enrollment routes (nothing the tunnel
+  forwarded) or be called by the gateway (only ones that answer as the bridge enrolling)
 - agent-bridge: its token check, the allowed-roots and agent-count limits, which Claude
   account (login and config) an agent starts under, and folder trust (it must never
   write the default Claude config, or trust a folder outside the trust root)
@@ -50,5 +50,5 @@ the gateway first, see [Updating](README.md#updating)).
 - Attacks that need the sign-in passphrase, a valid OAuth or static token, an agent
   host's bridge token, or a shell on the gateway host or an agent host
 - Attacks from the LAN that need an open enrollment window's secret, or that read the
-  gateway's plain-HTTP traffic to the agent-bridges (it carries each bridge's token; TLS
-  on the LAN is not provided)
+  plain-HTTP traffic between the gateway and the agent-bridges (it carries each bridge's
+  token, and the window's secret when a bridge enrolls; TLS on the LAN is not provided)

@@ -35,7 +35,8 @@ You need:
 - an agent host that stays awake while you use it, and on macOS and Windows logged in (see
   [Keeping the agent host available](agent-bridge/README.md#keeping-the-agent-host-available));
 - a Cloudflare account (the Free plan is fine) with a domain whose DNS is on Cloudflare;
-- a Claude plan with custom connectors.
+- a Claude account: every plan has custom connectors (Free allows one; on Team and
+  Enterprise an Owner adds it).
 
 The gateway and the agent host can be one machine.
 
@@ -83,7 +84,8 @@ restarts the service on the new version.
   `PORT` and `TUNNEL_NAME` again if you changed them, as they aren't kept (see
   [Update and rotate](mcp-gateway/README.md#update-and-rotate)).
 - **Agent hosts:** `uv tool upgrade claude-remote-mcp-agent-bridge`, then
-  `agent-bridge setup`.
+  `agent-bridge setup`. On Windows, stop agent-bridge first: the upgrade fails while it
+  runs (see [Windows](agent-bridge/README.md#as-a-service-on-windows-task-scheduler)).
 
 Update the gateway first: it calls agent-bridges at its own API version and one behind, but
 not newer ones. The agent hosts can then follow one at a time.

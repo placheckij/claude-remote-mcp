@@ -18,8 +18,8 @@ mobile and CarPlay. Claude decides which tool to call; nothing in this repo runs
 What this layer imposes on the others:
 
 - **Time.** Voice mode gives up on a tool call after about 30 s, other clients after
-  about 60 s. Tools therefore wait at most 20 s, and longer work is followed with
-  `wait_for_agent`.
+  about 60 s (measured; Claude's docs say 240 s). Tools therefore wait at most 20 s,
+  and longer work is followed with `wait_for_agent`.
 - **Speech.** Replies are read aloud, so tool results are a few short lines of plain
   text, never code or logs.
 - **Approval.** Voice mode asks before each tool call unless the tools are set to
@@ -41,9 +41,10 @@ Cloudflare Tunnel. See [mcp-gateway/README.md](mcp-gateway/README.md).
   token. An agent id names its host (`mac/w1:p1`, bare while there is one host), and
   each tool becomes a call to that host's agent-bridge. `list_agents` asks every host at
   once, and `start_agent` without a host, among several, asks each one for the project
-  (`GET /projects/{name}`). Hosts first say about themselves (`GET /info`), and only
-  those at the gateway's API version or one behind are called (one that hasn't answered
-  yet is tried; one recorded at another version is asked again before it is refused).
+  by name (`GET /projects/{name}`; a path needs the host). Hosts first say about
+  themselves (`GET /info`), and only those at the gateway's API version or one behind
+  are called (one that hasn't answered yet is tried; one recorded at another version is
+  asked again before it is refused).
   Arguments (agent ids, prompt length, waits) are checked before anything is sent.
   Project names and paths go to agent-bridge as given: it resolves and checks them, and
   reports each agent's project.
@@ -70,8 +71,8 @@ its memory, and it reads `oauth.json` only at startup.
 The machine where Claude Code runs. See [agent-bridge/README.md](agent-bridge/README.md).
 
 - **agent-bridge** is a small HTTP API on the LAN with its own bearer token. It turns
-  each request into `herdr` CLI calls. Its settings are an env file, and a state file
-  holds its id and, once enrolled, its gateway. `agent-bridge setup` installs it as a
+  each agent request into `herdr` CLI calls. Its settings are an env file, and a state
+  file holds its id and, once enrolled, its gateway. `agent-bridge setup` installs it as a
   service and enrolls it; its commands are `serve`, `enroll`, `rename`, `unenroll`,
   `check`, `setup` and `uninstall`.
 - **Workspace management.** herdr owns the agents. Each agent started here gets its own
@@ -79,8 +80,8 @@ The machine where Claude Code runs. See [agent-bridge/README.md](agent-bridge/RE
   their herdr pane id, e.g. `w1:p1`.
 - **Agent lifecycle.** Start in a project folder (only under the allowed roots, while
   herdr runs fewer than `AGENT_BRIDGE_MAX_AGENTS` agents, 10 by default, counting ones
-  started by hand; on the account the request names or else the one set up for that
-  folder), prompt, wait, answer a question, rename, stop. The gateway starts agents with
+  started by hand; on the account the request names, else the one set up for that
+  folder, else `AGENT_BRIDGE_CLAUDE_CONFIG_DIR` or Claude's default config), prompt, wait, answer a question, rename, stop. The gateway starts agents with
   Claude Code's Remote Control on unless asked otherwise, so they also show up in the
   Claude app (agent-bridge leaves it off when a request doesn't ask for it, unless
   `AGENT_BRIDGE_CLAUDE_ARGS` turns it on for every agent). Every agent can be read;
@@ -113,8 +114,9 @@ agent-bridge holds no agents: after a restart it sees the same ones through herd
 1. **Internet to gateway:** Cloudflare terminates TLS. The tunnel forwards only `/mcp`
    and the OAuth paths, and `/mcp` needs an access token from the passphrase sign-in (or
    the static `MCP_GATEWAY_TOKEN`, while it is set).
-2. **Gateway to agent host:** a separate bearer token, over the LAN only. agent-bridge
-   isn't reachable from the internet.
+2. **Gateway to agent host:** a separate bearer token, over the LAN (enrollment takes
+   only LAN addresses; `mcp-gateway bridges add` takes any). agent-bridge isn't
+   reachable from the internet.
 3. **LAN to gateway:** the gateway listens on the LAN for enrollment only; everything
    else answers loopback (cloudflared) only. Enrolling needs the window's secret, and
    changing a host's record that host's token. Enrollment refuses callers off the LAN
