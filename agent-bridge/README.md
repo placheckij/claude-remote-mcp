@@ -335,7 +335,8 @@ Then it:
 2. writes the env file, readable only by you. Other settings in it are kept, but not its
    comments;
 3. writes the plist and (re)starts the service;
-4. runs `agent-bridge check`;
+4. runs `agent-bridge check`. Before the first enrollment its last line is
+   `--    not enrolled with a gateway`, which isn't a failure;
 5. enrolls with the gateway. If the gateway has another host by that name, it asks for
    another one.
 
@@ -483,8 +484,9 @@ installed yet, and takes the same flags. Then it:
    running, and never restarts it, so running agents stay;
 4. turns on lingering (`loginctl enable-linger`). If that is refused, it prints the
    `sudo` command to run;
-5. (re)starts agent-bridge, runs `agent-bridge check`, and enrolls. If the gateway has
-   another host by that name, it asks for another one.
+5. (re)starts agent-bridge, runs `agent-bridge check` (`--    not enrolled with a gateway`
+   before the first enrollment isn't a failure), and enrolls. If the gateway has another
+   host by that name, it asks for another one.
 
 `--no-herdr-service` installs no service for herdr's server, if you start it yourself,
 and removes one installed before without stopping its server; `--herdr-service` brings it
@@ -525,7 +527,9 @@ uv tool uninstall claude-remote-mcp-agent-bridge
 `agent-bridge uninstall` leaves the gateway (`agent-bridge unenroll`), then removes both
 services, the env file and the state file. Its log is in the journal, which systemd ages
 out. herdr's server keeps running with its agents until you stop it (`herdr server stop`)
-or reboot. Lingering stays on; `loginctl disable-linger` turns it off.
+or reboot; until then `systemctl --user` lists `agent-bridge-herdr.service` as
+`not-found active running`. Lingering stays on; `loginctl disable-linger` turns it off.
+`~/.config/systemd/user/` stays, as it is systemd's.
 
 ### As a service on Windows (Task Scheduler)
 
@@ -568,8 +572,9 @@ which isn't on `PATH`. Then it:
    between, so ending the task ends agent-bridge. It is tried every minute while you're
    logged on, which does nothing while it runs. That way it starts once Wi-Fi brings up
    the LAN address, and starts again if it stops;
-5. runs `agent-bridge check`, and enrolls with the gateway (asking for another name if the
-   gateway already has a host by that name).
+5. runs `agent-bridge check` (`--    not enrolled with a gateway` before the first
+   enrollment isn't a failure), and enrolls with the gateway (asking for another name if
+   the gateway already has a host by that name).
 
 Its log is `%LOCALAPPDATA%\agent-bridge\agent-bridge.log`, with a line for each start and one
 per request. Once it passes 1 MB it is moved to `agent-bridge.log.1`, replacing the one
