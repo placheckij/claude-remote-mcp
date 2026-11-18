@@ -475,6 +475,17 @@ def test_units_systemd_didnt_reload_stop_the_setup(host: FakeLinux, capsys) -> N
     assert ("restart", UNIT) not in host.ran("systemctl")
 
 
+def test_a_rotation_the_unit_doesnt_start_for_puts_the_token_back(host: FakeLinux, capsys) -> None:
+    token = installed_by_setup_sh(host)
+    host.failing = {("restart", UNIT)}
+
+    run = setup(host, capsys, "--rotate-token", "--enrollment", ENROLLMENT)
+
+    assert run.code == 1
+    assert "the installed one is back" in run.out
+    assert host.env("TOKEN") == token
+
+
 def test_a_herdr_unit_that_cant_be_enabled_stops_the_setup(host: FakeLinux, capsys) -> None:
     host.failing = {("enable", HERDR_UNIT)}
 
