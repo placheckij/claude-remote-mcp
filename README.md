@@ -20,15 +20,14 @@ requirements, configuration, deployment and tests.
 
 | Directory | Runs on | Role |
 |---|---|---|
-| [`mcp-gateway/`](mcp-gateway/) | an always-on host: a small home server, a VPS, or the agent host itself (Linux, macOS; the setup script needs Debian-based Linux with systemd) | MCP server exposed to claude.ai through a Cloudflare Tunnel; signs the connector in with OAuth (a passphrase) and forwards tool calls to `agent-bridge`. Includes a setup script. |
+| [`mcp-gateway/`](mcp-gateway/) | an always-on host: a small home server, a VPS, or the agent host itself (Linux, macOS; `mcp-gateway setup` needs Debian-based Linux with systemd) | MCP server exposed to claude.ai through a Cloudflare Tunnel; signs the connector in with OAuth (a passphrase) and forwards tool calls to `agent-bridge`. `mcp-gateway setup` installs it as a service. |
 | [`agent-bridge/`](agent-bridge/) | the machine where herdr and Claude Code run (macOS, Linux or Windows) | Narrow LAN-only HTTP API translating requests into `herdr` CLI calls; keeps only its id and its gateway. Enrolls itself with the gateway. Runs as a launchd or systemd user service, or a Windows scheduled task. |
 
 You need:
 
 - [herdr](https://github.com/herdrdev/herdr) 0.8.0+ and Claude Code on each agent
   host;
-- [uv](https://docs.astral.sh/uv/) on each agent host (the gateway's setup script
-  installs it on the gateway host);
+- [uv](https://docs.astral.sh/uv/) on each host;
 - an agent host that stays awake and logged in while you use it (see
   [Keeping the agent host available](agent-bridge/README.md#keeping-the-agent-host-available));
 - a Cloudflare account (the Free plan is fine) with a domain whose DNS is on Cloudflare;
@@ -40,10 +39,11 @@ The gateway and the agent host can be one machine.
 
 1. **Cloudflare:** add your domain to Cloudflare if it isn't there yet (its DNS must be
    managed by Cloudflare), and pick a subdomain for the connector, e.g.
-   `mcp.example.com`. Nothing else to create by hand: the setup script in step 2 makes
+   `mcp.example.com`. Nothing else to create by hand: `mcp-gateway setup` in step 2 makes
    the tunnel and the DNS record.
-2. **Gateway host:** run [`mcp-gateway/deploy/setup.sh`](mcp-gateway/README.md#deploy-with-the-setup-script)
-   with that subdomain. On the first run it prints a Cloudflare login URL: open it in
+2. **Gateway host:** run `uv tool install claude-remote-mcp-gateway`, then
+   [`mcp-gateway setup`](mcp-gateway/README.md#install-with-mcp-gateway-setup) with that
+   subdomain. On the first run it prints a Cloudflare login URL: open it in
    any browser and pick your domain. It then sets up the service and the
    [Cloudflare Tunnel](mcp-gateway/README.md#cloudflare-tunnel), prints the sign-in
    passphrase, and prints an enrollment string for the agent hosts, good for 30 minutes
@@ -75,7 +75,7 @@ uv workspace; each component is its own package.
 ```sh
 uv sync --all-packages
 uv run --package claude-remote-mcp-agent-bridge pytest agent-bridge
-uv run --package mcp-gateway pytest mcp-gateway
+uv run --package claude-remote-mcp-gateway pytest mcp-gateway
 uv run pytest   # both packages plus tests/ (deploy scripts, enrollment end to end)
 ```
 
@@ -91,6 +91,9 @@ agent-bridge is published to PyPI as `claude-remote-mcp-agent-bridge`; its comma
 3. The [release workflow](.github/workflows/release.yml) runs CI, checks that the tag is
    the package's version, builds it, and waits for approval in the `pypi` environment.
    Approve it in the run; it then publishes to PyPI and creates the GitHub Release.
+
+mcp-gateway is released the same way, as `claude-remote-mcp-gateway` with
+`mcp-gateway-v*` tags: see [Releasing mcp-gateway](mcp-gateway/README.md#releasing-mcp-gateway).
 
 ## License
 

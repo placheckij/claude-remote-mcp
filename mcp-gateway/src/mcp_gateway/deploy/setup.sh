@@ -1,18 +1,20 @@
 #!/usr/bin/env bash
 # Installs mcp-gateway as a systemd service on a Debian-based Linux host (e.g. Debian,
 # Ubuntu) and publishes it through a Cloudflare Tunnel. Safe to re-run: it
-# updates the code, keeps the sign-in passphrase, the OAuth tokens and the settings below,
-# and reuses the existing tunnel.
+# installs the version it is run from, keeps the sign-in passphrase, the OAuth tokens and
+# the settings below, and reuses the existing tunnel.
 #
-# Run from a checkout of this repo on the gateway host:
-#   sudo PUBLIC_HOST=mcp.example.com mcp-gateway/deploy/setup.sh
+# Shipped in the package and run by it, as yourself (it runs this with sudo):
+#   uv tool install claude-remote-mcp-gateway
+#   PUBLIC_HOST=mcp.example.com mcp-gateway setup
+# Its arguments are the Python version and the exact packages to install for the service.
 # On a re-run, values not given are taken from /etc/mcp-gateway/env; pass one to change
 # it. Only PUBLIC_HOST is asked for, if missing. At the end the script opens a 30-minute
 # enrollment window and prints the string for `agent-bridge enroll` on each agent host; open another
 # later with `sudo mcp-gateway enroll`, which this script installs. The gateway listens on
 # every interface for that; the tunnel publishes only /mcp and the OAuth paths.
 # Don't put tokens on the command line (shell history, process list): let the script ask,
-# or export them and pass them with sudo --preserve-env=NAME. Optional: AGENT_BRIDGE_URL
+# or export them; mcp-gateway setup passes them on. Optional: AGENT_BRIDGE_URL
 # (an agent host to add now; its token is asked for, or AGENT_BRIDGE_TOKEN), PROJECTS_ROOT (only for an agent-bridge without /info: the
 # folder on the agent host that project names given to start_agent resolve against), TUNNEL_NAME
 # (claude-remote), PORT (8766), MCP_GATEWAY_OAUTH_PASSPHRASE (use this sign-in passphrase
@@ -21,8 +23,10 @@
 
 set -euo pipefail
 
-REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-APP_DIR=/opt/claude-remote-mcp
+APP_DIR=/opt/mcp-gateway
+VENV="$APP_DIR/venv"
+# Where an install from a checkout ran the gateway from.
+OLD_APP_DIR=/opt/claude-remote-mcp
 ENV_DIR=/etc/mcp-gateway
 ENV_FILE="$ENV_DIR/env"
 # systemd's StateDirectory=; holds the OAuth clients and token hashes.
@@ -60,7 +64,10 @@ env_value() { # env_value KEY: KEY's value in $ENV_FILE, or nothing
 if ! command -v apt-get >/dev/null || ! command -v systemctl >/dev/null; then
   die "this script needs a Debian-based Linux with systemd; see mcp-gateway/README.md to install by hand"
 fi
-[[ -f "$REPO_DIR/mcp-gateway/pyproject.toml" ]] || die "run from a checkout of claude-remote-mcp"
+[[ $# -ge 2 && $1 =~ ^3\.[0-9]+$ ]] || die "run it with: mcp-gateway setup (uv tool install claude-remote-mcp-gateway)"
+PYTHON_VERSION=$1
+shift
+REQUIREMENTS=("$@")
 
 # A re-run keeps the last run's values for anything not given: updating the code needs no
 # retyping, and a typo can't move the hostname.
@@ -124,11 +131,16 @@ fi
 
 log "Installing system packages"
 apt-get update -qq
-apt-get install -y -qq curl ca-certificates gnupg openssl rsync python3 git >/dev/null
+# git for a gateway installed from a git URL.
+apt-get install -y -qq curl ca-certificates gnupg openssl python3 git >/dev/null
 
 if ! command -v uv >/dev/null; then
   log "Installing uv"
   curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR=/usr/local/bin UV_NO_MODIFY_PATH=1 sh
+else
+  # An older uv may not know the Python the tool runs on, which the venv below needs.
+  log "Updating uv"
+  uv self update --quiet || echo "warning: couldn't update $(command -v uv); if the venv below fails, update it"
 fi
 
 if ! command -v cloudflared >/dev/null; then
@@ -146,17 +158,28 @@ fi
 log "Installing mcp-gateway into $APP_DIR"
 id "$SERVICE_USER" &>/dev/null || useradd --system --no-create-home --shell /usr/sbin/nologin "$SERVICE_USER"
 install -d -m 0755 "$APP_DIR"
-# Only committed files (no .env, notes or caches from the checkout), owned by root: the
-# service, and whoever owns the checkout, can run this code but not change it. The
-# checkout belongs to another user, hence safe.directory for root's git.
 STAGE="$(mktemp -d)"
 trap 'rm -rf "$STAGE"' EXIT
-git -c safe.directory="$REPO_DIR" -c tar.umask=0022 -C "$REPO_DIR" archive --format=tar HEAD | tar -x -C "$STAGE"
-chmod 0755 "$STAGE"
-rsync -a --delete --chown=root:root --exclude /.venv --exclude /python "$STAGE/" "$APP_DIR/"
-# Compile bytecode now: the sandboxed service can't write it into $APP_DIR, so without it
-# every start compiles the dependencies again, which takes seconds on a small board.
-(cd "$APP_DIR" && UV_PYTHON_INSTALL_DIR="$APP_DIR/python" uv sync --frozen --no-dev --package mcp-gateway --compile-bytecode)
+printf '%s\n' "${REQUIREMENTS[@]}" >"$STAGE/requirements.txt"
+# Its own copy, owned by root: the service can't read the tool's environment in a home
+# folder (ProtectHome=yes), and can run this code but not change it. The same for Python,
+# when uv has to download it.
+export UV_PYTHON_INSTALL_DIR="$APP_DIR/python"
+venv_python="$("$VENV/bin/python" -c 'import sys; print("%d.%d" % sys.version_info[:2])' 2>/dev/null || true)"
+if [[ $venv_python != "$PYTHON_VERSION" ]]; then
+  uv venv --quiet --clear --python "$PYTHON_VERSION" "$VENV"
+fi
+# A build from a path or URL may have changed under the same version, which uv would
+# take as installed: those are installed again every time.
+rebuild=()
+for requirement in "${REQUIREMENTS[@]}"; do
+  [[ $requirement != *" @ "* ]] || rebuild+=(--reinstall-package "${requirement%% @ *}")
+done
+# Exactly these packages, so an upgrade also drops the ones no longer needed. Bytecode is
+# compiled now: the sandboxed service can't write it into $APP_DIR, so without it every
+# start compiles the dependencies again, which takes seconds on a small board.
+uv pip sync --quiet --python "$VENV/bin/python" --compile-bytecode "${rebuild[@]}" "$STAGE/requirements.txt"
+echo "Installed $("$VENV/bin/mcp-gateway" --version)"
 
 log "Writing $ENV_FILE"
 install -d -m 0750 -g "$SERVICE_USER" "$ENV_DIR"
@@ -194,10 +217,15 @@ chmod 0640 "$ENV_FILE"
 # `sudo mcp-gateway bridges …` runs as the service user, so bridges.json stays its own.
 # AGENT_BRIDGE_TOKEN, if set, is passed on for `bridges add` without a terminal;
 # MCP_GATEWAY_PORT is the port `enroll` puts in the string.
+# setup itself is the tool's own, which installs its version: this one is the service's.
 cat >/usr/local/bin/mcp-gateway <<EOF
 #!/bin/sh
-# Installed by mcp-gateway/deploy/setup.sh: mcp-gateway's commands, on the service's state.
-exec sudo --preserve-env=AGENT_BRIDGE_TOKEN -u $SERVICE_USER /usr/bin/env MCP_GATEWAY_PORT=$PORT $APP_DIR/.venv/bin/mcp-gateway --state-dir $STATE_DIR "\$@"
+# Installed by mcp-gateway setup: mcp-gateway's commands, on the service's state.
+if [ "\$1" = setup ]; then
+  echo 'Run setup as yourself, without sudo, from the mcp-gateway that uv tool installed: ~/.local/bin/mcp-gateway setup' >&2
+  exit 1
+fi
+exec sudo --preserve-env=AGENT_BRIDGE_TOKEN -u $SERVICE_USER /usr/bin/env MCP_GATEWAY_PORT=$PORT $VENV/bin/mcp-gateway --state-dir $STATE_DIR "\$@"
 EOF
 chmod 0755 /usr/local/bin/mcp-gateway
 
@@ -218,7 +246,7 @@ WorkingDirectory=$APP_DIR
 # 127.0.0.1; other callers reach only the enrollment routes, which refuse what it forwards.
 # --no-proxy-headers: uvicorn would otherwise take the tunnel's caller from X-Forwarded-For,
 # and the gateway, seeing a caller other than 127.0.0.1, would answer 404 to everything.
-ExecStart=$APP_DIR/.venv/bin/uvicorn mcp_gateway.server:main --factory --host 0.0.0.0 --port $PORT --no-server-header --no-proxy-headers
+ExecStart=$VENV/bin/uvicorn mcp_gateway.server:main --factory --host 0.0.0.0 --port $PORT --no-server-header --no-proxy-headers
 Restart=on-failure
 RestartSec=5
 # $STATE_DIR, the one place the service can write (ProtectSystem=strict).
@@ -364,6 +392,11 @@ check() { # check [-w SECONDS] "label" expected-status curl-args...
 
 log "Checks"
 check -w 30 "mcp-gateway is up" 200 "http://127.0.0.1:$PORT/healthz"
+# Kept until the service runs from $APP_DIR.
+if [[ ${#FAILED[@]} -eq 0 && -d $OLD_APP_DIR ]]; then
+  rm -rf "$OLD_APP_DIR"
+  echo "ok    removed $OLD_APP_DIR, the install from a checkout"
+fi
 # Without mcp-gateway the tunnel can only answer 502: then don't wait for it below.
 tunnel_wait=30
 [[ ${#FAILED[@]} -eq 0 ]] || tunnel_wait=0
@@ -415,7 +448,7 @@ else
   printf '\nNot working yet: %d check(s) failed:\n' "${#FAILED[@]}"
   printf '  - %s\n' "${FAILED[@]}"
   cat <<EOF
-Fix the cause (see the logs below) and re-run this script; it keeps the passphrase and tokens.
+Fix the cause (see the logs below) and re-run mcp-gateway setup; it keeps the passphrase and tokens.
 If only the tunnel checks failed for a new hostname, DNS may need a few more minutes:
   curl -i -X POST https://$PUBLIC_HOST/mcp    should answer 401.
 EOF

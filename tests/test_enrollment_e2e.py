@@ -157,7 +157,7 @@ def hosts(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[tuple[Gat
     sock = loopback_socket()
     settings = GatewaySettings(oauth_passphrase="p" * 24, state_dir=gateway.state_dir,
                                public_host="mcp.example.com", token=MCP_TOKEN)
-    # As deploy/setup.sh starts it.
+    # As mcp-gateway setup starts it.
     served = Served(sock, gateway_app(settings), proxy_headers=False)
     gateway.url = f"http://127.0.0.1:{sock.getsockname()[1]}"
     bridges = Bridge("alpha", tmp_path / "alpha", monkeypatch), Bridge("beta", tmp_path / "beta", monkeypatch)
@@ -229,7 +229,7 @@ def test_the_tunnel_gets_through_with_the_callers_address(hosts: tuple[Gateway, 
 
 def test_the_setup_scripts_start_the_gateway_without_proxy_headers() -> None:
     root = Path(__file__).parent.parent / "mcp-gateway"
-    for path in (root / "deploy" / "setup.sh", root / "README.md"):
+    for path in (root / "src" / "mcp_gateway" / "deploy" / "setup.sh", root / "README.md"):
         starts = [line for line in path.read_text().splitlines() if "uvicorn mcp_gateway.server:main" in line
                   and "--host 0.0.0.0" in line]
         assert starts and all("--no-proxy-headers" in line for line in starts), path
