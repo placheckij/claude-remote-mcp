@@ -1,6 +1,6 @@
 [project]
 name = "claude-remote-mcp-gateway"
-version = "0.1.0"
+version = "0.1.1"
 description = "Public MCP server that exposes Claude Code session tools and forwards them to agent-bridge"
 readme = "README.md"
 requires-python = ">=3.11"

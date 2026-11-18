@@ -169,9 +169,11 @@ venv_python="$("$VENV/bin/python" -c 'import sys; print("%d.%d" % sys.version_in
 if [[ $venv_python != "$PYTHON_VERSION" ]]; then
   uv venv --quiet --clear --python "$PYTHON_VERSION" "$VENV"
 fi
-# A build from a path or URL may have changed under the same version, which uv would
-# take as installed: those are installed again every time.
-rebuild=()
+# uv takes any installed copy of a version as that version, wherever it came from. So
+# mcp-gateway itself is installed again every time, or the service would keep a build from
+# a path or URL after the tool moved to the release of the same version; and so is any
+# build from a path or URL, which may have changed under the same version.
+rebuild=(--reinstall-package claude-remote-mcp-gateway)
 for requirement in "${REQUIREMENTS[@]}"; do
   [[ $requirement != *" @ "* ]] || rebuild+=(--reinstall-package "${requirement%% @ *}")
 done
