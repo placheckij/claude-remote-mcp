@@ -652,6 +652,23 @@ def test_check_keeps_the_name_the_gateway_has_now(
     assert load(state_path()).gateway.name == "studio"
 
 
+@pytest.mark.parametrize(("status", "code"), [(404, "not_enrolled"), (401, "unauthorized")])
+def test_check_says_to_enroll_again_when_the_gateway_doesnt_have_this_host(
+    capsys, settings: Path, fake: FakeGateway, monkeypatch: pytest.MonkeyPatch, status: int, code: str
+) -> None:
+    # E.g. after the gateway was reinstalled.
+    state = enrolled()
+    monkeypatch.setattr(cli, "Herdr", FakeHerdr)
+    monkeypatch.setattr(cli.httpx, "get", lambda url, **kwargs: httpx.Response(
+        200, json={"bridge_id": state.bridge_id}, request=httpx.Request("GET", url)))
+    fake.answers[("PUT", "bridges")] = httpx.Response(status, json={"error": {"code": code, "message": "Gone."}})
+
+    result, out, _ = run(capsys, "check")
+
+    assert result == 1
+    assert out.splitlines()[-1] == f"FAIL  the gateway at {state.gateway.url} has this host (Gone. {cli.ENROLL_AGAIN})"
+
+
 def test_check_fails_with_one_line_per_check(
     capsys, settings: Path, fake: FakeGateway, monkeypatch: pytest.MonkeyPatch
 ) -> None:

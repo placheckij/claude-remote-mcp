@@ -300,7 +300,7 @@ answers `404` elsewhere, `/enroll` included (waiting up to 30 s each for the ser
 the tunnel to come up). If all pass, it prints the connector settings and opens an
 [enrollment](#enrollment) window, printing the string for the agent hosts' setups; if
 any fails, it lists the failed checks and exits with status 1. Either way it says where
-the passphrase is: when it makes a new one, it prints it. DNS for a new hostname can take a few minutes; if only
+the passphrase is: when it makes a new one, it prints it once saved and again at the end. DNS for a new hostname can take a few minutes; if only
 the tunnel checks fail, try again shortly:
 `curl -i -X POST https://mcp.example.com/mcp` should answer `401`.
 
@@ -410,7 +410,11 @@ uv tool uninstall claude-remote-mcp-gateway
 Then:
 
 - **DNS:** `tunnel delete` leaves the hostname's CNAME behind. Delete it in the
-  Cloudflare dashboard (your domain → DNS → Records → the `mcp` record).
+  Cloudflare dashboard (your domain → DNS → Records → the `mcp` record). A reinstall
+  stops at it otherwise; it prints the `--overwrite-dns` command that points it at the
+  new tunnel instead.
+- **Agent hosts:** a reinstalled gateway has none. Enroll each again: `sudo mcp-gateway
+  enroll`, then `agent-bridge enroll '<string>'` on each host.
 - **claude.ai:** remove the custom connector (Customize → Connectors; on Team and
   Enterprise, an Owner removes it in Organization settings → Connectors).
 - **Cloudflare Access**, if you set it up: delete the application and the service token

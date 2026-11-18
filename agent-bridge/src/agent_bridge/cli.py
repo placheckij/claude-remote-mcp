@@ -26,6 +26,7 @@ import uvicorn
 from agent_bridge.app import create_app
 from agent_bridge.config import Settings, check_name_format, check_token_format
 from agent_bridge.gateway import (
+    ENROLL_AGAIN,
     GatewayError,
     GatewayUnreachable,
     enroll,
@@ -405,7 +406,8 @@ def _check() -> int:
             report(True, f"the gateway at {state.gateway.url} has this host as {name}")
             rename(state_file(), state.gateway, name)
         except GatewayError as error:
-            report(False, f"the gateway at {state.gateway.url} has this host", str(error))
+            hint = f" {ENROLL_AGAIN}" if error.code in NOT_KNOWN else ""
+            report(False, f"the gateway at {state.gateway.url} has this host", f"{error}{hint}")
     return FAILED if failed else OK
 
 

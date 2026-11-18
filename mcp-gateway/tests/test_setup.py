@@ -1,6 +1,7 @@
 """`mcp-gateway --version` and `mcp-gateway setup`: the shipped script gets the exact
 packages of the environment setup runs from, to install for the service."""
 
+import io
 import json
 import os
 import subprocess
@@ -103,6 +104,33 @@ def test_setup_says_which_variables_it_passes_on_without_their_secrets(
 
     assert code == 0
     assert output == "Passing on from your environment: PORT=3000, AGENT_BRIDGE_TOKEN\n"
+
+
+class Flushes(io.StringIO):
+    """Standard output that keeps what had reached the terminal at each flush."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.flushed = ""
+
+    def flush(self) -> None:
+        self.flushed = self.getvalue()
+
+
+def test_setup_prints_what_it_passes_on_before_the_script_writes(
+    setup: Setup, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The script writes to the same terminal or file, unbuffered: an unflushed line comes after.
+    monkeypatch.setenv("PORT", "3000")
+    setup.site.add("claude-remote-mcp-gateway", "0.3.0")
+    stdout = Flushes()
+    monkeypatch.setattr(sys, "stdout", stdout)
+    seen: list[str] = []
+
+    cli.main(["setup"], run=lambda command: seen.append(stdout.flushed) or 0,
+             site_packages=lambda: [str(setup.site.path)])
+
+    assert seen == ["Passing on from your environment: PORT=3000\n"]
 
 
 def test_setup_run_as_root_runs_the_script_without_sudo(setup: Setup, monkeypatch: pytest.MonkeyPatch) -> None:

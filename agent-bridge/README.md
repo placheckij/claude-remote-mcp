@@ -295,7 +295,8 @@ agent-bridge enroll 'crm1@192.168.1.10:8766#…'
 The gateway checks that the address in `AGENT_BRIDGE_HOST` and `AGENT_BRIDGE_PORT`
 answers as this bridge, and adds it under `AGENT_BRIDGE_NAME`. From then on, every start
 tells the gateway the current address; if it can't be reached, agent-bridge logs how to
-enroll again and serves on. A bridge can also be added by hand on the gateway host with
+enroll again and serves on. A reinstalled gateway has no hosts: `agent-bridge check`
+then fails with "isn't enrolled" and says how to enroll again, the same way. A bridge can also be added by hand on the gateway host with
 `sudo mcp-gateway bridges add <url>`, which asks for the token.
 
 The examples below use `/Users/me` for your home folder; replace it with yours.
