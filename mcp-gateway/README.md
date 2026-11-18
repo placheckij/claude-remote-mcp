@@ -30,7 +30,7 @@ or with a NUL character) come back the same way as one sentence.
 | Hardware | very light: one small Python process plus cloudflared. A single-board computer, a small home server, a VPS (if it can reach agent-bridge, e.g. over a VPN) or the agent host itself is enough. 64-bit recommended. |
 | Software | [uv](https://docs.astral.sh/uv/) (installs Python 3.11+ itself if needed); [cloudflared](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/) for the tunnel |
 | Network | outbound HTTPS to Cloudflare; a route to agent-bridge's URL; agent hosts on the LAN reach port 8766 to [enroll](#enrollment) and, afterwards, to report their address, rename and unenroll. No port needs to be open to the internet. |
-| Accounts | a Cloudflare account with a domain whose DNS is on Cloudflare (Free plan is fine); a Claude plan with custom connectors (Free, Pro and Max included) |
+| Accounts | a Cloudflare account with a domain whose DNS is on Cloudflare (Free plan is fine); a Claude plan with custom connectors (all plans have them; Free allows one, and on Team and Enterprise an Owner adds it) |
 | Always on | yes: the connector only works while this host is up |
 
 ## Tools

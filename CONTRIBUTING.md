@@ -17,10 +17,11 @@ invitation**: only the people listed below can open them.
 - Work on a branch and open a pull request against `main`. Keep each one to one change.
 - Every pull request needs the maintainer's approval and passing CI (tests on Linux and
   macOS, plus agent-bridge's on Windows, each on Python 3.11 and 3.13; `shellcheck` on
-  the gateway's setup script; and for pull requests that touch `agent-bridge/src/` or the
-  gateway's modules that talk to it, the mixed-versions check in `.github/compat/` against
-  the last releases, which `.github/compat/check.py` says how to run locally). New commits
-  after an approval need a new one.
+  the gateway's setup script). New commits after an approval need a new one.
+- Pull requests that touch `agent-bridge/src/` or the gateway's modules that talk to it
+  also run the mixed-versions check in `.github/compat/` against the last releases
+  (`.github/compat/check.py` says how to run it locally). GitHub doesn't require it, as
+  it runs only for those paths, so check its result yourself.
 - Add or update tests with the change: a bug fix comes with a test that fails without it.
   A new dependency goes in the right `pyproject.toml`, with the updated `uv.lock`
   committed (`uv lock`): CI installs with `--frozen`. A test dependency goes in the
