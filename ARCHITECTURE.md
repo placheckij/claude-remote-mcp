@@ -33,7 +33,8 @@ Cloudflare Tunnel. See [mcp-gateway/README.md](mcp-gateway/README.md).
 - **OAuth.** It is its own authorization server for one user: claude.ai registers
   itself, and the user signs in once with a passphrase. Access tokens last an hour and
   refresh tokens 90 days, replaced on every refresh.
-- **Authentication.** Every `/mcp` request needs a valid access token. The tunnel only
+- **Authentication.** Every `/mcp` request needs a valid access token (or the static
+  `MCP_GATEWAY_TOKEN` from before OAuth, while it is still set). The tunnel only
   publishes `/mcp` and the OAuth paths, and the server only accepts its own hostname and
   requests from claude.ai or claude.com (or with no origin).
 - **Tool routing.** The gateway keeps its agent hosts in `bridges.json`, each with its own
@@ -48,8 +49,8 @@ Cloudflare Tunnel. See [mcp-gateway/README.md](mcp-gateway/README.md).
   window and prints a string with the gateway's LAN address and a secret; each
   agent-bridge sends that secret with its id, address, token and name to `POST /enroll`.
   The gateway adds it once the address's `/info` answers with the same id. Bridges then
-  report their address on every start and remove themselves on uninstall, with their own
-  token. These routes share the gateway's listener but serve only LAN callers the tunnel
+  report their address on every start, rename themselves, and remove themselves on
+  uninstall, each with their own token. These routes share the gateway's listener but serve only LAN callers the tunnel
   didn't forward, and call only LAN addresses.
 - **Agent operations.** `list_agents`, `agent_details`, `read_output`, `send_prompt`,
   `wait_for_agent`, `answer_agent`, `start_agent`, `rename_agent` and `stop_agent`.
@@ -63,15 +64,17 @@ its memory, and it reads `oauth.json` only at startup.
 The machine where Claude Code runs. See [agent-bridge/README.md](agent-bridge/README.md).
 
 - **agent-bridge** is a small HTTP API on the LAN with its own bearer token. It turns
-  each request into `herdr` CLI calls. Its settings are an env file, and enrolling adds a
-  state file with its id and its gateway; the platform setups run its commands
-  (`agent-bridge serve`, `enroll`, `unenroll`, `check`).
+  each request into `herdr` CLI calls. Its settings are an env file, and a state file
+  holds its id and, once enrolled, its gateway. `agent-bridge setup` installs it as a
+  service and enrolls it; its commands are `serve`, `enroll`, `rename`, `unenroll`,
+  `check`, `setup` and `uninstall`.
 - **Workspace management.** herdr owns the agents. Each agent started here gets its own
   herdr workspace, named after the agent; renaming renames both. Agents are addressed by
   their herdr pane id, e.g. `w1:p1`.
 - **Agent lifecycle.** Start in a project folder (only under the allowed roots, at most
-  10 agents, on the Claude account set up for that folder), prompt, wait, answer a
-  question, rename, stop. Every agent can be read; only those in allowed folders can be
+  10 agents, on the account the request names or else the one set up for that folder),
+  prompt, wait, answer a question, rename, stop. Agents start with Claude Code's Remote
+  Control on unless asked otherwise, so they also show up in the Claude app. Every agent can be read; only those in allowed folders can be
   changed, including ones started by hand.
 - **Claude Code sessions** run in herdr panes, each with its account's Claude config.
   With a trust root and a separate Claude config set, a new agent's folder under the
@@ -88,6 +91,7 @@ The machine where Claude Code runs. See [agent-bridge/README.md](agent-bridge/RE
 | Agent hosts: URL, token and what each last said about itself | `bridges.json` on the gateway host |
 | The gateway's id and the enrollment window: a hash of its secret, its expiry, wrong tries | `enrollment.json` on the gateway host |
 | Wrong enrollment strings per address | mcp-gateway's memory |
+| mcp-gateway's settings: the passphrase, the public hostname | its env file on the gateway host (`/etc/mcp-gateway/env` from `mcp-gateway setup`) |
 | agent-bridge's settings | its env file on the agent host |
 | agent-bridge's id and the gateway it enrolled with | its `state.json` on the agent host |
 | Agents, their workspaces and output | herdr on the agent host |

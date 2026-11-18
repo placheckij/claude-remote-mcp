@@ -76,10 +76,16 @@ All routes require `Authorization: Bearer $AGENT_BRIDGE_TOKEN`.
 | `GET /agents/{id}/output?lines=40&source=recent` | `agent read` | last N (1-500) meaningful lines: padding, input box (also when it shows the session's name) and status bar dropped; the visible screen only while the agent is working or blocked (herdr can't scroll its history then). `source=visible` reads only the screen; `recent-unwrapped` reads herdr's history of that name |
 | `POST /agents/{id}/prompt` `{text, timeout_s?, lines?}` | `agent prompt --wait` | waits until idle/done/blocked (the agent includes `question`); on timeout returns `timed_out: true` with current status, and `unconfirmed: true` if the text was typed but the agent didn't react within 5 s (don't resend). Refused with `409 agent_blocked` while the agent is `blocked` (the Enter would answer its question), and with `409 agent_busy` while it is `working` or another prompt to it is running |
 | `POST /agents/{id}/wait` `{timeout_s?, lines?, expect_change?}` | `agent wait` | same result as `/prompt`, without sending anything; `expect_change` (after `/keys`) first gives the agent 5 s to leave its old `blocked` state |
-| `POST /agents/{id}/keys` `{keys}` | `agent send-keys` | answer a `blocked` agent's question |
-| `POST /agents` `{project, name?, account?}` | `workspace create` + `agent start --kind claude` | start an agent in a project: a folder name, looked up as `GET /projects/{name}` does, or an absolute path. `{cwd}` (an absolute path) is still taken instead of `project`, for gateways from before it. On the folder's Claude account or the one named (see below); the reply adds the `account` used. `name` (by default the folder's) may be any words: it becomes a name herdr accepts (lower-case ASCII, starting with a letter, at most 32 characters, e.g. `Webapp fix!` → `webapp-fix`), with `-2`, `-3`, … if a live agent already has it |
+| `POST /agents/{id}/keys` `{keys}` | `agent send-keys` | answer a `blocked` agent's question; `204` |
+| `POST /agents` `{project, name?, account?, remote_control?}` | `workspace create` + `agent start --kind claude` | start an agent in a project: a folder name, looked up as `GET /projects/{name}` does, or an absolute path; `201` with the agent. `{cwd}` (an absolute path) is still taken instead of `project`, for gateways from before it. On the folder's Claude account or the one named (see below); the reply adds the `account` used. `remote_control` (default off) starts it with Remote Control (see below). `name` (by default the folder's) may be any words: it becomes a name herdr accepts (lower-case ASCII, starting with a letter, at most 32 characters, e.g. `Webapp fix!` → `webapp-fix`), with `-2`, `-3`, … if a live agent already has it |
 | `PATCH /agents/{id}` `{name}` | `agent rename` + `workspace rename` | give the agent and its workspace the same new name, made the way `POST /agents` makes one (`-2`, `-3`, … only if *another* live agent has it); returns the agent |
-| `DELETE /agents/{id}` | `agent get` + `pane close` | close the agent's pane; `404` if the id isn't an agent (a shell or dev-server pane) |
+| `DELETE /agents/{id}` | `agent get` + `pane close` | close the agent's pane; `204`, or `404` if the id isn't an agent (a shell or dev-server pane) |
+
+Request limits, refused with `422`: `text` 1-20,000 characters with no NUL character;
+`timeout_s` 1-3600 and `lines` 1-500 (default 40) for `/prompt` and `/wait`; `keys` 1-20
+entries; `name` 1-200 characters; `account` 1-64. On Windows a prompt whose quoted
+command line for herdr is longer than Windows allows is refused with
+`422 prompt_too_long`.
 
 Every error comes back as `{"error": {"code", "message"}}` with a matching status
 (`unauthorized` → 401, `path_not_allowed` → 403, `agent_not_found` → 404,
@@ -257,7 +263,7 @@ uv run --package claude-remote-mcp-agent-bridge agent-bridge serve
 
 | Command | Does | Exit codes |
 |---|---|---|
-| `agent-bridge serve` | runs the service from the env and state files, and tells the gateway its address | |
+| `agent-bridge serve [--log-file PATH]` | runs the service from the env and state files, and tells the gateway its address. `--log-file` appends the log to `PATH` instead of stderr, moved to `PATH.1` once past 1 MB | |
 | `agent-bridge enroll <string>` | joins the gateway that printed the string (below) | 0 enrolled, 3 name taken, 4 gateway unreachable (prints the command to retry), 5 enrolled but the state file couldn't be saved, 1 otherwise |
 | `agent-bridge rename <name>` | renames this host on that gateway | 0 renamed, 2 name won't do, 3 name taken, 4 gateway unreachable, 5 renamed but the state file couldn't be saved, 6 gateway too old to rename hosts, 1 otherwise (e.g. not enrolled); 4, 6 and a refusal from the gateway print the gateway's command, but a gateway without this host says to enroll again |
 | `agent-bridge unenroll` | leaves that gateway | 0, also when the gateway can't be reached or refuses (prints the gateway's command); 1 if the state file can't be read or written |
@@ -281,8 +287,7 @@ tells the gateway the current address; if it can't be reached, agent-bridge logs
 enroll again and serves on. A bridge can also be added by hand on the gateway host with
 `sudo mcp-gateway bridges add <url>`, which asks for the token.
 
-The examples below use `/path/to/claude-remote-mcp` for the checkout, `192.168.1.20` for
-the LAN address and `~/projects` for the projects folder; replace them with yours.
+The examples below use `/Users/me` for your home folder; replace it with yours.
 
 ### As a service on macOS (launchd)
 

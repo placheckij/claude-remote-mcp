@@ -16,16 +16,20 @@ invitation**: only the people listed below can open them.
 
 - Work on a branch and open a pull request against `main`. Keep each one to one change.
 - Every pull request needs the maintainer's approval and passing CI (tests on Linux and
-  macOS, `shellcheck` on the setup scripts, and for changes between the gateway and the
-  bridge, the mixed-versions check in `.github/compat/`). New commits after an approval
-  need a new one.
+  macOS, plus agent-bridge's on Windows, each on Python 3.11 and 3.13; `shellcheck` on
+  the gateway's setup script; and for changes between the gateway and the bridge, the
+  mixed-versions check in `.github/compat/` against the last releases). New commits after
+  an approval need a new one.
 - Add or update tests with the change: a bug fix comes with a test that fails without it.
 - Set up and run the tests as in the README's [Development](README.md#development)
-  section.
+  section. After changing `mcp-gateway/src/mcp_gateway/deploy/setup.sh`, also run
+  `shellcheck` on it.
+- Don't change the packages' versions: the maintainer releases each package by tagging
+  `main` (see [Releasing](README.md#releasing)).
 - Tool output is read aloud to someone who may be driving: keep replies short and
   speakable, and refusals plain enough to act on.
-- Never commit tokens, personal paths or LAN addresses; examples use `/Users/me`,
-  `192.168.1.20` and `mcp.example.com`.
+- Never commit tokens, personal paths, LAN addresses or real project names; examples use
+  `/Users/me`, `192.168.1.20`, `mcp.example.com` and the project `webapp`.
 
 By contributing you agree that your contribution is licensed under the
 [MIT License](LICENSE), like the rest of the project.
