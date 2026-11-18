@@ -146,7 +146,8 @@ def is_bridge(command_line: str, known: Iterable[str] = ()) -> bool:
         if path and re.search(re.escape(path) + r'"?\s+serve\b', command_line, re.IGNORECASE):
             return True
     return bool(
-        re.search(r'agent-bridgew?(\.(exe|cmd|bat))?"?\s+serve\b', command_line, re.IGNORECASE)
+        # The program's own name: after a folder, a quote or the start, not inside another name.
+        re.search(r'(?:^|[\\/"\s])agent-bridgew?(\.(exe|cmd|bat))?"?\s+serve\b', command_line, re.IGNORECASE)
         or re.search(r"-m\s+agent_bridge(\.cli)?\s+serve\b", command_line, re.IGNORECASE)
         or re.search(r"\bagent_bridge\.app:main\b", command_line, re.IGNORECASE)
     )

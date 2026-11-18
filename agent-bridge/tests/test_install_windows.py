@@ -52,6 +52,8 @@ def test_a_task_that_cannot_be_read_has_no_command() -> None:
     (r"C:\tools\bridge.exe check", (r"C:\tools\bridge.exe",), False),
     (r"C:\Users\me\.local\bin\agent-bridge.exe check", (), False),
     (r"code.exe C:\repo\agent_bridge\serve.py", (), False),
+    (r"C:\tools\my-agent-bridge.exe serve", (), False),
+    ("agent-bridge serve", (), True),
     ("", (), False),
 ])
 def test_is_bridge(line: str, known: tuple[str, ...], expected: bool) -> None:
