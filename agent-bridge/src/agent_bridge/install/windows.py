@@ -305,16 +305,20 @@ def uninstall(system: System) -> int:
 
 def _setup_ps1_answers(options: Options, paths: Paths) -> Options:
     """setup.ps1 set up folder trust only when it was passed, and asked nothing about it: on a
-    host it set up, a folder-trust setting its env file doesn't have was answered none."""
+    host it set up, a folder-trust setting its env file doesn't have was answered none. Not the
+    trust root when a config folder is passed now: that is folder trust set up on this run."""
     if not paths.env_file.exists() or not _from_setup_ps1(paths):
         return options
     try:
         keys = {key.upper() for key in dotenv_values(paths.env_file)}
     except OSError:
         return options
-    return replace(options, **{name: "" for key, name in (("CLAUDE_CONFIG_DIR", "claude_config_dir"),
-                                                          ("TRUST_ROOT", "trust_root"))
-                               if getattr(options, name) is None and f"{PREFIX}{key}" not in keys})
+    answers = {}
+    if options.claude_config_dir is None and f"{PREFIX}CLAUDE_CONFIG_DIR" not in keys:
+        answers["claude_config_dir"] = ""
+    if options.trust_root is None and options.claude_config_dir is None and f"{PREFIX}TRUST_ROOT" not in keys:
+        answers["trust_root"] = ""
+    return replace(options, **answers)
 
 
 def _from_setup_ps1(paths: Paths) -> bool:
@@ -752,11 +756,14 @@ class WindowsSystem:
     def firewall_rule(self) -> tuple | None:
         """Setup's rule as (enabled, direction, action, profile, protocol, port); None when it
         isn't there, () when PowerShell couldn't tell."""
+        # A rule that isn't there leaves PowerShell's exit code 1 although it is no error, so
+        # the exit code is set here: 0 unless something failed.
         code, output = self.powershell(
-            f"$r = Get-NetFirewallRule -Name '{RULE}' -ErrorAction SilentlyContinue; if ($r) {{ "
-            "$f = Get-NetFirewallPortFilter -AssociatedNetFirewallRule $r; @{ Enabled = [string]$r.Enabled; "
-            "Direction = [string]$r.Direction; Action = [string]$r.Action; Profile = [string]$r.Profile; "
-            "Protocol = [string]$f.Protocol; Port = [string]$f.LocalPort } | ConvertTo-Json -Compress }")
+            f"$ErrorActionPreference = 'Stop'; try {{ $r = Get-NetFirewallRule -Name '{RULE}' "
+            "-ErrorAction SilentlyContinue; if ($r) { $f = Get-NetFirewallPortFilter -AssociatedNetFirewallRule $r; "
+            "@{ Enabled = [string]$r.Enabled; Direction = [string]$r.Direction; Action = [string]$r.Action; "
+            "Profile = [string]$r.Profile; Protocol = [string]$f.Protocol; Port = [string]$f.LocalPort } | "
+            "ConvertTo-Json -Compress }; exit 0 } catch { exit 1 }")
         if code != 0:
             return ()
         try:

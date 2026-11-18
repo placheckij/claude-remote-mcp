@@ -586,6 +586,19 @@ def test_a_setup_ps1_install_is_taken_over_without_questions(host: FakeWindows, 
     assert "enrolled with the gateway at http://10.0.0.1:8766 as dell" in run.out
 
 
+def test_a_setup_ps1_host_given_a_config_folder_is_asked_for_the_trust_root(host: FakeWindows, capsys,
+                                                                            tmp_path: Path) -> None:
+    installed_by_setup_ps1(host, tmp_path / "claude-remote-mcp")
+    config = host.home / ".claude-agents"
+
+    run = setup(host, capsys, "--claude-config-dir", str(config), answers=("",))
+
+    assert run.code == 0, run.out
+    assert any("Trust agents' folders under" in question for question in run.asked)
+    assert host.env("CLAUDE_CONFIG_DIR") == str(config)
+    assert host.env("TRUST_ROOT") == str(host.home / "Projects")
+
+
 def test_a_bridge_started_by_hand_on_the_port_is_stopped(host: FakeWindows, capsys) -> None:
     by_hand = Listener(77, "python.exe", r"C:\Python\python.exe -m agent_bridge.cli serve", r"C:\Python\python.exe")
     host.processes_ = [(by_hand, 8765)]
