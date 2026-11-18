@@ -4,9 +4,11 @@ import os
 import re
 import subprocess
 import sys
+import time
 from collections.abc import Callable, Sequence
 from pathlib import Path, PurePosixPath, PureWindowsPath
 
+import psutil
 import pytest
 from fastapi.testclient import TestClient
 
@@ -563,7 +565,18 @@ def claude_process():
             env["CLAUDE_CONFIG_DIR"] = str(config_dir)
         process = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"], env=env)
         processes.append(process)
-        return process.pid
+        # macOS can briefly refuse to read a just-started process's environment (#97).
+        expected = None if config_dir is None else str(config_dir)
+        deadline = time.monotonic() + 5
+        while True:
+            try:
+                if psutil.Process(process.pid).environ().get("CLAUDE_CONFIG_DIR") == expected:
+                    return process.pid
+            except (psutil.Error, OSError):
+                pass
+            if time.monotonic() > deadline:
+                pytest.fail(f"could not read CLAUDE_CONFIG_DIR={expected} from the stand-in claude")
+            time.sleep(0.01)
 
     yield start
     for process in processes:
