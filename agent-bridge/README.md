@@ -153,7 +153,7 @@ what a plain `claude` uses), or another named by `CLAUDE_CONFIG_DIR`.
    ```
 
    In Windows PowerShell 5.1, write each `"` inside it as `\"`: it drops them otherwise
-   when it passes the value on:
+   when it passes the value on. Remove it there with `--accounts=`, as it drops `''` too:
 
    ```powershell
    agent-bridge setup --accounts '{\"work\": {\"config_dir\": null, \"folders\": [\"C:\\Users\\me\\work\"]}}'
@@ -517,8 +517,11 @@ agent-bridge setup
 ```
 
 It asks the same questions as [on macOS](#with-agent-bridge-setup), only for what isn't
-installed yet, and takes the same flags; `--roots` takes folders separated by `;`. The
-default name is the computer name, e.g. `win-pc`. It finds the LAN address and
+installed yet, and takes the same flags; `--roots` takes folders separated by `;`, in
+quotes (`--roots 'C:\Projects;D:\Work'`), as PowerShell ends a command at an unquoted `;`.
+Windows PowerShell 5.1 drops an empty `''` argument, so write an empty value with `=`, as
+in `--enrollment=` or `--trust-root=`. The default name is the computer name, e.g.
+`win-pc`. It finds the LAN address and
 `herdr.exe` itself, including herdr's `%LOCALAPPDATA%\Programs\Herdr\bin\herdr.exe`,
 which isn't on `PATH`. Then it:
 
