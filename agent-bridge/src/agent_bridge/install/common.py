@@ -29,8 +29,7 @@ def ask(read: Read, question: str, default: str = "", hint: str = "") -> str:
     answer = read()
     if answer is None:
         print(file=sys.stderr)
-    # Windows PowerShell 5.1 starts what it pipes in with a byte order mark.
-    return (answer or "").lstrip("﻿").strip() or default
+    return (answer or "").strip() or default
 
 
 def ask_optional(read: Read, question: str, default: str) -> str:

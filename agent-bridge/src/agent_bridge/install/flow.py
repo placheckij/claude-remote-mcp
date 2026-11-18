@@ -27,7 +27,7 @@ from dotenv import dotenv_values
 
 from agent_bridge.cli import FAILED, NAME_TAKEN, OK, SAVE_FAILED, UNREACHABLE
 from agent_bridge.config import check_host, check_name_format, check_token_format
-from agent_bridge.gateway import parse_enrollment
+from agent_bridge.gateway import ENROLL_AGAIN, parse_enrollment
 from agent_bridge.install.common import (
     PREFIX,
     Read,
@@ -628,7 +628,8 @@ def _start(system: System, service: Service) -> None:
         if "FAIL  agent-bridge answers" not in result:
             break
         system.sleep(0.5)
-    print(result, end="")
+    # Setup enrolls next, or says how at the end.
+    print(result.replace(f" {ENROLL_AGAIN}", ""), end="")
 
 
 def _enroll(plan: Plan, enrolled: Enrolled, system: System, service: Service, read: Read) -> None:

@@ -14,6 +14,7 @@ from dotenv import dotenv_values
 
 from agent_bridge import cli
 from agent_bridge.config import check_name_format
+from agent_bridge.gateway import ENROLL_AGAIN
 from agent_bridge.install import common, flow, macos
 
 # POSIX paths and file modes; the Windows setup is its own.
@@ -141,7 +142,7 @@ class FakeMac:
         if self.gateway_down:
             return f"{failed} (ConnectError)\n"
         if self.gateway_token is None:
-            return f"{failed} (This agent host isn't enrolled with the gateway.)\n"
+            return f"{failed} (This agent host isn't enrolled with the gateway. {ENROLL_AGAIN})\n"
         if self.gateway_token != self.env("TOKEN"):
             return f"{failed} (That isn't this agent host's token.)\n"
         # check saves the gateway's name.
@@ -877,6 +878,8 @@ def test_a_host_the_gateway_lost_is_asked_to_enroll_again(mac: FakeMac, capsys, 
 
     assert run.code == 0, run.out
     assert "didn't confirm it has this host as studio" in run.out
+    # Not check's own advice to run `agent-bridge enroll`: setup does that itself.
+    assert ENROLL_AGAIN not in run.out
     assert run.asked == ["Enrollment string it printed, crm1@… [Enter to enroll later"]
     assert mac.ran("agent-bridge")[-1] == ("enroll", ENROLLMENT)
     assert "It is enrolled with the gateway" in run.out

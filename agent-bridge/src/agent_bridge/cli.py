@@ -11,6 +11,7 @@ gateway is too old to rename hosts (rename it there); `rename`, `check --token-f
 import argparse
 import asyncio
 import contextlib
+import locale
 import logging
 import logging.handlers
 import os
@@ -19,6 +20,7 @@ import sys
 from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
+from typing import BinaryIO
 
 import httpx
 import uvicorn
@@ -331,7 +333,20 @@ def _setup(args: argparse.Namespace) -> int:
     if platform is None:
         return FAILED
     options = platform.Options.from_args(args)
-    return platform.setup(options, platform.system(), lambda: sys.stdin.readline() or None)
+    return platform.setup(options, platform.system(), lambda: read_line(sys.stdin.buffer))
+
+
+def read_line(stream: BinaryIO) -> str | None:
+    """The next line of setup's answers, None at the end. UTF-8 without the byte order mark
+    Windows PowerShell 5.1 puts first when it pipes, which Python would decode in the ANSI
+    code page; anything else in the locale's encoding."""
+    line = stream.readline()
+    if not line:
+        return None
+    try:
+        return line.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        return line.decode(locale.getpreferredencoding(False), "replace")
 
 
 def _uninstall() -> int:

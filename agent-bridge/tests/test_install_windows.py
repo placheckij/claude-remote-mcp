@@ -361,15 +361,6 @@ def test_asks_for_what_is_missing_with_the_computer_name_as_the_default(host: Fa
     assert host.gateway()["name"] == "dell-kg"
 
 
-def test_answers_piped_from_windows_powershell_lose_its_byte_order_mark(host: FakeWindows, capsys) -> None:
-    roots = str(host.home / "Projects")
-
-    run = setup(host, capsys, answers=(f"﻿{roots}", "dell", "-", ENROLLMENT))
-
-    assert run.code == 0, run.out
-    assert host.env("ALLOWED_ROOTS") == roots
-
-
 def test_the_default_name_starts_with_pc_when_the_computer_name_doesnt_start_with_a_letter(
         host: FakeWindows, capsys, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(host, "hostname", lambda: "7-DESKTOP")

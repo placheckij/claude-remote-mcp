@@ -2,6 +2,7 @@
 and files the platform setups rely on."""
 
 import asyncio
+import io
 import json
 import logging
 import os
@@ -96,6 +97,23 @@ def test_check_formats(capsys, flag: str, value: str, code: int, reason: str) ->
     assert result == code
     assert out == ""
     assert reason in err
+
+
+@pytest.mark.parametrize(("piped", "line"), [
+    # Windows PowerShell 5.1 starts what it pipes with a byte order mark.
+    ("\ufeffC:\\Projekty\n".encode(), "C:\\Projekty\n"),
+    ("C:\\Użytkownicy\n".encode(), "C:\\Użytkownicy\n"),
+    # Not UTF-8: the locale's encoding, here Windows' Central European one.
+    ("C:\\Użytkownicy\n".encode("cp1250"), "C:\\Użytkownicy\n"),
+])
+def test_setup_reads_piped_answers(monkeypatch: pytest.MonkeyPatch, piped: bytes, line: str) -> None:
+    monkeypatch.setattr(cli.locale, "getpreferredencoding", lambda do_setlocale=True: "cp1250")
+
+    assert cli.read_line(io.BytesIO(piped)) == line
+
+
+def test_setup_reads_no_answer_at_the_end_of_its_input() -> None:
+    assert cli.read_line(io.BytesIO(b"")) is None
 
 
 def test_version_is_the_packages(capsys) -> None:
