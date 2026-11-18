@@ -1,4 +1,4 @@
-"""`agent-bridge serve | enroll | rename | unenroll | check`: what the platform setups run.
+"""`agent-bridge serve | enroll | rename | unenroll | check | setup | uninstall`: what the platform setups run.
 
 Exit codes are part of the deploy contract the setups are built against: `enroll` and
 `rename` exit 3 when the name is taken (ask for another) and 4 when the gateway can't be
@@ -65,6 +65,8 @@ def main(argv: list[str] | None = None, *, run: Callable[..., None] = uvicorn.ru
             return _unenroll()
         if args.command == "setup":
             return _setup(args)
+        if args.command == "uninstall":
+            return _uninstall()
         if args.token_format is not None:
             return _format(check_token_format, args.token_format, "The token")
         if args.name_format is not None:
@@ -91,16 +93,22 @@ def _parser() -> argparse.ArgumentParser:
     formats.add_argument("--token-format", metavar="TOKEN", help="exit 0 if TOKEN can be AGENT_BRIDGE_TOKEN, else 2")
     formats.add_argument("--name-format", metavar="NAME", help="exit 0 if NAME can be AGENT_BRIDGE_NAME, else 2")
     setup = commands.add_parser(
-        "setup", help="install the service on this Mac and enroll it; asks for what isn't passed",
+        "setup", help="install or update the service on this Mac and enroll it; keeps what is installed, "
+                      "and asks for what is missing",
     )
     setup.add_argument("--roots", metavar="DIRS", help="the :-separated folders agents may start in")
-    setup.add_argument("--name", help="this host's name in agent ids (default: the hostname)")
+    setup.add_argument("--name", help="this host's name in agent ids (default: the hostname); a new one on an "
+                                      "enrolled host renames it on the gateway")
     setup.add_argument("--host", metavar="ADDRESS", help="the LAN address to listen on (default: found)")
     setup.add_argument("--port", help="the port to listen on (default: 8765)")
     setup.add_argument("--herdr-bin", metavar="PATH", help="herdr (default: found)")
     setup.add_argument("--claude-config-dir", metavar="DIR", help="a separate Claude config for agents; '' for none")
     setup.add_argument("--trust-root", metavar="DIR", help="trust agents' folders under DIR in that config; '' for none")
     setup.add_argument("--enrollment", metavar="STRING", help="what `sudo mcp-gateway enroll` printed; '' to enroll later")
+    setup.add_argument("--accounts", metavar="JSON", help="AGENT_BRIDGE_ACCOUNTS, the named Claude logins; '' removes them")
+    setup.add_argument("--rotate-token", action="store_true",
+                       help="a new token; needs --enrollment, so the gateway learns it")
+    commands.add_parser("uninstall", help="leave the gateway, then remove the service, its settings, state and log")
     return parser
 
 
@@ -323,6 +331,16 @@ def _setup(args: argparse.Namespace) -> int:
     from agent_bridge.install import macos
 
     return macos.setup(macos.Options.from_args(args), macos.MacSystem(), lambda: sys.stdin.readline() or None)
+
+
+def _uninstall() -> int:
+    if sys.platform != "darwin":
+        print("agent-bridge uninstall is for macOS for now. From a checkout, run agent-bridge/deploy/linux/"
+              "uninstall.sh on Linux, or agent-bridge\\deploy\\windows\\uninstall.ps1 on Windows.", file=sys.stderr)
+        return FAILED
+    from agent_bridge.install import macos
+
+    return macos.uninstall(macos.MacSystem())
 
 
 def _format(check: Callable[[str], str], value: str, what: str) -> int:
