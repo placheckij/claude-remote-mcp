@@ -269,7 +269,7 @@ From a checkout: `uv sync --all-packages`, then
 
 | Command | Does | Exit codes |
 |---|---|---|
-| `agent-bridge serve [--log-file PATH]` | runs the service from the env and state files, and tells the gateway its address. `--log-file` appends the log to `PATH` instead of stderr, moved to `PATH.1` once past 1 MB | 0 when it stops, 1 if the settings or the state file are refused (it says why) |
+| `agent-bridge serve [--log-file PATH]` | runs the service from the env and state files, and tells the gateway its address. `--log-file` appends the log to `PATH` instead of stderr, moved to `PATH.1` once past 1 MB | 0 when it stops, 1 if the settings or the state file are refused (it says why), 3 if it can't start serving (e.g. the port is taken, or the address isn't this host's yet) |
 | `agent-bridge enroll <string>` | joins the gateway that printed the string (below) | 0 enrolled, 3 name taken, 4 gateway unreachable (prints the command to retry), 5 enrolled but the state file couldn't be saved, 1 otherwise |
 | `agent-bridge rename <name>` | renames this host on that gateway | 0 renamed, 2 name won't do, 3 name taken, 4 gateway unreachable, 5 renamed but the state file couldn't be saved, 6 gateway too old to rename hosts, 1 otherwise (e.g. not enrolled); 4, 6 and a refusal from the gateway print the gateway's command, but a gateway without this host says to enroll again |
 | `agent-bridge unenroll` | leaves that gateway | 0, also when the gateway can't be reached or refuses (prints the gateway's command); 1 if the state file can't be read or written |
