@@ -142,8 +142,8 @@ folder. Claude Code keeps each login in a config folder: its default one (`~/.cl
 what a plain `claude` uses), or another named by `CLAUDE_CONFIG_DIR`.
 
 1. **Log in once in each config.** The default one is likely logged in already. For
-   another, run `CLAUDE_CONFIG_DIR=~/.claude-home claude`, log in, and quit. An alias
-   such as `alias claude-home='CLAUDE_CONFIG_DIR=$HOME/.claude-home claude'`
+   another, run `CLAUDE_CONFIG_DIR=~/.claude-agents claude`, log in, and quit. An alias
+   such as `alias claude-agents='CLAUDE_CONFIG_DIR=$HOME/.claude-agents claude'`
    keeps using that login by hand easy.
 2. **Name the accounts** in `AGENT_BRIDGE_ACCOUNTS`, as JSON: each with its config folder
    and the project folders it's for. Names are lower-case; paths are full paths.
@@ -152,7 +152,7 @@ what a plain `claude` uses), or another named by `CLAUDE_CONFIG_DIR`.
    ```json
    {
      "work": {"config_dir": null, "folders": ["/Users/me/projects/work"]},
-     "personal": {"config_dir": "/Users/me/.claude-home", "folders": ["/Users/me/projects/own"]}
+     "personal": {"config_dir": "/Users/me/.claude-agents", "folders": ["/Users/me/projects/own"]}
    }
    ```
 3. **Apply it.** With `agent-bridge setup`, pass it in once as `--accounts`; re-runs keep
