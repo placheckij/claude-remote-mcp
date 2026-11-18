@@ -350,6 +350,10 @@ Setup refuses to run from a checkout's `.venv` or under `uvx`, as the plist must
 installed agent-bridge. From a checkout, install it with
 `uv tool install --editable ./agent-bridge` and run that one's `agent-bridge setup`.
 
+An agent-bridge installed from a checkout or a wheel stays that version under a plain
+`uv tool install claude-remote-mcp-agent-bridge`. To move it to the published package, run
+`uv tool install --reinstall claude-remote-mcp-agent-bridge`, then `agent-bridge setup`.
+
 #### By hand
 
 What setup does, step by step:
@@ -483,6 +487,10 @@ Setup refuses to run from a checkout's `.venv` or under `uvx`, as the unit must 
 installed agent-bridge. From a checkout, install it with
 `uv tool install --editable ./agent-bridge` and run that one's `agent-bridge setup`.
 
+An agent-bridge installed from a checkout or a wheel stays that version under a plain
+`uv tool install claude-remote-mcp-agent-bridge`. To move it to the published package, run
+`uv tool install --reinstall claude-remote-mcp-agent-bridge`, then `agent-bridge setup`.
+
 #### Restart, stop, uninstall
 
 ```sh
@@ -579,6 +587,11 @@ and points the task at the package. The checkout isn't used after that.
 Setup refuses to run from a checkout's `.venv` or under `uvx`, as the task must run an
 installed agent-bridge. From a checkout, install it with
 `uv tool install --editable ./agent-bridge` and run that one's `agent-bridge setup`.
+
+An agent-bridge installed from a checkout or a wheel stays that version under a plain
+`uv tool install claude-remote-mcp-agent-bridge`. To move it to the published package, stop
+agent-bridge (as above), run `uv tool install --reinstall claude-remote-mcp-agent-bridge`,
+then `agent-bridge setup`.
 
 #### Restart, stop, uninstall
 
