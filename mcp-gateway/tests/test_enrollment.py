@@ -267,12 +267,13 @@ def test_an_unchanged_report_leaves_the_file_alone(gateway: Gateway) -> None:
     # The gateway may run from an SD card.
     gateway.enroll(gateway.open())
     path = gateway.state_dir / "bridges.json"
-    before = path.stat().st_mtime_ns
+    # A write replaces the file, so its inode changes even within one tick of a coarse clock.
+    before = path.stat().st_ino, path.stat().st_mtime_ns
 
     response = address(gateway, URL)
 
     assert response.status_code == 200, response.text
-    assert path.stat().st_mtime_ns == before
+    assert (path.stat().st_ino, path.stat().st_mtime_ns) == before
 
 
 def test_an_unchanged_address_is_taken_even_if_it_cant_be_asked(
