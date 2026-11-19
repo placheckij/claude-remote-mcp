@@ -24,9 +24,6 @@ log = logging.getLogger(__name__)
 
 # The host part of an agent id ("mac/w1:p1"): short, speakable and without "/" or ":".
 NAME_PATTERN = r"[a-z][a-z0-9-]{0,31}"
-# Every call refreshes last_seen in memory; on disk only this often, as the gateway's host
-# may run from an SD card. A changed /info is written at once.
-SEEN_WRITE_S = 3600
 
 
 class RegistryError(Exception):
@@ -85,7 +82,8 @@ class Bridge(BaseModel):
     # it first answers.
     info: Annotated[dict | None, AfterValidator(check_info)]
     enrolled_at: int
-    last_seen: int | None
+    # Always null: kept so an older gateway can still read the file.
+    last_seen: Annotated[int | None, AfterValidator(lambda _: None)] = None
 
 
 class _File(BaseModel):
@@ -110,6 +108,8 @@ class Registry:
         self.bridges, self._stamp = self._read()
         # The last problem reload() logged, so it isn't logged on every call.
         self._problem: str | None = None
+        # Bridges whose /info update_info kept in memory only, to save with the next answer.
+        self._unsaved: set[str] = set()
         # Counts every time `bridges` is taken from the file, which may bring in another
         # process's changes: by a reload, or by a change of this process's own.
         self.generation = 0
@@ -207,7 +207,7 @@ class Registry:
         try:
             return Bridge(
                 bridge_id=bridge_id, name=name, url=url.rstrip("/"), token=token, info=info,
-                enrolled_at=now, last_seen=now if info is not None else None,
+                enrolled_at=now,
             )
         except ValidationError as error:
             # Without the input: it may be the token.
@@ -245,18 +245,14 @@ class Registry:
 
         self._change(remove)
 
-    def seen(self, bridge_id: str, info: dict) -> None:
-        """Notes that a bridge answered /info. Kept in memory if it can't be saved: the
-        gateway works on without it."""
-        now = int(self.clock())
-        current = next((bridge for bridge in self.bridges if bridge.bridge_id == bridge_id), None)
-        if current is None:
+    def update_info(self, bridge_id: str, info: dict) -> None:
+        """Notes what a bridge answered /info. Saved only when it changed, i.e. after the
+        bridge was updated or set up anew, as the gateway's host may run from an SD card.
+        Kept in memory if it can't be saved: the gateway works on without it."""
+        current = self.find_id(bridge_id)
+        if current is None or (current.info == info and bridge_id not in self._unsaved):
             return
-        update = {"info": info, "last_seen": now}
-        # last_seen in memory is the one on disk: only a save moves it.
-        stale = current.last_seen is None or now - current.last_seen >= SEEN_WRITE_S
-        if current.info == info and not stale:
-            return
+        update = {"info": info}
         try:
             self._change(
                 lambda bridges: [b.model_copy(update=update) if b.bridge_id == bridge_id else b for b in bridges]
@@ -264,6 +260,9 @@ class Registry:
         except (OSError, RegistryError) as error:
             log.warning("Couldn't save what %s said about itself in %s (%s).", current.name, self.path, error)
             self.bridges = [b.model_copy(update=update) if b.bridge_id == bridge_id else b for b in self.bridges]
+            self._unsaved.add(bridge_id)
+            return
+        self._unsaved.discard(bridge_id)
 
     # --- The file ----------------------------------------------------------------------
 

@@ -4,6 +4,8 @@ registry changing while it runs."""
 import asyncio
 import json
 import logging
+import threading
+import time
 from pathlib import Path
 
 import httpx
@@ -84,7 +86,7 @@ def url(name: str) -> str:
 class Gateway:
     """The gateway with a fake agent-bridge per host, added to its registry in order."""
 
-    def __init__(self, tmp_path: Path, names: list[str], **settings):
+    def __init__(self, tmp_path: Path, names: list[str], check_hosts: bool = False, **settings):
         self.state_dir = tmp_path
         self.fakes = {name: FakeAgentBridge({("GET", "/info"): httpx.Response(200, json=info(name))}) for name in names}
         self.registry = Registry(tmp_path / "bridges.json")
@@ -92,7 +94,9 @@ class Gateway:
             self.registry.add(name, url(name), TOKEN, info(name))
         self.connected: list[str] = []
         settings = SETTINGS.model_copy(update={"state_dir": tmp_path, **settings})
-        self.client = TestClient(create_app(settings, self.connect), base_url=f"https://{HOST}", client=CLOUDFLARED)
+        # Off unless a test is about it: its /info requests would come at any time.
+        app = create_app(settings, self.connect, check_hosts=check_hosts)
+        self.client = TestClient(app, base_url=f"https://{HOST}", client=CLOUDFLARED)
 
     def connect(self, bridge_url: str, token: str) -> AgentBridge:
         self.connected.append(bridge_url)
@@ -206,7 +210,7 @@ def test_list_agents_on_an_unknown_host_names_the_hosts(make) -> None:
 def says(gateway: Gateway, name: str, answer: dict) -> None:
     """The host recorded as having said `answer` about itself, and saying it again."""
     bridge_id = next(record.bridge_id for record in gateway.registry.bridges if record.name == name)
-    gateway.registry.seen(bridge_id, answer)
+    gateway.registry.update_info(bridge_id, answer)
     gateway.route(name, "GET", "/info", httpx.Response(200, json=answer) if answer["api_version"] > 1 else NO_INFO)
 
 
@@ -270,7 +274,8 @@ def test_list_agents_by_platform_on_a_host_that_cant_say(make) -> None:
 def test_list_agents_by_platform_goes_by_what_a_host_says_when_asked(make, platform: str, expected: str) -> None:
     # Recorded before it could say (updated since): asked, then kept or left out by its answer.
     gateway = make(["mac", "box"])
-    gateway.registry.seen(next(r.bridge_id for r in gateway.registry.bridges if r.name == "box"), {"api_version": 1})
+    box = next(r.bridge_id for r in gateway.registry.bridges if r.name == "box")
+    gateway.registry.update_info(box, {"api_version": 1})
     gateway.route("mac", "GET", "/agents", agents())
     gateway.route("box", "GET", "/info", httpx.Response(200, json={**info("box"), "platform": "linux"}))
     gateway.route("box", "GET", "/agents", agents("w1:p1"))
@@ -575,6 +580,63 @@ def test_the_instructions_name_the_hosts(make) -> None:
     assert instructions().endswith("Agent hosts: mac, linux.\n")
 
 
+def eventually(condition, seconds: float = 5) -> bool:
+    deadline = time.monotonic() + seconds
+    while not condition():
+        if time.monotonic() > deadline:
+            return False
+        time.sleep(0.01)
+    return True
+
+
+def test_the_gateway_asks_every_host_about_itself_at_startup(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    # E.g. after an upgrade, `bridges list` shows each host's version without a tool call.
+    def bridge_version(name: str) -> str:
+        return next(b["info"]["bridge_version"] for b in saved(tmp_path) if b["name"] == name)
+
+    gateway = Gateway(tmp_path, ["mac", "linux", "dell"], check_hosts=True)
+    gateway.route("mac", "GET", "/info", httpx.Response(200, json={**info("mac"), "bridge_version": "0.2.0"}))
+    gateway.route("dell", "GET", "/info", httpx.Response(200, json={**info("dell"), "bridge_version": "0.2.0"}))
+    gateway.fake("linux").down = True
+    with caplog.at_level(logging.WARNING), gateway.client:
+        assert eventually(lambda: bridge_version("mac") == bridge_version("dell") == "0.2.0")
+        # One host down doesn't stop the gateway either.
+        gateway.route("mac", "GET", "/agents", agents("w1:p1"))
+        assert gateway.call("list_agents", host="mac")[0] is False
+        assert eventually(lambda: "linux didn't answer at the gateway's start" in caplog.text)
+    assert bridge_version("linux") == "0.1.0"
+
+
+def test_a_shutdown_stops_the_startup_check_of_a_host_that_hangs(tmp_path: Path) -> None:
+    Registry(tmp_path / "bridges.json").add("mac", url("mac"), TOKEN, info("mac"))
+    asked = threading.Event()
+    clients: list[httpx.AsyncClient] = []
+    # Stopped before the clients close, so it doesn't go on to use one that is closed.
+    stopped_while_open: list[bool] = []
+
+    async def hang(request: httpx.Request) -> httpx.Response:
+        asked.set()
+        try:
+            await asyncio.sleep(60)
+        except asyncio.CancelledError:
+            stopped_while_open.append(not clients[0].is_closed)
+            raise
+        return httpx.Response(200, json=info("mac"))
+
+    def connect(bridge_url: str, token: str) -> AgentBridge:
+        clients.append(httpx.AsyncClient(base_url=bridge_url, transport=httpx.MockTransport(hang)))
+        return AgentBridge(clients[-1])
+
+    app = create_app(SETTINGS.model_copy(update={"state_dir": tmp_path}), connect)
+    started = time.monotonic()
+    with TestClient(app, base_url=f"https://{HOST}", client=CLOUDFLARED):
+        assert asked.wait(5)
+    assert time.monotonic() - started < 3
+    assert stopped_while_open == [True] and all(client.is_closed for client in clients)
+
+
 def test_a_broken_registry_file_stops_startup(tmp_path: Path) -> None:
     (tmp_path / "bridges.json").write_text("{")
     with pytest.raises(RuntimeError, match="Can't read the agent hosts"):
@@ -591,7 +653,7 @@ def legacy_gateway(tmp_path: Path, fake: FakeAgentBridge) -> TestClient:
         return AgentBridge(httpx.AsyncClient(base_url=bridge_url, transport=httpx.MockTransport(fake),
                                              headers={"Authorization": f"Bearer {token}"}))
 
-    return TestClient(create_app(settings, connect), base_url=f"https://{HOST}", client=CLOUDFLARED)
+    return TestClient(create_app(settings, connect, check_hosts=False), base_url=f"https://{HOST}", client=CLOUDFLARED)
 
 
 def saved(tmp_path: Path) -> list[dict]:
@@ -710,7 +772,7 @@ def test_a_change_taken_in_by_the_gateways_own_save_gets_a_client(tmp_path: Path
     # save starts from the file, so it takes linux in without a reload.
     hosts, registry, _ = hosts_on(tmp_path)
     Registry(tmp_path / "bridges.json").add("linux", url("linux"), TOKEN, info("linux"))
-    registry.seen(registry.bridges[0].bridge_id, info("mac", 1))
+    registry.update_info(registry.bridges[0].bridge_id, info("mac", 1))
     assert [host.name for host in hosts.all()] == ["mac", "linux"]
 
 
@@ -742,7 +804,7 @@ def test_a_new_url_taken_in_by_the_gateways_own_save_gets_a_new_client(tmp_path:
     data = json.loads(path.read_text())
     data["bridges"][0]["url"] = url("studio")
     path.write_text(json.dumps(data))
-    registry.seen(host.record.bridge_id, info("mac", 1))
+    registry.update_info(host.record.bridge_id, info("mac", 1))
     host.record = registry.bridges[0]
     (host,) = hosts.all()
     assert host.bridge is not old

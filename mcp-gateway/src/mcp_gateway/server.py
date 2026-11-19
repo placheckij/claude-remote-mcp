@@ -7,6 +7,7 @@ replies.py turns agent-bridge's JSON into short speakable text. oauth.py signs t
 connector in and keeps its tokens; auth.py checks them in front of the MCP endpoint.
 """
 
+import asyncio
 import logging
 import os
 import sys
@@ -19,7 +20,7 @@ from starlette.types import ASGIApp, Message, Receive, Scope, Send
 from uvicorn.config import STARTUP_FAILURE
 
 from mcp_gateway.auth import BearerAuth
-from mcp_gateway.bridge import AgentBridge
+from mcp_gateway.bridge import AgentBridge, BridgeError
 from mcp_gateway.config import Settings, StartupError
 from mcp_gateway.enrollment import Enrollment, enrollment_routes
 from mcp_gateway.hosts import Hosts
@@ -39,8 +40,10 @@ def create_app(
     connect: Callable[[str, str], AgentBridge] = AgentBridge.connect,
     oauth: GatewayOAuth | None = None,
     enrollment: Enrollment | None = None,
+    check_hosts: bool = True,
 ) -> ASGIApp:
-    """`connect` makes the client for a bridge's URL and token."""
+    """`connect` makes the client for a bridge's URL and token; `check_hosts` asks every
+    host about itself at startup."""
     oauth = oauth or GatewayOAuth(settings)
     try:
         registry = Registry(settings.state_dir / "bridges.json")
@@ -61,7 +64,9 @@ def create_app(
             allowed_origins=list(ALLOWED_ORIGINS),
         ),
     )
-    app = BearerAuth(StatelessEdges(app, hosts, oauth), oauth.load_access_token, oauth.resource_metadata_url)
+    app = BearerAuth(
+        StatelessEdges(app, hosts, oauth, check_hosts), oauth.load_access_token, oauth.resource_metadata_url
+    )
     # In front of the token check: bridges have no OAuth token, and the routes check their own.
     enrollment = enrollment or Enrollment(settings.state_dir / "enrollment.json")
     return enrollment_routes(app, registry, enrollment, connect)
@@ -76,13 +81,17 @@ class StatelessEdges:
       stream, which would only hold a task open until the client hangs up;
     - at startup and before every MCP request the agent hosts are brought up to date with
       bridges.json, which `mcp-gateway bridges` may have changed;
+    - at startup every host is asked about itself in the background, so an upgrade on
+      either side shows in bridges.json without waiting for a tool call;
     - on shutdown the agent-bridge clients are closed and the state folder unlocked.
     """
 
-    def __init__(self, app: ASGIApp, hosts: Hosts, oauth: GatewayOAuth):
+    def __init__(self, app: ASGIApp, hosts: Hosts, oauth: GatewayOAuth, check_hosts: bool = True):
         self.app = app
         self.hosts = hosts
         self.oauth = oauth
+        self.check_hosts = check_hosts
+        self._checking: asyncio.Task | None = None
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope["type"] == "lifespan":
@@ -111,13 +120,27 @@ class StatelessEdges:
             message = await receive()
             if message["type"] == "lifespan.startup":
                 await self.hosts.refresh()
+                if self.check_hosts:
+                    # Not awaited: a sleeping host would hold up /mcp.
+                    self._checking = asyncio.create_task(self._checking_hosts())
             return message
 
         return wrapped
 
+    async def _checking_hosts(self) -> None:
+        try:
+            for host, answer in await self.hosts.ask_all():
+                if isinstance(answer, BridgeError):
+                    log.warning("%s didn't answer at the gateway's start (%s).", host.name, answer)
+        except Exception:
+            log.exception("Couldn't ask the agent hosts about themselves at startup")
+
     def _closing_hosts_on_shutdown(self, send: Send) -> Send:
         async def wrapped(message: Message) -> None:
             if message["type"] == "lifespan.shutdown.complete":
+                if self._checking is not None:
+                    self._checking.cancel()
+                    await asyncio.gather(self._checking, return_exceptions=True)
                 await self.hosts.aclose()
                 self.oauth.close()
             await send(message)

@@ -29,7 +29,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 from mcp_gateway.bridge import AgentBridge, BridgeError
 from mcp_gateway.config import ENV_FILE
 from mcp_gateway.enrollment import PREFIX, WINDOW_S, Enrollment, is_lan
-from mcp_gateway.hosts import version_problem
+from mcp_gateway.hosts import Host, Hosts, version_problem
 from mcp_gateway.registry import NAME_PATTERN, Registry, RegistryError
 
 EXAMPLE_URL = "http://192.168.1.20:8765"
@@ -80,7 +80,7 @@ def main(
         if args.command == "add":
             _add(registry, args.url, args.name, ask_token, connect)
         elif args.command == "list":
-            _list(registry)
+            _list(registry, connect)
         elif args.command == "rename":
             registry.rename(args.name, args.new_name)
             print(f"Renamed {args.name} to {args.new_name}.")
@@ -299,17 +299,28 @@ async def _info(bridge: AgentBridge) -> dict | None:
         await bridge.aclose()
 
 
-def _list(registry: Registry) -> None:
+def _list(registry: Registry, connect: Callable[[str, str], AgentBridge]) -> None:
     if not registry.bridges:
         print("No agent hosts. Add one with: mcp-gateway bridges add <url>")
         return
+    # Asked first, so it shows each host as it is now, e.g. right after an upgrade.
+    answers = {host.record.bridge_id: answer for host, answer in asyncio.run(_ask_all(Hosts(registry, connect)))}
     names = max(len(bridge.name) for bridge in registry.bridges)
     urls = max(len(bridge.url) for bridge in registry.bridges)
     for bridge in registry.bridges:
-        if bridge.info is None or bridge.last_seen is None:
-            about = "never answered"
-        else:
-            seen = datetime.fromtimestamp(bridge.last_seen).strftime("%Y-%m-%d %H:%M")
-            platform = bridge.info.get("platform", "agent-bridge before /info")
-            about = f"{platform}, API {bridge.info['api_version']}, last seen {seen}"
-        print(f"{bridge.name:<{names}}  {bridge.url:<{urls}}  {about}")
+        about = []
+        # What it said last: just now, or before for one that doesn't answer.
+        if (info := bridge.info) is not None:
+            about.append(f"{info.get('platform', 'agent-bridge before /info')}, API {info['api_version']}")
+            if "bridge_version" in info:
+                about[0] += f", agent-bridge {info['bridge_version']}"
+        if isinstance(answer := answers.get(bridge.bridge_id), BridgeError):
+            about.append(f"not answering: {answer}")
+        print(f"{bridge.name:<{names}}  {bridge.url:<{urls}}  {'; '.join(about)}")
+
+
+async def _ask_all(hosts: Hosts) -> list[tuple[Host, dict | BridgeError]]:
+    try:
+        return await hosts.ask_all()
+    finally:
+        await hosts.aclose()
