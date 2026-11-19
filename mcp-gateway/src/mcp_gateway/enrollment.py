@@ -194,7 +194,7 @@ def enrollment_routes(
                 log.warning("Couldn't ask %s at %s about itself (%s).", before.name, url, error.code)
         record = registry.move(bridge_id, url)
         if info is not None:
-            registry.seen(bridge_id, info)
+            registry.update_info(bridge_id, info)
         if before is not None and before.url != record.url:
             log.info("%s moved from %s to %s.", record.name, before.url, record.url)
         return _joined(record.name)

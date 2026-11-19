@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from mcp_gateway.registry import SEEN_WRITE_S, Registry, RegistryError
+from mcp_gateway.registry import Registry, RegistryError
 
 INFO = {"api_version": 2, "name": "mac", "platform": "darwin"}
 
@@ -42,16 +42,28 @@ def test_adds_a_bridge_to_memory_and_disk_together(tmp_path: Path, clock: Clock)
     assert registry.bridges == [bridge]
     assert saved(tmp_path) == [{
         "bridge_id": bridge.bridge_id, "name": "mac", "url": "http://192.168.1.20:8765", "token": "t" * 32,
-        "info": INFO, "enrolled_at": 1_000_000, "last_seen": 1_000_000,
+        "info": INFO, "enrolled_at": 1_000_000, "last_seen": None,
     }]
     # It holds tokens: only the gateway's user may read it.
     assert stat.S_IMODE((tmp_path / "bridges.json").stat().st_mode) == 0o600
     assert open_registry(tmp_path, clock).bridges == [bridge]
 
 
-def test_a_bridge_never_seen_has_no_last_seen(tmp_path: Path, clock: Clock) -> None:
-    bridge = open_registry(tmp_path, clock).add("mac", "http://mac:8765", "t", None)
-    assert (bridge.info, bridge.last_seen) == (None, None)
+def test_a_bridge_that_never_answered_has_no_info(tmp_path: Path, clock: Clock) -> None:
+    assert open_registry(tmp_path, clock).add("mac", "http://mac:8765", "t", None).info is None
+
+
+def test_last_seen_is_kept_only_as_null(tmp_path: Path, clock: Clock) -> None:
+    # An older gateway needs the key to read the file; what it saved there is dropped.
+    record = {
+        "bridge_id": "1" * 32, "name": "mac", "url": "http://mac:8765", "token": "t", "info": INFO,
+        "enrolled_at": 1_000_000, "last_seen": 1_000_500,
+    }
+    (tmp_path / "bridges.json").write_text(json.dumps({"version": 1, "bridges": [record]}))
+    registry = open_registry(tmp_path, clock)
+    assert registry.bridges[0].last_seen is None
+    registry.rename("mac", "studio")
+    assert saved(tmp_path)[0]["last_seen"] is None
 
 
 @pytest.mark.parametrize("name", ["", "Mac", "1mac", "mac_book", "mac/1", "m" * 33, "-mac"])
@@ -184,36 +196,35 @@ def test_a_record_no_client_can_be_made_for_is_refused(
     assert value not in str(error.value)
 
 
-def test_seen_writes_new_info_at_once_and_last_seen_hourly(tmp_path: Path, clock: Clock) -> None:
+def test_update_info_writes_only_a_changed_info(tmp_path: Path, clock: Clock) -> None:
+    # Most calls ask /info; the gateway may run from an SD card, so the same answer isn't saved again.
     registry = open_registry(tmp_path, clock)
     bridge = registry.add("mac", "http://mac:8765", "t", INFO)
-    # Seen every half hour: saved hourly, as the gateway may run from an SD card, but
-    # still saved though no gap between calls is an hour long.
-    for _ in range(4):
-        clock.now += SEEN_WRITE_S / 2
-        registry.seen(bridge.bridge_id, INFO)
-    assert saved(tmp_path)[0]["last_seen"] == 1_000_000 + 2 * SEEN_WRITE_S
+    before = (tmp_path / "bridges.json").stat().st_mtime_ns
+    clock.now += 86_400
+    registry.update_info(bridge.bridge_id, dict(INFO))
+    assert (tmp_path / "bridges.json").stat().st_mtime_ns == before
     newer = {**INFO, "api_version": 3}
-    registry.seen(bridge.bridge_id, newer)
+    registry.update_info(bridge.bridge_id, newer)
     assert saved(tmp_path)[0]["info"] == newer
 
 
-def test_seen_ignores_a_bridge_removed_meanwhile(tmp_path: Path, clock: Clock) -> None:
+def test_update_info_ignores_a_bridge_removed_meanwhile(tmp_path: Path, clock: Clock) -> None:
     gateway, cli = open_registry(tmp_path, clock), open_registry(tmp_path, clock)
     bridge = gateway.add("mac", "http://mac:8765", "t", None)
     cli.remove("mac")
-    gateway.seen(bridge.bridge_id, INFO)
+    gateway.update_info(bridge.bridge_id, INFO)
     assert saved(tmp_path) == [] and gateway.bridges == []
 
 
-def test_seen_survives_a_disk_that_cant_be_written(
+def test_update_info_survives_a_disk_that_cant_be_written(
     tmp_path: Path, clock: Clock, caplog: pytest.LogCaptureFixture
 ) -> None:
     registry = open_registry(tmp_path, clock)
     bridge = registry.add("mac", "http://mac:8765", "t", None)
     os.chmod(tmp_path, 0o500)
     try:
-        registry.seen(bridge.bridge_id, INFO)
+        registry.update_info(bridge.bridge_id, INFO)
     finally:
         os.chmod(tmp_path, 0o700)
     assert registry.bridges[0].info == INFO

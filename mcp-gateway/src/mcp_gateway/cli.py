@@ -305,24 +305,18 @@ def _list(registry: Registry, connect: Callable[[str, str], AgentBridge]) -> Non
         return
     # Asked first, so it shows each host as it is now, e.g. right after an upgrade.
     answers = {host.record.bridge_id: answer for host, answer in asyncio.run(_ask_all(Hosts(registry, connect)))}
-    now = datetime.now().timestamp()
     names = max(len(bridge.name) for bridge in registry.bridges)
     urls = max(len(bridge.url) for bridge in registry.bridges)
     for bridge in registry.bridges:
-        answer = answers.get(bridge.bridge_id)
-        if bridge.info is None or bridge.last_seen is None:
-            about = "never answered"
-        else:
-            # The saved time moves only once an hour (registry.SEEN_WRITE_S); it just answered.
-            seen = now if isinstance(answer, dict) else bridge.last_seen
-            platform = bridge.info.get("platform", "agent-bridge before /info")
-            about = f"{platform}, API {bridge.info['api_version']}"
-            if "bridge_version" in bridge.info:
-                about += f", agent-bridge {bridge.info['bridge_version']}"
-            about += f", last seen {datetime.fromtimestamp(seen).strftime('%Y-%m-%d %H:%M')}"
-        if isinstance(answer, BridgeError):
-            about += f"; now: {answer}"
-        print(f"{bridge.name:<{names}}  {bridge.url:<{urls}}  {about}")
+        about = []
+        # What it said last: just now, or before for one that doesn't answer.
+        if (info := bridge.info) is not None:
+            about.append(f"{info.get('platform', 'agent-bridge before /info')}, API {info['api_version']}")
+            if "bridge_version" in info:
+                about[0] += f", agent-bridge {info['bridge_version']}"
+        if isinstance(answer := answers.get(bridge.bridge_id), BridgeError):
+            about.append(f"not answering: {answer}")
+        print(f"{bridge.name:<{names}}  {bridge.url:<{urls}}  {'; '.join(about)}")
 
 
 async def _ask_all(hosts: Hosts) -> list[tuple[Host, dict | BridgeError]]:

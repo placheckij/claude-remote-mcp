@@ -81,11 +81,10 @@ unset. An invalid setting stops startup with one line per problem, naming the va
 ## Agent hosts
 
 The gateway keeps its agent-bridges in `bridges.json` in `MCP_GATEWAY_STATE_DIR` (mode
-600): for each, its id, name, URL and token, the last `GET /info`, and when it enrolled
-and was last seen. "Last seen" is the last time the bridge answered the gateway's
-`GET /info`: on a tool call, on its address report at every start, when the gateway
-starts (it asks every host), or on `bridges list`. Unchanged answers are saved at most
-hourly. Agent hosts usually add
+600): for each, its id, name, URL and token, what it last answered to `GET /info`, and
+when it enrolled. The gateway asks `/info` on tool calls, on a bridge's address report
+at every start, at its own start (every host) and on `bridges list`, and saves the answer
+only when it changed. `last_seen` is always null, kept for older gateways. Agent hosts usually add
 themselves ([enrollment](#enrollment)); they can also be managed by hand on the gateway
 host:
 

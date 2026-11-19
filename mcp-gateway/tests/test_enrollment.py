@@ -256,13 +256,11 @@ def test_an_address_report_records_what_the_bridge_says(gateway: Gateway) -> Non
     # A bridge reports its address on every start, which is when its version changes.
     gateway.enroll(gateway.open())
     gateway.bridges[URL] = httpx.Response(200, json={**INFO, "bridge_version": "0.2.0"})
-    enrolled = gateway.hosts()[0]["last_seen"]
 
     response = address(gateway, URL)
 
     assert response.status_code == 200, response.text
-    (host,) = gateway.hosts()
-    assert host["info"]["bridge_version"] == "0.2.0" and host["last_seen"] >= enrolled
+    assert gateway.hosts()[0]["info"]["bridge_version"] == "0.2.0"
 
 
 def test_an_unchanged_address_is_taken_even_if_it_cant_be_asked(

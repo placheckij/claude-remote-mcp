@@ -174,20 +174,20 @@ def test_list_shows_each_host_without_its_token(bridges: Bridges) -> None:
     code, out, _ = bridges("list")
     lines = out.splitlines()
     assert code == 0 and len(lines) == 2 and TOKEN not in out
-    assert lines[0].startswith("mac    http://mac:8765    darwin, API 2, agent-bridge 0.1.0, last seen ")
-    assert lines[1].startswith("linux  http://linux:8765  never answered; now: The agent host is not reachable")
+    assert lines[0] == "mac    http://mac:8765    darwin, API 2, agent-bridge 0.1.0"
+    assert lines[1].startswith("linux  http://linux:8765  not answering: The agent host is not reachable")
 
 
 def test_list_asks_each_host_and_records_what_it_says(bridges: Bridges) -> None:
     # So it is current right after an upgrade, e.g. in setup.sh's list.
     bridges("add", "http://mac:8765")
     bridges.info = httpx.Response(200, json={**INFO, "bridge_version": "0.2.0"})
-    assert "agent-bridge 0.2.0, last seen " in bridges("list")[1]
+    assert bridges("list")[1] == "mac  http://mac:8765  darwin, API 2, agent-bridge 0.2.0\n"
     assert bridges.saved()[0]["info"]["bridge_version"] == "0.2.0"
-    # One that doesn't answer keeps what it said last, and says why.
+    # One that doesn't answer shows what it said last, and why.
     bridges.down = {"mac"}
     out = bridges("list")[1]
-    assert "agent-bridge 0.2.0, last seen " in out and "; now: The agent host is not reachable" in out
+    assert out.startswith("mac  http://mac:8765  darwin, API 2, agent-bridge 0.2.0; not answering: The agent host is")
 
 
 def test_rename_and_remove(bridges: Bridges) -> None:

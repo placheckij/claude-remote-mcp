@@ -115,7 +115,7 @@ class Hosts:
     async def info(self, host: Host) -> dict:
         """Asks the bridge about itself and records the answer."""
         info = await host.bridge.info() or NO_INFO
-        self.registry.seen(host.record.bridge_id, info)
+        self.registry.update_info(host.record.bridge_id, info)
         host.record = self._record(host.record.bridge_id) or host.record
         return info
 

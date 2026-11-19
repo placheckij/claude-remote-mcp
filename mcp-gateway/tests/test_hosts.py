@@ -209,7 +209,7 @@ def test_list_agents_on_an_unknown_host_names_the_hosts(make) -> None:
 def says(gateway: Gateway, name: str, answer: dict) -> None:
     """The host recorded as having said `answer` about itself, and saying it again."""
     bridge_id = next(record.bridge_id for record in gateway.registry.bridges if record.name == name)
-    gateway.registry.seen(bridge_id, answer)
+    gateway.registry.update_info(bridge_id, answer)
     gateway.route(name, "GET", "/info", httpx.Response(200, json=answer) if answer["api_version"] > 1 else NO_INFO)
 
 
@@ -273,7 +273,8 @@ def test_list_agents_by_platform_on_a_host_that_cant_say(make) -> None:
 def test_list_agents_by_platform_goes_by_what_a_host_says_when_asked(make, platform: str, expected: str) -> None:
     # Recorded before it could say (updated since): asked, then kept or left out by its answer.
     gateway = make(["mac", "box"])
-    gateway.registry.seen(next(r.bridge_id for r in gateway.registry.bridges if r.name == "box"), {"api_version": 1})
+    box = next(r.bridge_id for r in gateway.registry.bridges if r.name == "box")
+    gateway.registry.update_info(box, {"api_version": 1})
     gateway.route("mac", "GET", "/agents", agents())
     gateway.route("box", "GET", "/info", httpx.Response(200, json={**info("box"), "platform": "linux"}))
     gateway.route("box", "GET", "/agents", agents("w1:p1"))
@@ -742,7 +743,7 @@ def test_a_change_taken_in_by_the_gateways_own_save_gets_a_client(tmp_path: Path
     # save starts from the file, so it takes linux in without a reload.
     hosts, registry, _ = hosts_on(tmp_path)
     Registry(tmp_path / "bridges.json").add("linux", url("linux"), TOKEN, info("linux"))
-    registry.seen(registry.bridges[0].bridge_id, info("mac", 1))
+    registry.update_info(registry.bridges[0].bridge_id, info("mac", 1))
     assert [host.name for host in hosts.all()] == ["mac", "linux"]
 
 
@@ -774,7 +775,7 @@ def test_a_new_url_taken_in_by_the_gateways_own_save_gets_a_new_client(tmp_path:
     data = json.loads(path.read_text())
     data["bridges"][0]["url"] = url("studio")
     path.write_text(json.dumps(data))
-    registry.seen(host.record.bridge_id, info("mac", 1))
+    registry.update_info(host.record.bridge_id, info("mac", 1))
     host.record = registry.bridges[0]
     (host,) = hosts.all()
     assert host.bridge is not old
