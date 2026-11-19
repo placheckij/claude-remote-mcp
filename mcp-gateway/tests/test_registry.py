@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from mcp_gateway.registry import Registry, RegistryError
+from mcp_gateway.registry import Registry, RegistryError, UnknownBridge
 
 INFO = {"api_version": 2, "name": "mac", "platform": "darwin"}
 
@@ -218,6 +218,16 @@ def test_move_writes_only_a_new_address(tmp_path: Path, clock: Clock) -> None:
     assert (tmp_path / "bridges.json").stat().st_mtime_ns == before
     registry.move(bridge.bridge_id, "http://mac:9999")
     assert saved(tmp_path)[0]["url"] == "http://mac:9999"
+
+
+def test_move_refuses_a_bridge_removed_meanwhile(tmp_path: Path, clock: Clock) -> None:
+    # E.g. `bridges remove` while the gateway asks the bridge's /info: it must enroll again.
+    gateway, cli = open_registry(tmp_path, clock), open_registry(tmp_path, clock)
+    bridge = gateway.add("mac", "http://mac:8765", "t", INFO)
+    cli.remove("mac")
+    with pytest.raises(UnknownBridge):
+        gateway.move(bridge.bridge_id, "http://mac:8765")
+    assert saved(tmp_path) == [] and gateway.bridges == []
 
 
 def test_update_info_ignores_a_bridge_removed_meanwhile(tmp_path: Path, clock: Clock) -> None:

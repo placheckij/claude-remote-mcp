@@ -176,9 +176,6 @@ class Registry:
         addresses, and is dropped, as enroll() does. The address it had isn't saved again,
         as a bridge reports it on every start and the gateway's host may run from an SD card."""
         url = url.rstrip("/")
-        current = self.find_id(bridge_id)
-        if current is not None and current.url == url:
-            return current
 
         def move(bridges: list[Bridge]) -> list[Bridge]:
             current = _find_id(bridges, bridge_id)
@@ -271,13 +268,16 @@ class Registry:
     # --- The file ----------------------------------------------------------------------
 
     def _change(self, change: Callable[[list[Bridge]], list[Bridge]]) -> None:
-        """Applies `change` to the file as it is now, under the lock, then to memory."""
+        """Applies `change` to the file as it is now, under the lock, then to memory. Memory
+        takes in the file even if `change` refuses it, and a change that leaves the records
+        as they were isn't written."""
         with locked(self._lock_path):
-            bridges, _ = self._read()
-            bridges = change(bridges)
-            write_json(self.path, _File(bridges=bridges).model_dump(mode="json"))
-            self.bridges, self._stamp = bridges, self._file_stamp()
+            self.bridges, self._stamp = self._read()
             self.generation += 1
+            bridges = change(self.bridges)
+            if bridges != self.bridges:
+                write_json(self.path, _File(bridges=bridges).model_dump(mode="json"))
+                self.bridges, self._stamp = bridges, self._file_stamp()
 
     def _read(self) -> tuple[list[Bridge], tuple | None]:
         stamp = self._file_stamp()
