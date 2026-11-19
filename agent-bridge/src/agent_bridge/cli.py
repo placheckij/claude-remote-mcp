@@ -433,14 +433,19 @@ def _check() -> int:
 
 
 def _herdr_server(server: dict, version: str) -> tuple[bool, str, str]:
-    """check's line for herdr's server: running, and the version of the herdr it is run with.
-    A server started before `herdr update` keeps the old version until it restarts."""
+    """check's line for herdr's server. A server started before `herdr update` keeps its
+    version until it restarts; herdr leaves one it still works with running, so that one is
+    only noted, and fails when herdr says it must restart."""
     if not server.get("running"):
         return False, "herdr's server runs", "start herdr"
+    running = server.get("version")
     if server.get("restart_needed"):
-        return (False, f"herdr's server is herdr {version}",
-                f"it's {server.get('version')}; restart it when its agents can stop")
-    return True, f"herdr's server {server.get('version')} runs", ""
+        return (False, f"herdr's server works with herdr {version}",
+                f"it's {running}; herdr says to restart it, which stops its agents")
+    if running != version:
+        return (True, f"herdr's server {running} runs",
+                f"herdr is {version}; restart the server when its agents can stop, to update it")
+    return True, f"herdr's server {running} runs", ""
 
 
 def _exposed(path: Path) -> str | None:

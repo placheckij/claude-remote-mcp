@@ -119,7 +119,8 @@ class Herdr:
 
     async def server_status(self) -> dict:
         """`herdr status server --json`: whether its server is `running`, its `version`, and
-        `restart_needed` when that version isn't this herdr's (e.g. after `herdr update`)."""
+        `restart_needed` (herdr 0.8: another version than this herdr; from 0.9: one this herdr
+        can't work with)."""
         stdout = await self._run("status", "server", "--json")
         try:
             status = json.loads(stdout)

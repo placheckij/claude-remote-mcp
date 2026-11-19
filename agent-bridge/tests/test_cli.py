@@ -701,17 +701,33 @@ def test_check_fails_when_herdrs_server_isnt_running(capsys, settings: Path, fak
     assert "FAIL  herdr's server runs (start herdr)" in out.splitlines()
 
 
-def test_check_fails_when_herdrs_server_runs_another_version(capsys, settings: Path, fake: FakeGateway,
-                                                             monkeypatch: pytest.MonkeyPatch) -> None:
-    # herdr was updated while its server kept running, as herdr 0.8.0 prints it.
+def test_check_fails_when_herdr_says_its_server_needs_a_restart(capsys, settings: Path, fake: FakeGateway,
+                                                                monkeypatch: pytest.MonkeyPatch) -> None:
+    # herdr was updated while its server kept running, as herdr 0.8.0 prints it: there
+    # restart_needed means another version; from 0.9 on, one this herdr can't work with.
     server = {"status": "running", "running": True, "version": "0.9.4", "protocol": 22, "capabilities": None,
               "compatible": True, "socket": "/s", "session": None, "restart_needed": True}
 
     code, out = check_with_server(capsys, monkeypatch, server)
 
     assert code == 1
-    assert ("FAIL  herdr's server is herdr 0.9.5 (it's 0.9.4; restart it when its agents can stop)"
-            in out.splitlines())
+    assert ("FAIL  herdr's server works with herdr 0.9.5 (it's 0.9.4; herdr says to restart it, which stops its "
+            "agents)" in out.splitlines())
+
+
+def test_check_notes_a_server_on_another_version_that_still_works(capsys, settings: Path, fake: FakeGateway,
+                                                                  monkeypatch: pytest.MonkeyPatch) -> None:
+    # A 0.9.4 server under herdr 0.9.5, as 0.9.5 prints it: herdr leaves a compatible server running.
+    fake.answers[("PUT", "bridges")] = httpx.Response(200, json={"name": "mac", "gateway_id": "g", "api_version": 2})
+    server = {"status": "running", "running": True, "version": "0.9.4", "protocol": 22,
+              "capabilities": {"endpoint_protocol_generation": 1}, "compatible": True, "endpoint_compatible": True,
+              "socket": "/s", "session": None, "restart_needed": False, "server_binary_stale": True}
+
+    code, out = check_with_server(capsys, monkeypatch, server)
+
+    assert code == 0, out
+    assert ("ok    herdr's server 0.9.4 runs (herdr is 0.9.5; restart the server when its agents can stop, to "
+            "update it)" in out.splitlines())
 
 
 def test_check_fails_when_herdr_cant_say_how_its_server_is(capsys, settings: Path, fake: FakeGateway,
