@@ -106,11 +106,14 @@ class Registry:
         self.clock = clock
         self._lock_path = path.with_name("bridges.lock")
         self.bridges, self._stamp = self._read()
+        # The bridges as the file had them when last read, under any /info kept in memory.
+        self._on_disk = self.bridges
         # The last problem reload() logged, so it isn't logged on every call.
         self._problem: str | None = None
-        # The /info update_info couldn't save, by bridge_id: kept over the file's until it is
-        # saved, and saved with the next answer.
-        self._unsaved: dict[str, dict] = {}
+        # The /info update_info couldn't save, by bridge_id, with the file's /info it stands
+        # in for: kept over the file's while the file still has that one, and saved with the
+        # next answer.
+        self._unsaved: dict[str, tuple[dict | None, dict]] = {}
         # Counts every time `bridges` is taken from the file, which may bring in another
         # process's changes: by a reload, or by a change of this process's own.
         self.generation = 0
@@ -264,7 +267,8 @@ class Registry:
             )
         except (OSError, RegistryError) as error:
             log.warning("Couldn't save what %s said about itself in %s (%s).", current.name, self.path, error)
-            self._unsaved[bridge_id] = info
+            on_disk = next((b.info for b in self._on_disk if b.bridge_id == bridge_id), None)
+            self._unsaved[bridge_id] = (on_disk, info)
             self.bridges = [b.model_copy(update=update) if b.bridge_id == bridge_id else b for b in self.bridges]
 
     # --- The file ----------------------------------------------------------------------
@@ -279,16 +283,23 @@ class Registry:
             bridges = change(before)
             if bridges != before:
                 write_json(self.path, _File(bridges=bridges).model_dump(mode="json"))
-                self._take(bridges, self._file_stamp())
+                stamp = self._file_stamp()
+            # Also unwritten: `change` may have dropped /info kept in memory.
+            self._take(bridges, stamp)
 
     def _take(self, bridges: list[Bridge], stamp: tuple | None) -> None:
-        """Memory takes in the file's bridges, with the /info update_info couldn't save on top."""
-        present = {b.bridge_id for b in bridges}
-        self._unsaved = {bridge_id: info for bridge_id, info in self._unsaved.items() if bridge_id in present}
+        """Memory takes in the file's bridges, with each /info update_info couldn't save on
+        top while the file still has the /info it stands in for."""
+        on_disk = {b.bridge_id: b.info for b in bridges}
+        self._unsaved = {
+            bridge_id: (base, info) for bridge_id, (base, info) in self._unsaved.items()
+            if bridge_id in on_disk and on_disk[bridge_id] == base
+        }
         self.bridges = [
-            b.model_copy(update={"info": self._unsaved[b.bridge_id]}) if b.bridge_id in self._unsaved else b
+            b.model_copy(update={"info": self._unsaved[b.bridge_id][1]}) if b.bridge_id in self._unsaved else b
             for b in bridges
         ]
+        self._on_disk = bridges
         self._stamp = stamp
         self.generation += 1
 

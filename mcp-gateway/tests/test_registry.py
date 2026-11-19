@@ -284,7 +284,24 @@ def test_info_kept_in_memory_outlasts_other_changes(tmp_path: Path, clock: Clock
     assert saved(tmp_path)[0]["info"] == newer
 
 
-def test_re_enrolling_replaces_info_kept_in_memory(tmp_path: Path, clock: Clock) -> None:
+def test_info_another_process_saves_replaces_info_kept_in_memory(tmp_path: Path, clock: Clock) -> None:
+    # E.g. `bridges list`, which asks every host, after the bridge was updated again.
+    gateway = open_registry(tmp_path, clock)
+    bridge = gateway.add("mac", "http://mac:8765", "t", INFO)
+    os.chmod(tmp_path, 0o500)
+    try:
+        gateway.update_info(bridge.bridge_id, {**INFO, "api_version": 3})
+    finally:
+        os.chmod(tmp_path, 0o700)
+    newest = {**INFO, "api_version": 4}
+    open_registry(tmp_path, clock).update_info(bridge.bridge_id, newest)
+    assert gateway.reload() and gateway.bridges[0].info == newest
+    gateway.rename("mac", "studio")
+    assert gateway.bridges[0].info == newest
+
+
+@pytest.mark.parametrize("answer", [INFO, {**INFO, "platform": "linux"}], ids=["same", "new"])
+def test_re_enrolling_replaces_info_kept_in_memory(tmp_path: Path, clock: Clock, answer: dict) -> None:
     registry = open_registry(tmp_path, clock)
     bridge = registry.enroll("1" * 32, "mac", "http://mac:8765", "t", INFO)
     registry.add("linux", "http://linux:8765", "t", INFO)
@@ -296,13 +313,14 @@ def test_re_enrolling_replaces_info_kept_in_memory(tmp_path: Path, clock: Clock)
         os.chmod(tmp_path, 0o700)
     # One refused keeps it.
     with pytest.raises(NameTaken):
-        registry.enroll("1" * 32, "linux", "http://mac:8765", "t", {**INFO, "platform": "linux"})
+        registry.enroll("1" * 32, "linux", "http://mac:8765", "t", answer)
     assert registry.bridges[0].info == newer
-    fresh = {**INFO, "platform": "linux"}
-    registry.enroll("1" * 32, "mac", "http://mac:8765", "t", fresh)
-    assert registry.bridges[0].info == fresh
+    # Its answer replaces it, also when the record stays as it was (same answer, same second)
+    # and nothing is written.
+    registry.enroll("1" * 32, "mac", "http://mac:8765", "t", answer)
+    assert registry.bridges[0].info == answer
     registry.rename("mac", "studio")
-    assert registry.bridges[0].info == fresh
+    assert registry.bridges[0].info == answer
 
 
 def test_never_follows_a_link_in_place_of_the_file(tmp_path: Path, clock: Clock) -> None:
