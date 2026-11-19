@@ -8,7 +8,7 @@ from collections.abc import Awaitable, Callable
 
 from mcp.server.mcpserver.exceptions import ToolError
 
-from mcp_gateway.bridge import AgentBridge, BridgeError
+from mcp_gateway.bridge import INFO_TIMEOUT_S, AgentBridge, BridgeError
 from mcp_gateway.registry import NAME_PATTERN, Bridge, Registry, RegistryError
 
 log = logging.getLogger(__name__)
@@ -118,6 +118,12 @@ class Hosts:
         self.registry.seen(host.record.bridge_id, info)
         host.record = self._record(host.record.bridge_id) or host.record
         return info
+
+    async def ask_all(self) -> list[tuple[Host, dict | BridgeError]]:
+        """Asks every host about itself at once and records the answers, as the gateway
+        starts and `bridges list` does: their versions are current after an upgrade."""
+        hosts = self.all()
+        return list(zip(hosts, await gather_hosts(hosts, self.info, INFO_TIMEOUT_S)))
 
     async def usable(self, host: Host) -> None:
         """Refuses a host whose bridge version the gateway doesn't call. The bridge may

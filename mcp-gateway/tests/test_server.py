@@ -79,7 +79,8 @@ class FakeAgentBridge:
 def app(bridge: AgentBridge, state_dir: Path, **settings):
     """The gateway with one host, "mac", whose client is `bridge`."""
     Registry(state_dir / "bridges.json").add("mac", BRIDGE_URL, "b" * 32, INFO)
-    return create_app(SETTINGS.model_copy(update={"state_dir": state_dir, **settings}), lambda url, token: bridge)
+    return create_app(SETTINGS.model_copy(update={"state_dir": state_dir, **settings}), lambda url, token: bridge,
+                      check_hosts=False)
 
 
 @pytest.fixture

@@ -250,9 +250,35 @@ def test_a_bridge_updates_its_address_with_its_token(gateway: Gateway) -> None:
     assert response.status_code == 200, response.text
     assert response.json()["name"] == "mac"
     assert gateway.hosts()[0]["url"] == "http://192.168.1.20:9999"
-    # The same address again needs no check.
-    del gateway.bridges["http://192.168.1.20:9999"]
-    assert address(gateway, "http://192.168.1.20:9999").status_code == 200
+
+
+def test_an_address_report_records_what_the_bridge_says(gateway: Gateway) -> None:
+    # A bridge reports its address on every start, which is when its version changes.
+    gateway.enroll(gateway.open())
+    gateway.bridges[URL] = httpx.Response(200, json={**INFO, "bridge_version": "0.2.0"})
+    enrolled = gateway.hosts()[0]["last_seen"]
+
+    response = address(gateway, URL)
+
+    assert response.status_code == 200, response.text
+    (host,) = gateway.hosts()
+    assert host["info"]["bridge_version"] == "0.2.0" and host["last_seen"] >= enrolled
+
+
+def test_an_unchanged_address_is_taken_even_if_it_cant_be_asked(
+    gateway: Gateway, caplog: pytest.LogCaptureFixture
+) -> None:
+    # The report itself got through; only what the bridge says isn't recorded.
+    gateway.enroll(gateway.open())
+    gateway.bridges[URL] = httpx.Response(200, json={**INFO, "bridge_id": "9" * 32, "bridge_version": "9.9.9"})
+    other = address(gateway, URL)
+    del gateway.bridges[URL]
+    with caplog.at_level(logging.WARNING):
+        down = address(gateway, URL)
+
+    assert (other.status_code, down.status_code) == (200, 200)
+    assert [(h["url"], h["info"]) for h in gateway.hosts()] == [(URL, INFO)]
+    assert f"Couldn't ask mac at {URL} about itself (bridge_unreachable)" in caplog.text
 
 
 def test_a_new_address_must_answer_as_the_bridge(gateway: Gateway) -> None:

@@ -4,7 +4,8 @@
 good for 30 minutes and any number of bridges. A bridge sends it to POST /enroll with its
 id, address, token and name; the gateway asks that address's /info whether it is that
 bridge, and adds it. The bridge reports its address on every start (PUT
-/bridges/{id}/address; a new one is checked the same way), renames itself (PUT
+/bridges/{id}/address; its /info there is recorded, and a new one is checked the same
+way), renames itself (PUT
 /bridges/{id}/name) and removes itself on uninstall (DELETE /bridges/{id}), all with its
 own token.
 
@@ -180,10 +181,20 @@ def enrollment_routes(
         bridge_id = _authorized(request)
         url = lan_url((await _body(request, _AddressRequest)).url)
         before = registry.find_id(bridge_id)
-        if before is not None and before.url != url:
-            # Saved only once it answers as this bridge, so no other address is ever called.
-            await _info_of(bridge_id, url, before.token)
+        info = None
+        if before is not None:
+            # Asked every time: a bridge reports on every start, which is when its version changes.
+            try:
+                info = await _info_of(bridge_id, url, before.token)
+            except Refused as error:
+                # A new address is saved only once it answers as this bridge, so no other
+                # address is ever called. The one it had is kept: the report got through.
+                if before.url != url:
+                    raise
+                log.warning("Couldn't ask %s at %s about itself (%s).", before.name, url, error.code)
         record = registry.move(bridge_id, url)
+        if info is not None:
+            registry.seen(bridge_id, info)
         if before is not None and before.url != record.url:
             log.info("%s moved from %s to %s.", record.name, before.url, record.url)
         return _joined(record.name)

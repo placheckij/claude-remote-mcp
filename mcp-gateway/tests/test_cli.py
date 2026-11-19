@@ -24,10 +24,14 @@ class Bridges:
         self.capsys = capsys
         self.info: httpx.Response | Exception = httpx.Response(200, json=INFO)
         self.seen: list[httpx.Request] = []
+        # Hosts whose agent-bridge refuses connections.
+        self.down: set[str] = set()
         self.token = TOKEN
 
     def answer(self, request: httpx.Request) -> httpx.Response:
         self.seen.append(request)
+        if request.url.host in self.down:
+            raise httpx.ConnectError("connection refused", request=request)
         if isinstance(self.info, Exception):
             raise self.info
         return self.info
@@ -166,11 +170,24 @@ def test_list_shows_each_host_without_its_token(bridges: Bridges) -> None:
     assert bridges("list")[1] == "No agent hosts. Add one with: mcp-gateway bridges add <url>\n"
     bridges("add", "http://mac:8765")
     Registry(bridges.state_dir / "bridges.json").add("linux", "http://linux:8765", TOKEN, None)
+    bridges.down = {"linux"}
     code, out, _ = bridges("list")
     lines = out.splitlines()
     assert code == 0 and len(lines) == 2 and TOKEN not in out
-    assert lines[0].startswith("mac    http://mac:8765    darwin, API 2, last seen ")
-    assert lines[1] == "linux  http://linux:8765  never answered"
+    assert lines[0].startswith("mac    http://mac:8765    darwin, API 2, agent-bridge 0.1.0, last seen ")
+    assert lines[1].startswith("linux  http://linux:8765  never answered; now: The agent host is not reachable")
+
+
+def test_list_asks_each_host_and_records_what_it_says(bridges: Bridges) -> None:
+    # So it is current right after an upgrade, e.g. in setup.sh's list.
+    bridges("add", "http://mac:8765")
+    bridges.info = httpx.Response(200, json={**INFO, "bridge_version": "0.2.0"})
+    assert "agent-bridge 0.2.0, last seen " in bridges("list")[1]
+    assert bridges.saved()[0]["info"]["bridge_version"] == "0.2.0"
+    # One that doesn't answer keeps what it said last, and says why.
+    bridges.down = {"mac"}
+    out = bridges("list")[1]
+    assert "agent-bridge 0.2.0, last seen " in out and "; now: The agent host is not reachable" in out
 
 
 def test_rename_and_remove(bridges: Bridges) -> None:

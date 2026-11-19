@@ -82,7 +82,10 @@ unset. An invalid setting stops startup with one line per problem, naming the va
 
 The gateway keeps its agent-bridges in `bridges.json` in `MCP_GATEWAY_STATE_DIR` (mode
 600): for each, its id, name, URL and token, the last `GET /info`, and when it enrolled
-and was last seen. Agent hosts usually add
+and was last seen. "Last seen" is the last time the bridge answered the gateway's
+`GET /info`: on a tool call, on its address report at every start, when the gateway
+starts (it asks every host), or on `bridges list`. Unchanged answers are saved at most
+hourly. Agent hosts usually add
 themselves ([enrollment](#enrollment)); they can also be managed by hand on the gateway
 host:
 
@@ -96,7 +99,8 @@ sudo mcp-gateway bridges remove studio
 `add` takes the name and everything else from the bridge's `/info`, and refuses a
 bridge without it (`--name` picks another name). It takes the token from an exported
 `AGENT_BRIDGE_TOKEN` when set (`sudo --preserve-env=AGENT_BRIDGE_TOKEN`), and otherwise
-asks for it. The
+asks for it. `list` asks every host's `/info` first (5 s at most), so it shows each
+host's current version, or why it didn't answer. The
 running gateway picks up each change before its next request.
 
 - **Agent ids** carry their host, e.g. `mac/w1:p1`. While only one host is set up, bare
@@ -131,8 +135,9 @@ as a warning.
 - **Afterwards** each agent-bridge sends its address on every start
   (`PUT /bridges/{id}/address`), renames itself when its setup is given a new name
   (`PUT /bridges/{id}/name`, `409` for a taken name) and removes itself on uninstall
-  (`DELETE /bridges/{id}`), all with its own token. A new address is kept only once its `/info` answers with the
-  same id.
+  (`DELETE /bridges/{id}`), all with its own token. On each address report the gateway
+  asks `/info` there and records the answer. A new address is kept only once its `/info`
+  answers with the same id. An unchanged one is kept even if `/info` doesn't answer.
 - **Who may call these routes:** only callers on a private, loopback or link-local
   address, with no `CF-Connecting-IP` or `CF-Ray` header (anything the tunnel forwards
   has one); everyone else gets `404`. The tunnel doesn't publish them either. Bridge
