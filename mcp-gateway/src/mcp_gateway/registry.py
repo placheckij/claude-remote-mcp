@@ -108,6 +108,8 @@ class Registry:
         self.bridges, self._stamp = self._read()
         # The last problem reload() logged, so it isn't logged on every call.
         self._problem: str | None = None
+        # Bridges whose /info update_info kept in memory only, to save with the next answer.
+        self._unsaved: set[str] = set()
         # Counts every time `bridges` is taken from the file, which may bring in another
         # process's changes: by a reload, or by a change of this process's own.
         self.generation = 0
@@ -248,7 +250,7 @@ class Registry:
         bridge was updated or set up anew, as the gateway's host may run from an SD card.
         Kept in memory if it can't be saved: the gateway works on without it."""
         current = self.find_id(bridge_id)
-        if current is None or current.info == info:
+        if current is None or (current.info == info and bridge_id not in self._unsaved):
             return
         update = {"info": info}
         try:
@@ -258,6 +260,9 @@ class Registry:
         except (OSError, RegistryError) as error:
             log.warning("Couldn't save what %s said about itself in %s (%s).", current.name, self.path, error)
             self.bridges = [b.model_copy(update=update) if b.bridge_id == bridge_id else b for b in self.bridges]
+            self._unsaved.add(bridge_id)
+            return
+        self._unsaved.discard(bridge_id)
 
     # --- The file ----------------------------------------------------------------------
 

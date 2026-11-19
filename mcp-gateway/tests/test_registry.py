@@ -229,6 +229,9 @@ def test_update_info_survives_a_disk_that_cant_be_written(
         os.chmod(tmp_path, 0o700)
     assert registry.bridges[0].info == INFO
     assert "Couldn't save" in caplog.text
+    # Saved with the next answer, though it is the same as the one kept in memory.
+    registry.update_info(bridge.bridge_id, INFO)
+    assert saved(tmp_path)[0]["info"] == INFO
 
 
 def test_never_follows_a_link_in_place_of_the_file(tmp_path: Path, clock: Clock) -> None:
