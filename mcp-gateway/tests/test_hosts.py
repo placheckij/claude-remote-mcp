@@ -4,6 +4,7 @@ registry changing while it runs."""
 import asyncio
 import json
 import logging
+import threading
 import time
 from pathlib import Path
 
@@ -606,6 +607,34 @@ def test_the_gateway_asks_every_host_about_itself_at_startup(
         assert gateway.call("list_agents", host="mac")[0] is False
         assert eventually(lambda: "linux didn't answer at the gateway's start" in caplog.text)
     assert bridge_version("linux") == "0.1.0"
+
+
+def test_a_shutdown_stops_the_startup_check_of_a_host_that_hangs(tmp_path: Path) -> None:
+    Registry(tmp_path / "bridges.json").add("mac", url("mac"), TOKEN, info("mac"))
+    asked = threading.Event()
+    clients: list[httpx.AsyncClient] = []
+    # Stopped before the clients close, so it doesn't go on to use one that is closed.
+    stopped_while_open: list[bool] = []
+
+    async def hang(request: httpx.Request) -> httpx.Response:
+        asked.set()
+        try:
+            await asyncio.sleep(60)
+        except asyncio.CancelledError:
+            stopped_while_open.append(not clients[0].is_closed)
+            raise
+        return httpx.Response(200, json=info("mac"))
+
+    def connect(bridge_url: str, token: str) -> AgentBridge:
+        clients.append(httpx.AsyncClient(base_url=bridge_url, transport=httpx.MockTransport(hang)))
+        return AgentBridge(clients[-1])
+
+    app = create_app(SETTINGS.model_copy(update={"state_dir": tmp_path}), connect)
+    started = time.monotonic()
+    with TestClient(app, base_url=f"https://{HOST}", client=CLOUDFLARED):
+        assert asked.wait(5)
+    assert time.monotonic() - started < 3
+    assert stopped_while_open == [True] and all(client.is_closed for client in clients)
 
 
 def test_a_broken_registry_file_stops_startup(tmp_path: Path) -> None:
