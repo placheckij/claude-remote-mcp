@@ -209,6 +209,17 @@ def test_update_info_writes_only_a_changed_info(tmp_path: Path, clock: Clock) ->
     assert saved(tmp_path)[0]["info"] == newer
 
 
+def test_move_writes_only_a_new_address(tmp_path: Path, clock: Clock) -> None:
+    # A bridge reports its address on every start, mostly the one it had.
+    registry = open_registry(tmp_path, clock)
+    bridge = registry.add("mac", "http://mac:8765", "t", INFO)
+    before = (tmp_path / "bridges.json").stat().st_mtime_ns
+    assert registry.move(bridge.bridge_id, "http://mac:8765/") == bridge
+    assert (tmp_path / "bridges.json").stat().st_mtime_ns == before
+    registry.move(bridge.bridge_id, "http://mac:9999")
+    assert saved(tmp_path)[0]["url"] == "http://mac:9999"
+
+
 def test_update_info_ignores_a_bridge_removed_meanwhile(tmp_path: Path, clock: Clock) -> None:
     gateway, cli = open_registry(tmp_path, clock), open_registry(tmp_path, clock)
     bridge = gateway.add("mac", "http://mac:8765", "t", None)

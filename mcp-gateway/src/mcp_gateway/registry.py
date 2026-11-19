@@ -173,8 +173,12 @@ class Registry:
     def move(self, bridge_id: str, url: str) -> Bridge:
         """Gives an enrolled bridge a new address. Its /info has just answered there as this
         bridge, so another record there is out of date, e.g. after two hosts swapped
-        addresses, and is dropped, as enroll() does."""
+        addresses, and is dropped, as enroll() does. The address it had isn't saved again,
+        as a bridge reports it on every start and the gateway's host may run from an SD card."""
         url = url.rstrip("/")
+        current = self.find_id(bridge_id)
+        if current is not None and current.url == url:
+            return current
 
         def move(bridges: list[Bridge]) -> list[Bridge]:
             current = _find_id(bridges, bridge_id)
