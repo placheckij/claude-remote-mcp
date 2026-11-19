@@ -20,6 +20,9 @@ TIMEOUT = httpx.Timeout(20, connect=5)
 # Seconds before each try of the address report: the first may come before this bridge
 # listens, or while the gateway is still starting.
 REPORT_DELAYS = (1, 2, 4, 8, 16)
+# For a gateway that no longer has this host, e.g. after it was reinstalled.
+ENROLL_AGAIN = ("To enroll again, run `sudo mcp-gateway enroll` on the gateway host, then "
+                "`agent-bridge enroll <string>` here.")
 
 
 class GatewayError(Exception):
@@ -90,9 +93,7 @@ async def keep_address(state: State, settings: Settings, path: Path | None = Non
             if error.status in (401, 404) or attempt == len(REPORT_DELAYS) - 1:
                 log.warning(
                     "Couldn't tell the gateway at %s this host's address (%s). agent-bridge works on, but "
-                    "the gateway may not reach it. To enroll again, run `sudo mcp-gateway enroll` on the "
-                    "gateway host, then `agent-bridge enroll <string>` here.",
-                    gateway.url, error,
+                    "the gateway may not reach it. %s", gateway.url, error, ENROLL_AGAIN,
                 )
                 return
             continue

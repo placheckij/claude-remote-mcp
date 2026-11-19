@@ -27,6 +27,8 @@ BOOTSTRAPS = 10
 class System(flow.System, Protocol):
     # launchd's domain for this user's agents, gui/<uid>.
     def domain(self) -> str: ...
+    # Whether `launchctl disable` keeps the job from starting.
+    def disabled(self) -> bool: ...
     def launchctl(self, *args: str) -> int: ...
 
 
@@ -127,7 +129,9 @@ class MacService:
         print(f"\n==> Starting {LABEL}")
         service = f"{self.system.domain()}/{LABEL}"
         self.system.launchctl("bootout", service)
-        self.system.launchctl("enable", service)
+        # Only when disabled: enabling records an override that launchd keeps after uninstall.
+        if self.system.disabled():
+            self.system.launchctl("enable", service)
         for attempt in range(BOOTSTRAPS):
             if self.system.launchctl("bootstrap", self.system.domain(), str(self.plist)) == 0:
                 break
@@ -195,6 +199,12 @@ class MacSystem(PosixSystem):
         # the port.
         job = re.search(r"^\s*pid = (\d+)", _output("launchctl", "print", f"{self.domain()}/{LABEL}"), re.MULTILINE)
         return job is not None and self._listener(port) == job.group(1)
+
+    def disabled(self) -> bool:
+        # One line per override, `"<label>" => disabled` (`=> true` before macOS 11).
+        listed = re.search(rf'^\s*"{re.escape(LABEL)}" => (\w+)', _output("launchctl", "print-disabled", self.domain()),
+                           re.MULTILINE)
+        return listed is not None and listed.group(1) in ("disabled", "true")
 
     def launchctl(self, *args: str) -> int:
         return subprocess.run(["launchctl", *args], capture_output=True).returncode

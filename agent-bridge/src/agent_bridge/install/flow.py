@@ -27,7 +27,7 @@ from dotenv import dotenv_values
 
 from agent_bridge.cli import FAILED, NAME_TAKEN, OK, SAVE_FAILED, UNREACHABLE
 from agent_bridge.config import check_host, check_name_format, check_token_format
-from agent_bridge.gateway import parse_enrollment
+from agent_bridge.gateway import ENROLL_AGAIN, parse_enrollment
 from agent_bridge.install.common import (
     PREFIX,
     Read,
@@ -216,7 +216,7 @@ def setup(options: Options, system: System, service: Service, read: Read) -> int
             service.prepare()
             _write_env(plan, service)
             service.install(plan)
-            _start(system, service)
+            _start(system, service, plan.gone or plan.new_token)
             _enroll(plan, enrolled, system, service, read)
         except (Refused, KeyboardInterrupt):
             # However setup stops, a new token the gateway didn't confirm doesn't stay.
@@ -620,7 +620,10 @@ def _write_env(plan: Plan, service: Service) -> None:
     write_file(service.env_file, env_text(plan.values).encode(), 0o600, folder_mode=0o700)
 
 
-def _start(system: System, service: Service) -> None:
+def _start(system: System, service: Service, enrolls: bool) -> None:
+    """Starts the service and prints its checks; `enrolls`: setup enrolls next, or says how at
+    the end (the gateway lost this host, or the token is new), so check's own advice to enroll
+    again is left out."""
     service.start()
     print("\n==> Checks")
     for _ in range(CHECKS):
@@ -628,7 +631,7 @@ def _start(system: System, service: Service) -> None:
         if "FAIL  agent-bridge answers" not in result:
             break
         system.sleep(0.5)
-    print(result, end="")
+    print(result.replace(f" {ENROLL_AGAIN}", "") if enrolls else result, end="")
 
 
 def _enroll(plan: Plan, enrolled: Enrolled, system: System, service: Service, read: Read) -> None:
@@ -657,7 +660,7 @@ def _enroll(plan: Plan, enrolled: Enrolled, system: System, service: Service, re
                 break
             plan.values[f"{PREFIX}NAME"] = name
             _write_env(plan, service)
-            _start(system, service)
+            _start(system, service, plan.gone or plan.new_token)
             continue
         plan.enrollment = _ask_enrollment(read, "Enrollment string, crm1@…")
 
@@ -690,7 +693,7 @@ def _put_token_back(plan: Plan, enrolled: Enrolled, system: System, service: Ser
     _write_env(plan, service)
     # A service that wouldn't start before may not now either; its next start reads it.
     with contextlib.suppress(Refused):
-        _start(system, service)
+        _start(system, service, plan.gone or plan.new_token)
     return True
 
 

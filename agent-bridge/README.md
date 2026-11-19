@@ -279,7 +279,7 @@ From a checkout: `uv sync --all-packages`, then
 | `agent-bridge check` | checks the settings, the files' modes, herdr, the running service and the gateway, one line each | 0 all passed, 1 one failed |
 | `agent-bridge check --token-format <token>`, `--name-format <name>` | checks a value before it goes in the env file | 0 fine, 2 not (why, on stderr) |
 | `agent-bridge setup` | installs or updates the service and enrolls it ([macOS](#with-agent-bridge-setup), [Linux](#as-a-service-on-linux-systemd-user-unit), [Windows](#as-a-service-on-windows-task-scheduler)) | 0 installed (enrolled or not), 1 refused or failed |
-| `agent-bridge uninstall` | leaves the gateway, then removes the service, its settings, state and log (on Windows, also the firewall rule) | 0 removed, also when leaving the gateway failed (prints the gateway's command); 1 run with sudo, on Linux without a systemd user manager, or on Windows as another account than the desktop's (nothing is removed then); 1 also if the service couldn't be removed, after the host has left the gateway |
+| `agent-bridge uninstall` | leaves the gateway, then removes the service, its settings, state and log (on Windows, also the firewall rule). Their folders go too, except one holding other files, which it names | 0 removed, also when leaving the gateway failed (prints the gateway's command); 1 run with sudo, on Linux without a systemd user manager, or on Windows as another account than the desktop's (nothing is removed then); 1 also if the service couldn't be removed, after the host has left the gateway |
 | `agent-bridge --version` | prints the installed version | 0 |
 
 ### Enroll with the gateway
@@ -295,7 +295,8 @@ agent-bridge enroll 'crm1@192.168.1.10:8766#…'
 The gateway checks that the address in `AGENT_BRIDGE_HOST` and `AGENT_BRIDGE_PORT`
 answers as this bridge, and adds it under `AGENT_BRIDGE_NAME`. From then on, every start
 tells the gateway the current address; if it can't be reached, agent-bridge logs how to
-enroll again and serves on. A bridge can also be added by hand on the gateway host with
+enroll again and serves on. A reinstalled gateway has no hosts: `agent-bridge check`
+then fails with "isn't enrolled" and says how to enroll again, the same way. A bridge can also be added by hand on the gateway host with
 `sudo mcp-gateway bridges add <url>`, which asks for the token.
 
 The examples below use `/Users/me` for your home folder; replace it with yours.
@@ -335,7 +336,8 @@ Then it:
 2. writes the env file, readable only by you. Other settings in it are kept, but not its
    comments;
 3. writes the plist and (re)starts the service;
-4. runs `agent-bridge check`;
+4. runs `agent-bridge check`. Before the first enrollment its last line is
+   `--    not enrolled with a gateway`, which isn't a failure;
 5. enrolls with the gateway. If the gateway has another host by that name, it asks for
    another one.
 
@@ -445,7 +447,8 @@ launchctl disable gui/$(id -u)/dev.claude-remote.agent-bridge
 launchctl enable gui/$(id -u)/dev.claude-remote.agent-bridge      # undo
 
 # Uninstall: leaves the gateway, then removes the service, the env and state files and
-# the log. Then `uv tool uninstall claude-remote-mcp-agent-bridge` removes the package.
+# the log. ~/Library/Application Support/agent-bridge goes too, unless it holds other
+# files. Then `uv tool uninstall claude-remote-mcp-agent-bridge` removes the package.
 agent-bridge uninstall
 ```
 
@@ -482,8 +485,9 @@ installed yet, and takes the same flags. Then it:
    running, and never restarts it, so running agents stay;
 4. turns on lingering (`loginctl enable-linger`). If that is refused, it prints the
    `sudo` command to run;
-5. (re)starts agent-bridge, runs `agent-bridge check`, and enrolls. If the gateway has
-   another host by that name, it asks for another one.
+5. (re)starts agent-bridge, runs `agent-bridge check` (`--    not enrolled with a gateway`
+   before the first enrollment isn't a failure), and enrolls. If the gateway has another
+   host by that name, it asks for another one.
 
 `--no-herdr-service` installs no service for herdr's server, if you start it yourself,
 and removes one installed before without stopping its server; `--herdr-service` brings it
@@ -524,7 +528,9 @@ uv tool uninstall claude-remote-mcp-agent-bridge
 `agent-bridge uninstall` leaves the gateway (`agent-bridge unenroll`), then removes both
 services, the env file and the state file. Its log is in the journal, which systemd ages
 out. herdr's server keeps running with its agents until you stop it (`herdr server stop`)
-or reboot. Lingering stays on; `loginctl disable-linger` turns it off.
+or reboot; until then `systemctl --user` lists `agent-bridge-herdr.service` as
+`not-found active running`. Lingering stays on; `loginctl disable-linger` turns it off.
+`~/.config/systemd/user/` stays, as it is systemd's.
 
 ### As a service on Windows (Task Scheduler)
 
@@ -567,8 +573,9 @@ which isn't on `PATH`. Then it:
    between, so ending the task ends agent-bridge. It is tried every minute while you're
    logged on, which does nothing while it runs. That way it starts once Wi-Fi brings up
    the LAN address, and starts again if it stops;
-5. runs `agent-bridge check`, and enrolls with the gateway (asking for another name if the
-   gateway already has a host by that name).
+5. runs `agent-bridge check` (`--    not enrolled with a gateway` before the first
+   enrollment isn't a failure), and enrolls with the gateway (asking for another name if
+   the gateway already has a host by that name).
 
 Its log is `%LOCALAPPDATA%\agent-bridge\agent-bridge.log`, with a line for each start and one
 per request. Once it passes 1 MB it is moved to `agent-bridge.log.1`, replacing the one

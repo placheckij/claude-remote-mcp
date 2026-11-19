@@ -142,7 +142,8 @@ def _setup(run: Callable[[list[str]], int], site_packages: list[str]) -> int:
     # Exported for something else, e.g. PORT for a dev server, one would move the service.
     if given := [name if name in SECRET_VARIABLES else f"{name}={os.environ[name]}"
                  for name in SETUP_VARIABLES if os.environ.get(name)]:
-        print(f"Passing on from your environment: {', '.join(given)}")
+        # Flushed: the script's output goes straight to the same place.
+        print(f"Passing on from your environment: {', '.join(given)}", flush=True)
     with as_file(files("mcp_gateway") / "deploy" / "setup.sh") as script:
         command = ["bash", str(script), python, *requirements]
         if os.geteuid() != 0:

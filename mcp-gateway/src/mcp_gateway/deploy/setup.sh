@@ -215,6 +215,9 @@ EOF
 umask 022
 chown root:"$SERVICE_USER" "$ENV_FILE"
 chmod 0640 "$ENV_FILE"
+# Now as well as at the end: a run that stops before the end keeps it, and later runs only
+# say where it is.
+[[ $PASSPHRASE_SOURCE != new ]] || echo "Sign-in passphrase (new): $PASSPHRASE"
 
 # `sudo mcp-gateway bridges …` runs as the service user, so bridges.json stays its own.
 # AGENT_BRIDGE_TOKEN, if set, is passed on for `bridges add` without a terminal;
@@ -281,8 +284,10 @@ if [[ ! -f $ORIGIN_CERT ]]; then
     log "Using the existing Cloudflare login cert /root/.cloudflared/cert.pem"
     echo "If it isn't for the zone that contains $PUBLIC_HOST, delete $ORIGIN_CERT and re-run."
   else
-    log "Log in to Cloudflare: open the URL below and pick the zone that contains $PUBLIC_HOST"
-    HOME=/root cloudflared tunnel login
+    log "Log in to Cloudflare: open the URL below, pick the zone that contains $PUBLIC_HOST and click Authorize"
+    HOME=/root cloudflared tunnel login || die "the Cloudflare login didn't finish. Re-run mcp-gateway setup for \
+a new URL; after logging in, pick the zone and click Authorize. If your browser downloaded cert.pem, copy it to \
+/root/.cloudflared/cert.pem first: setup then uses it."
   fi
   mv /root/.cloudflared/cert.pem "$ORIGIN_CERT"
   chmod 0600 "$ORIGIN_CERT"
@@ -310,9 +315,26 @@ chown "$CF_USER":"$CF_USER" "$CREDENTIALS"
 chmod 0600 "$CREDENTIALS"
 
 log "Routing $PUBLIC_HOST to tunnel $TUNNEL_NAME"
-# Never overwrites an existing DNS record; if one exists for another target, fix it by hand.
-cloudflared tunnel route dns "$TUNNEL_NAME" "$PUBLIC_HOST" \
-  || echo "warning: DNS route not created (does a record for $PUBLIC_HOST already exist?)"
+# Never overwrites an existing DNS record: it may be another service's.
+# DNS_ROUTE: ok (created now, or already this tunnel's) or failed.
+if route="$(cloudflared tunnel route dns "$TUNNEL_NAME" "$PUBLIC_HOST" 2>&1)"; then
+  echo "$route"
+  DNS_ROUTE=ok
+else
+  echo "$route"
+  DNS_ROUTE=failed
+  if [[ $route == *"already exists"* ]]; then
+    cat <<EOF
+error: $PUBLIC_HOST already has a DNS record for something else, e.g. a tunnel deleted
+before. Delete it in the Cloudflare dashboard (your domain -> DNS -> Records), or point it
+at this tunnel with:
+  sudo TUNNEL_ORIGIN_CERT=$ORIGIN_CERT cloudflared tunnel route dns --overwrite-dns $TUNNEL_NAME $PUBLIC_HOST
+then re-run mcp-gateway setup.
+EOF
+  else
+    echo "error: the DNS route for $PUBLIC_HOST wasn't created (above); fix that and re-run mcp-gateway setup."
+  fi
+fi
 
 # Only /mcp and the OAuth sign-in are published; the health check and anything else stay
 # on this host.
@@ -399,7 +421,8 @@ if [[ ${#FAILED[@]} -eq 0 && -d $OLD_APP_DIR ]]; then
   rm -rf "$OLD_APP_DIR"
   echo "ok    removed $OLD_APP_DIR, the install from a checkout"
 fi
-# Without mcp-gateway the tunnel can only answer 502: then don't wait for it below.
+[[ $DNS_ROUTE != failed ]] || FAILED+=("DNS route for $PUBLIC_HOST")
+# Without mcp-gateway or the DNS route the tunnel can't answer: then don't wait for it below.
 tunnel_wait=30
 [[ ${#FAILED[@]} -eq 0 ]] || tunnel_wait=0
 # The gateway imports the legacy agent-bridge before it answers: once it is in
@@ -431,12 +454,12 @@ if [[ ${#FAILED[@]} -eq 0 ]]; then
   echo "Agent hosts:"
   /usr/local/bin/mcp-gateway bridges list | sed 's/^/  /' || true
 fi
-# The tunnel takes a few seconds to register at Cloudflare's edge; until then it answers 530.
-# Once it has answered, it is registered, so the second check needn't wait.
+# The tunnel takes a few seconds to register at Cloudflare's edge; until then it answers 530,
+# and for a while after its first answer still does now and then, so every check waits.
 check -w "$tunnel_wait" "tunnel refuses requests without a token" 401 -X POST "https://$PUBLIC_HOST/mcp"
-check "tunnel serves the OAuth metadata" 200 "https://$PUBLIC_HOST/.well-known/oauth-protected-resource/mcp"
-check "tunnel hides the rest" 404 "https://$PUBLIC_HOST/healthz"
-check "tunnel hides enrollment" 404 -X POST "https://$PUBLIC_HOST/enroll"
+check -w "$tunnel_wait" "tunnel serves the OAuth metadata" 200 "https://$PUBLIC_HOST/.well-known/oauth-protected-resource/mcp"
+check -w "$tunnel_wait" "tunnel hides the rest" 404 "https://$PUBLIC_HOST/healthz"
+check -w "$tunnel_wait" "tunnel hides enrollment" 404 -X POST "https://$PUBLIC_HOST/enroll"
 
 if [[ ${#FAILED[@]} -eq 0 ]]; then
   cat <<EOF
@@ -445,16 +468,19 @@ Done. Add the connector in claude.ai -> Customize -> Connectors -> Add -> Add cu
 (on Team and Enterprise, an Owner adds it in Organization settings -> Connectors):
   URL:  https://$PUBLIC_HOST/mcp
   Authentication: Sign in now. OAuth client: Register automatically (or leave the client
-  ID and secret empty). Then click Add, then Connect, and sign in with the passphrase below.
+  ID and secret empty). Then click Add, then Connect, and sign in with the sign-in passphrase.
 EOF
 else
   printf '\nNot working yet: %d check(s) failed:\n' "${#FAILED[@]}"
   printf '  - %s\n' "${FAILED[@]}"
-  cat <<EOF
-Fix the cause (see the logs below) and re-run mcp-gateway setup; it keeps the passphrase and tokens.
-If only the tunnel checks failed for a new hostname, DNS may need a few more minutes:
+  echo "Fix the cause (see the logs below) and re-run mcp-gateway setup; it keeps the passphrase and tokens."
+  # Also on a re-run: the record made by the run before may still be on its way.
+  if [[ $DNS_ROUTE == ok ]]; then
+    cat <<EOF
+If only the tunnel checks failed, DNS for a new hostname may need a few more minutes:
   curl -i -X POST https://$PUBLIC_HOST/mcp    should answer 401.
 EOF
+  fi
 fi
 case $PASSPHRASE_SOURCE in
   new) echo "Sign-in passphrase (new): $PASSPHRASE" ;;

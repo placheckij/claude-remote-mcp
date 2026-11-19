@@ -14,6 +14,7 @@ from dotenv import dotenv_values
 
 from agent_bridge import cli
 from agent_bridge.config import check_name_format
+from agent_bridge.gateway import ENROLL_AGAIN
 from agent_bridge.install import common, flow, macos
 
 # POSIX paths and file modes; the Windows setup is its own.
@@ -48,6 +49,8 @@ class FakeMac:
     gateway_name: str = ""
     gateway_down: bool = False
     bootstrap_failures: int = 0
+    # `launchctl disable` was run on the job.
+    job_disabled: bool = False
     # How many `check`s report agent-bridge not answering yet.
     slow_starts: int = 0
     calls: list[tuple[str, ...]] = field(default_factory=list)
@@ -85,9 +88,16 @@ class FakeMac:
     def find_herdr(self) -> str | None:
         return str(self.herdr) if self.herdr else None
 
+    def disabled(self) -> bool:
+        return self.job_disabled
+
     def launchctl(self, *args: str) -> int:
         self.calls.append(("launchctl", *args))
+        if args[0] == "enable":
+            self.job_disabled = False
         if args[0] == "bootstrap":
+            if self.job_disabled:
+                return 5
             if self.bootstrap_failures:
                 self.bootstrap_failures -= 1
                 return 5
@@ -132,9 +142,9 @@ class FakeMac:
         if self.gateway_down:
             return f"{failed} (ConnectError)\n"
         if self.gateway_token is None:
-            return f"{failed} (This agent host isn't enrolled with the gateway.)\n"
+            return f"{failed} (This agent host isn't enrolled with the gateway. {ENROLL_AGAIN})\n"
         if self.gateway_token != self.env("TOKEN"):
-            return f"{failed} (That isn't this agent host's token.)\n"
+            return f"{failed} (That isn't this agent host's token. {ENROLL_AGAIN})\n"
         # check saves the gateway's name.
         self.save_gateway(self.gateway_name)
         return f"ok    the gateway at {gateway['url']} has this host as {self.gateway_name}\n"
@@ -286,13 +296,26 @@ def test_the_launch_agent_runs_the_installed_command(mac: FakeMac, capsys) -> No
 def test_starts_the_launch_agent(mac: FakeMac, capsys) -> None:
     setup(mac, capsys, *every_flag(mac))
 
+    # Not enabled: that would leave an override in launchd after uninstall.
+    assert mac.ran("launchctl") == [
+        ("bootout", f"gui/501/{LABEL}"),
+        ("bootstrap", "gui/501", str(mac.plist)),
+    ]
+    # launchd doesn't make the log's folder.
+    assert (mac.home / "Library" / "Logs").is_dir()
+
+
+def test_enables_a_disabled_launch_agent(mac: FakeMac, capsys) -> None:
+    mac.job_disabled = True
+
+    run = setup(mac, capsys, *every_flag(mac))
+
+    assert run.code == 0, run.out
     assert mac.ran("launchctl") == [
         ("bootout", f"gui/501/{LABEL}"),
         ("enable", f"gui/501/{LABEL}"),
         ("bootstrap", "gui/501", str(mac.plist)),
     ]
-    # launchd doesn't make the log's folder.
-    assert (mac.home / "Library" / "Logs").is_dir()
 
 
 def test_retries_the_bootstrap_while_the_old_job_goes(mac: FakeMac, capsys) -> None:
@@ -855,9 +878,32 @@ def test_a_host_the_gateway_lost_is_asked_to_enroll_again(mac: FakeMac, capsys, 
 
     assert run.code == 0, run.out
     assert "didn't confirm it has this host as studio" in run.out
+    # Not check's own advice to run `agent-bridge enroll`: setup does that itself.
+    assert ENROLL_AGAIN not in run.out
     assert run.asked == ["Enrollment string it printed, crm1@… [Enter to enroll later"]
     assert mac.ran("agent-bridge")[-1] == ("enroll", ENROLLMENT)
     assert "It is enrolled with the gateway" in run.out
+
+
+def test_a_host_the_gateway_lost_after_setup_asked_keeps_checks_advice(
+        mac: FakeMac, capsys, monkeypatch: pytest.MonkeyPatch) -> None:
+    # Unreachable when setup asks first, so it keeps the enrollment; reinstalled by the checks.
+    installed(mac)
+    mac.gateway_token = None
+    mac.gateway_down = True
+    asked = mac._gateway_check
+
+    def back_after_the_first() -> str:
+        answer = asked()
+        mac.gateway_down = False
+        return answer
+
+    monkeypatch.setattr(mac, "_gateway_check", back_after_the_first)
+
+    run = setup(mac, capsys)
+
+    assert run.code == 0, run.out
+    assert f"isn't enrolled with the gateway. {ENROLL_AGAIN}" in run.out
 
 
 def test_a_host_the_gateway_lost_and_left_unenrolled_says_so(mac: FakeMac, capsys) -> None:
@@ -983,6 +1029,9 @@ def test_rotate_token_replaces_the_token_and_enrolls_again(mac: FakeMac, capsys)
     assert run.code == 0, run.out
     assert env(mac)["AGENT_BRIDGE_TOKEN"] not in (TOKEN, None)
     assert mac.gateway_token == env(mac)["AGENT_BRIDGE_TOKEN"]
+    # The checks before it see the gateway refuse the new token; setup enrolls, not the user.
+    assert "That isn't this agent host's token." in run.out
+    assert ENROLL_AGAIN not in run.out
 
 
 def test_rotate_token_without_an_enrollment_string_changes_nothing(mac: FakeMac, capsys) -> None:
@@ -1367,6 +1416,22 @@ def test_the_service_holds_the_port_when_launchd_runs_the_listener(
         outputs[("launchctl", "print", f"gui/501/{LABEL}")] = f"gui/501/{LABEL} = {{\n\tstate = running\n\tpid = {job}\n}}\n"
 
     assert macos.MacSystem().serves(8765) is serves
+
+
+@pytest.mark.parametrize(("listed", "disabled"), [
+    (f'\t"{LABEL}" => disabled\n', True),
+    (f'\t"{LABEL}" => true\n', True),
+    (f'\t"{LABEL}" => enabled\n', False),
+    (f'\t"{LABEL}-TEST" => disabled\n', False),
+    ("", False),
+])
+def test_reads_whether_the_launch_agent_is_disabled(
+    outputs: dict, monkeypatch: pytest.MonkeyPatch, listed: str, disabled: bool
+) -> None:
+    monkeypatch.setattr(macos.os, "getuid", lambda: 501)
+    outputs[("launchctl", "print-disabled", "gui/501")] = f"disabled services = {{\n{listed}}}\n"
+
+    assert macos.MacSystem().disabled() is disabled
 
 
 def test_a_free_port_has_no_holder(outputs: dict) -> None:
