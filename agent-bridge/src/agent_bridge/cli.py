@@ -400,11 +400,17 @@ def _check() -> int:
     for path in (env_file(), state_file()):
         if (problem := _exposed(path)) is not None:
             report(False, f"only you can read {path}", problem)
+    herdr = Herdr(binary=settings.herdr_bin)
     try:
-        version = asyncio.run(Herdr(binary=settings.herdr_bin).version())
+        version = asyncio.run(herdr.version())
         report(True, f"herdr {version} runs")
     except HerdrError as error:
         report(False, f"herdr runs ({settings.herdr_bin})", str(error))
+    else:
+        try:
+            report(*_herdr_server(asyncio.run(herdr.server_status()), version))
+        except HerdrError as error:
+            report(False, "herdr's server runs", str(error))
     state = load(state_file())
     try:
         info = httpx.get(f"{settings.url}/info", headers={"Authorization": f"Bearer {settings.token}"}, timeout=5)
@@ -424,6 +430,17 @@ def _check() -> int:
             hint = f" {ENROLL_AGAIN}" if error.code in NOT_KNOWN else ""
             report(False, f"the gateway at {state.gateway.url} has this host", f"{error}{hint}")
     return FAILED if failed else OK
+
+
+def _herdr_server(server: dict, version: str) -> tuple[bool, str, str]:
+    """check's line for herdr's server: running, and the version of the herdr it is run with.
+    A server started before `herdr update` keeps the old version until it restarts."""
+    if not server.get("running"):
+        return False, "herdr's server runs", "start herdr"
+    if server.get("restart_needed"):
+        return (False, f"herdr's server is herdr {version}",
+                f"it's {server.get('version')}; restart it when its agents can stop")
+    return True, f"herdr's server {server.get('version')} runs", ""
 
 
 def _exposed(path: Path) -> str | None:

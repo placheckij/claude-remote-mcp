@@ -881,7 +881,9 @@ class WindowsSystem:
         return found
 
     def find_herdr(self) -> str | None:
-        """Where herdr's installer puts the CLI, else herdr.exe on PATH."""
+        """Where herdr's installer puts the CLI, else herdr.exe on PATH. The installer links
+        Programs\\Herdr\\bin to the current release, while PATH names one release's folder, so
+        this one follows `herdr update`."""
         installed = self.paths.local / "Programs" / "Herdr" / "bin" / "herdr.exe"
         if installed.is_file():
             return str(installed)

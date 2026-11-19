@@ -117,6 +117,18 @@ class Herdr:
         """herdr's version, e.g. "0.9.5" from `herdr 0.9.5`."""
         return (await self._run("--version")).strip().removeprefix("herdr").strip()
 
+    async def server_status(self) -> dict:
+        """`herdr status server --json`: whether its server is `running`, its `version`, and
+        `restart_needed` when that version isn't this herdr's (e.g. after `herdr update`)."""
+        stdout = await self._run("status", "server", "--json")
+        try:
+            status = json.loads(stdout)
+        except ValueError:
+            status = None
+        if not isinstance(status, dict):
+            raise HerdrError("bad_output", f"herdr's server status isn't a JSON object: {stdout.strip()[:200]}")
+        return status
+
     async def list_agents(self) -> list[dict]:
         return (await self._json("agent", "list"))["agents"]
 

@@ -276,7 +276,7 @@ From a checkout: `uv sync --all-packages`, then
 | `agent-bridge enroll <string>` | joins the gateway that printed the string (below) | 0 enrolled, 3 name taken, 4 gateway unreachable (prints the command to retry), 5 enrolled but the state file couldn't be saved, 1 otherwise |
 | `agent-bridge rename <name>` | renames this host on that gateway | 0 renamed, 2 name won't do, 3 name taken, 4 gateway unreachable, 5 renamed but the state file couldn't be saved, 6 gateway too old to rename hosts, 1 otherwise (e.g. not enrolled); 4, 6 and a refusal from the gateway print the gateway's command, but a gateway without this host says to enroll again |
 | `agent-bridge unenroll` | leaves that gateway | 0, also when the gateway can't be reached or refuses (prints the gateway's command); 1 if the state file can't be read or written |
-| `agent-bridge check` | checks the settings, the files' modes, herdr, the running service and the gateway, one line each | 0 all passed, 1 one failed |
+| `agent-bridge check` | checks the settings, the files' modes, herdr, herdr's server (running, on the same version as herdr: one started before `herdr update` fails until restarted), the running service and the gateway, one line each | 0 all passed, 1 one failed |
 | `agent-bridge check --token-format <token>`, `--name-format <name>` | checks a value before it goes in the env file | 0 fine, 2 not (why, on stderr) |
 | `agent-bridge setup` | installs or updates the service and enrolls it ([macOS](#with-agent-bridge-setup), [Linux](#as-a-service-on-linux-systemd-user-unit), [Windows](#as-a-service-on-windows-task-scheduler)) | 0 installed (enrolled or not), 1 refused or failed |
 | `agent-bridge uninstall` | leaves the gateway, then removes the service, its settings, state and log (on Windows, also the firewall rule). Their folders go too, except one holding other files, which it names | 0 removed, also when leaving the gateway failed (prints the gateway's command); 1 run with sudo, on Linux without a systemd user manager, or on Windows as another account than the desktop's (nothing is removed then); 1 also if the service couldn't be removed, after the host has left the gateway |
@@ -553,8 +553,9 @@ quotes (`--roots 'C:\Projects;D:\Work'`), as PowerShell ends a command at an unq
 Windows PowerShell 5.1 drops an empty `''` argument, so write an empty value with `=`, as
 in `--enrollment=` or `--trust-root=`. The default name is the computer name, e.g.
 `win-pc`. It finds the LAN address and
-`herdr.exe` itself, including herdr's `%LOCALAPPDATA%\Programs\Herdr\bin\herdr.exe`,
-which isn't on `PATH`. Then it:
+`herdr.exe` itself, preferring herdr's `%LOCALAPPDATA%\Programs\Herdr\bin\herdr.exe`,
+which isn't on `PATH`: herdr's installer links that folder to the current release, while
+`PATH` names one release's folder, so the setting follows `herdr update`. Then it:
 
 1. checks the port (8765). If another program holds it, or Windows keeps it for Hyper-V or
    WSL, it names that and offers a free port. A port held by agent-bridge itself is fine;
