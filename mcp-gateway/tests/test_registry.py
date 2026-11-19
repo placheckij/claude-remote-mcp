@@ -323,6 +323,24 @@ def test_re_enrolling_replaces_info_kept_in_memory(tmp_path: Path, clock: Clock,
     assert registry.bridges[0].info == answer
 
 
+def test_a_change_that_cant_be_saved_keeps_info_kept_in_memory(tmp_path: Path, clock: Clock) -> None:
+    registry = open_registry(tmp_path, clock)
+    bridge = registry.enroll("1" * 32, "mac", "http://mac:8765", "t", INFO)
+    newer = {**INFO, "api_version": 3}
+    os.chmod(tmp_path, 0o500)
+    try:
+        registry.update_info(bridge.bridge_id, newer)
+        clock.now += 1
+        with pytest.raises(OSError):
+            registry.enroll("1" * 32, "mac", "http://mac:8765", "t", INFO)
+    finally:
+        os.chmod(tmp_path, 0o700)
+    assert registry.bridges[0].info == newer
+    # Still saved with the next answer.
+    registry.update_info(bridge.bridge_id, newer)
+    assert saved(tmp_path)[0]["info"] == newer
+
+
 def test_never_follows_a_link_in_place_of_the_file(tmp_path: Path, clock: Clock) -> None:
     # The state folder's owner could plant one for a root-run CLI to read or write through.
     elsewhere = tmp_path / "elsewhere.json"

@@ -274,18 +274,23 @@ class Registry:
     # --- The file ----------------------------------------------------------------------
 
     def _change(self, change: Callable[[list[Bridge]], list[Bridge]]) -> None:
-        """Applies `change` to the file as it is now, under the lock, then to memory. Memory
-        takes in the file even if `change` refuses it, and a change that leaves the records
-        as they were isn't written."""
+        """Applies `change` to the file as it is now, under the lock, then to memory. A change
+        that leaves the records as they were isn't written. One that is refused or can't be
+        saved leaves the file as it was, and memory takes in that file with the /info it kept
+        over it before."""
         with locked(self._lock_path):
             before, stamp = self._read()
-            self._take(before, stamp)
-            bridges = change(before)
-            if bridges != before:
-                write_json(self.path, _File(bridges=bridges).model_dump(mode="json"))
-                stamp = self._file_stamp()
+            unsaved = dict(self._unsaved)
+            try:
+                bridges = change(before)
+                if bridges != before:
+                    write_json(self.path, _File(bridges=bridges).model_dump(mode="json"))
+            except BaseException:
+                self._unsaved = unsaved
+                self._take(before, stamp)
+                raise
             # Also unwritten: `change` may have dropped /info kept in memory.
-            self._take(bridges, stamp)
+            self._take(bridges, self._file_stamp() if bridges != before else stamp)
 
     def _take(self, bridges: list[Bridge], stamp: tuple | None) -> None:
         """Memory takes in the file's bridges, with each /info update_info couldn't save on
