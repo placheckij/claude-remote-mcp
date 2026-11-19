@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from mcp_gateway.registry import Registry, RegistryError
+from mcp_gateway.registry import NameTaken, Registry, RegistryError, UnknownBridge
 
 INFO = {"api_version": 2, "name": "mac", "platform": "darwin"}
 
@@ -29,6 +29,12 @@ def open_registry(state_dir: Path, clock: Clock) -> Registry:
 
 def saved(state_dir: Path) -> list[dict]:
     return json.loads((state_dir / "bridges.json").read_text())["bridges"]
+
+
+def written(path: Path) -> tuple[int, int]:
+    # A write replaces the file, so its inode changes even within one tick of a coarse clock.
+    status = path.stat()
+    return status.st_ino, status.st_mtime_ns
 
 
 def test_starts_empty_without_a_file(tmp_path: Path, clock: Clock) -> None:
@@ -209,6 +215,27 @@ def test_update_info_writes_only_a_changed_info(tmp_path: Path, clock: Clock) ->
     assert saved(tmp_path)[0]["info"] == newer
 
 
+def test_move_writes_only_a_new_address(tmp_path: Path, clock: Clock) -> None:
+    # A bridge reports its address on every start, mostly the one it had.
+    registry = open_registry(tmp_path, clock)
+    bridge = registry.add("mac", "http://mac:8765", "t", INFO)
+    before = written(tmp_path / "bridges.json")
+    assert registry.move(bridge.bridge_id, "http://mac:8765/") == bridge
+    assert written(tmp_path / "bridges.json") == before
+    registry.move(bridge.bridge_id, "http://mac:9999")
+    assert saved(tmp_path)[0]["url"] == "http://mac:9999"
+
+
+def test_move_refuses_a_bridge_removed_meanwhile(tmp_path: Path, clock: Clock) -> None:
+    # E.g. `bridges remove` while the gateway asks the bridge's /info: it must enroll again.
+    gateway, cli = open_registry(tmp_path, clock), open_registry(tmp_path, clock)
+    bridge = gateway.add("mac", "http://mac:8765", "t", INFO)
+    cli.remove("mac")
+    with pytest.raises(UnknownBridge):
+        gateway.move(bridge.bridge_id, "http://mac:8765")
+    assert saved(tmp_path) == [] and gateway.bridges == []
+
+
 def test_update_info_ignores_a_bridge_removed_meanwhile(tmp_path: Path, clock: Clock) -> None:
     gateway, cli = open_registry(tmp_path, clock), open_registry(tmp_path, clock)
     bridge = gateway.add("mac", "http://mac:8765", "t", None)
@@ -232,6 +259,86 @@ def test_update_info_survives_a_disk_that_cant_be_written(
     # Saved with the next answer, though it is the same as the one kept in memory.
     registry.update_info(bridge.bridge_id, INFO)
     assert saved(tmp_path)[0]["info"] == INFO
+
+
+def test_info_kept_in_memory_outlasts_other_changes(tmp_path: Path, clock: Clock) -> None:
+    gateway, cli = open_registry(tmp_path, clock), open_registry(tmp_path, clock)
+    bridge = gateway.add("mac", "http://mac:8765", "t", INFO)
+    newer = {**INFO, "api_version": 3}
+    os.chmod(tmp_path, 0o500)
+    try:
+        gateway.update_info(bridge.bridge_id, newer)
+        # Neither a change that changes nothing nor a refused one drops it.
+        gateway.move(bridge.bridge_id, "http://mac:8765")
+        with pytest.raises(UnknownBridge):
+            gateway.move("9" * 32, "http://mac:8765")
+    finally:
+        os.chmod(tmp_path, 0o700)
+    assert gateway.bridges[0].info == newer
+    # Nor another process's change, nor one of its own.
+    cli.rename("mac", "studio")
+    assert gateway.reload() and gateway.bridges[0].info == newer
+    gateway.rename("studio", "mac")
+    assert gateway.bridges[0].info == newer and saved(tmp_path)[0]["info"] == INFO
+    gateway.update_info(bridge.bridge_id, newer)
+    assert saved(tmp_path)[0]["info"] == newer
+
+
+def test_info_another_process_saves_replaces_info_kept_in_memory(tmp_path: Path, clock: Clock) -> None:
+    # E.g. `bridges list`, which asks every host, after the bridge was updated again.
+    gateway = open_registry(tmp_path, clock)
+    bridge = gateway.add("mac", "http://mac:8765", "t", INFO)
+    os.chmod(tmp_path, 0o500)
+    try:
+        gateway.update_info(bridge.bridge_id, {**INFO, "api_version": 3})
+    finally:
+        os.chmod(tmp_path, 0o700)
+    newest = {**INFO, "api_version": 4}
+    open_registry(tmp_path, clock).update_info(bridge.bridge_id, newest)
+    assert gateway.reload() and gateway.bridges[0].info == newest
+    gateway.rename("mac", "studio")
+    assert gateway.bridges[0].info == newest
+
+
+@pytest.mark.parametrize("answer", [INFO, {**INFO, "platform": "linux"}], ids=["same", "new"])
+def test_re_enrolling_replaces_info_kept_in_memory(tmp_path: Path, clock: Clock, answer: dict) -> None:
+    registry = open_registry(tmp_path, clock)
+    bridge = registry.enroll("1" * 32, "mac", "http://mac:8765", "t", INFO)
+    registry.add("linux", "http://linux:8765", "t", INFO)
+    newer = {**INFO, "api_version": 3}
+    os.chmod(tmp_path, 0o500)
+    try:
+        registry.update_info(bridge.bridge_id, newer)
+    finally:
+        os.chmod(tmp_path, 0o700)
+    # One refused keeps it.
+    with pytest.raises(NameTaken):
+        registry.enroll("1" * 32, "linux", "http://mac:8765", "t", answer)
+    assert registry.bridges[0].info == newer
+    # Its answer replaces it, also when the record stays as it was (same answer, same second)
+    # and nothing is written.
+    registry.enroll("1" * 32, "mac", "http://mac:8765", "t", answer)
+    assert registry.bridges[0].info == answer
+    registry.rename("mac", "studio")
+    assert registry.bridges[0].info == answer
+
+
+def test_a_change_that_cant_be_saved_keeps_info_kept_in_memory(tmp_path: Path, clock: Clock) -> None:
+    registry = open_registry(tmp_path, clock)
+    bridge = registry.enroll("1" * 32, "mac", "http://mac:8765", "t", INFO)
+    newer = {**INFO, "api_version": 3}
+    os.chmod(tmp_path, 0o500)
+    try:
+        registry.update_info(bridge.bridge_id, newer)
+        clock.now += 1
+        with pytest.raises(OSError):
+            registry.enroll("1" * 32, "mac", "http://mac:8765", "t", INFO)
+    finally:
+        os.chmod(tmp_path, 0o700)
+    assert registry.bridges[0].info == newer
+    # Still saved with the next answer.
+    registry.update_info(bridge.bridge_id, newer)
+    assert saved(tmp_path)[0]["info"] == newer
 
 
 def test_never_follows_a_link_in_place_of_the_file(tmp_path: Path, clock: Clock) -> None:

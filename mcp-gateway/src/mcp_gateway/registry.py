@@ -106,10 +106,14 @@ class Registry:
         self.clock = clock
         self._lock_path = path.with_name("bridges.lock")
         self.bridges, self._stamp = self._read()
+        # The bridges as the file had them when last read, under any /info kept in memory.
+        self._on_disk = self.bridges
         # The last problem reload() logged, so it isn't logged on every call.
         self._problem: str | None = None
-        # Bridges whose /info update_info kept in memory only, to save with the next answer.
-        self._unsaved: set[str] = set()
+        # The /info update_info couldn't save, by bridge_id, with the file's /info it stands
+        # in for: kept over the file's while the file still has that one, and saved with the
+        # next answer.
+        self._unsaved: dict[str, tuple[dict | None, dict]] = {}
         # Counts every time `bridges` is taken from the file, which may bring in another
         # process's changes: by a reload, or by a change of this process's own.
         self.generation = 0
@@ -126,7 +130,7 @@ class Registry:
                 return False
             # Not read again until it changes, however it went.
             self._stamp = stamp
-            self.bridges, self._stamp = self._read()
+            self._take(*self._read())
         except RegistryError as error:
             # Logged once per problem, not on every call until it's fixed.
             if str(error) != self._problem:
@@ -134,7 +138,6 @@ class Registry:
             self._problem = str(error)
             return False
         self._problem = None
-        self.generation += 1
         return True
 
     def add(self, name: str, url: str, token: str, info: dict | None) -> Bridge:
@@ -161,6 +164,8 @@ class Registry:
             others = [b for b in bridges if b.bridge_id != bridge_id and b not in stale]
             if any(other.name == name for other in others):
                 raise NameTaken(f"There is already a host named {name}.")
+            # Its /info has just answered, newer than one kept in memory.
+            self._unsaved.pop(bridge_id, None)
             for record in stale:
                 log.warning("Dropping %s: %s now answers as the agent host enrolling.", record.name, record.url)
             # In its old place if it had one, so `bridges list` keeps its order.
@@ -173,7 +178,8 @@ class Registry:
     def move(self, bridge_id: str, url: str) -> Bridge:
         """Gives an enrolled bridge a new address. Its /info has just answered there as this
         bridge, so another record there is out of date, e.g. after two hosts swapped
-        addresses, and is dropped, as enroll() does."""
+        addresses, and is dropped, as enroll() does. The address it had isn't saved again,
+        as a bridge reports it on every start and the gateway's host may run from an SD card."""
         url = url.rstrip("/")
 
         def move(bridges: list[Bridge]) -> list[Bridge]:
@@ -253,27 +259,54 @@ class Registry:
         if current is None or (current.info == info and bridge_id not in self._unsaved):
             return
         update = {"info": info}
+        # Out first, so memory takes in what is saved; back in if it can't be.
+        self._unsaved.pop(bridge_id, None)
         try:
             self._change(
                 lambda bridges: [b.model_copy(update=update) if b.bridge_id == bridge_id else b for b in bridges]
             )
         except (OSError, RegistryError) as error:
             log.warning("Couldn't save what %s said about itself in %s (%s).", current.name, self.path, error)
+            on_disk = next((b.info for b in self._on_disk if b.bridge_id == bridge_id), None)
+            self._unsaved[bridge_id] = (on_disk, info)
             self.bridges = [b.model_copy(update=update) if b.bridge_id == bridge_id else b for b in self.bridges]
-            self._unsaved.add(bridge_id)
-            return
-        self._unsaved.discard(bridge_id)
 
     # --- The file ----------------------------------------------------------------------
 
     def _change(self, change: Callable[[list[Bridge]], list[Bridge]]) -> None:
-        """Applies `change` to the file as it is now, under the lock, then to memory."""
+        """Applies `change` to the file as it is now, under the lock, then to memory. A change
+        that leaves the records as they were isn't written. One that is refused or can't be
+        saved leaves the file as it was, and memory takes in that file with the /info it kept
+        over it before."""
         with locked(self._lock_path):
-            bridges, _ = self._read()
-            bridges = change(bridges)
-            write_json(self.path, _File(bridges=bridges).model_dump(mode="json"))
-            self.bridges, self._stamp = bridges, self._file_stamp()
-            self.generation += 1
+            before, stamp = self._read()
+            unsaved = dict(self._unsaved)
+            try:
+                bridges = change(before)
+                if bridges != before:
+                    write_json(self.path, _File(bridges=bridges).model_dump(mode="json"))
+            except BaseException:
+                self._unsaved = unsaved
+                self._take(before, stamp)
+                raise
+            # Also unwritten: `change` may have dropped /info kept in memory.
+            self._take(bridges, self._file_stamp() if bridges != before else stamp)
+
+    def _take(self, bridges: list[Bridge], stamp: tuple | None) -> None:
+        """Memory takes in the file's bridges, with each /info update_info couldn't save on
+        top while the file still has the /info it stands in for."""
+        on_disk = {b.bridge_id: b.info for b in bridges}
+        self._unsaved = {
+            bridge_id: (base, info) for bridge_id, (base, info) in self._unsaved.items()
+            if bridge_id in on_disk and on_disk[bridge_id] == base
+        }
+        self.bridges = [
+            b.model_copy(update={"info": self._unsaved[b.bridge_id][1]}) if b.bridge_id in self._unsaved else b
+            for b in bridges
+        ]
+        self._on_disk = bridges
+        self._stamp = stamp
+        self.generation += 1
 
     def _read(self) -> tuple[list[Bridge], tuple | None]:
         stamp = self._file_stamp()
