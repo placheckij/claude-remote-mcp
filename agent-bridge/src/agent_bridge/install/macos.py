@@ -30,12 +30,21 @@ class System(flow.System, Protocol):
     # Whether `launchctl disable` keeps the job from starting.
     def disabled(self) -> bool: ...
     def launchctl(self, *args: str) -> int: ...
+    # How agent-bridge is installed: "Homebrew", "uv", both or neither.
+    def installs(self) -> list[str]: ...
 
 
 def setup(options: Options, system: System, read: Read) -> int:
     # Before any question.
     if options.herdr_service is not None:
         print("error: --herdr-service and --no-herdr-service are for Linux; on macOS you start herdr's server",
+              file=sys.stderr)
+        return flow.FAILED
+    # One install, so the launch agent can't run one while you upgrade the other.
+    if len(system.installs()) > 1:
+        print("error: agent-bridge is installed with both Homebrew and uv; keep one. Remove the other with "
+              "brew uninstall agent-bridge, or uv tool uninstall claude-remote-mcp-agent-bridge, then run "
+              "agent-bridge setup again: it keeps the settings, the token and the enrollment",
               file=sys.stderr)
         return flow.FAILED
     return flow.setup(options, system, MacService(system), read)
@@ -156,6 +165,16 @@ class MacService:
 
 class MacSystem(PosixSystem):
     herdr_places = ("/opt/homebrew/bin/herdr", "/usr/local/bin/herdr")
+    # The formula's opt links, on Apple silicon and on Intel.
+    homebrew_commands = ("/opt/homebrew/opt/agent-bridge/bin/agent-bridge",
+                         "/usr/local/opt/agent-bridge/bin/agent-bridge")
+
+    def installs(self) -> list[str]:
+        found = ["Homebrew"] if any(os.path.exists(command) for command in self.homebrew_commands) else []
+        # uv tool's link.
+        if os.path.exists(self.home / ".local" / "bin" / "agent-bridge"):
+            found.append("uv")
+        return found
 
     def domain(self) -> str:
         return f"gui/{os.getuid()}"

@@ -54,8 +54,9 @@ The gateway and the agent host can be one machine.
    passphrase, and, once its checks pass, prints an enrollment string for the agent hosts,
    good for 30 minutes (`sudo mcp-gateway enroll` prints a new one). If only the tunnel
    checks fail, DNS for a new hostname may need a few more minutes: run it again.
-3. **Agent hosts:** run `brew install placheckij/tap/agent-bridge` on macOS, or
-   `uv tool install claude-remote-mcp-agent-bridge` on any OS, then
+3. **Agent hosts:** run `uv tool install claude-remote-mcp-agent-bridge`, or on macOS
+   either that or `brew install placheckij/tap/agent-bridge` (one of the two, not both),
+   then
    `agent-bridge setup` ([macOS](agent-bridge/README.md#as-a-service-on-macos-launchd),
    [Linux](agent-bridge/README.md#as-a-service-on-linux-systemd-user-unit),
    [Windows](agent-bridge/README.md#as-a-service-on-windows-task-scheduler)), and paste

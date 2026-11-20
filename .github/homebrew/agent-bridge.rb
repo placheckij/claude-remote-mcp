@@ -15,6 +15,16 @@ class AgentBridge < Formula
   depends_on "python@3.13"
 
   def install
+    # One install per Mac. HOME is a temporary folder while brew builds.
+    uv = "#{Etc.getpwuid.dir}/.local/bin/agent-bridge"
+    if File.exist?(uv)
+      odie <<~EOS
+        agent-bridge is already installed with uv (#{uv}); keep one install. To move to
+        Homebrew, run uv tool uninstall claude-remote-mcp-agent-bridge, then install this
+        again and run agent-bridge setup: it keeps the settings, the token and the enrollment.
+      EOS
+    end
+
     virtualenv_install_with_resources
   end
 
@@ -22,8 +32,10 @@ class AgentBridge < Formula
   # manage the same job twice.
   def caveats
     <<~EOS
-      To install and start the service and enroll this Mac with your gateway, run:
+      To set up the service (its settings, the launch agent, and enrolling this Mac with
+      your gateway), run:
         agent-bridge setup
+      After brew upgrade agent-bridge, run it again to restart the service on the new version.
     EOS
   end
 
