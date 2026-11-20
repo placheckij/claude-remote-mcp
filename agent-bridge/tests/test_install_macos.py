@@ -1549,8 +1549,11 @@ def test_finds_the_homebrew_and_uv_installs(
     assert macos.MacSystem().installs() == ["Homebrew", "uv"]
 
 
-def test_tells_pipx_from_uv(tmp_path: Path, set_home: Callable[[Path], None]) -> None:
+def test_tells_pipx_from_uv(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, set_home: Callable[[Path], None]
+) -> None:
     set_home(tmp_path)
+    monkeypatch.setattr(macos.MacSystem, "homebrew_commands", ())
     install_link(tmp_path / ".local/bin/agent-bridge", tmp_path / ".local/pipx/venvs/x/bin/agent-bridge")
 
     assert macos.MacSystem().installs() == ["pipx"]
