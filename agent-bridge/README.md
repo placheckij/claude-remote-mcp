@@ -261,7 +261,8 @@ write the [env file](#configuration) and start it. To keep it running, set it up
 service instead (below).
 
 ```sh
-uv tool install claude-remote-mcp-agent-bridge
+brew install placheckij/tap/agent-bridge        # macOS
+uv tool install claude-remote-mcp-agent-bridge   # any OS
 agent-bridge serve
 ```
 
@@ -314,9 +315,11 @@ Run `sudo mcp-gateway enroll` on the gateway host for an enrollment string. Then
 own user, not with `sudo`:
 
 ```sh
-uv tool install claude-remote-mcp-agent-bridge
+brew install placheckij/tap/agent-bridge
 agent-bridge setup
 ```
+
+Without Homebrew, install it with `uv tool install claude-remote-mcp-agent-bridge`.
 
 It asks only for what isn't installed yet:
 
@@ -342,10 +345,13 @@ Then it:
    another one.
 
 The last lines name the host as the gateway knows it. Nothing needs copying to the
-gateway host. The plist runs `~/.local/bin/agent-bridge`, which `uv tool upgrade
-claude-remote-mcp-agent-bridge` keeps; re-run `agent-bridge setup` after upgrading, which
-restarts the service. Re-running asks nothing on an installed Mac, and keeps the token
-and the enrollment. If setup stops partway, run it again: it picks up from there.
+gateway host. The plist runs the agent-bridge that ran setup, at a path upgrades keep:
+`/opt/homebrew/opt/agent-bridge/bin/agent-bridge` for Homebrew (`brew upgrade
+agent-bridge`), `~/.local/bin/agent-bridge` for uv (`uv tool upgrade
+claude-remote-mcp-agent-bridge`). With both installed, run setup from the one the plist
+should run, e.g. `/opt/homebrew/bin/agent-bridge setup`. Re-run `agent-bridge setup` after
+upgrading, which restarts the service. Re-running asks nothing on an installed Mac, and
+keeps the token and the enrollment. If setup stops partway, run it again: it picks up from there.
 
 To skip the questions or change an installed value, pass it: `--roots`, `--name`,
 `--host`, `--port`, `--herdr-bin`, `--claude-config-dir` and `--trust-root` (`''` for no
@@ -448,7 +454,8 @@ launchctl enable gui/$(id -u)/dev.claude-remote.agent-bridge      # undo
 
 # Uninstall: leaves the gateway, then removes the service, the env and state files and
 # the log. ~/Library/Application Support/agent-bridge goes too, unless it holds other
-# files. Then `uv tool uninstall claude-remote-mcp-agent-bridge` removes the package.
+# files. Then `brew uninstall agent-bridge` (or `uv tool uninstall
+# claude-remote-mcp-agent-bridge`) removes the package.
 agent-bridge uninstall
 ```
 

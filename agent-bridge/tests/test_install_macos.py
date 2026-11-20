@@ -1360,7 +1360,6 @@ def test_ignores_settings_in_the_environment(mac: FakeMac, capsys, monkeypatch: 
     [
         # uv tool's shim, which `uv tool upgrade` keeps.
         ("/Users/me/.local/bin/agent-bridge", "/Users/me/.local/bin/agent-bridge"),
-        ("/opt/homebrew/bin/agent-bridge", "/opt/homebrew/bin/agent-bridge"),
         # A Homebrew version's own folder goes at the next upgrade; its opt link stays.
         ("/opt/homebrew/Cellar/agent-bridge/0.1.0/bin/agent-bridge", "/opt/homebrew/opt/agent-bridge/bin/agent-bridge"),
         ("/opt/homebrew/Cellar/agent-bridge/0.1.0/libexec/bin/agent-bridge",
@@ -1375,6 +1374,30 @@ def test_finds_a_command_run_by_name_on_the_path() -> None:
     assert macos.stable_command("agent-bridge", which=lambda name: f"/opt/homebrew/bin/{name}") == (
         "/opt/homebrew/bin/agent-bridge"
     )
+
+
+def install_link(link: Path, target: Path) -> None:
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.touch()
+    link.parent.mkdir(parents=True, exist_ok=True)
+    link.symlink_to(target)
+
+
+def test_runs_homebrews_opt_link_for_its_bin_link(tmp_path: Path) -> None:
+    # brew links bin/agent-bridge to the version's bin, which links to its virtualenv's script.
+    script = tmp_path / "Cellar/agent-bridge/0.2.3/libexec/bin/agent-bridge"
+    install_link(tmp_path / "Cellar/agent-bridge/0.2.3/bin/agent-bridge", script)
+    (tmp_path / "bin").mkdir()
+    (tmp_path / "bin/agent-bridge").symlink_to("../Cellar/agent-bridge/0.2.3/bin/agent-bridge")
+
+    assert macos.stable_command(str(tmp_path / "bin/agent-bridge")) == str(tmp_path / "opt/agent-bridge/bin/agent-bridge")
+
+
+def test_keeps_uv_tools_link(tmp_path: Path) -> None:
+    link = tmp_path / ".local/bin/agent-bridge"
+    install_link(link, tmp_path / ".local/share/uv/tools/claude-remote-mcp-agent-bridge/bin/agent-bridge")
+
+    assert macos.stable_command(str(link)) == str(link)
 
 
 # --- The real Mac, over canned command output -----------------------------------------

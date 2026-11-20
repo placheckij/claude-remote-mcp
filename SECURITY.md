@@ -39,7 +39,8 @@ the gateway first, see [Updating](README.md#updating)).
   where the bridge's token ends up, the Windows firewall rule
 - the releases: the tag-triggered workflows (`.github/workflows/release.yml`,
   `release-mcp-gateway.yml`) and the packages they publish to PyPI through Trusted
-  Publishing and attach to the GitHub Release
+  Publishing and attach to the GitHub Release, and the agent-bridge formula they push to
+  `placheckij/homebrew-tap`
 
 ## Out of scope
 

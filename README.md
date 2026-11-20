@@ -54,7 +54,8 @@ The gateway and the agent host can be one machine.
    passphrase, and, once its checks pass, prints an enrollment string for the agent hosts,
    good for 30 minutes (`sudo mcp-gateway enroll` prints a new one). If only the tunnel
    checks fail, DNS for a new hostname may need a few more minutes: run it again.
-3. **Agent hosts:** run `uv tool install claude-remote-mcp-agent-bridge`, then
+3. **Agent hosts:** run `brew install placheckij/tap/agent-bridge` on macOS, or
+   `uv tool install claude-remote-mcp-agent-bridge` on any OS, then
    `agent-bridge setup` ([macOS](agent-bridge/README.md#as-a-service-on-macos-launchd),
    [Linux](agent-bridge/README.md#as-a-service-on-linux-systemd-user-unit),
    [Windows](agent-bridge/README.md#as-a-service-on-windows-task-scheduler)), and paste
@@ -116,7 +117,10 @@ Each package has its own version, tag and release workflow:
    `git tag agent-bridge-v0.3.0 && git push origin agent-bridge-v0.3.0`.
 3. The workflow runs CI, checks that the tag is the package's version, builds it, and waits
    for approval in the `pypi` environment. Approve it in the run; it then publishes to PyPI
-   through Trusted Publishing and creates the GitHub Release.
+   through Trusted Publishing and creates the GitHub Release. For agent-bridge, it then
+   updates the formula in [placheckij/homebrew-tap](https://github.com/placheckij/homebrew-tap)
+   from [.github/homebrew/agent-bridge.rb](.github/homebrew/agent-bridge.rb), after
+   installing, testing and auditing it on macOS.
 
 ## License
 
