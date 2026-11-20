@@ -400,11 +400,17 @@ def _check() -> int:
     for path in (env_file(), state_file()):
         if (problem := _exposed(path)) is not None:
             report(False, f"only you can read {path}", problem)
+    herdr = Herdr(binary=settings.herdr_bin)
     try:
-        version = asyncio.run(Herdr(binary=settings.herdr_bin).version())
+        version = asyncio.run(herdr.version())
         report(True, f"herdr {version} runs")
     except HerdrError as error:
         report(False, f"herdr runs ({settings.herdr_bin})", str(error))
+    else:
+        try:
+            report(*_herdr_server(asyncio.run(herdr.server_status()), version))
+        except HerdrError as error:
+            report(False, "herdr's server runs", str(error))
     state = load(state_file())
     try:
         info = httpx.get(f"{settings.url}/info", headers={"Authorization": f"Bearer {settings.token}"}, timeout=5)
@@ -424,6 +430,22 @@ def _check() -> int:
             hint = f" {ENROLL_AGAIN}" if error.code in NOT_KNOWN else ""
             report(False, f"the gateway at {state.gateway.url} has this host", f"{error}{hint}")
     return FAILED if failed else OK
+
+
+def _herdr_server(server: dict, version: str) -> tuple[bool, str, str]:
+    """check's line for herdr's server. A server started before `herdr update` keeps its
+    version until it restarts; herdr leaves one it still works with running, so that one is
+    only noted, and fails when herdr says it must restart."""
+    if not server.get("running"):
+        return False, "herdr's server runs", "start herdr"
+    running = server.get("version")
+    if server.get("restart_needed"):
+        return (False, f"herdr's server works with herdr {version}",
+                f"it's {running}; herdr says to restart it, which stops its agents")
+    if running != version:
+        return (True, f"herdr's server {running} runs",
+                f"herdr is {version}; restart the server when its agents can stop, to update it")
+    return True, f"herdr's server {running} runs", ""
 
 
 def _exposed(path: Path) -> str | None:
