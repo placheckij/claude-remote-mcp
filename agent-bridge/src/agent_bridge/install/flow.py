@@ -303,6 +303,9 @@ def stable_command(invoked: str, which: Callable[[str], str | None] = shutil.whi
     path = Path(os.path.abspath(invoked))
     # Followed one link at a time: the version's bin links on to its virtualenv's script.
     for _ in range(10):
+        # In its real folder: the opt link's bin is the version's, and a relative ../Cellar
+        # climbs from where a linked folder (a ~/bin linked to Homebrew's bin) points.
+        path = Path(os.path.realpath(path.parent)) / path.name
         parts = path.parts
         if "Cellar" in parts:
             cellar = parts.index("Cellar")
@@ -311,8 +314,7 @@ def stable_command(invoked: str, which: Callable[[str], str | None] = shutil.whi
                 return str(Path(*parts[:cellar], "opt", parts[cellar + 1], *parts[cellar + 3:]))
         if not path.is_symlink():
             break
-        # From the link's real folder: if that folder is a link, a relative ../Cellar climbs from where it points.
-        path = Path(os.path.normpath(Path(os.path.realpath(path.parent)) / path.readlink()))
+        path = Path(os.path.normpath(path.parent / path.readlink()))
     return os.path.abspath(invoked)
 
 
