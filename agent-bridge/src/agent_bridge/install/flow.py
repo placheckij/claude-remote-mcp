@@ -311,7 +311,8 @@ def stable_command(invoked: str, which: Callable[[str], str | None] = shutil.whi
                 return str(Path(*parts[:cellar], "opt", parts[cellar + 1], *parts[cellar + 3:]))
         if not path.is_symlink():
             break
-        path = Path(os.path.normpath(path.parent / path.readlink()))
+        # From the link's real folder: if that folder is a link, a relative ../Cellar climbs from where it points.
+        path = Path(os.path.normpath(Path(os.path.realpath(path.parent)) / path.readlink()))
     return os.path.abspath(invoked)
 
 

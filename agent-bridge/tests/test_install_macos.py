@@ -1427,6 +1427,18 @@ def test_runs_homebrews_opt_link_for_its_bin_link(tmp_path: Path) -> None:
     assert macos.stable_command(str(tmp_path / "bin/agent-bridge")) == str(tmp_path / "opt/agent-bridge/bin/agent-bridge")
 
 
+def test_runs_homebrews_opt_link_for_a_bin_reached_through_a_linked_folder(tmp_path: Path) -> None:
+    # ~/bin links to Homebrew's bin, whose agent-bridge links to ../Cellar/...
+    prefix = tmp_path / "homebrew"
+    version = prefix / "Cellar/agent-bridge/0.2.3"
+    install_link(version / "bin/agent-bridge", version / "libexec/bin/agent-bridge")
+    (prefix / "bin").mkdir()
+    (prefix / "bin/agent-bridge").symlink_to("../Cellar/agent-bridge/0.2.3/bin/agent-bridge")
+    (tmp_path / "bin").symlink_to(prefix / "bin")
+
+    assert macos.stable_command(str(tmp_path / "bin/agent-bridge")) == str(prefix / "opt/agent-bridge/bin/agent-bridge")
+
+
 def test_keeps_uv_tools_link(tmp_path: Path) -> None:
     link = tmp_path / ".local/bin/agent-bridge"
     install_link(link, tmp_path / ".local/share/uv/tools/claude-remote-mcp-agent-bridge/bin/agent-bridge")
