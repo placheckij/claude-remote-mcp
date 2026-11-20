@@ -65,7 +65,7 @@ class FakeLinux:
         return self.cached
 
     def hostname(self) -> str:
-        return "neura-box.lan"
+        return "tower-1.lan"
 
     def command(self) -> str:
         return self.command_path
@@ -186,7 +186,7 @@ def host(tmp_path: Path, set_home: Callable[[Path], None]) -> FakeLinux:
 def every_flag(host: FakeLinux, **changes: str | None) -> list[str]:
     flags = {
         "--roots": str(host.home / "Projects"),
-        "--name": "neura",
+        "--name": "tower",
         "--host": "192.168.1.20",
         "--port": "8765",
         "--herdr-bin": str(host.herdr),
@@ -224,7 +224,7 @@ def installed_by_setup_sh(host: FakeLinux) -> str:
         f"AGENT_BRIDGE_ALLOWED_ROOTS='{host.home / 'Projects'}'\n"
         "AGENT_BRIDGE_HOST='192.168.1.20'\n"
         "AGENT_BRIDGE_PORT='8765'\n"
-        "AGENT_BRIDGE_NAME='neura'\n"
+        "AGENT_BRIDGE_NAME='tower'\n"
         f"AGENT_BRIDGE_HERDR_BIN='{host.herdr}'\n"
         "AGENT_BRIDGE_CLAUDE_CONFIG_DIR=''\n"
         "AGENT_BRIDGE_TRUST_ROOT=''\n"
@@ -236,8 +236,8 @@ def installed_by_setup_sh(host: FakeLinux) -> str:
     host.running = {UNIT: "50", HERDR_UNIT: "60"}
     host.service_port = 8765
     host.holders = {8765: "PID 50: agent-bridge serve"}
-    host.gateway_token, host.gateway_name = token, "neura"
-    host.save_gateway("neura")
+    host.gateway_token, host.gateway_name = token, "tower"
+    host.save_gateway("tower")
     host.linger = True
     return token
 
@@ -260,8 +260,8 @@ def test_installs_both_units_starts_them_and_enrolls(host: FakeLinux, capsys) ->
     systemctl = host.ran("systemctl")
     assert systemctl.index(("daemon-reload",)) < systemctl.index(("restart", UNIT))
     assert host.ran("agent-bridge")[-1] == ("enroll", ENROLLMENT)
-    assert host.env("NAME") == "neura"
-    assert "enrolled with the gateway at http://10.0.0.1:8766 as neura" in run.out
+    assert host.env("NAME") == "tower"
+    assert "enrolled with the gateway at http://10.0.0.1:8766 as tower" in run.out
     assert "starts at boot" in run.out
     assert f"journalctl --user -u {UNIT}" in run.out
 
@@ -341,8 +341,8 @@ def test_the_default_name_is_the_hostname(host: FakeLinux, capsys) -> None:
     run = setup(host, capsys, *every_flag(host, name=None), answers=("",))
 
     assert run.code == 0, run.out
-    assert run.asked == ["This host's name in agent ids, like neura-box/w1:p1 [neura-box"]
-    assert host.env("NAME") == "neura-box"
+    assert run.asked == ["This host's name in agent ids, like tower-1/w1:p1 [tower-1"]
+    assert host.env("NAME") == "tower-1"
 
 
 def test_from_a_checkout_it_says_to_install_the_package(host: FakeLinux, capsys) -> None:
@@ -560,7 +560,7 @@ def test_a_rerun_asks_nothing_keeps_the_token_and_leaves_herdr_running(host: Fak
     assert host.env("TOKEN") == token
     assert ("enroll", ENROLLMENT) not in host.ran("agent-bridge")
     assert not any(HERDR_UNIT in call and call[0] in ("start", "restart", "stop") for call in host.ran("systemctl"))
-    assert "enrolled with the gateway at http://10.0.0.1:8766 as neura" in run.out
+    assert "enrolled with the gateway at http://10.0.0.1:8766 as tower" in run.out
 
 
 def test_a_setup_sh_install_is_taken_over_without_questions(host: FakeLinux, capsys) -> None:
@@ -572,7 +572,7 @@ def test_a_setup_sh_install_is_taken_over_without_questions(host: FakeLinux, cap
     assert run.asked == []
     settings = dotenv_values(host.env_file)
     assert settings["AGENT_BRIDGE_TOKEN"] == token
-    assert settings["AGENT_BRIDGE_NAME"] == "neura"
+    assert settings["AGENT_BRIDGE_NAME"] == "tower"
     assert settings["AGENT_BRIDGE_PORT"] == "8765"
     # Its settings setup doesn't write itself stay.
     assert settings["AGENT_BRIDGE_LOG_LEVEL"] == "debug"
@@ -580,9 +580,9 @@ def test_a_setup_sh_install_is_taken_over_without_questions(host: FakeLinux, cap
     assert f'ExecStart="{COMMAND}" serve' in (host.units / UNIT).read_text()
     assert ("restart", UNIT) in host.ran("systemctl")
     assert not any(HERDR_UNIT in call and call[0] in ("start", "restart", "stop") for call in host.ran("systemctl"))
-    assert host.gateway()["name"] == "neura"
+    assert host.gateway()["name"] == "tower"
     assert ("enroll", ENROLLMENT) not in host.ran("agent-bridge")
-    assert "enrolled with the gateway at http://10.0.0.1:8766 as neura" in run.out
+    assert "enrolled with the gateway at http://10.0.0.1:8766 as tower" in run.out
 
 
 def test_a_setup_sh_install_without_a_herdr_unit_gets_none(host: FakeLinux, capsys) -> None:
@@ -669,7 +669,7 @@ def test_uninstall_goes_on_when_leaving_the_gateway_fails(host: FakeLinux, capsy
 
     assert linux.uninstall(host) == 0
 
-    assert "sudo mcp-gateway bridges remove neura" in capsys.readouterr().err
+    assert "sudo mcp-gateway bridges remove tower" in capsys.readouterr().err
     assert not (host.units / UNIT).exists()
 
 
