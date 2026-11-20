@@ -1,6 +1,6 @@
 [project]
 name = "claude-remote-mcp-agent-bridge"
-version = "0.2.3"
+version = "0.2.4"
 description = "Stateless HTTP service on the agent host that drives the herdr CLI"
 readme = "README.md"
 requires-python = ">=3.11"
