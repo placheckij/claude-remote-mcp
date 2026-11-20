@@ -76,7 +76,7 @@ class FakeWindows:
         return False
 
     def hostname(self) -> str:
-        return "DELL-KG"
+        return "WINDOWS-1"
 
     def command(self) -> str:
         return str(self.bin / "agent-bridge.exe")
@@ -269,7 +269,7 @@ def host(tmp_path: Path, set_home: Callable[[Path], None]) -> FakeWindows:
 def every_flag(host: FakeWindows, **changes: str | None) -> list[str]:
     flags = {
         "--roots": str(host.home / "Projects"),
-        "--name": "dell",
+        "--name": "windows",
         "--host": "192.168.1.20",
         "--port": "8765",
         "--herdr-bin": str(host.herdr),
@@ -309,7 +309,7 @@ def installed_by_setup_ps1(host: FakeWindows, checkout: Path) -> str:
         f"AGENT_BRIDGE_ALLOWED_ROOTS={host.home / 'Projects'}\n"
         "AGENT_BRIDGE_HOST=192.168.1.20\n"
         "AGENT_BRIDGE_PORT=8765\n"
-        "AGENT_BRIDGE_NAME=dell\n"
+        "AGENT_BRIDGE_NAME=windows\n"
         f"AGENT_BRIDGE_HERDR_BIN={host.herdr}\n"
         "AGENT_BRIDGE_LOG_LEVEL=debug\n", encoding="utf-8")
     host.paths.state.mkdir(parents=True)
@@ -322,8 +322,8 @@ def installed_by_setup_ps1(host: FakeWindows, checkout: Path) -> str:
     host.processes_ = [(Listener(LAUNCHER, "agent-bridgew.exe", line, old), 0),
                        (Listener(SERVER, "pythonw.exe", rf"C:\Python\pythonw.exe {line}", r"C:\Python\pythonw.exe"), 8765)]
     host.rule = RULE
-    host.gateway_token, host.gateway_name = token, "dell"
-    host.save_gateway("dell")
+    host.gateway_token, host.gateway_name = token, "windows"
+    host.save_gateway("windows")
     return token
 
 
@@ -335,7 +335,7 @@ def test_installs_the_task_adds_the_firewall_rule_and_enrolls(host: FakeWindows,
 
     assert run.code == 0, run.out
     assert run.asked == []
-    assert host.env("NAME") == "dell"
+    assert host.env("NAME") == "windows"
     assert host.env("ALLOWED_ROOTS") == str(host.home / "Projects")
     assert len(host.env("TOKEN") or "") == 64
     # The task runs the windowless agent-bridge beside the one that was run, as you.
@@ -346,10 +346,10 @@ def test_installs_the_task_adds_the_firewall_rule_and_enrolls(host: FakeWindows,
     # One UAC prompt, for the rule only.
     assert host.ran("elevated") == [(windows.firewall_rule_commands(8765),)]
     assert host.rule == RULE
-    assert host.gateway()["name"] == "dell"
+    assert host.gateway()["name"] == "windows"
     assert not host.paths.disabled_marker.exists()
     assert "Done. agent-bridge listens on http://192.168.1.20:8765 and starts at every logon." in run.out
-    assert "enrolled with the gateway at http://10.0.0.1:8766 as dell" in run.out
+    assert "enrolled with the gateway at http://10.0.0.1:8766 as windows" in run.out
 
 
 def test_asks_for_what_is_missing_with_the_computer_name_as_the_default(host: FakeWindows, capsys) -> None:
@@ -357,8 +357,8 @@ def test_asks_for_what_is_missing_with_the_computer_name_as_the_default(host: Fa
 
     assert run.code == 0, run.out
     assert any("Folders agents may start in, " in question for question in run.asked)
-    assert host.env("NAME") == "dell-kg"
-    assert host.gateway()["name"] == "dell-kg"
+    assert host.env("NAME") == "windows-1"
+    assert host.gateway()["name"] == "windows-1"
 
 
 def test_the_default_name_starts_with_pc_when_the_computer_name_doesnt_start_with_a_letter(
@@ -567,7 +567,7 @@ def test_a_rerun_asks_nothing_keeps_the_token_and_restarts_the_task(host: FakeWi
     assert host.ran("register") == [(host.service_command(),)]
     assert host.ran("elevated") == []
     assert host.task() is not None and windows.Task.parse(host.task()).enabled
-    assert "enrolled with the gateway at http://10.0.0.1:8766 as dell" in run.out
+    assert "enrolled with the gateway at http://10.0.0.1:8766 as windows" in run.out
 
 
 def test_a_setup_ps1_install_is_taken_over_without_questions(host: FakeWindows, capsys, tmp_path: Path) -> None:
@@ -583,7 +583,7 @@ def test_a_setup_ps1_install_is_taken_over_without_questions(host: FakeWindows, 
     assert run.asked == []
     settings = dotenv_values(host.env_file)
     assert settings["AGENT_BRIDGE_TOKEN"] == token
-    assert settings["AGENT_BRIDGE_NAME"] == "dell"
+    assert settings["AGENT_BRIDGE_NAME"] == "windows"
     assert settings["AGENT_BRIDGE_LOG_LEVEL"] == "debug"
     # The task runs the package from now on; the checkout's bridge is gone.
     assert windows.Task.parse(host.task()).command == host.service_command()
@@ -593,7 +593,7 @@ def test_a_setup_ps1_install_is_taken_over_without_questions(host: FakeWindows, 
         assert not leftover.exists()
     assert host.ran("elevated") == []
     assert ("enroll", ENROLLMENT) not in host.ran("agent-bridge")
-    assert "enrolled with the gateway at http://10.0.0.1:8766 as dell" in run.out
+    assert "enrolled with the gateway at http://10.0.0.1:8766 as windows" in run.out
 
 
 def test_a_setup_ps1_host_given_a_config_folder_is_asked_for_the_trust_root(host: FakeWindows, capsys,
@@ -772,7 +772,7 @@ def test_a_failed_restart_after_the_takeover_puts_back_the_new_task(host: FakeWi
 
     host.register = register  # type: ignore[method-assign]
 
-    run = setup(host, capsys, "--enrollment", ENROLLMENT, answers=("dell2",))
+    run = setup(host, capsys, "--enrollment", ENROLLMENT, answers=("windows2",))
 
     assert run.code == 1
     # The package's task, not setup.ps1's, whose files are gone.

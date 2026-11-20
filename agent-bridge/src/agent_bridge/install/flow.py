@@ -293,20 +293,29 @@ def remove_with_temporary(path: Path) -> None:
 
 def stable_command(invoked: str, which: Callable[[str], str | None] = shutil.which) -> str:
     """The path of the agent-bridge that was run, as one that survives upgrades: links are kept
-    (uv tool's ~/.local/bin shim, Homebrew's bin), and a Homebrew version's own folder becomes
-    its opt link."""
+    (uv tool's ~/.local/bin shim), and a Homebrew version's own folder, or a link into it
+    (Homebrew's bin), becomes its opt link."""
     if os.sep not in invoked:
         found = which(invoked)
         if found is None:
             raise Refused(f"can't find {invoked} on the PATH")
         invoked = found
-    parts = Path(os.path.abspath(invoked)).parts
-    if "Cellar" in parts:
-        cellar = parts.index("Cellar")
-        if len(parts) > cellar + 3:
-            # <prefix>/Cellar/<formula>/<version>/... -> <prefix>/opt/<formula>/...
-            return str(Path(*parts[:cellar], "opt", parts[cellar + 1], *parts[cellar + 3:]))
-    return str(Path(*parts))
+    path = Path(os.path.abspath(invoked))
+    # Followed one link at a time: the version's bin links on to its virtualenv's script.
+    for _ in range(10):
+        # In its real folder: the opt link's bin is the version's, and a relative ../Cellar
+        # climbs from where a linked folder (a ~/bin linked to Homebrew's bin) points.
+        path = Path(os.path.realpath(path.parent)) / path.name
+        parts = path.parts
+        if "Cellar" in parts:
+            cellar = parts.index("Cellar")
+            if len(parts) > cellar + 3:
+                # <prefix>/Cellar/<formula>/<version>/... -> <prefix>/opt/<formula>/...
+                return str(Path(*parts[:cellar], "opt", parts[cellar + 1], *parts[cellar + 3:]))
+        if not path.is_symlink():
+            break
+        path = Path(os.path.normpath(path.parent / path.readlink()))
+    return os.path.abspath(invoked)
 
 
 # --- Deciding: questions and checks, before anything changes ------------------------

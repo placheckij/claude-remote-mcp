@@ -596,12 +596,12 @@ def test_the_gateway_asks_every_host_about_itself_at_startup(
     def bridge_version(name: str) -> str:
         return next(b["info"]["bridge_version"] for b in saved(tmp_path) if b["name"] == name)
 
-    gateway = Gateway(tmp_path, ["mac", "linux", "dell"], check_hosts=True)
+    gateway = Gateway(tmp_path, ["mac", "linux", "windows"], check_hosts=True)
     gateway.route("mac", "GET", "/info", httpx.Response(200, json={**info("mac"), "bridge_version": "0.2.0"}))
-    gateway.route("dell", "GET", "/info", httpx.Response(200, json={**info("dell"), "bridge_version": "0.2.0"}))
+    gateway.route("windows", "GET", "/info", httpx.Response(200, json={**info("windows"), "bridge_version": "0.2.0"}))
     gateway.fake("linux").down = True
     with caplog.at_level(logging.WARNING), gateway.client:
-        assert eventually(lambda: bridge_version("mac") == bridge_version("dell") == "0.2.0")
+        assert eventually(lambda: bridge_version("mac") == bridge_version("windows") == "0.2.0")
         # One host down doesn't stop the gateway either.
         gateway.route("mac", "GET", "/agents", agents("w1:p1"))
         assert gateway.call("list_agents", host="mac")[0] is False

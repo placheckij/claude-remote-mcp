@@ -38,6 +38,8 @@ class FakeMac:
     root: bool = False
     checkout: bool = False
     cached: bool = False
+    # How agent-bridge is installed: "uv", "Homebrew".
+    packages: tuple[str, ...] = ("uv",)
     name: str = "Studio-Mac.local"
     enroll_codes: list[int] = field(default_factory=list)
     rename_codes: list[int] = field(default_factory=list)
@@ -63,6 +65,9 @@ class FakeMac:
 
     def in_uv_cache(self) -> bool:
         return self.cached
+
+    def installs(self) -> list[str]:
+        return list(self.packages)
 
     def hostname(self) -> str:
         return self.name
@@ -268,6 +273,32 @@ def test_the_herdr_service_flags_are_refused(mac: FakeMac, capsys, flag: str) ->
     assert run.asked == []
     assert "are for Linux" in run.out
     assert not mac.env_file.exists()
+
+
+@pytest.mark.parametrize(("other", "uninstall"), [
+    ("uv", "uv tool uninstall claude-remote-mcp-agent-bridge"),
+    ("pipx", "pipx uninstall claude-remote-mcp-agent-bridge"),
+])
+def test_refuses_with_two_installs(mac: FakeMac, capsys, other: str, uninstall: str) -> None:
+    mac.packages = ("Homebrew", other)
+
+    run = setup(mac, capsys, *every_flag(mac))
+
+    assert run.code == 1
+    assert run.asked == []
+    assert f"installed with both Homebrew and {other}" in run.out
+    assert "brew uninstall agent-bridge" in run.out
+    assert uninstall in run.out
+    assert not mac.env_file.exists()
+    assert mac.calls == []
+
+
+@pytest.mark.parametrize("packages", [("Homebrew",), ("uv",), ("pipx",), ()])
+def test_installs_from_one_install(mac: FakeMac, capsys, packages: tuple[str, ...]) -> None:
+    # (): none found, e.g. installed with pip into a virtualenv.
+    mac.packages = packages
+
+    assert setup(mac, capsys, *every_flag(mac)).code == 0
 
 
 def test_only_the_user_can_read_the_settings(mac: FakeMac, capsys) -> None:
@@ -1360,7 +1391,6 @@ def test_ignores_settings_in_the_environment(mac: FakeMac, capsys, monkeypatch: 
     [
         # uv tool's shim, which `uv tool upgrade` keeps.
         ("/Users/me/.local/bin/agent-bridge", "/Users/me/.local/bin/agent-bridge"),
-        ("/opt/homebrew/bin/agent-bridge", "/opt/homebrew/bin/agent-bridge"),
         # A Homebrew version's own folder goes at the next upgrade; its opt link stays.
         ("/opt/homebrew/Cellar/agent-bridge/0.1.0/bin/agent-bridge", "/opt/homebrew/opt/agent-bridge/bin/agent-bridge"),
         ("/opt/homebrew/Cellar/agent-bridge/0.1.0/libexec/bin/agent-bridge",
@@ -1371,10 +1401,63 @@ def test_runs_a_path_that_survives_upgrades(invoked: str, runs: str) -> None:
     assert macos.stable_command(invoked) == runs
 
 
-def test_finds_a_command_run_by_name_on_the_path() -> None:
-    assert macos.stable_command("agent-bridge", which=lambda name: f"/opt/homebrew/bin/{name}") == (
-        "/opt/homebrew/bin/agent-bridge"
-    )
+def test_finds_a_command_run_by_name_on_the_path(tmp_path: Path) -> None:
+    # Under tmp_path: stable_command follows links, and a real /opt/homebrew/bin has one.
+    command = tmp_path / "bin/agent-bridge"
+    command.parent.mkdir()
+    command.touch()
+
+    assert macos.stable_command("agent-bridge", which=lambda name: str(tmp_path / "bin" / name)) == str(command)
+
+
+def install_link(link: Path, target: Path) -> None:
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.touch()
+    link.parent.mkdir(parents=True, exist_ok=True)
+    link.symlink_to(target)
+
+
+def test_runs_homebrews_opt_link_for_its_bin_link(tmp_path: Path) -> None:
+    # brew links bin/agent-bridge to the version's bin, which links to its virtualenv's script.
+    script = tmp_path / "Cellar/agent-bridge/0.2.3/libexec/bin/agent-bridge"
+    install_link(tmp_path / "Cellar/agent-bridge/0.2.3/bin/agent-bridge", script)
+    (tmp_path / "bin").mkdir()
+    (tmp_path / "bin/agent-bridge").symlink_to("../Cellar/agent-bridge/0.2.3/bin/agent-bridge")
+
+    assert macos.stable_command(str(tmp_path / "bin/agent-bridge")) == str(tmp_path / "opt/agent-bridge/bin/agent-bridge")
+
+
+def test_runs_homebrews_opt_link_for_a_bin_reached_through_a_linked_folder(tmp_path: Path) -> None:
+    # ~/bin links to Homebrew's bin, whose agent-bridge links to ../Cellar/...
+    prefix = tmp_path / "homebrew"
+    version = prefix / "Cellar/agent-bridge/0.2.3"
+    install_link(version / "bin/agent-bridge", version / "libexec/bin/agent-bridge")
+    (prefix / "bin").mkdir()
+    (prefix / "bin/agent-bridge").symlink_to("../Cellar/agent-bridge/0.2.3/bin/agent-bridge")
+    (tmp_path / "bin").symlink_to(prefix / "bin")
+
+    assert macos.stable_command(str(tmp_path / "bin/agent-bridge")) == str(prefix / "opt/agent-bridge/bin/agent-bridge")
+
+
+def test_keeps_homebrews_opt_link(tmp_path: Path) -> None:
+    # opt/agent-bridge links to the version, whose bin links on to ../libexec/bin.
+    version = tmp_path / "Cellar/agent-bridge/0.2.3"
+    (version / "libexec/bin").mkdir(parents=True)
+    (version / "libexec/bin/agent-bridge").touch()
+    (version / "bin").mkdir()
+    (version / "bin/agent-bridge").symlink_to("../libexec/bin/agent-bridge")
+    (tmp_path / "opt").mkdir()
+    (tmp_path / "opt/agent-bridge").symlink_to("../Cellar/agent-bridge/0.2.3")
+    command = str(tmp_path / "opt/agent-bridge/bin/agent-bridge")
+
+    assert macos.stable_command(command) == command
+
+
+def test_keeps_uv_tools_link(tmp_path: Path) -> None:
+    link = tmp_path / ".local/bin/agent-bridge"
+    install_link(link, tmp_path / ".local/share/uv/tools/claude-remote-mcp-agent-bridge/bin/agent-bridge")
+
+    assert macos.stable_command(str(link)) == str(link)
 
 
 # --- The real Mac, over canned command output -----------------------------------------
@@ -1478,6 +1561,31 @@ def test_knows_a_checkout_and_uvx(tmp_path: Path, monkeypatch: pytest.MonkeyPatc
     monkeypatch.setattr(sys, "prefix", "/Users/me/.cache/uv/archive-v0/m4XVlWm3syEIKOSH")
     assert not macos.MacSystem().in_checkout()
     assert macos.MacSystem().in_uv_cache()
+
+
+def test_finds_the_homebrew_and_uv_installs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, set_home: Callable[[Path], None]
+) -> None:
+    set_home(tmp_path)
+    brew = tmp_path / "opt/homebrew/opt/agent-bridge/bin/agent-bridge"
+    monkeypatch.setattr(macos.MacSystem, "homebrew_commands", (str(brew),))
+    assert macos.MacSystem().installs() == []
+
+    install_link(brew, tmp_path / "opt/homebrew/Cellar/agent-bridge/0.2.3/bin/agent-bridge")
+    assert macos.MacSystem().installs() == ["Homebrew"]
+
+    install_link(tmp_path / ".local/bin/agent-bridge", tmp_path / ".local/share/uv/tools/x/bin/agent-bridge")
+    assert macos.MacSystem().installs() == ["Homebrew", "uv"]
+
+
+def test_tells_pipx_from_uv(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, set_home: Callable[[Path], None]
+) -> None:
+    set_home(tmp_path)
+    monkeypatch.setattr(macos.MacSystem, "homebrew_commands", ())
+    install_link(tmp_path / ".local/bin/agent-bridge", tmp_path / ".local/pipx/venvs/x/bin/agent-bridge")
+
+    assert macos.MacSystem().installs() == ["pipx"]
 
 
 def test_finds_herdr_on_the_path_else_in_the_usual_places(

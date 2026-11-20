@@ -82,3 +82,86 @@ jobs:
           gh release create "$TAG" dist/*
           --repo "$GITHUB_REPOSITORY" --verify-tag --generate-notes
           --title "agent-bridge ${TAG#agent-bridge-v}"
+
+  # Builds the Homebrew formula for the published sdist and installs, tests and audits it.
+  # No secrets here: installing runs the build scripts of every Python dependency.
+  homebrew-formula:
+    needs: publish
+    runs-on: macos-latest
+    env:
+      TAP: placheckij/tap
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Point the formula at the sdist on PyPI
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          version="${TAG#agent-bridge-v}"
+          # PyPI's JSON API can lag the upload for a while.
+          for attempt in $(seq 30); do
+            sdist="$(curl -fsS "https://pypi.org/pypi/claude-remote-mcp-agent-bridge/$version/json" \
+              | jq -c '.urls[] | select(.packagetype == "sdist")' || true)"
+            [ -n "$sdist" ] && break
+            sleep 10
+          done
+          [ -n "$sdist" ] || { echo "::error::PyPI has no sdist of $version"; exit 1; }
+          url="$(jq -r .url <<<"$sdist")"
+          sha256="$(jq -r .digests.sha256 <<<"$sdist")"
+          # Only the formula's own url and sha256 are indented by two spaces.
+          sed -i '' -E -e "s|^  url \".*\"|  url \"$url\"|" -e "s|^  sha256 \".*\"|  sha256 \"$sha256\"|" \
+            .github/homebrew/agent-bridge.rb
+          grep -qF "$url" .github/homebrew/agent-bridge.rb
+      - name: Add the Python dependencies as resources
+        run: |
+          brew tap-new "$TAP" --no-git
+          brew trust --tap "$TAP"
+          formula="$(brew --repository "$TAP")/Formula/agent-bridge.rb"
+          cp .github/homebrew/agent-bridge.rb "$formula"
+          # The release is minutes old; its dependencies still wait out Homebrew's cooldown.
+          brew update-python-resources --ignore-main-package-cooldown "$TAP/agent-bridge"
+          cp "$formula" agent-bridge.rb
+      - name: Audit, install and test
+        run: |
+          brew audit --strict --formula "$TAP/agent-bridge"
+          brew install --build-from-source "$TAP/agent-bridge"
+          brew test "$TAP/agent-bridge"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: formula
+          path: agent-bridge.rb
+          if-no-files-found: error
+
+  homebrew-tap:
+    needs: homebrew-formula
+    runs-on: ubuntu-latest
+    # HOMEBREW_TAP_DEPLOY_KEY: the private half of a deploy key that can write to
+    # placheckij/homebrew-tap only.
+    environment: homebrew-tap
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: placheckij/homebrew-tap
+          ssh-key: ${{ secrets.HOMEBREW_TAP_DEPLOY_KEY }}
+          path: tap
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: formula
+          path: formula/
+      - name: Push the formula
+        env:
+          TAG: ${{ github.ref_name }}
+        working-directory: tap
+        run: |
+          mkdir -p Formula
+          cp ../formula/agent-bridge.rb Formula/agent-bridge.rb
+          git add Formula/agent-bridge.rb
+          if git diff --cached --quiet; then
+            echo "The tap already has this formula."
+            exit 0
+          fi
+          git -c user.name="github-actions[bot]" \
+            -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
+            commit -m "agent-bridge ${TAG#agent-bridge-v}"
+          git push
