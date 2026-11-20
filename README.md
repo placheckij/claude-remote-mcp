@@ -85,8 +85,8 @@ restarts the service on the new version.
   It keeps `PUBLIC_HOST`, the passphrase, the tokens, the agent hosts and the tunnel; pass
   `PORT` and `TUNNEL_NAME` again if you changed them, as they aren't kept (see
   [Update and rotate](mcp-gateway/README.md#update-and-rotate)).
-- **Agent hosts:** `uv tool upgrade claude-remote-mcp-agent-bridge`, then
-  `agent-bridge setup`. On Windows, stop agent-bridge first: the upgrade fails while it
+- **Agent hosts:** `uv tool upgrade claude-remote-mcp-agent-bridge` (on a Mac with the
+  Homebrew install, `brew upgrade agent-bridge`), then `agent-bridge setup`. On Windows, stop agent-bridge first: the upgrade fails while it
   runs (see [Windows](agent-bridge/README.md#as-a-service-on-windows-task-scheduler)).
 
 Update the gateway first: it calls agent-bridges at its own API version and one behind, but
