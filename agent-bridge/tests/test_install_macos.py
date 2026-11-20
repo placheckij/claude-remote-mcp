@@ -1401,10 +1401,13 @@ def test_runs_a_path_that_survives_upgrades(invoked: str, runs: str) -> None:
     assert macos.stable_command(invoked) == runs
 
 
-def test_finds_a_command_run_by_name_on_the_path() -> None:
-    assert macos.stable_command("agent-bridge", which=lambda name: f"/opt/homebrew/bin/{name}") == (
-        "/opt/homebrew/bin/agent-bridge"
-    )
+def test_finds_a_command_run_by_name_on_the_path(tmp_path: Path) -> None:
+    # Under tmp_path: stable_command follows links, and a real /opt/homebrew/bin has one.
+    command = tmp_path / "bin/agent-bridge"
+    command.parent.mkdir()
+    command.touch()
+
+    assert macos.stable_command("agent-bridge", which=lambda name: str(tmp_path / "bin" / name)) == str(command)
 
 
 def install_link(link: Path, target: Path) -> None:
