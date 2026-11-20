@@ -16,11 +16,13 @@ class AgentBridge < Formula
 
   def install
     # One install per Mac. HOME is a temporary folder while brew builds.
-    uv = "#{Etc.getpwuid.dir}/.local/bin/agent-bridge"
-    if File.exist?(uv)
+    link = "#{Etc.getpwuid.dir}/.local/bin/agent-bridge"
+    if File.exist?(link)
+      # uv tool's link, or pipx's: pipx keeps its virtualenvs in a pipx folder.
+      tool = File.realpath(link).include?("/pipx/") ? "pipx" : "uv tool"
       odie <<~EOS
-        agent-bridge is already installed with uv (#{uv}); keep one install. To move to
-        Homebrew, run uv tool uninstall claude-remote-mcp-agent-bridge, then install this
+        agent-bridge is already installed with #{tool} (#{link}); keep one install. To move
+        to Homebrew, run #{tool} uninstall claude-remote-mcp-agent-bridge, then install this
         again and run agent-bridge setup: it keeps the settings, the token and the enrollment.
       EOS
     end

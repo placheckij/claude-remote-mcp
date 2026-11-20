@@ -22,6 +22,12 @@ __all__ = ["LABEL", "MacService", "MacSystem", "Options", "launch_agent", "setup
 LABEL = "dev.claude-remote.agent-bridge"
 # launchctl bootout returns before the old job is gone, so a bootstrap right after can fail.
 BOOTSTRAPS = 10
+# Each install's uninstall command.
+UNINSTALLS = {
+    "Homebrew": "brew uninstall agent-bridge",
+    "uv": "uv tool uninstall claude-remote-mcp-agent-bridge",
+    "pipx": "pipx uninstall claude-remote-mcp-agent-bridge",
+}
 
 
 class System(flow.System, Protocol):
@@ -30,7 +36,7 @@ class System(flow.System, Protocol):
     # Whether `launchctl disable` keeps the job from starting.
     def disabled(self) -> bool: ...
     def launchctl(self, *args: str) -> int: ...
-    # How agent-bridge is installed: "Homebrew", "uv", both or neither.
+    # How agent-bridge is installed: "Homebrew", "uv" or "pipx", any of them or none.
     def installs(self) -> list[str]: ...
 
 
@@ -41,10 +47,11 @@ def setup(options: Options, system: System, read: Read) -> int:
               file=sys.stderr)
         return flow.FAILED
     # One install, so the launch agent can't run one while you upgrade the other.
-    if len(system.installs()) > 1:
-        print("error: agent-bridge is installed with both Homebrew and uv; keep one. Remove the other with "
-              "brew uninstall agent-bridge, or uv tool uninstall claude-remote-mcp-agent-bridge, then run "
-              "agent-bridge setup again: it keeps the settings, the token and the enrollment",
+    installs = system.installs()
+    if len(installs) > 1:
+        print(f"error: agent-bridge is installed with both {' and '.join(installs)}; keep one. Remove the other "
+              f"with {', or '.join(UNINSTALLS[install] for install in installs)}, then run agent-bridge setup "
+              "again: it keeps the settings, the token and the enrollment",
               file=sys.stderr)
         return flow.FAILED
     return flow.setup(options, system, MacService(system), read)
@@ -171,9 +178,10 @@ class MacSystem(PosixSystem):
 
     def installs(self) -> list[str]:
         found = ["Homebrew"] if any(os.path.exists(command) for command in self.homebrew_commands) else []
-        # uv tool's link.
-        if os.path.exists(self.home / ".local" / "bin" / "agent-bridge"):
-            found.append("uv")
+        # uv tool's link, or pipx's: pipx keeps its virtualenvs in a pipx folder.
+        link = self.home / ".local" / "bin" / "agent-bridge"
+        if os.path.exists(link):
+            found.append("pipx" if "pipx" in Path(os.path.realpath(link)).parts else "uv")
         return found
 
     def domain(self) -> str:

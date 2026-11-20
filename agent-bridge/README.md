@@ -350,8 +350,8 @@ Then it:
 
 The last lines name the host as the gateway knows it. Nothing needs copying to the
 gateway host. The plist runs agent-bridge at a path upgrades keep:
-`/opt/homebrew/opt/agent-bridge/bin/agent-bridge` for Homebrew (`brew upgrade
-agent-bridge`), `~/.local/bin/agent-bridge` for uv (`uv tool upgrade
+`/opt/homebrew/opt/agent-bridge/bin/agent-bridge` for Homebrew (`/usr/local/opt/...` on
+Intel; `brew upgrade agent-bridge`), `~/.local/bin/agent-bridge` for uv (`uv tool upgrade
 claude-remote-mcp-agent-bridge`). Re-run `agent-bridge setup` after upgrading, which
 restarts the service. Re-running asks nothing on an installed Mac, and keeps the token and
 the enrollment. If setup stops partway, run it again: it picks up from there.
@@ -385,8 +385,9 @@ An agent-bridge installed from a checkout or a wheel stays that version under a 
 #### Homebrew or uv on macOS
 
 Install agent-bridge with Homebrew or with uv, not both: with two installs, the plist runs
-one while you upgrade the other. `brew install` refuses while uv's agent-bridge is
-installed, and `agent-bridge setup` refuses while both are.
+one while you upgrade the other. `brew install` refuses while agent-bridge is in
+`~/.local/bin` (uv's, or pipx's), and `agent-bridge setup` refuses while two installs are
+found. Each names the command that removes the other.
 
 To move from one to the other, uninstall the package only, not the service: its settings,
 token and enrollment stay. Then install the other way and run `agent-bridge setup`, which

@@ -275,23 +275,27 @@ def test_the_herdr_service_flags_are_refused(mac: FakeMac, capsys, flag: str) ->
     assert not mac.env_file.exists()
 
 
-def test_refuses_with_both_homebrew_and_uv_installs(mac: FakeMac, capsys) -> None:
-    mac.packages = ("Homebrew", "uv")
+@pytest.mark.parametrize(("other", "uninstall"), [
+    ("uv", "uv tool uninstall claude-remote-mcp-agent-bridge"),
+    ("pipx", "pipx uninstall claude-remote-mcp-agent-bridge"),
+])
+def test_refuses_with_two_installs(mac: FakeMac, capsys, other: str, uninstall: str) -> None:
+    mac.packages = ("Homebrew", other)
 
     run = setup(mac, capsys, *every_flag(mac))
 
     assert run.code == 1
     assert run.asked == []
-    assert "installed with both Homebrew and uv" in run.out
+    assert f"installed with both Homebrew and {other}" in run.out
     assert "brew uninstall agent-bridge" in run.out
-    assert "uv tool uninstall claude-remote-mcp-agent-bridge" in run.out
+    assert uninstall in run.out
     assert not mac.env_file.exists()
     assert mac.calls == []
 
 
-@pytest.mark.parametrize("packages", [("Homebrew",), ("uv",), ()])
+@pytest.mark.parametrize("packages", [("Homebrew",), ("uv",), ("pipx",), ()])
 def test_installs_from_one_install(mac: FakeMac, capsys, packages: tuple[str, ...]) -> None:
-    # (): neither, e.g. installed with pipx.
+    # (): none found, e.g. installed with pip into a virtualenv.
     mac.packages = packages
 
     assert setup(mac, capsys, *every_flag(mac)).code == 0
@@ -1543,6 +1547,13 @@ def test_finds_the_homebrew_and_uv_installs(
 
     install_link(tmp_path / ".local/bin/agent-bridge", tmp_path / ".local/share/uv/tools/x/bin/agent-bridge")
     assert macos.MacSystem().installs() == ["Homebrew", "uv"]
+
+
+def test_tells_pipx_from_uv(tmp_path: Path, set_home: Callable[[Path], None]) -> None:
+    set_home(tmp_path)
+    install_link(tmp_path / ".local/bin/agent-bridge", tmp_path / ".local/pipx/venvs/x/bin/agent-bridge")
+
+    assert macos.MacSystem().installs() == ["pipx"]
 
 
 def test_finds_herdr_on_the_path_else_in_the_usual_places(
