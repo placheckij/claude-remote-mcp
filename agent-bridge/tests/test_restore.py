@@ -315,6 +315,19 @@ def test_other_failure_keeps_entry(path: Path, folder: Path, tmp_path: Path) -> 
     assert load(path).agents[0] == failing.model_copy(update={"restore_failed": True})
 
 
+def test_a_failed_restore_is_kept_for_the_next_restart_even_after_a_miss(
+    path: Path, folder: Path, tmp_path: Path
+) -> None:
+    # One save missed it, then herdr brought its pane back; the start fails.
+    runner = runner_for([pane(agent=None, cwd=str(folder))], **{"agent start": err("agent_start_failed")})
+    run(runner, path, [entry(folder, session_id=UUID, misses=1)], tmp_path)
+
+    # Its miss doesn't count against it any more: at the next restart, with that shell gone,
+    # it must be tried again, not forgotten as "already gone".
+    [kept] = load(path).agents
+    assert (kept.restore_failed, kept.misses) == (True, 0)
+
+
 def test_a_file_that_cant_be_written_doesnt_stop_the_restore(
     path: Path, folder: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -176,8 +176,10 @@ async def _close(herdr: Herdr, pane: dict | None, found: _Found, what: str = "th
 
 
 async def _keep_failed(path: Path, entry: SavedAgent) -> None:
-    """Mark `entry` as one the restore couldn't start, so the snapshots leave it be."""
-    await asyncio.to_thread(_replace, path, entry.terminal_id, entry.model_copy(update={"restore_failed": True}))
+    """Mark `entry` as one the restore couldn't start, so the snapshots leave it be. Its misses
+    go back to 0: an earlier miss would otherwise get it forgotten at the next restart."""
+    failed = entry.model_copy(update={"restore_failed": True, "misses": 0})
+    await asyncio.to_thread(_replace, path, entry.terminal_id, failed)
 
 
 def _session_of(pane: dict) -> str | None:
