@@ -13,6 +13,7 @@ import ipaddress
 import os
 import re
 import secrets
+import shlex
 import shutil
 import socket
 import subprocess
@@ -688,9 +689,18 @@ def _herdr_resume(plan: Plan, system: System) -> None:
             reason = result.strip().splitlines()[-1] if result.strip() else f"exit code {code}"
             print(f"warning: herdr integration install claude failed for {config_dir} ({reason}); agents started "
                   f"there come back as their folder's latest conversation. Run it again with: "
-                  f"CLAUDE_CONFIG_DIR={config_dir} herdr integration install claude", file=sys.stderr)
+                  f"{_hook_command(config_dir)}", file=sys.stderr)
     if not has_claude_hook(default_claude_config()):
         print(HOOK_MISSING, file=sys.stderr)
+
+
+def _hook_command(config_dir: Path) -> str:
+    """The command that installs herdr's Claude hook in `config_dir`, for this platform's shell
+    (PowerShell on Windows)."""
+    if sys.platform == "win32":
+        quoted = str(config_dir).replace("'", "''")
+        return f"$env:CLAUDE_CONFIG_DIR='{quoted}'; herdr integration install claude"
+    return f"CLAUDE_CONFIG_DIR={shlex.quote(str(config_dir))} herdr integration install claude"
 
 
 def _give_herdr_its_resume_back() -> None:

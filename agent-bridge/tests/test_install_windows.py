@@ -69,12 +69,14 @@ class FakeWindows:
     herdr_starts: bool = True
     herdr_register_fails: bool = False
     herdr_delete_fails: bool = False
+    # What `herdr integration install claude` exits with.
+    integration_code: int = 0
 
     # --- flow.System
 
     def herdr_integration(self, binary: str, config_dir: Path) -> tuple[int, str]:
         self.calls.append(("herdr integration", binary, str(config_dir)))
-        return 0, ""
+        return self.integration_code, "can't write settings.json" if self.integration_code else ""
 
     def is_root(self) -> bool:
         return False
@@ -499,6 +501,19 @@ def test_agent_restore_turns_off_herdrs_resume_and_installs_its_hook_in_an_accou
     assert setup(host, capsys, "--agent-restore").code == 0
     assert host.env("RESTORE_AGENTS") == "true"
     assert herdr_resume() is False
+
+
+def test_a_hook_that_wont_install_says_how_to_rerun_it_in_powershell(
+        host: FakeWindows, capsys, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(sys, "platform", "win32")
+    host.integration_code = 1
+    work = host.home / "it's work"
+
+    run = setup(host, capsys, *every_flag(host, accounts=json.dumps({"work": {"config_dir": str(work)}})))
+
+    assert run.code == 0, run.out
+    escaped = str(work).replace("'", "''")
+    assert f"Run it again with: $env:CLAUDE_CONFIG_DIR='{escaped}'; herdr integration install claude" in run.out
 
 
 def test_a_host_set_up_before_the_herdr_task_gets_it(host: FakeWindows, capsys, tmp_path: Path) -> None:

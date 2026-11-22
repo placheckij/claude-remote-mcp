@@ -508,6 +508,7 @@ def test_a_hook_that_wont_install_is_a_warning(mac: FakeMac, capsys) -> None:
 
     assert run.code == 0, run.out
     assert f"warning: herdr integration install claude failed for {work}" in run.out
+    assert f"Run it again with: CLAUDE_CONFIG_DIR={work} herdr integration install claude" in run.out
     assert "can't write settings.json" in run.out
     assert "enrolled with the gateway" in run.out
 
