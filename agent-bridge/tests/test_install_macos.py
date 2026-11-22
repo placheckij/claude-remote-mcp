@@ -5,6 +5,7 @@ import json
 import plistlib
 import stat
 import sys
+import tomllib
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -15,7 +16,7 @@ from dotenv import dotenv_values
 from agent_bridge import cli
 from agent_bridge.config import check_name_format
 from agent_bridge.gateway import ENROLL_AGAIN
-from agent_bridge.install import common, flow, macos
+from agent_bridge.install import common, flow, herdr_config, macos
 
 # POSIX paths and file modes; the Windows setup is its own.
 pytestmark = pytest.mark.skipif(sys.platform == "win32", reason="the macOS setup uses POSIX paths")
@@ -60,6 +61,8 @@ class FakeMac:
     herdr_up: bool = True
     herdr_starts: bool = True
     herdr_bootstrap_failures: int = 0
+    # What `herdr integration install claude` exits with.
+    integration_code: int = 0
     calls: list[tuple[str, ...]] = field(default_factory=list)
 
     def is_root(self) -> bool:
@@ -103,6 +106,13 @@ class FakeMac:
 
     def herdr_running(self, herdr: str) -> bool:
         return self.herdr_up
+
+    def herdr_integration(self, binary: str, config_dir: Path) -> tuple[int, str]:
+        self.calls.append(("herdr integration", binary, str(config_dir)))
+        # As herdr 0.9.5 refuses a config folder that isn't there.
+        if not config_dir.is_dir():
+            return 1, f"claude directory not found at {config_dir}. install claude code first\n"
+        return self.integration_code, "" if self.integration_code == 0 else "error: can't write settings.json\n"
 
     def launchctl(self, *args: str) -> int:
         self.calls.append(("launchctl", *args))
@@ -282,6 +292,7 @@ def test_installs_and_enrolls_without_asking(mac: FakeMac, capsys) -> None:
         "AGENT_BRIDGE_HERDR_BIN": str(mac.herdr),
         "AGENT_BRIDGE_CLAUDE_CONFIG_DIR": "",
         "AGENT_BRIDGE_TRUST_ROOT": "",
+        "AGENT_BRIDGE_RESTORE_AGENTS": "true",
     }
     assert mac.ran("agent-bridge") == [("check",), ("enroll", ENROLLMENT)]
     assert "enrolled with the gateway at http://10.0.0.1:8766 as studio" in run.out
@@ -369,6 +380,107 @@ def test_no_herdr_service_removes_the_herdr_launch_agent_and_reruns_keep_it_off(
     assert mac.herdr_plist.exists()
     setup(mac, capsys)
     assert mac.herdr_plist.exists()
+
+
+def herdr_resume() -> bool | None:
+    """herdr's resume_agents_on_restore as its config file has it, None when it isn't set."""
+    path = herdr_config.herdr_config_path()
+    if not path.exists():
+        return None
+    return tomllib.loads(path.read_text(encoding="utf-8")).get("session", {}).get("resume_agents_on_restore")
+
+
+def test_no_agent_restore_gives_herdr_its_resume_back_and_reruns_keep_it_off(mac: FakeMac, capsys) -> None:
+    run = setup(mac, capsys, *every_flag(mac))
+    assert run.code == 0, run.out
+    assert env(mac)["AGENT_BRIDGE_RESTORE_AGENTS"] == "true"
+    assert herdr_resume() is False
+
+    run = setup(mac, capsys, "--no-agent-restore")
+
+    assert run.code == 0, run.out
+    assert env(mac)["AGENT_BRIDGE_RESTORE_AGENTS"] == "false"
+    assert herdr_resume() is None
+    setup(mac, capsys)
+    assert env(mac)["AGENT_BRIDGE_RESTORE_AGENTS"] == "false"
+    assert herdr_resume() is None
+
+    setup(mac, capsys, "--agent-restore")
+    assert env(mac)["AGENT_BRIDGE_RESTORE_AGENTS"] == "true"
+    assert herdr_resume() is False
+
+
+def test_a_resume_setting_of_your_own_is_left_as_you_set_it(mac: FakeMac, capsys) -> None:
+    path = herdr_config.herdr_config_path()
+    path.write_text("[session]\nresume_agents_on_restore = true\n", encoding="utf-8")
+
+    run = setup(mac, capsys, *every_flag(mac))
+
+    assert run.code == 0, run.out
+    assert path.read_text(encoding="utf-8") == "[session]\nresume_agents_on_restore = true\n"
+    assert f"note: herdr's resume_agents_on_restore is set in {path}; left as you set it" in run.out
+
+
+def test_a_herdr_config_it_cant_read_is_a_warning(mac: FakeMac, capsys) -> None:
+    herdr_config.herdr_config_path().write_text("[session\n", encoding="utf-8")
+
+    run = setup(mac, capsys, *every_flag(mac))
+
+    assert run.code == 0, run.out
+    assert "warning: couldn't turn off herdr's resume_agents_on_restore" in run.out
+
+
+def test_installs_herdrs_claude_hook_in_the_agents_configs_but_never_the_default(mac: FakeMac, capsys) -> None:
+    work, agents = mac.home / ".claude-work", mac.home / ".claude-agents"
+    accounts = json.dumps({"personal": {"config_dir": None}, "work": {"config_dir": str(work)}})
+
+    run = setup(mac, capsys, *every_flag(mac, claude_config_dir=str(agents), accounts=accounts))
+
+    assert run.code == 0, run.out
+    assert mac.ran("herdr integration") == [(str(mac.herdr), str(agents)), (str(mac.herdr), str(work))]
+    # Made first, as herdr wants it there; Claude logs in to it later.
+    assert "herdr integration install claude failed" not in run.out
+    assert stat.S_IMODE(work.stat().st_mode) == 0o700
+    assert ("warning: herdr's Claude hook isn't in the default Claude config, so agents started there by hand come "
+            "back as their folder's latest conversation. Install it with: herdr integration install claude") in run.out
+
+
+def test_a_config_with_herdrs_hook_isnt_given_it_again(mac: FakeMac, capsys) -> None:
+    work = mac.home / ".claude-work"
+    hook = {"hooks": {"SessionStart": [{"hooks": [
+        {"type": "command", "command": f"bash '{mac.home}/.claude/hooks/herdr-agent-state.sh' session"}]}]}}
+    for config in (work, mac.home / ".claude"):
+        config.mkdir()
+        (config / "settings.json").write_text(json.dumps(hook))
+
+    run = setup(mac, capsys, *every_flag(mac, accounts=json.dumps({"work": {"config_dir": str(work)}})))
+
+    assert run.code == 0, run.out
+    assert mac.ran("herdr integration") == []
+    assert "herdr's Claude hook isn't in the default Claude config" not in run.out
+
+
+def test_a_hook_that_wont_install_is_a_warning(mac: FakeMac, capsys) -> None:
+    mac.integration_code = 1
+    work = mac.home / ".claude-work"
+
+    run = setup(mac, capsys, *every_flag(mac, accounts=json.dumps({"work": {"config_dir": str(work)}})))
+
+    assert run.code == 0, run.out
+    assert f"warning: herdr integration install claude failed for {work}" in run.out
+    assert "can't write settings.json" in run.out
+    assert "enrolled with the gateway" in run.out
+
+
+def test_no_agent_restore_installs_no_hook(mac: FakeMac, capsys) -> None:
+    work = mac.home / ".claude-work"
+
+    run = setup(mac, capsys, *every_flag(mac, accounts=json.dumps({"work": {"config_dir": str(work)}})),
+                "--no-agent-restore")
+
+    assert run.code == 0, run.out
+    assert mac.ran("herdr integration") == []
+    assert "herdr's Claude hook" not in run.out
 
 
 def test_a_mac_set_up_before_the_herdr_launch_agent_gets_it(mac: FakeMac, capsys) -> None:
@@ -761,7 +873,8 @@ def test_a_rerun_asks_nothing_and_keeps_the_settings_and_the_enrollment(mac: Fak
 
     assert run.code == 0, run.out
     assert run.asked == []
-    assert env(mac) == settings
+    # An install from before agent restore gets it on.
+    assert env(mac) == {**settings, "AGENT_BRIDGE_RESTORE_AGENTS": "true"}
     # It asks the gateway first, then checks the restarted service; nothing enrolls again.
     assert mac.ran("agent-bridge") == [("check",), ("check",)]
     assert "enrolled with the gateway at http://10.0.0.1:8766 as studio" in run.out
@@ -1297,6 +1410,20 @@ def test_uninstall_leaves_the_gateway_then_removes_the_service_and_files(mac: Fa
     assert mac.herdr_up
     assert "herdr's server, if it runs, keeps running" in out
     assert "agent-bridge is removed" in out
+
+
+def test_uninstall_gives_herdr_its_resume_back_and_removes_the_saved_agents(mac: FakeMac, capsys) -> None:
+    setup(mac, capsys, *every_flag(mac))
+    agents = mac.state_file.with_name("agents.json")
+    for path in (agents, agents.with_name("agents.json.tmp"), agents.with_name("agents.json.lock")):
+        path.write_text("{}")
+
+    code, out = uninstall(mac, capsys)
+
+    assert code == 0, out
+    assert herdr_resume() is None
+    assert not mac.support.exists()
+    assert "Left" not in out
 
 
 def test_uninstall_after_no_herdr_service_removes_its_marker(mac: FakeMac, capsys) -> None:

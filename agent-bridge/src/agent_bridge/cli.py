@@ -41,6 +41,7 @@ from agent_bridge.gateway import (
 )
 from agent_bridge.herdr import Herdr, HerdrError, spawn_server
 from agent_bridge.host import API_VERSION, BRIDGE_VERSION
+from agent_bridge.install.herdr_config import default_claude_config, has_claude_hook
 from agent_bridge.saved_agents import agents_file, load as load_agents, locked, merge
 from agent_bridge.saved_agents import save as save_agents, snapshot
 from agent_bridge.state import Gateway, State, StateError, env_file, load, load_or_create, rename, save, state_file
@@ -123,6 +124,9 @@ def _parser() -> argparse.ArgumentParser:
                        help="a new token; needs --enrollment, so the gateway learns it")
     setup.add_argument("--herdr-service", action=argparse.BooleanOptionalAction, default=None,
                        help="start herdr's server at boot or login too (default: as installed, else yes)")
+    setup.add_argument("--agent-restore", dest="restore_agents", action=argparse.BooleanOptionalAction, default=None,
+                       help="bring the Claude agents back after a restart, instead of herdr, which setup turns off "
+                            "(default: as installed, else yes)")
     commands.add_parser("uninstall", help="leave the gateway, then remove the service, its settings, state and log")
     commands.add_parser("save-agents", help="save the Claude agents running in herdr now, to restore after a restart")
     start_herdr = commands.add_parser(
@@ -484,6 +488,10 @@ def _check() -> int:
             report(*_herdr_server(asyncio.run(herdr.server_status()), version))
         except HerdrError as error:
             report(False, "herdr's server runs", str(error))
+    if settings.restore_agents and not has_claude_hook(default_claude_config()):
+        # Only a note: agents started there by hand still come back, as their folder's latest
+        # conversation, and setup leaves your own config to you.
+        print("--    herdr's Claude hook isn't in the default Claude config")
     state = load(state_file())
     try:
         info = httpx.get(f"{settings.url}/info", headers={"Authorization": f"Bearer {settings.token}"}, timeout=5)

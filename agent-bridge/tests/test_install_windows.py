@@ -7,6 +7,7 @@ processes, ports or a gateway, so it runs on any platform."""
 import json
 import re
 import sys
+import tomllib
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -15,7 +16,7 @@ import pytest
 from dotenv import dotenv_values
 
 from agent_bridge import cli
-from agent_bridge.install import common, windows
+from agent_bridge.install import common, herdr_config, windows
 from agent_bridge.install.common import Refused
 from agent_bridge.install.windows import Listener
 
@@ -70,6 +71,10 @@ class FakeWindows:
     herdr_delete_fails: bool = False
 
     # --- flow.System
+
+    def herdr_integration(self, binary: str, config_dir: Path) -> tuple[int, str]:
+        self.calls.append(("herdr integration", binary, str(config_dir)))
+        return 0, ""
 
     def is_root(self) -> bool:
         return False
@@ -464,6 +469,36 @@ def test_no_herdr_service_removes_the_task_and_later_runs_keep_it_off(host: Fake
 
     assert host.herdr_task is not None
     assert not host.paths.no_herdr_task.exists()
+
+
+def herdr_resume() -> bool | None:
+    path = herdr_config.herdr_config_path()
+    if not path.exists():
+        return None
+    return tomllib.loads(path.read_text(encoding="utf-8")).get("session", {}).get("resume_agents_on_restore")
+
+
+def test_agent_restore_turns_off_herdrs_resume_and_installs_its_hook_in_an_accounts_config(
+        host: FakeWindows, capsys) -> None:
+    work = host.home / ".claude-work"
+    accounts = json.dumps({"personal": {"config_dir": None}, "work": {"config_dir": str(work)}})
+
+    run = setup(host, capsys, *every_flag(host, accounts=accounts))
+
+    assert run.code == 0, run.out
+    assert host.ran("herdr integration") == [(str(host.herdr), str(work))]
+    assert host.env("RESTORE_AGENTS") == "true"
+    assert herdr_resume() is False
+
+    assert setup(host, capsys, "--no-agent-restore").code == 0
+    assert host.env("RESTORE_AGENTS") == "false"
+    assert herdr_resume() is None
+    assert setup(host, capsys).code == 0
+    assert host.env("RESTORE_AGENTS") == "false"
+
+    assert setup(host, capsys, "--agent-restore").code == 0
+    assert host.env("RESTORE_AGENTS") == "true"
+    assert herdr_resume() is False
 
 
 def test_a_host_set_up_before_the_herdr_task_gets_it(host: FakeWindows, capsys, tmp_path: Path) -> None:

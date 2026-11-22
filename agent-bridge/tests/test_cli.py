@@ -49,6 +49,20 @@ class FakeGateway:
         return json.loads(self.requests[-1].content)
 
 
+HOOK = {"hooks": {"SessionStart": [{"hooks": [{"type": "command", "command": "bash herdr-agent-state.sh session"}]}]}}
+
+
+@pytest.fixture(autouse=True)
+def home(tmp_path_factory: pytest.TempPathFactory, set_home) -> Path:
+    """A home folder whose default Claude config has herdr's hook, as check looks for it. Not
+    above tmp_path, which tests allow agents in."""
+    home = tmp_path_factory.mktemp("home")
+    (home / ".claude").mkdir()
+    (home / ".claude" / "settings.json").write_text(json.dumps(HOOK))
+    set_home(home)
+    return home
+
+
 @pytest.fixture
 def fake(monkeypatch: pytest.MonkeyPatch) -> FakeGateway:
     fake = FakeGateway()
@@ -676,6 +690,25 @@ def test_check_passes_with_the_service_up_and_enrolled(
 
     assert code == 0, out
     assert [line.split()[0] for line in out.splitlines()] == ["ok"] * 5
+
+
+@pytest.mark.parametrize(("restore", "said"), [("true", True), ("false", False)])
+def test_check_notes_herdrs_hook_missing_from_the_default_config(
+    capsys, settings: Path, fake: FakeGateway, monkeypatch: pytest.MonkeyPatch, home: Path, restore: str, said: bool
+) -> None:
+    (home / ".claude" / "settings.json").unlink()
+    with settings.open("a") as file:
+        file.write(f"AGENT_BRIDGE_RESTORE_AGENTS={restore}\n")
+    state = enrolled()
+    monkeypatch.setattr(cli, "Herdr", FakeHerdr)
+    monkeypatch.setattr(cli.httpx, "get", lambda url, **kwargs: httpx.Response(
+        200, json={"bridge_id": state.bridge_id}, request=httpx.Request("GET", url)))
+    fake.answers[("PUT", "bridges")] = httpx.Response(200, json={"name": "mac", "gateway_id": "g", "api_version": 2})
+
+    code, out, _ = run(capsys, "check")
+
+    assert code == 0, out
+    assert ("--    herdr's Claude hook isn't in the default Claude config" in out.splitlines()) == said
     assert fake.body() == {"url": "http://192.168.1.20:8765"}
 
 

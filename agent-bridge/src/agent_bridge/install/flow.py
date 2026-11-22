@@ -41,6 +41,14 @@ from agent_bridge.install.common import (
     warn_about_settings_in_env,
     write_file,
 )
+from agent_bridge.install.herdr_config import (
+    default_claude_config,
+    has_claude_hook,
+    herdr_config_path,
+    hook_config_dirs,
+    turn_off_resume,
+    undo_resume,
+)
 from agent_bridge.state import Gateway, StateError, load
 
 DEFAULT_PORT = 8765
@@ -48,7 +56,11 @@ DEFAULT_PORT = 8765
 CHECKS = 30
 # The AGENT_BRIDGE_* settings setup writes; the env file's others are kept.
 MANAGED = ("TOKEN", "ALLOWED_ROOTS", "HOST", "PORT", "NAME", "HERDR_BIN", "CLAUDE_CONFIG_DIR", "TRUST_ROOT",
-           "ACCOUNTS")
+           "ACCOUNTS", "RESTORE_AGENTS")
+# How the settings spell false, as the bridge reads a bool (pydantic).
+FALSE = ("0", "off", "f", "false", "n", "no")
+HOOK_MISSING = ("warning: herdr's Claude hook isn't in the default Claude config, so agents started there by hand come "
+                "back as their folder's latest conversation. Install it with: herdr integration install claude")
 
 TRUST_EXPLAINED = """
 Folder trust (optional). The first time Claude opens in a folder it asks "Is this a
@@ -76,6 +88,9 @@ class Options:
     rotate_token: bool = False
     # A service (a task, a launch agent) that starts herdr's server; None keeps what is installed.
     herdr_service: bool | None = None
+    # agent-bridge brings agents back after herdr restarts, instead of herdr; None keeps what
+    # is installed (else on).
+    restore_agents: bool | None = None
 
     @classmethod
     def from_args(cls, args: argparse.Namespace) -> "Options":
@@ -104,6 +119,9 @@ class System(Protocol):
     # Runs the installed agent-bridge with no AGENT_BRIDGE_* in its environment, as the
     # service would; its output, stderr included, is returned when captured, else shown.
     def bridge(self, *args: str, capture: bool = False) -> tuple[int, str]: ...
+    # Runs `herdr integration install claude` for the Claude config `config_dir`; its exit
+    # code and output.
+    def herdr_integration(self, binary: str, config_dir: Path) -> tuple[int, str]: ...
     def sleep(self, seconds: float) -> None: ...
 
 
@@ -216,6 +234,7 @@ def setup(options: Options, system: System, service: Service, read: Read) -> int
             service.prepare()
             _write_env(plan, service)
             service.install(plan)
+            _herdr_resume(plan, system)
             _start(system, service, plan.gone or plan.new_token)
             _enroll(plan, enrolled, system, service, read)
         except (Refused, KeyboardInterrupt):
@@ -270,7 +289,9 @@ def uninstall(system: System, service: Service) -> int:
     except Refused as error:
         print(f"error: {error}", file=sys.stderr)
         return FAILED
-    for path in (service.env_file, service.state_file):
+    # herdr brings its agents back itself again.
+    _give_herdr_its_resume_back()
+    for path in (service.env_file, service.state_file, service.state_file.with_name("agents.json")):
         # With what an interrupted write left beside it, which for the env file holds the token.
         remove_with_temporary(path)
     for folder in service.folders():
@@ -285,8 +306,9 @@ def uninstall(system: System, service: Service) -> int:
 
 
 def remove_with_temporary(path: Path) -> None:
-    """Removes `path` and the temporary file write_file leaves beside it when interrupted."""
-    for file in (path, path.with_name(f"{path.name}.tmp")):
+    """Removes `path`, the temporary file write_file leaves beside it when interrupted, and a
+    lock left beside it (saved_agents.locked)."""
+    for file in (path, path.with_name(f"{path.name}.tmp"), path.with_name(f"{path.name}.lock")):
         with contextlib.suppress(OSError):
             file.unlink(missing_ok=True)
 
@@ -359,6 +381,10 @@ def _decide(options: Options, system: System, service: Service, read: Read) -> P
         print(f"warning: {config_dir} has no Claude login yet (see the end)", file=sys.stderr)
     # Never asked for (it's JSON); passed in, or kept.
     accounts = options.accounts if options.accounts is not None else installed.get("ACCOUNTS")
+    if options.restore_agents is not None:
+        restore = options.restore_agents
+    else:
+        restore = installed.get("RESTORE_AGENTS").strip().lower() not in FALSE
 
     # Kept, unless rotating. Nobody copies it: enrolling hands it to the gateway.
     installed_token = installed.get("TOKEN")
@@ -379,6 +405,7 @@ def _decide(options: Options, system: System, service: Service, read: Read) -> P
         # Written even when empty, so the next run knows folder trust was answered.
         f"{PREFIX}CLAUDE_CONFIG_DIR": config_dir,
         f"{PREFIX}TRUST_ROOT": trust_root,
+        f"{PREFIX}RESTORE_AGENTS": "true" if restore else "false",
     }
     if accounts:
         values[f"{PREFIX}ACCOUNTS"] = accounts
@@ -629,6 +656,53 @@ def _write_env(plan: Plan, service: Service) -> None:
     write_file(service.env_file, env_text(plan.values).encode(), 0o600, folder_mode=0o700)
 
 
+def _herdr_resume(plan: Plan, system: System) -> None:
+    """With agent-bridge bringing agents back, herdr's own resume goes off and its Claude hook
+    goes into the agents' configs, so each comes back in its own conversation. Without, herdr's
+    resume comes back on. Only warns: agents still start without either."""
+    if plan.values[f"{PREFIX}RESTORE_AGENTS"] != "true":
+        _give_herdr_its_resume_back()
+        return
+    path = herdr_config_path()
+    try:
+        if turn_off_resume(path) == "yours":
+            print(f"note: herdr's resume_agents_on_restore is set in {path}; left as you set it", file=sys.stderr)
+    except (OSError, ValueError) as error:
+        print(f"warning: couldn't turn off herdr's resume_agents_on_restore in {path} ({_reason(error)}); set it to "
+              "false there, or herdr brings each agent back a second time", file=sys.stderr)
+    herdr = plan.values[f"{PREFIX}HERDR_BIN"]
+    for config_dir in hook_config_dirs(plan.values):
+        if has_claude_hook(config_dir):
+            continue
+        try:
+            # herdr refuses a config that isn't there yet, i.e. one not logged in to yet.
+            config_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+        except OSError as error:
+            code, result = FAILED, f"can't make it: {_reason(error)}"
+        else:
+            code, result = system.herdr_integration(herdr, config_dir)
+        if code != OK:
+            reason = result.strip().splitlines()[-1] if result.strip() else f"exit code {code}"
+            print(f"warning: herdr integration install claude failed for {config_dir} ({reason}); agents started "
+                  f"there come back as their folder's latest conversation. Run it again with: "
+                  f"CLAUDE_CONFIG_DIR={config_dir} herdr integration install claude", file=sys.stderr)
+    if not has_claude_hook(default_claude_config()):
+        print(HOOK_MISSING, file=sys.stderr)
+
+
+def _give_herdr_its_resume_back() -> None:
+    path = herdr_config_path()
+    try:
+        undo_resume(path)
+    except (OSError, ValueError) as error:
+        print(f"warning: couldn't take agent-bridge's resume_agents_on_restore line out of {path} "
+              f"({_reason(error)}); remove it there to have herdr bring agents back itself", file=sys.stderr)
+
+
+def _reason(error: Exception) -> str:
+    return error.strerror if isinstance(error, OSError) and error.strerror else str(error)
+
+
 def _start(system: System, service: Service, enrolls: bool) -> None:
     """Starts the service and prints its checks; `enrolls`: setup enrolls next, or says how at
     the end (the gateway lost this host, or the token is new), so check's own advice to enroll
@@ -788,6 +862,15 @@ class PosixSystem:
         except OSError as error:
             raise Refused(f"can't run {self.command()} ({error.strerror})") from None
         return result.returncode, result.stdout or ""
+
+    def herdr_integration(self, binary: str, config_dir: Path) -> tuple[int, str]:
+        environment = {**os.environ, "CLAUDE_CONFIG_DIR": str(config_dir)}
+        try:
+            result = subprocess.run([binary, "integration", "install", "claude"], env=environment,
+                                    stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=60)
+        except (OSError, subprocess.TimeoutExpired) as error:
+            return FAILED, str(error)
+        return result.returncode, result.stdout + result.stderr
 
     def sleep(self, seconds: float) -> None:
         time.sleep(seconds)
