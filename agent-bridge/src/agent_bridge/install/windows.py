@@ -1,9 +1,10 @@
 """`agent-bridge setup` and `uninstall` on Windows: agent-bridge as a scheduled task of the user
 who runs it. It starts at logon, in that user's session (next to their herdr server), with no
-window, and again every minute while it isn't running. Setup adds a firewall rule for the port
-on Private networks, the one step that asks for admin rights. A host set up with setup.ps1
-from a checkout is taken over: the task runs the package from then on. The rest of setup is
-flow's.
+window, and again every minute while it isn't running. Another task starts herdr's server at
+logon unless one runs, so agents can start after a restart before anyone opens herdr (skipped
+with --no-herdr-service). Setup adds a firewall rule for the port on Private networks, the one
+step that asks for admin rights. A host set up with setup.ps1 from a checkout is taken over:
+the task runs the package from then on. The rest of setup is flow's.
 """
 
 import contextlib
@@ -33,10 +34,15 @@ from agent_bridge.install import flow
 from agent_bridge.install.common import PREFIX, Read, Refused, ask
 from agent_bridge.install.flow import Installed, Options, Plan
 
-__all__ = ["RULE", "TASK", "Options", "WindowsService", "WindowsSystem", "setup", "system", "task_xml", "uninstall"]
+__all__ = ["HERDR_TASK", "RULE", "TASK", "Options", "WindowsService", "WindowsSystem", "herdr_task_xml", "setup",
+           "system", "task_xml", "uninstall"]
 
 TASK = "agent-bridge"
+# Starts herdr's server at logon; never stops it.
+HERDR_TASK = "agent-bridge-herdr"
 RULE = "agent-bridge"
+# How long setup waits for the herdr task to start herdr's server: 40 looks, 0.5 s apart.
+HERDR_LOOKS = 40
 # The task's command and its arguments: Task Scheduler expands %...% in both, quoted or not.
 NO_EXPANSION = "%"
 
@@ -84,6 +90,16 @@ class Paths:
         return self.state / "task.xml"
 
     @property
+    def herdr_task_file(self) -> Path:
+        return self.state / "herdr-task.xml"
+
+    @property
+    def no_herdr_task(self) -> Path:
+        """There after setup --no-herdr-service, which the next setup keeps. Hosts set up before
+        the herdr task existed have neither, and get the task."""
+        return self.state / "no-herdr-task"
+
+    @property
     def disabled_marker(self) -> Path:
         """There while setup has the task disabled: a setup that stops early, or the next one
         after one was killed, then knows the task is setup's to bring back, not one you turned
@@ -105,13 +121,27 @@ def task_xml(user: str, command: str, log: Path, folder: Path) -> str:
     for path in (command, str(log)):
         if NO_EXPANSION in path:
             raise Refused(f"agent-bridge can't run from a path with % in it: {path}")
+    return _filled("agent-bridge.task.xml", user, command, f'serve --log-file "{log}"', folder)
+
+
+def herdr_task_xml(user: str, command: str, herdr: str, log: Path, folder: Path) -> str:
+    """The task that starts herdr's server: at logon, as `user`, runs `command`
+    (agent-bridgew.exe) start-herdr for `herdr`, which appends to `log`."""
+    for path in (command, herdr, str(log)):
+        if NO_EXPANSION in path:
+            raise Refused(f"the task {HERDR_TASK} can't run a path with % in it: {path}")
+    return _filled("agent-bridge-herdr.task.xml", user, command,
+                   f'start-herdr --herdr-bin "{herdr}" --log-file "{log}"', folder)
+
+
+def _filled(template: str, user: str, command: str, arguments: str, folder: Path) -> str:
     fields = {
         "{{USER}}": user,
         "{{COMMAND}}": command,
-        "{{ARGUMENTS}}": f'serve --log-file "{log}"',
+        "{{ARGUMENTS}}": arguments,
         "{{WORKING_DIRECTORY}}": str(folder),
     }
-    xml = importlib.resources.files(__package__).joinpath("agent-bridge.task.xml").read_text(encoding="utf-8")
+    xml = importlib.resources.files(__package__).joinpath(template).read_text(encoding="utf-8")
     for placeholder, value in fields.items():
         xml = xml.replace(placeholder, escape(value, {'"': "&quot;"}))
     return xml
@@ -276,16 +306,14 @@ class System(flow.System, Protocol):
     def blocked(self, program: str) -> bool: ...
     def elevated(self, commands: list[str]) -> int: ...
     def schtasks(self, *args: str) -> int: ...
-    def task(self) -> str | None: ...
-    def register(self, xml: str, file: Path) -> bool: ...
+    # The task's XML, None when there is no such task.
+    def task(self, name: str = TASK) -> str | None: ...
+    def register(self, xml: str, file: Path, name: str = TASK) -> bool: ...
+    def herdr_running(self, herdr: str) -> bool: ...
 
 
 def setup(options: Options, system: System, read: Read) -> int:
     # Before any question.
-    if options.herdr_service is not None:
-        print("error: --herdr-service and --no-herdr-service are for Linux; on Windows you start herdr's server",
-              file=sys.stderr)
-        return flow.FAILED
     if (refusal := _other_account(system)) is not None:
         print(f"error: {refusal}", file=sys.stderr)
         return flow.FAILED
@@ -364,6 +392,9 @@ class WindowsService:
     previous: str | None = None
     # abandon() ran: flow's refusal handler and setup()'s finally both call it.
     abandoned: bool = False
+    # The task that starts herdr's server at logon, and the herdr it starts.
+    herdr_service: bool = True
+    herdr: str = ""
     # Lines for the end: what setup couldn't do.
     notes: list[str] = field(default_factory=list)
 
@@ -381,6 +412,10 @@ class WindowsService:
 
     def _xml(self) -> str:
         return task_xml(self.system.user(), self.system.service_command(), self.paths.log, self.paths.state)
+
+    def _herdr_xml(self) -> str:
+        return herdr_task_xml(self.system.user(), self.system.service_command(), self.herdr, self.paths.log,
+                              self.paths.state)
 
     def check(self, plan: Plan, options: Options) -> None:
         # The task gets your lasting environment, where these win over the env file.
@@ -400,8 +435,16 @@ class WindowsService:
                           "start. uv before 0.12.4 makes them so (astral-sh/uv#19235): update uv (uv self update), "
                           "reinstall the package with agent-bridge stopped (uv tool install --reinstall "
                           "claude-remote-mcp-agent-bridge), then run agent-bridge setup again")
-        # Refused here, before anything changes, rather than when the task is registered.
+        # Kept as the last setup left it unless passed: off only after --no-herdr-service.
+        if options.herdr_service is not None:
+            self.herdr_service = options.herdr_service
+        else:
+            self.herdr_service = not self.paths.no_herdr_task.exists()
+        self.herdr = plan.values[f"{PREFIX}HERDR_BIN"]
+        # Refused here, before anything changes, rather than when the tasks are registered.
         self._xml()
+        if self.herdr_service:
+            self._herdr_xml()
         if plan.login_hint:
             config = plan.values[f"{PREFIX}CLAUDE_CONFIG_DIR"]
             plan.login_hint = ("Log in to Claude once in the agents' config, or new agents can't start. In "
@@ -443,6 +486,51 @@ class WindowsService:
 
     def install(self, plan: Plan) -> None:
         self._firewall()
+        if self.herdr_service:
+            self._herdr_task()
+        else:
+            self._no_herdr_task()
+
+    def _herdr_task(self) -> None:
+        """Registers the task that starts herdr's server at logon. Registering it runs it once,
+        which starts the server unless one runs; a running one is never restarted."""
+        print(f"\n==> The scheduled task {HERDR_TASK}, which starts herdr's server at every logon")
+        running = self.system.herdr_running(self.herdr)
+        if not self.system.register(self._herdr_xml(), self.paths.herdr_task_file, HERDR_TASK):
+            raise Refused(f"schtasks couldn't register the task {HERDR_TASK}")
+        with contextlib.suppress(OSError):
+            self.paths.no_herdr_task.unlink(missing_ok=True)
+        if running:
+            print("herdr's server already runs; it is left as it is.")
+            return
+        print("Starting herdr's server")
+        for _ in range(HERDR_LOOKS):
+            self.system.sleep(0.5)
+            if self.system.herdr_running(self.herdr):
+                print("ok")
+                return
+        print(f"warning: herdr's server didn't start; see {self.paths.log}", file=sys.stderr)
+        self.notes.append("herdr's server didn't start (see above), so agents can't start until you open herdr.")
+
+    def _no_herdr_task(self) -> None:
+        """Removes the herdr task, and remembers that, so the next setup doesn't add it back.
+        herdr's server keeps running."""
+        try:
+            self.paths.state.mkdir(parents=True, exist_ok=True)
+            self.paths.no_herdr_task.write_text("setup --no-herdr-service\n", encoding="utf-8")
+        except OSError as error:
+            raise Refused(f"can't write {self.paths.no_herdr_task} ({error.strerror})") from None
+        if self.system.task(HERDR_TASK) is not None:
+            print(f"\n==> Removing the scheduled task {HERDR_TASK} (herdr's server keeps running)")
+            self._delete_herdr_task()
+        with contextlib.suppress(OSError):
+            self.paths.herdr_task_file.unlink(missing_ok=True)
+
+    def _delete_herdr_task(self) -> None:
+        if self.system.schtasks("/Delete", "/TN", f"\\{HERDR_TASK}", "/F") != 0:
+            print(f"warning: couldn't remove the scheduled task {HERDR_TASK}; remove it in Task Scheduler",
+                  file=sys.stderr)
+            self.notes.append(f"The scheduled task {HERDR_TASK} is still there (see above).")
 
     def _firewall(self) -> None:
         print(f"\n==> Firewall rule for TCP {self.port}, on Private networks only")
@@ -547,6 +635,8 @@ class WindowsService:
 
     def done(self, url: str) -> list[str]:
         lines = [f"Done. agent-bridge listens on {url} and starts at every logon.",
+                 f"herdr's server starts at every logon too (the task {HERDR_TASK})." if self.herdr_service else
+                 "Open herdr after each logon: its server must run for agents to start.",
                  f"If a check failed: see its log, {self.paths.log} (herdr failing means its server isn't running)."]
         program = next((listener.path for listener in self.system.listeners(self.port)
                         if is_bridge(listener.command_line) and listener.path), "")
@@ -566,6 +656,11 @@ class WindowsService:
         if self.previous is not None and self.system.schtasks("/Delete", "/TN", f"\\{TASK}", "/F") != 0:
             self.abandon()
             raise Refused(f"couldn't remove the scheduled task {TASK}; it is left as it was. Run uninstall again.")
+        if self.system.task(HERDR_TASK) is not None:
+            print(f"\n==> Removing the scheduled task {HERDR_TASK}")
+            self._delete_herdr_task()
+            print("herdr's server, if it runs, keeps running with its agents until you stop it (herdr server stop) "
+                  "or log off.")
         print("\n==> Removing the firewall rule")
         rule = self.system.firewall_rule()
         if rule is None:
@@ -580,7 +675,8 @@ class WindowsService:
                 print(f"warning: not removed. In a PowerShell run as administrator:\n  {remove_rule_command()}",
                       file=sys.stderr)
         for path in (self.paths.log, self.paths.log.with_name(f"{self.paths.log.name}.1"), self.paths.task_file,
-                     self.paths.state / "task-before-setup.xml", self.paths.disabled_marker, *self.paths.leftovers()):
+                     self.paths.herdr_task_file, self.paths.no_herdr_task, self.paths.state / "task-before-setup.xml",
+                     self.paths.disabled_marker, *self.paths.leftovers()):
             self._remove(path)
         shutil.rmtree(self.paths.check_folder(), ignore_errors=True)
 
@@ -832,10 +928,10 @@ class WindowsSystem:
         except OSError:
             return -1
 
-    def task(self) -> str | None:
-        """The installed task's XML, or None when there is no task."""
+    def task(self, name: str = TASK) -> str | None:
+        """The installed task's XML, or None when there is no such task."""
         try:
-            result = subprocess.run([_system32("schtasks.exe"), "/Query", "/TN", f"\\{TASK}", "/XML"], capture_output=True,
+            result = subprocess.run([_system32("schtasks.exe"), "/Query", "/TN", f"\\{name}", "/XML"], capture_output=True,
                                     creationflags=subprocess.CREATE_NO_WINDOW)
         except OSError:
             return None
@@ -844,15 +940,24 @@ class WindowsSystem:
         # In the console's code page.
         return result.stdout.decode(_oem(), "replace")
 
-    def register(self, xml: str, file: Path) -> bool:
-        """Registers the task from `xml`, kept in `file` (UTF-16, as its declaration says).
-        Registering fires its registration trigger, which starts it."""
+    def register(self, xml: str, file: Path, name: str = TASK) -> bool:
+        """Registers the task `name` from `xml`, kept in `file` (UTF-16, as its declaration
+        says). Registering fires its registration trigger, which starts it."""
         try:
             file.parent.mkdir(parents=True, exist_ok=True)
             file.write_text(xml, encoding="utf-16")
         except OSError as error:
             raise Refused(f"can't write {file} ({error.strerror})") from None
-        return self.schtasks("/Create", "/TN", f"\\{TASK}", "/XML", str(file), "/F") == 0
+        return self.schtasks("/Create", "/TN", f"\\{name}", "/XML", str(file), "/F") == 0
+
+    def herdr_running(self, herdr: str) -> bool:
+        """Whether `herdr status server` says its server runs."""
+        try:
+            result = subprocess.run([herdr, "status", "server", "--json"], capture_output=True, timeout=30,
+                                    creationflags=subprocess.CREATE_NO_WINDOW)
+            return bool(json.loads(result.stdout).get("running"))
+        except (OSError, subprocess.TimeoutExpired, ValueError, AttributeError):
+            return False
 
     def stop(self, pids: list[int]) -> None:
         """Ends the processes and waits (up to 10 s) until they are gone and have let go of

@@ -1,0 +1,62 @@
+<?xml version="1.0" encoding="UTF-16"?>
+<!--
+  The scheduled task that starts herdr's server at logon, as you, in your session, unless one
+  runs already: so agents can start after a restart (a Windows Update one too) before anyone
+  opens herdr. agent-bridge setup (install/windows.py) fills in the fields in double braces and
+  registers it; setup with no-herdr-service, and uninstall, remove it.
+
+  The action runs agent-bridgew.exe start-herdr, which starts `herdr server` with no window and
+  exits: herdr.exe is a console program, which would open a window. The server keeps running
+  on its own, so ending or removing the task leaves it and its agents alone.
+-->
+<Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+  <RegistrationInfo>
+    <Description>agent-bridge: starts herdr's server at logon, so agents can start before you open herdr. Installed by agent-bridge setup; remove it with agent-bridge setup --no-herdr-service or agent-bridge uninstall.</Description>
+    <URI>\agent-bridge-herdr</URI>
+  </RegistrationInfo>
+  <!-- At every logon, and once when setup registers it. Not again after `herdr server stop`. -->
+  <Triggers>
+    <LogonTrigger>
+      <Enabled>true</Enabled>
+      <UserId>{{USER}}</UserId>
+    </LogonTrigger>
+    <RegistrationTrigger>
+      <Enabled>true</Enabled>
+    </RegistrationTrigger>
+  </Triggers>
+  <Principals>
+    <Principal id="Author">
+      <UserId>{{USER}}</UserId>
+      <LogonType>InteractiveToken</LogonType>
+      <RunLevel>LeastPrivilege</RunLevel>
+    </Principal>
+  </Principals>
+  <Settings>
+    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
+    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
+    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
+    <AllowHardTerminate>true</AllowHardTerminate>
+    <StartWhenAvailable>false</StartWhenAvailable>
+    <RunOnlyIfNetworkAvailable>false</RunOnlyIfNetworkAvailable>
+    <IdleSettings>
+      <StopOnIdleEnd>false</StopOnIdleEnd>
+      <RestartOnIdle>false</RestartOnIdle>
+    </IdleSettings>
+    <AllowStartOnDemand>true</AllowStartOnDemand>
+    <Enabled>true</Enabled>
+    <Hidden>true</Hidden>
+    <RunOnlyIfIdle>false</RunOnlyIfIdle>
+    <WakeToRun>false</WakeToRun>
+    <!-- It waits at most 15 s for the server to answer. -->
+    <ExecutionTimeLimit>PT5M</ExecutionTimeLimit>
+    <!-- Normal priority, which the server and its agents inherit; a task's default (7) is below normal. -->
+    <Priority>5</Priority>
+  </Settings>
+  <Actions Context="Author">
+    <Exec>
+      <Command>{{COMMAND}}</Command>
+      <Arguments>{{ARGUMENTS}}</Arguments>
+      <WorkingDirectory>{{WORKING_DIRECTORY}}</WorkingDirectory>
+    </Exec>
+  </Actions>
+</Task>

@@ -1,4 +1,5 @@
-"""`agent-bridge serve | enroll | rename | unenroll | check | setup | uninstall`: what the platform setups run.
+"""`agent-bridge serve | enroll | rename | unenroll | check | setup | uninstall | start-herdr`: what the platform
+setups run.
 
 Exit codes are part of the deploy contract the setups are built against: `enroll` and
 `rename` exit 3 when the name is taken (ask for another) and 4 when the gateway can't be
@@ -17,6 +18,7 @@ import logging.handlers
 import os
 import stat
 import sys
+import time
 from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
@@ -37,7 +39,7 @@ from agent_bridge.gateway import (
     report_address,
     unenroll,
 )
-from agent_bridge.herdr import Herdr, HerdrError
+from agent_bridge.herdr import Herdr, HerdrError, spawn_server
 from agent_bridge.host import API_VERSION, bridge_version
 from agent_bridge.state import Gateway, State, StateError, env_file, load, load_or_create, rename, save, state_file
 
@@ -46,6 +48,8 @@ OK, FAILED, INVALID, NAME_TAKEN, UNREACHABLE, SAVE_FAILED, OUTDATED = 0, 1, 2, 3
 LOG_LIMIT = 1024 * 1024
 # The gateway's codes for a host it has no record of with this token (enrollment.py).
 NOT_KNOWN = ("not_enrolled", "unauthorized")
+# How long start-herdr waits for the server it started to answer: 30 looks, 0.5 s apart.
+HERDR_START_LOOKS, HERDR_START_POLL_S = 30, 0.5
 
 log = logging.getLogger(__name__)
 
@@ -70,6 +74,8 @@ def main(argv: list[str] | None = None, *, run: Callable[..., None] = uvicorn.ru
             return _setup(args)
         if args.command == "uninstall":
             return _uninstall()
+        if args.command == "start-herdr":
+            return _start_herdr(args.herdr_bin, args.log_file)
         if args.token_format is not None:
             return _format(check_token_format, args.token_format, "The token")
         if args.name_format is not None:
@@ -112,8 +118,14 @@ def _parser() -> argparse.ArgumentParser:
     setup.add_argument("--rotate-token", action="store_true",
                        help="a new token; needs --enrollment, so the gateway learns it")
     setup.add_argument("--herdr-service", action=argparse.BooleanOptionalAction, default=None,
-                       help="Linux: run herdr's server as a user service too (default: as installed, else yes)")
+                       help="Linux and Windows: start herdr's server at boot or logon too (default: as "
+                            "installed, else yes)")
     commands.add_parser("uninstall", help="leave the gateway, then remove the service, its settings, state and log")
+    start_herdr = commands.add_parser(
+        "start-herdr", help="start herdr's server in the background unless one runs (what the Windows task "
+                            "agent-bridge-herdr runs at logon)")
+    start_herdr.add_argument("--herdr-bin", metavar="PATH", help="herdr (default: AGENT_BRIDGE_HERDR_BIN)")
+    start_herdr.add_argument("--log-file", type=Path, metavar="PATH", help="append to PATH instead of stderr")
     return parser
 
 
@@ -186,8 +198,8 @@ class _RotatingLog(logging.handlers.RotatingFileHandler):
         self.stream = self._open()
 
 
-def _open_log(path: Path) -> logging.Handler:
-    """Sends logging, and only logging, to `path`, after a line for this start. What is
+def _open_log(path: Path, starting: str = "agent-bridge") -> logging.Handler:
+    """Sends logging, and only logging, to `path`, after a line for this start (of `starting`). What is
     printed stays out of it, as do tracebacks: they may hold settings. The log is moved to
     `<name>.1` once it passes 1 MB, also while agent-bridge runs."""
     with contextlib.suppress(OSError):  # not there yet, or held open by another bridge
@@ -198,12 +210,51 @@ def _open_log(path: Path) -> logging.Handler:
         handler = _RotatingLog(path, maxBytes=LOG_LIMIT, backupCount=1, encoding="utf-8")
     except OSError as error:
         raise _Refused(f"Can't write {path} ({error.strerror}).") from None
-    handler.stream.write(f"==== {datetime.now():%Y-%m-%d %H:%M:%S} starting agent-bridge\n")
+    handler.stream.write(f"==== {datetime.now():%Y-%m-%d %H:%M:%S} starting {starting}\n")
     handler.setFormatter(_NoTraceback("%(asctime)s %(levelname)-9s %(message)s", "%Y-%m-%d %H:%M:%S"))
     root = logging.getLogger()
     root.setLevel(logging.INFO)
     root.addHandler(handler)
     return handler
+
+
+def _start_herdr(herdr_bin: str | None, log_file: Path | None) -> int:
+    """Starts herdr's server in the background, in your home folder, unless one runs, and waits
+    until it answers. What the Windows task runs at logon: herdr's own CLI would open a console
+    window there, and herdr starts its server only when you open it."""
+    handler = _open_log(log_file, "herdr's server") if log_file else None
+    if handler is None:
+        logging.basicConfig(level=logging.INFO, format="%(levelname)-9s %(message)s")
+    try:
+        binary = herdr_bin or _settings(for_service=False).herdr_bin
+        herdr = Herdr(binary=binary)
+
+        def running() -> bool:
+            return bool(asyncio.run(herdr.server_status()).get("running"))
+
+        if running():
+            log.info("herdr's server already runs")
+            return OK
+        try:
+            spawn_server(binary, str(Path.home()))
+        except OSError as error:
+            raise _Refused(f"Couldn't start herdr's server ({binary} server): {error.strerror or error}") from None
+        for _ in range(HERDR_START_LOOKS):
+            time.sleep(HERDR_START_POLL_S)
+            if running():
+                log.info("started herdr's server (%s server)", binary)
+                return OK
+        raise _Refused(f"herdr's server ({binary} server) didn't answer within "
+                       f"{HERDR_START_LOOKS * HERDR_START_POLL_S:g} s; see herdr's own server log")
+    except (_Refused, HerdrError) as error:
+        if handler:
+            log.error("%s", error)
+        print(error, file=sys.stderr)
+        return FAILED
+    finally:
+        if handler:
+            logging.getLogger().removeHandler(handler)
+            handler.close()
 
 
 def _enroll(string: str) -> int:

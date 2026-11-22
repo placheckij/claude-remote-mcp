@@ -74,7 +74,7 @@ class Options:
     enrollment: str | None = None
     accounts: str | None = None
     rotate_token: bool = False
-    # Linux: a service for herdr's server; None keeps what is installed.
+    # Linux and Windows: a service (a task) that starts herdr's server; None keeps what is installed.
     herdr_service: bool | None = None
 
     @classmethod

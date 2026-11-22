@@ -43,8 +43,8 @@ class System(flow.System, Protocol):
 def setup(options: Options, system: System, read: Read) -> int:
     # Before any question.
     if options.herdr_service is not None:
-        print("error: --herdr-service and --no-herdr-service are for Linux; on macOS you start herdr's server",
-              file=sys.stderr)
+        print("error: --herdr-service and --no-herdr-service are for Linux and Windows; on macOS you start herdr's "
+              "server", file=sys.stderr)
         return flow.FAILED
     # One install, so the launch agent can't run one while you upgrade the other.
     installs = system.installs()

@@ -33,6 +33,26 @@ ERROR_FILENAME_EXCED_RANGE = 206
 NO_WINDOW = {"creationflags": subprocess.CREATE_NO_WINDOW} if WINDOWS else {}
 
 
+def spawn_server(binary: str, cwd: str) -> None:
+    """Starts `herdr server` in the background and leaves it running: in a new session on
+    POSIX; on Windows with a console no one sees, which the shells herdr runs share, and out
+    of the job of whatever started this (uv's launcher, a scheduled task), so it outlives it.
+    herdr refuses to start a second server, so a race costs nothing."""
+    def start(**options: object) -> None:
+        subprocess.Popen([binary, "server"], cwd=cwd, close_fds=True, stdin=subprocess.DEVNULL,
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, **options)
+
+    if not WINDOWS:
+        start(start_new_session=True)
+        return
+    flags = subprocess.CREATE_NO_WINDOW | subprocess.CREATE_NEW_PROCESS_GROUP
+    try:
+        start(creationflags=flags | subprocess.CREATE_BREAKAWAY_FROM_JOB)
+    except PermissionError:
+        # A job that doesn't allow breakaway: then it starts in the job.
+        start(creationflags=flags)
+
+
 def command_line_length(argv: Sequence[str]) -> int:
     """How many of Windows' command-line units `argv` takes once quoted."""
     return len(subprocess.list2cmdline(argv).encode("utf-16-le")) // 2
