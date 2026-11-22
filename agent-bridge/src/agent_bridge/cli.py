@@ -118,12 +118,11 @@ def _parser() -> argparse.ArgumentParser:
     setup.add_argument("--rotate-token", action="store_true",
                        help="a new token; needs --enrollment, so the gateway learns it")
     setup.add_argument("--herdr-service", action=argparse.BooleanOptionalAction, default=None,
-                       help="Linux and Windows: start herdr's server at boot or logon too (default: as "
-                            "installed, else yes)")
+                       help="start herdr's server at boot or login too (default: as installed, else yes)")
     commands.add_parser("uninstall", help="leave the gateway, then remove the service, its settings, state and log")
     start_herdr = commands.add_parser(
-        "start-herdr", help="start herdr's server in the background unless one runs (what the Windows task "
-                            "agent-bridge-herdr runs at logon)")
+        "start-herdr", help="start herdr's server in the background unless one runs (what the macOS launch "
+                            "agent and the Windows task agent-bridge-herdr run at login)")
     start_herdr.add_argument("--herdr-bin", metavar="PATH", help="herdr (default: AGENT_BRIDGE_HERDR_BIN)")
     start_herdr.add_argument("--log-file", type=Path, metavar="PATH", help="append to PATH instead of stderr")
     return parser
@@ -220,8 +219,8 @@ def _open_log(path: Path, starting: str = "agent-bridge") -> logging.Handler:
 
 def _start_herdr(herdr_bin: str | None, log_file: Path | None) -> int:
     """Starts herdr's server in the background, in your home folder, unless one runs, and waits
-    until it answers. What the Windows task runs at logon: herdr's own CLI would open a console
-    window there, and herdr starts its server only when you open it."""
+    until it answers. What the macOS launch agent and the Windows task run at login: herdr starts
+    its server only when you open it, and on Windows its own CLI would open a console window."""
     handler = _open_log(log_file, "herdr's server") if log_file else None
     if handler is None:
         logging.basicConfig(level=logging.INFO, format="%(levelname)-9s %(message)s")

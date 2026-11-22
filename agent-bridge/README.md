@@ -19,7 +19,7 @@ whose folder is under the allowed roots.
 | | |
 |---|---|
 | OS | macOS, Linux or Windows (natively), wherever [herdr](https://github.com/herdrdev/herdr) runs. Tested on macOS 27.2 (Apple silicon), Ubuntu 26.04 LTS (x86_64, systemd 259) and Windows 11 25H2 (Windows PowerShell 5.1). The service setup needs launchd on macOS, systemd user units on Linux, and Windows 10 version 1809 or later. |
-| herdr | 0.8.0 or newer (tested with 0.8.0 and 0.9.5); its server must be running for the same user (it is whenever herdr is open, and keeps running after you detach) |
+| herdr | 0.8.0 or newer (tested with 0.8.0 and 0.9.5); its server must be running for the same user (it is whenever herdr is open, and keeps running after you detach; `agent-bridge setup` starts it at boot or login) |
 | Claude Code | the `claude` CLI, installed and logged in for that user |
 | Python | 3.11+, via [uv](https://docs.astral.sh/uv/) (uv installs it if needed); on Windows, uv 0.12.4 or newer, as older ones install a windowless agent-bridge that opens a console window |
 | Network | reachable from the gateway host on one TCP port (default 8765), and able to reach the gateway on its port (8766) to enroll and, at every start, to report its address. Give the host a fixed LAN address, e.g. a DHCP reservation. Nothing is exposed to the internet. |
@@ -42,11 +42,11 @@ answers "The agent host is not reachable". The gateway host can't wake it: macOS
 - A laptop with the lid closed sleeps anyway, unless it's on power with an external
   display. `sudo pmset -c disablesleep 1` keeps it awake with the lid closed too (an
   undocumented setting; undo with `0`; mind the heat).
-- Stay logged in. agent-bridge is a launchd agent, which only runs in a logged-in
-  session; a locked screen is fine. After a restart (for example an overnight macOS
-  update) FileVault waits for your password, so nothing runs until you log in again.
-  Consider turning off automatic installation of macOS updates.
-- Keep herdr open, or detached; its server must be running.
+- Stay logged in. The [launch agents](#as-a-service-on-macos-launchd) start agent-bridge
+  and herdr's server at login and only run in a logged-in session; a locked screen is
+  fine. After a restart (for example an overnight macOS update) FileVault waits for your
+  password, so nothing runs until you log in again. Consider turning off automatic
+  installation of macOS updates.
 
 **Linux**
 
@@ -319,7 +319,9 @@ The examples below use `/Users/me` for your home folder; replace it with yours.
 launchd, macOS's service manager, starts agent-bridge at login and restarts it if it
 stops. It is configured by a *plist* file in `~/Library/LaunchAgents`, which runs
 `agent-bridge serve`; the settings are in the [env file](#configuration).
-`agent-bridge setup` writes both and enrolls the bridge.
+`agent-bridge setup` writes both and enrolls the bridge. A second launch agent starts
+herdr's server at login, headless, unless one runs, so agents can start after a restart
+before you open herdr.
 
 #### With agent-bridge setup
 
@@ -351,11 +353,25 @@ Then it:
    a free port;
 2. writes the env file, readable only by you. Other settings in it are kept, but not its
    comments;
-3. writes the plist and (re)starts the service;
-4. runs `agent-bridge check`. Before the first enrollment its last line is
+3. writes and loads a second launch agent, `dev.claude-remote.agent-bridge-herdr`, which
+   runs `agent-bridge start-herdr` at every login: that starts `herdr server` in the
+   background unless a herdr server runs, waits until it answers, and exits. Loading it
+   runs it once, so setup starts herdr's server if none runs. It never restarts a running
+   one, so running agents stay, and it doesn't start one again after `herdr server stop`
+   until the next login. Its log is `~/Library/Logs/agent-bridge-herdr.log`;
+4. writes the plist and (re)starts the service;
+5. runs `agent-bridge check`. Before the first enrollment its last line is
    `--    not enrolled with a gateway`, which isn't a failure;
-5. enrolls with the gateway. If the gateway has another host by that name, it asks for
+6. enrolls with the gateway. If the gateway has another host by that name, it asks for
    another one.
+
+You can still open herdr, which attaches to the server the launch agent started. The
+agents in that server get macOS folder permissions as herdr, not as your terminal app, so
+an agent working under Desktop, Documents or Downloads may wait on a permission prompt
+until you answer it at the Mac. `--no-herdr-service` removes the herdr launch agent
+without stopping herdr's server, if you start it yourself; re-runs keep it off until
+`--herdr-service` brings it back. A Mac set up before the launch agent existed gets it at
+its next setup.
 
 The last lines name the host as the gateway knows it. Nothing needs copying to the
 gateway host. The plist runs agent-bridge at a path upgrades keep:
@@ -487,15 +503,21 @@ launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/dev.claude-remote.agent-
 launchctl disable gui/$(id -u)/dev.claude-remote.agent-bridge
 launchctl enable gui/$(id -u)/dev.claude-remote.agent-bridge      # undo
 
-# Uninstall: leaves the gateway, then removes the service, the env and state files and
-# the log. ~/Library/Application Support/agent-bridge goes too, unless it holds other
-# files. Then `brew uninstall agent-bridge` (or `uv tool uninstall
+# herdr's launch agent: whether it ran at login ("last exit code = 0") and its log.
+launchctl print gui/$(id -u)/dev.claude-remote.agent-bridge-herdr | grep -E 'state|last exit'
+cat ~/Library/Logs/agent-bridge-herdr.log
+
+# Uninstall: leaves the gateway, then removes both launch agents, the env and state files
+# and the logs. ~/Library/Application Support/agent-bridge goes too, unless it holds other
+# files. herdr's server keeps running with its agents until you stop it (herdr server
+# stop) or log out. Then `brew uninstall agent-bridge` (or `uv tool uninstall
 # claude-remote-mcp-agent-bridge`) removes the package.
 agent-bridge uninstall
 ```
 
-By hand, uninstalling is `agent-bridge unenroll`, `launchctl bootout` as above, then
-removing the plist, `~/Library/Application Support/agent-bridge` and the log.
+By hand, uninstalling is `agent-bridge unenroll`, `launchctl bootout` as above for both
+labels, then removing both plists, `~/Library/Application Support/agent-bridge` and the
+logs.
 
 ### As a service on Linux (systemd user unit)
 

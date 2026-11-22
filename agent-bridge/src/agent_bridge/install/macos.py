@@ -1,14 +1,18 @@
 """`agent-bridge setup` and `uninstall` on macOS: agent-bridge as a launchd agent of the user
-who runs it. It starts at login and restarts when it stops. The rest of setup is flow's.
+who runs it. It starts at login and restarts when it stops. Another launch agent starts herdr's
+server at login unless one runs, so agents can start before anyone opens herdr (skipped with
+--no-herdr-service). The rest of setup is flow's.
 """
 
+import contextlib
+import json
 import os
 import plistlib
 import re
 import subprocess
 import sys
 from collections.abc import Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Protocol
 
@@ -17,11 +21,16 @@ from agent_bridge.install.common import PREFIX, Read, Refused, write_file
 from agent_bridge.install.flow import Installed, Options, Plan, PosixSystem, stable_command
 from agent_bridge.install.flow import output as _output
 
-__all__ = ["LABEL", "MacService", "MacSystem", "Options", "launch_agent", "setup", "stable_command", "system", "uninstall"]
+__all__ = ["HERDR_LABEL", "LABEL", "MacService", "MacSystem", "Options", "herdr_launch_agent", "launch_agent", "setup",
+           "stable_command", "system", "uninstall"]
 
 LABEL = "dev.claude-remote.agent-bridge"
+# Starts herdr's server at login; never stops it.
+HERDR_LABEL = "dev.claude-remote.agent-bridge-herdr"
 # launchctl bootout returns before the old job is gone, so a bootstrap right after can fail.
 BOOTSTRAPS = 10
+# How long setup waits for the herdr launch agent to start herdr's server: 40 looks, 0.5 s apart.
+HERDR_LOOKS = 40
 # Each install's uninstall command.
 UNINSTALLS = {
     "Homebrew": "brew uninstall agent-bridge",
@@ -38,14 +47,10 @@ class System(flow.System, Protocol):
     def launchctl(self, *args: str) -> int: ...
     # How agent-bridge is installed: "Homebrew", "uv" or "pipx", any of them or none.
     def installs(self) -> list[str]: ...
+    def herdr_running(self, herdr: str) -> bool: ...
 
 
 def setup(options: Options, system: System, read: Read) -> int:
-    # Before any question.
-    if options.herdr_service is not None:
-        print("error: --herdr-service and --no-herdr-service are for Linux and Windows; on macOS you start herdr's "
-              "server", file=sys.stderr)
-        return flow.FAILED
     # One install, so the launch agent can't run one while you upgrade the other.
     installs = system.installs()
     if len(installs) > 1:
@@ -76,6 +81,17 @@ def launch_agent(command: str, log: Path) -> dict:
     }
 
 
+def herdr_launch_agent(command: str, herdr: str, log: Path) -> dict:
+    """The launch agent that starts herdr's server at login: `agent-bridge start-herdr` starts
+    it in its own session unless one runs, waits until it answers, and exits. The server is in
+    no process group of the job's, so neither the job's exit nor a bootout ends it."""
+    return {
+        "Label": HERDR_LABEL,
+        "ProgramArguments": [command, "start-herdr", "--herdr-bin", herdr, "--log-file", str(log)],
+        "RunAtLoad": True,
+    }
+
+
 @dataclass
 class MacService:
     system: System
@@ -83,6 +99,11 @@ class MacService:
     runner: str = "launch agent"
     name_fallback: str = "mac"
     retries: str = "every 10 s"
+    # The launch agent that starts herdr's server at login, and the herdr it starts.
+    herdr_service: bool = True
+    herdr: str = ""
+    # Lines for the end: what setup couldn't do.
+    notes: list[str] = field(default_factory=list)
 
     @property
     def support(self) -> Path:
@@ -106,8 +127,27 @@ class MacService:
     def log(self) -> Path:
         return self.system.home / "Library" / "Logs" / "agent-bridge.log"
 
+    @property
+    def herdr_plist(self) -> Path:
+        return self.system.home / "Library" / "LaunchAgents" / f"{HERDR_LABEL}.plist"
+
+    @property
+    def herdr_log(self) -> Path:
+        return self.system.home / "Library" / "Logs" / "agent-bridge-herdr.log"
+
+    @property
+    def no_herdr_agent(self) -> Path:
+        """There after setup --no-herdr-service, which the next setup keeps. Macs set up before
+        the herdr launch agent existed have neither, and get it."""
+        return self.support / "no-herdr-agent"
+
     def check(self, plan: Plan, options: Options) -> None:
-        pass
+        # Kept as the last setup left it unless passed: off only after --no-herdr-service.
+        if options.herdr_service is not None:
+            self.herdr_service = options.herdr_service
+        else:
+            self.herdr_service = not self.no_herdr_agent.exists()
+        self.herdr = plan.values[f"{PREFIX}HERDR_BIN"]
 
     def prepare(self) -> None:
         pass
@@ -140,6 +180,58 @@ class MacService:
             self.log.parent.mkdir(parents=True, exist_ok=True)
         except OSError as error:
             raise Refused(f"can't make {self.log.parent} ({error.strerror})") from None
+        # Here, not in start(): setup restarts agent-bridge, and herdr's server needs no restart.
+        if self.herdr_service:
+            self._herdr_agent()
+        else:
+            self._no_herdr_agent()
+
+    def _herdr_agent(self) -> None:
+        """Loads the launch agent that starts herdr's server at login. Loading it runs it once,
+        which starts the server unless one runs; a running one is never restarted."""
+        print(f"\n==> Starting {HERDR_LABEL}, which starts herdr's server at every login")
+        running = self.system.herdr_running(self.herdr)
+        write_file(self.herdr_plist, plistlib.dumps(herdr_launch_agent(self.system.command(), self.herdr,
+                                                                       self.herdr_log)), 0o644)
+        with contextlib.suppress(OSError):
+            self.no_herdr_agent.unlink(missing_ok=True)
+        service = f"{self.system.domain()}/{HERDR_LABEL}"
+        # Ends only start-herdr, if it still runs: the server it started has its own session.
+        self.system.launchctl("bootout", service)
+        for attempt in range(BOOTSTRAPS):
+            if self.system.launchctl("bootstrap", self.system.domain(), str(self.herdr_plist)) == 0:
+                break
+            if attempt == BOOTSTRAPS - 1:
+                self._herdr_failed(f"launchctl bootstrap failed; see: launchctl print {service}")
+                return
+            self.system.sleep(1)
+        if running:
+            print("herdr's server already runs; it is left as it is.")
+            return
+        print("Starting herdr's server")
+        for _ in range(HERDR_LOOKS):
+            self.system.sleep(0.5)
+            if self.system.herdr_running(self.herdr):
+                print("ok")
+                return
+        self._herdr_failed(f"herdr's server didn't start; see {self.herdr_log}")
+
+    def _herdr_failed(self, warning: str) -> None:
+        print(f"warning: {warning}", file=sys.stderr)
+        self.notes.append("herdr's server didn't start (see above), so agents can't start until you open herdr.")
+
+    def _no_herdr_agent(self) -> None:
+        """Removes the herdr launch agent, and remembers that, so the next setup doesn't add it
+        back. herdr's server keeps running."""
+        write_file(self.no_herdr_agent, b"setup --no-herdr-service\n", 0o600)
+        if self.herdr_plist.exists():
+            print(f"\n==> Removing {HERDR_LABEL} (herdr's server keeps running)")
+            self._remove_herdr_agent()
+
+    def _remove_herdr_agent(self) -> None:
+        self.system.launchctl("bootout", f"{self.system.domain()}/{HERDR_LABEL}")
+        for path in (self.herdr_plist, self.herdr_log, self.herdr_log.with_name(f"{self.herdr_log.name}.1")):
+            flow.remove_with_temporary(path)
 
     def start(self) -> None:
         print(f"\n==> Starting {LABEL}")
@@ -157,14 +249,23 @@ class MacService:
 
     def done(self, url: str) -> list[str]:
         return [f"Done. agent-bridge listens on {url} and starts at every login.",
+                f"herdr's server starts at every login too ({HERDR_LABEL})." if self.herdr_service else
+                "Open herdr after each login: its server must run for agents to start.",
                 f"If a check failed: tail {self.log} (herdr failing means its server isn't running).",
-                "If the macOS firewall asks, allow incoming connections for Python."]
+                "If the macOS firewall asks, allow incoming connections for Python.",
+                *self.notes]
 
     def remove(self) -> None:
         print(f"\n==> Removing {LABEL}")
         self.system.launchctl("bootout", f"{self.system.domain()}/{LABEL}")
         for path in (self.plist, self.log):
             flow.remove_with_temporary(path)
+        if self.herdr_plist.exists():
+            print(f"\n==> Removing {HERDR_LABEL}")
+            self._remove_herdr_agent()
+            print("herdr's server, if it runs, keeps running with its agents until you stop it (herdr server stop) "
+                  "or log out.")
+        flow.remove_with_temporary(self.no_herdr_agent)
 
     def folders(self) -> Iterable[Path]:
         return (self.support,)
@@ -235,6 +336,14 @@ class MacSystem(PosixSystem):
 
     def launchctl(self, *args: str) -> int:
         return subprocess.run(["launchctl", *args], capture_output=True).returncode
+
+    def herdr_running(self, herdr: str) -> bool:
+        """Whether `herdr status server` says its server runs."""
+        try:
+            status = json.loads(_output(herdr, "status", "server", "--json"))
+        except ValueError:
+            return False
+        return isinstance(status, dict) and bool(status.get("running"))
 
 
 def system() -> MacSystem:

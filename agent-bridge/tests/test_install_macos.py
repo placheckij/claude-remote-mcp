@@ -23,6 +23,7 @@ pytestmark = pytest.mark.skipif(sys.platform == "win32", reason="the macOS setup
 ENROLLMENT = "crm1@10.0.0.1:8766#" + "a" * 24
 COMMAND = "/Users/me/.local/bin/agent-bridge"
 LABEL = "dev.claude-remote.agent-bridge"
+HERDR_LABEL = "dev.claude-remote.agent-bridge-herdr"
 
 
 @dataclass
@@ -55,6 +56,10 @@ class FakeMac:
     job_disabled: bool = False
     # How many `check`s report agent-bridge not answering yet.
     slow_starts: int = 0
+    # herdr's server runs; the herdr launch agent starts it unless `herdr_starts` is False.
+    herdr_up: bool = True
+    herdr_starts: bool = True
+    herdr_bootstrap_failures: int = 0
     calls: list[tuple[str, ...]] = field(default_factory=list)
 
     def is_root(self) -> bool:
@@ -96,8 +101,17 @@ class FakeMac:
     def disabled(self) -> bool:
         return self.job_disabled
 
+    def herdr_running(self, herdr: str) -> bool:
+        return self.herdr_up
+
     def launchctl(self, *args: str) -> int:
         self.calls.append(("launchctl", *args))
+        if args[0] == "bootstrap" and args[2] == str(self.herdr_plist):
+            if self.herdr_bootstrap_failures:
+                self.herdr_bootstrap_failures -= 1
+                return 5
+            self.herdr_up = self.herdr_up or self.herdr_starts
+            return 0
         if args[0] == "enable":
             self.job_disabled = False
         if args[0] == "bootstrap":
@@ -189,6 +203,14 @@ class FakeMac:
     def log(self) -> Path:
         return self.home / "Library" / "Logs" / "agent-bridge.log"
 
+    @property
+    def herdr_plist(self) -> Path:
+        return self.home / "Library" / "LaunchAgents" / f"{HERDR_LABEL}.plist"
+
+    @property
+    def herdr_log(self) -> Path:
+        return self.home / "Library" / "Logs" / "agent-bridge-herdr.log"
+
     def ran(self, kind: str) -> list[tuple[str, ...]]:
         return [call[1:] for call in self.calls if call[0] == kind]
 
@@ -265,14 +287,85 @@ def test_installs_and_enrolls_without_asking(mac: FakeMac, capsys) -> None:
     assert "enrolled with the gateway at http://10.0.0.1:8766 as studio" in run.out
 
 
-@pytest.mark.parametrize("flag", ["--herdr-service", "--no-herdr-service"])
-def test_the_herdr_service_flags_are_refused(mac: FakeMac, capsys, flag: str) -> None:
-    run = setup(mac, capsys, flag)
+def test_the_herdr_launch_agent_starts_herdrs_server_at_login(mac: FakeMac, capsys) -> None:
+    setup(mac, capsys, *every_flag(mac))
 
-    assert run.code == 1
-    assert run.asked == []
-    assert "are for Linux" in run.out
-    assert not mac.env_file.exists()
+    # No KeepAlive: start-herdr exits once the server answers, and leaves it running.
+    assert plistlib.loads(mac.herdr_plist.read_bytes()) == {
+        "Label": HERDR_LABEL,
+        "ProgramArguments": [COMMAND, "start-herdr", "--herdr-bin", str(mac.herdr), "--log-file", str(mac.herdr_log)],
+        "RunAtLoad": True,
+    }
+    assert stat.S_IMODE(mac.herdr_plist.stat().st_mode) == 0o644
+
+
+def test_starts_herdrs_server_before_agent_bridge(mac: FakeMac, capsys) -> None:
+    mac.herdr_up = False
+
+    run = setup(mac, capsys, *every_flag(mac))
+
+    assert run.code == 0, run.out
+    assert mac.herdr_up
+    assert mac.ran("launchctl")[:2] == [
+        ("bootout", f"gui/501/{HERDR_LABEL}"),
+        ("bootstrap", "gui/501", str(mac.herdr_plist)),
+    ]
+    assert "Starting herdr's server\nok" in run.out
+    assert "herdr's server starts at every login too" in run.out
+
+
+def test_leaves_a_running_herdr_server_as_it_is(mac: FakeMac, capsys) -> None:
+    run = setup(mac, capsys, *every_flag(mac))
+
+    assert run.code == 0, run.out
+    assert "herdr's server already runs; it is left as it is." in run.out
+
+
+@pytest.mark.parametrize("failure", ["the server doesn't start", "launchd won't load it"])
+def test_herdr_not_starting_is_a_warning(mac: FakeMac, capsys, failure: str) -> None:
+    mac.herdr_up = mac.herdr_starts = False
+    if failure == "launchd won't load it":
+        mac.herdr_bootstrap_failures = macos.BOOTSTRAPS
+
+    run = setup(mac, capsys, *every_flag(mac))
+
+    assert run.code == 0, run.out
+    assert "warning:" in run.out
+    assert "agents can't start until you open herdr" in run.out
+    assert mac.ran("agent-bridge") == [("check",), ("enroll", ENROLLMENT)]
+
+
+def test_no_herdr_service_removes_the_herdr_launch_agent_and_reruns_keep_it_off(mac: FakeMac, capsys) -> None:
+    setup(mac, capsys, *every_flag(mac))
+    mac.herdr_log.write_text("log\n")
+    mac.calls.clear()
+
+    run = setup(mac, capsys, "--no-herdr-service")
+
+    assert run.code == 0, run.out
+    assert ("bootout", f"gui/501/{HERDR_LABEL}") in mac.ran("launchctl")
+    assert not mac.herdr_plist.exists() and not mac.herdr_log.exists()
+    assert mac.herdr_up  # its server keeps running
+    assert "Open herdr after each login" in run.out
+
+    mac.calls.clear()
+    setup(mac, capsys)
+    assert not mac.herdr_plist.exists()
+    assert ("bootstrap", "gui/501", str(mac.herdr_plist)) not in mac.ran("launchctl")
+
+    setup(mac, capsys, "--herdr-service")
+    assert mac.herdr_plist.exists()
+    setup(mac, capsys)
+    assert mac.herdr_plist.exists()
+
+
+def test_a_mac_set_up_before_the_herdr_launch_agent_gets_it(mac: FakeMac, capsys) -> None:
+    installed(mac)
+
+    run = setup(mac, capsys)
+
+    assert run.code == 0, run.out
+    assert mac.herdr_plist.exists()
 
 
 @pytest.mark.parametrize(("other", "uninstall"), [
@@ -328,7 +421,7 @@ def test_starts_the_launch_agent(mac: FakeMac, capsys) -> None:
     setup(mac, capsys, *every_flag(mac))
 
     # Not enabled: that would leave an override in launchd after uninstall.
-    assert mac.ran("launchctl") == [
+    assert mac.ran("launchctl")[2:] == [
         ("bootout", f"gui/501/{LABEL}"),
         ("bootstrap", "gui/501", str(mac.plist)),
     ]
@@ -342,7 +435,7 @@ def test_enables_a_disabled_launch_agent(mac: FakeMac, capsys) -> None:
     run = setup(mac, capsys, *every_flag(mac))
 
     assert run.code == 0, run.out
-    assert mac.ran("launchctl") == [
+    assert mac.ran("launchctl")[2:] == [
         ("bootout", f"gui/501/{LABEL}"),
         ("enable", f"gui/501/{LABEL}"),
         ("bootstrap", "gui/501", str(mac.plist)),
@@ -355,7 +448,7 @@ def test_retries_the_bootstrap_while_the_old_job_goes(mac: FakeMac, capsys) -> N
     run = setup(mac, capsys, *every_flag(mac))
 
     assert run.code == 0, run.out
-    assert [call[0] for call in mac.ran("launchctl")].count("bootstrap") == 3
+    assert mac.ran("launchctl").count(("bootstrap", "gui/501", str(mac.plist))) == 3
 
 
 def test_waits_for_the_bridge_to_answer_before_enrolling(mac: FakeMac, capsys) -> None:
@@ -512,7 +605,7 @@ def test_asks_for_another_name_when_the_gateway_has_it(mac: FakeMac, capsys) -> 
     assert env(mac)["AGENT_BRIDGE_NAME"] == "studio-2"
     assert mac.ran("agent-bridge")[-1] == ("enroll", ENROLLMENT)
     # Restarted, so the bridge serves under the new name.
-    assert [call[0] for call in mac.ran("launchctl")].count("bootstrap") == 2
+    assert mac.ran("launchctl").count(("bootstrap", "gui/501", str(mac.plist))) == 2
     assert "as studio-2" in run.out
 
 
@@ -1177,16 +1270,20 @@ def uninstall(mac: FakeMac, capsys: pytest.CaptureFixture) -> tuple[int, str]:
 
 def test_uninstall_leaves_the_gateway_then_removes_the_service_and_files(mac: FakeMac, capsys) -> None:
     installed(mac)
+    mac.herdr_plist.write_bytes(plistlib.dumps(macos.herdr_launch_agent(COMMAND, str(mac.herdr), mac.herdr_log)))
     mac.log.parent.mkdir(parents=True)
     mac.log.write_text("log\n")
+    mac.herdr_log.write_text("log\n")
 
     code, out = uninstall(mac, capsys)
 
     assert code == 0
     assert mac.ran("agent-bridge") == [("unenroll",)]
     assert mac.gateway_token is None
-    assert mac.ran("launchctl") == [("bootout", f"gui/501/{LABEL}")]
-    assert not any(path.exists() for path in (mac.plist, mac.log, mac.support))
+    assert mac.ran("launchctl") == [("bootout", f"gui/501/{LABEL}"), ("bootout", f"gui/501/{HERDR_LABEL}")]
+    assert not any(path.exists() for path in (mac.plist, mac.log, mac.support, mac.herdr_plist, mac.herdr_log))
+    assert mac.herdr_up
+    assert "herdr's server, if it runs, keeps running" in out
     assert "agent-bridge is removed" in out
 
 
@@ -1515,6 +1612,19 @@ def test_reads_whether_the_launch_agent_is_disabled(
     outputs[("launchctl", "print-disabled", "gui/501")] = f"disabled services = {{\n{listed}}}\n"
 
     assert macos.MacSystem().disabled() is disabled
+
+
+@pytest.mark.parametrize(("printed", "running"), [
+    ('{"status":"running","running":true}', True),
+    ('{"status":"stopped","running":false}', False),
+    ("", False),
+    ("not json", False),
+    ("[]", False),
+])
+def test_reads_whether_herdrs_server_runs(outputs: dict, printed: str, running: bool) -> None:
+    outputs[("/bin/herdr", "status", "server", "--json")] = printed
+
+    assert macos.MacSystem().herdr_running("/bin/herdr") is running
 
 
 def test_a_free_port_has_no_holder(outputs: dict) -> None:
