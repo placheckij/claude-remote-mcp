@@ -129,9 +129,10 @@ def test_herdr_resume_with_same_account_and_args_is_kept(
 def test_herdr_resume_with_other_account_is_replaced(path: Path, folder: Path, tmp_path: Path) -> None:
     # herdr's own resume runs `claude --resume <id>`: no CLAUDE_CONFIG_DIR, no arguments.
     runner = runner_for([pane(session=UUID)], ["claude", "--resume", UUID])
-    run(runner, path, [entry(folder, config_dir="/cfg", session_id=UUID)], tmp_path)
+    [line] = run(runner, path, [entry(folder, config_dir="/cfg", session_id=UUID)], tmp_path)
 
     assert runner.called("pane", "close") == [["pane", "close", "w1:p1"]]
+    assert line.endswith(f"resuming {UUID} (closed herdr's own resume in w1:p1)")
     [create] = runner.called("workspace", "create")
     assert runner.calls.index(["pane", "close", "w1:p1"]) < runner.calls.index(create)
     assert create[create.index("--env") + 1] == f"CLAUDE_CONFIG_DIR={Path('/cfg')}"
@@ -155,7 +156,7 @@ def test_shell_pane_is_closed_and_agent_started_with_resume(path: Path, folder: 
     assert claude_args(runner) == ["--resume", UUID, "--permission-mode", "auto"]
     [create] = runner.called("workspace", "create")
     assert create[create.index("--cwd") + 1] == str(folder)
-    assert "restored" in line
+    assert line.endswith(f"resuming {UUID} (closed the shell left in w1:p1)")
     # The entry now names the new agent, still with its conversation.
     [replaced] = load(path).agents
     assert (replaced.pane_id, replaced.terminal_id, replaced.session_id, replaced.misses) == ("w90:p1", "t90", UUID, 0)

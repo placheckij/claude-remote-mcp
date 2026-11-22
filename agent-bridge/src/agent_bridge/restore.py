@@ -94,7 +94,7 @@ async def _restore_one(
             return f"{label}: herdr resumed it in {resumed['pane_id']} as it was, left as it is", False
         # herdr's own resume runs plain `claude --resume <id>`: without the account's
         # CLAUDE_CONFIG_DIR or the agent's arguments.
-        note = await _close(herdr, resumed, found)
+        note = await _close(herdr, resumed, found, "herdr's own resume")
     else:
         note = await _close(herdr, shell, found)
 
@@ -136,16 +136,17 @@ async def _restore_one(
     return f"{label}: restored in {agent['pane_id']}, {how}{note}", False
 
 
-async def _close(herdr: Herdr, pane: dict | None, found: _Found) -> str:
-    """Close what herdr left of an agent, if anything; a note for the log line when it can't."""
+async def _close(herdr: Herdr, pane: dict | None, found: _Found, what: str = "the shell left") -> str:
+    """Close what herdr left of an agent, if anything; a note for the log line either way, so
+    the log says which pane went and why."""
     if pane is None:
         return ""
     found.closed.add(pane["pane_id"])
     try:
         await herdr.close_pane(pane["pane_id"])
     except HerdrError as error:
-        return f" (couldn't close pane {pane['pane_id']}: {error})"
-    return ""
+        return f" (couldn't close {what} in {pane['pane_id']}: {error})"
+    return f" (closed {what} in {pane['pane_id']})"
 
 
 async def _keep_failed(path: Path, entry: SavedAgent) -> None:
