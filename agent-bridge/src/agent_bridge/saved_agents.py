@@ -113,10 +113,11 @@ def locked(path: Path) -> Iterator[None]:
 
 async def snapshot(herdr: Herdr) -> list[SavedAgent]:
     """One entry per Claude agent herdr lists. A HerdrError from listing propagates (herdr
-    is unreachable); a pane whose processes can't be read is left out."""
+    is unreachable); a pane whose processes can't be read is left out, and so is one herdr
+    gives no folder or terminal for: it couldn't be restored or told apart."""
     found = []
     for agent in await herdr.list_agents():
-        if agent.get("agent") != "claude":
+        if agent.get("agent") != "claude" or not agent.get("cwd") or not agent.get("terminal_id"):
             continue
         try:
             info = await herdr.process_info(agent["pane_id"])

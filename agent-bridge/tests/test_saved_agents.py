@@ -97,6 +97,17 @@ async def test_snapshot_skips_a_pane_whose_process_info_fails(monkeypatch: pytes
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("missing", ["cwd", "terminal_id"])
+async def test_snapshot_skips_an_agent_without_cwd_or_terminal(monkeypatch: pytest.MonkeyPatch, missing: str) -> None:
+    monkeypatch.setattr(psutil.Process, "environ", lambda self: {})
+    lacking = {key: value for key, value in claude_agent().items() if key != missing}
+    nulled = {**claude_agent(), "pane_id": "w2:p1", missing: None}
+    second = {**claude_agent(), "pane_id": "w3:p1", "terminal_id": "t3"}
+    snapshot = await saved_agents.snapshot(herdr_with([lacking, nulled, second]))
+    assert [saved.terminal_id for saved in snapshot] == ["t3"]
+
+
+@pytest.mark.asyncio
 async def test_snapshot_lets_a_failing_agent_list_propagate() -> None:
     herdr = Herdr(runner=FakeRunner({("agent", "list"): err("server_down")}))
     with pytest.raises(HerdrError):
