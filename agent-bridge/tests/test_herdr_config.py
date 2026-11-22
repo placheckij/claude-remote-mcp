@@ -237,3 +237,14 @@ def test_hook_config_dirs_skips_default(tmp_path: Path, set_home: Callable[[Path
 
 def test_hook_config_dirs_without_any(tmp_path: Path) -> None:
     assert hook_config_dirs({"AGENT_BRIDGE_CLAUDE_CONFIG_DIR": ""}) == []
+
+
+@pytest.mark.parametrize("accounts", ["{not json", "[1]", '{"work": "/cfg"}'])
+def test_hook_config_dirs_with_malformed_accounts_warns_and_goes_on(
+    tmp_path: Path, capsys: pytest.CaptureFixture, accounts: str
+) -> None:
+    agents = tmp_path / ".claude-agents"
+    values = {"AGENT_BRIDGE_CLAUDE_CONFIG_DIR": str(agents), "AGENT_BRIDGE_ACCOUNTS": accounts}
+
+    assert hook_config_dirs(values) == [agents]
+    assert "warning: AGENT_BRIDGE_ACCOUNTS" in capsys.readouterr().err

@@ -128,10 +128,17 @@ def has_claude_hook(config_dir: Path) -> bool:
 
 def hook_config_dirs(values: dict[str, str]) -> list[Path]:
     """The Claude configs agents start in that setup gives herdr's hook: the agents' own and
-    each account's, once each, never the default one, which is yours to change."""
+    each account's, once each, never the default one, which is yours to change. Accounts that
+    can't be read are warned about and skipped: agents still start without the hook."""
     found = [values.get(f"{PREFIX}CLAUDE_CONFIG_DIR") or ""]
-    accounts = json.loads(values.get(f"{PREFIX}ACCOUNTS") or "{}")
-    found += [account.get("config_dir") or "" for account in accounts.values()]
+    try:
+        accounts = json.loads(values.get(f"{PREFIX}ACCOUNTS") or "{}")
+        if not isinstance(accounts, dict) or not all(isinstance(account, dict) for account in accounts.values()):
+            raise ValueError("not an object of accounts")
+        found += [account.get("config_dir") or "" for account in accounts.values()]
+    except ValueError as error:
+        print(f"warning: {PREFIX}ACCOUNTS can't be read ({error}), so herdr's Claude hook isn't installed in the "
+              "accounts' configs", file=sys.stderr)
     dirs: list[Path] = []
     for value in found:
         config_dir = Path(value).expanduser() if value else None
