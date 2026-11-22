@@ -543,14 +543,15 @@ def test_a_state_file_error_shows_no_values(tmp_path: Path) -> None:
     assert CLIENT_SECRET not in str(error.value) and STATIC_TOKEN not in str(error.value)
 
 
-@pytest.mark.skipif(os.name != "posix", reason="Windows has no owner-only file modes")
 def test_a_leftover_temporary_file_does_not_loosen_the_mode(client: TestClient, tmp_path: Path) -> None:
     # Left by a crash, or made by hand with a looser mode.
     leftover = tmp_path / "oauth.json.tmp"
     leftover.write_text("{}")
     leftover.chmod(0o644)
     connect(client)
-    assert stat.S_IMODE((tmp_path / "oauth.json").stat().st_mode) == 0o600
+    if os.name == "posix":
+        assert stat.S_IMODE((tmp_path / "oauth.json").stat().st_mode) == 0o600
+    # On Windows too: opening the leftover with O_EXCL would fail every save.
     assert not leftover.exists()
 
 
