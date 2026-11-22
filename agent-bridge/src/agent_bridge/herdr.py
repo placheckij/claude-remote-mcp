@@ -155,6 +155,9 @@ class Herdr:
     async def list_agents(self) -> list[dict]:
         return (await self._json("agent", "list"))["agents"]
 
+    async def list_panes(self) -> list[dict]:
+        return (await self._json("pane", "list"))["panes"]
+
     async def get_agent(self, target: str) -> dict:
         return (await self._json("agent", "get", target))["agent"]
 

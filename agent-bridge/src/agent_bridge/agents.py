@@ -422,9 +422,9 @@ class AgentService:
         )
 
 
-def claude_environ(process_info: dict) -> dict[str, str] | None:
-    """The environment of the pane's Claude Code, from herdr's process info, if it has one
-    and the OS lets it be read. Found by name: its MCP servers run in the pane too."""
+def claude_process(process_info: dict) -> dict | None:
+    """The pane's Claude Code among herdr's foreground processes, if it has one. Found by
+    name: its MCP servers run in the pane too."""
     processes = process_info.get("foreground_processes") if isinstance(process_info, dict) else None
     claudes = [
         process
@@ -441,7 +441,15 @@ def claude_environ(process_info: dict) -> dict[str, str] | None:
     # herdr lists newer processes first, so a claude the agent's tools run comes before the
     # agent's own: that one is the group leader, else the oldest.
     leader = process_info.get("foreground_process_group_id")
-    agent = next((process for process in claudes if process["pid"] == leader), claudes[-1])
+    return next((process for process in claudes if process["pid"] == leader), claudes[-1])
+
+
+def claude_environ(process_info: dict) -> dict[str, str] | None:
+    """The environment of the pane's Claude Code, from herdr's process info, if it has one
+    and the OS lets it be read."""
+    agent = claude_process(process_info)
+    if agent is None:
+        return None
     try:
         return psutil.Process(agent["pid"]).environ()
     except (psutil.Error, OSError):
