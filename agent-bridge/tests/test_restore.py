@@ -194,6 +194,22 @@ def test_herdr_resume_with_other_account_is_replaced(path: Path, folder: Path, t
     assert claude_args(runner) == ["--resume", UUID, "--permission-mode", "auto"]
 
 
+def test_a_busy_pane_running_its_conversation_is_never_closed(
+    path: Path, folder: Path, tmp_path: Path
+) -> None:
+    # The user resumed it by hand, with other arguments, and is in the middle of a turn.
+    busy = pane(session=UUID, cwd=str(folder)) | {"agent_status": "working"}
+    runner = runner_for([busy], ["claude", "--resume", UUID])
+    [line] = run(runner, path, [entry(folder, session_id=UUID)], tmp_path)
+
+    assert runner.called("pane", "close") == []
+    assert runner.called("agent", "start") == []
+    assert "busy" in line
+    # Taken as the agent's own pane from now on.
+    [kept] = load(path).agents
+    assert (kept.pane_id, kept.terminal_id, kept.misses) == ("w1:p1", "t-new", 0)
+
+
 def test_herdr_resume_with_other_args_is_replaced(path: Path, folder: Path, tmp_path: Path) -> None:
     runner = runner_for([pane(session=UUID)], ["claude", "--resume", UUID])
     run(runner, path, [entry(folder, session_id=UUID)], tmp_path)

@@ -71,7 +71,11 @@ def turn_off_resume(path: Path) -> str:
     lines = text.splitlines(keepends=True)
     if _ours(lines) is not None:
         return "already"
-    if "resume_agents_on_restore" in tomllib.loads(text).get("session", {}):
+    session = tomllib.loads(text).get("session", {})
+    if not isinstance(session, dict):
+        # Valid TOML, but not herdr's: it wants a table there.
+        raise ValueError(f"{path} has a `session` that isn't a table")
+    if "resume_agents_on_restore" in session:
         return "yours"
     newline = "\r\n" if "\r\n" in text else "\n"
     ours = [f"{MARKER}{newline}", f"{KEY_LINE}{newline}"]

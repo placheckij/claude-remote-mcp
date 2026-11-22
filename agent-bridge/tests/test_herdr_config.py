@@ -280,3 +280,13 @@ def test_posix_herdr_integration_reports_a_missing_herdr(tmp_path: Path) -> None
 
     assert code == FAILED
     assert output
+
+
+def test_a_session_key_that_isnt_a_table_is_refused_as_not_herdrs_config(tmp_path: Path) -> None:
+    # Valid TOML, but herdr wants a table there: setup warns and goes on, as for broken TOML.
+    path = tmp_path / "config.toml"
+    path.write_text("session = 1\n", encoding="utf-8")
+
+    with pytest.raises(ValueError):
+        turn_off_resume(path)
+    assert path.read_text(encoding="utf-8") == "session = 1\n"

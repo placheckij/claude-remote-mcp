@@ -1067,9 +1067,10 @@ def test_save_agents_command_writes_file(capsys, settings: Path, monkeypatch: py
     code, out, err = run(capsys, "save-agents")
 
     assert code == 0, err
-    # The agent the snapshot didn't see counts a miss, as in the service; no restore runs.
+    # The agent the snapshot didn't see counts no miss: herdr may have just restarted, and
+    # a miss would get it forgotten at the restore. The service's own saves age entries.
     saved = load_agents(path).agents
-    assert [(agent.terminal_id, agent.misses) for agent in saved] == [("t1", 0), ("t-gone", 1)]
+    assert [(agent.terminal_id, agent.misses) for agent in saved] == [("t1", 0), ("t-gone", 0)]
     assert out == f"Saved 2 agents to {path}.\n"
 
 

@@ -100,9 +100,13 @@ async def _restore_one(
     if resumed is not None:
         running = found.live.get(resumed["pane_id"])
         # By the config each starts on: for an account that couldn't be read, its folder's.
-        if running is not None and running.args == entry.args and (
+        as_it_was = running is not None and running.args == entry.args and (
             service.config_dir_of(running) == service.config_dir_of(entry)
-        ):
+        )
+        # Busy: someone resumed it and is in the middle of a turn, likely by hand, since
+        # setup turns herdr's own resume off. Closing it would end that turn.
+        busy = resumed.get("agent_status") == "working"
+        if as_it_was or busy:
             kept = entry.model_copy(
                 update={"pane_id": resumed["pane_id"], "terminal_id": resumed["terminal_id"], "misses": 0,
                         "restore_failed": False}
@@ -110,7 +114,9 @@ async def _restore_one(
             await asyncio.to_thread(_replace, path, entry.terminal_id, kept)
             found.claimed.add(resumed["terminal_id"])
             found.sessions.add(entry.session_id)
-            return f"{label}: herdr resumed it in {resumed['pane_id']} as it was, left as it is", False
+            if as_it_was:
+                return f"{label}: herdr resumed it in {resumed['pane_id']} as it was, left as it is", False
+            return f"{label}: busy in {resumed['pane_id']}, which runs its conversation, left as it is", False
         # herdr's own resume runs plain `claude --resume <id>`: without the account's
         # CLAUDE_CONFIG_DIR or the agent's arguments.
         note = await _close(herdr, resumed, found, "herdr's own resume")
