@@ -1034,8 +1034,11 @@ def test_the_address_report_stops_when_retrying_cant_help(
 class FakeSnapshot:
     """What `save-agents` sees of herdr: a snapshot, or an error."""
 
-    def __init__(self, monkeypatch: pytest.MonkeyPatch, agents: list | Exception) -> None:
+    def __init__(self, monkeypatch: pytest.MonkeyPatch, agents: list | Exception,
+                 live: list[str] | None = None) -> None:
         self.agents = agents
+        # The terminals herdr still has when the file is locked: by default every agent seen.
+        self.live = live
         monkeypatch.setattr(cli, "Herdr", lambda binary: self)
 
         async def snapshot(herdr: object) -> list:
@@ -1044,6 +1047,10 @@ class FakeSnapshot:
             return self.agents
 
         monkeypatch.setattr(cli, "snapshot", snapshot)
+
+    async def list_panes(self) -> list[dict]:
+        live = self.live if self.live is not None else [agent.terminal_id for agent in self.agents]
+        return [{"pane_id": f"w{n}:p1", "terminal_id": terminal} for n, terminal in enumerate(live)]
 
 
 def saved_agent(terminal_id: str, **fields) -> SavedAgent:
@@ -1064,6 +1071,20 @@ def test_save_agents_command_writes_file(capsys, settings: Path, monkeypatch: py
     saved = load_agents(path).agents
     assert [(agent.terminal_id, agent.misses) for agent in saved] == [("t1", 0), ("t-gone", 1)]
     assert out == f"Saved 2 agents to {path}.\n"
+
+
+def test_save_agents_leaves_out_an_agent_stopped_during_its_snapshot(
+    capsys, settings: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = agents_file()
+    # The service's stop_agent closed t2's pane and forgot it while the snapshot still read it.
+    save_agents(path, SavedAgents(agents=[saved_agent("t1")]))
+    FakeSnapshot(monkeypatch, [saved_agent("t1"), saved_agent("t2", pane_id="w2:p1")], live=["t1"])
+
+    code, out, err = run(capsys, "save-agents")
+
+    assert code == 0, err
+    assert [agent.terminal_id for agent in load_agents(path).agents] == ["t1"]
 
 
 def test_save_agents_herdr_down_fails(capsys, settings: Path, monkeypatch: pytest.MonkeyPatch) -> None:

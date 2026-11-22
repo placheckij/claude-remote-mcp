@@ -278,6 +278,12 @@ def _save_agents() -> int:
     try:
         seen = asyncio.run(snapshot(herdr))
         with locked(path):
+            # An agent the service stopped during the snapshot was forgotten already, and the
+            # service's own record of stops isn't here. stop_agent closes the pane before it
+            # forgets, so keeping only terminals herdr still has, checked under the lock that
+            # forget takes too, never writes a stopped agent back.
+            live = {pane.get("terminal_id") for pane in asyncio.run(herdr.list_panes())}
+            seen = [agent for agent in seen if agent.terminal_id in live]
             saved = load_agents(path)
             # Not a restart: an agent that isn't running counts a miss, as in the service.
             kept = merge(saved.agents, seen, restarted=False)
