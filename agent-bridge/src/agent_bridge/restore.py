@@ -75,8 +75,10 @@ async def _restore_one(
         return f"{label}: not restored: it had already gone before the restart", False
     resumed = next(
         (
+            # A restored shell still carries the session id it last ran: only a pane with an
+            # agent in it is herdr's own resume.
             pane for pane in open_panes
-            if entry.session_id and pane.get("terminal_id") not in found.claimed
+            if entry.session_id and pane.get("agent") and pane.get("terminal_id") not in found.claimed
             and _session_of(pane) == entry.session_id
         ),
         None,

@@ -166,6 +166,16 @@ def test_shell_pane_is_closed_and_agent_started_with_resume(path: Path, folder: 
     )
 
 
+def test_a_restored_shell_keeping_the_session_id_is_closed_as_a_shell(path: Path, folder: Path, tmp_path: Path) -> None:
+    # With herdr's resume off, its restored panes are shells that still carry the saved
+    # session id: the log must not call that herdr's own resume.
+    runner = runner_for([pane(agent=None, session=UUID)])
+    [line] = run(runner, path, [entry(folder, session_id=UUID)], tmp_path)
+
+    assert runner.called("pane", "close") == [["pane", "close", "w1:p1"]]
+    assert line.endswith(f"resuming {UUID} (closed the shell left in w1:p1)")
+
+
 def test_an_agent_pane_at_the_saved_pane_id_is_left_alone(path: Path, folder: Path, tmp_path: Path) -> None:
     # Another agent took the pane id: only a plain shell is closed.
     runner = runner_for([pane(session=OTHER_UUID)])
