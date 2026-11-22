@@ -35,14 +35,17 @@ HOOK_SCRIPT = "herdr-agent-state"
 
 def herdr_config_paths() -> list[Path]:
     """The config files herdr may read: HERDR_CONFIG_PATH, else $XDG_CONFIG_HOME/herdr/config.toml,
-    else ~/.config/herdr/config.toml (%APPDATA%\\herdr\\config.toml on Windows). herdr's server
-    reads the one its own environment points at, e.g. a launch agent's or systemd unit's without
-    XDG_CONFIG_HOME, which setup can't see: with XDG_CONFIG_HOME set elsewhere, both."""
+    else ~/.config/herdr/config.toml (%APPDATA%\\herdr\\config.toml on Windows, which honours
+    XDG_CONFIG_HOME too). herdr's server reads the one its own environment points at, e.g. a
+    launch agent's, systemd unit's or scheduled task's without XDG_CONFIG_HOME, which setup can't
+    see: with XDG_CONFIG_HOME set elsewhere, both."""
     if path := os.environ.get("HERDR_CONFIG_PATH"):
         return [Path(path)]
     if sys.platform == "win32":
-        return [Path(os.environ.get("APPDATA") or Path.home() / "AppData" / "Roaming") / "herdr" / "config.toml"]
-    candidates = [Path.home() / ".config" / "herdr" / "config.toml"]
+        default = Path(os.environ.get("APPDATA") or Path.home() / "AppData" / "Roaming")
+    else:
+        default = Path.home() / ".config"
+    candidates = [default / "herdr" / "config.toml"]
     # The XDG spec ignores a relative one.
     if (xdg := os.environ.get("XDG_CONFIG_HOME")) and Path(xdg).is_absolute():
         candidates.insert(0, Path(xdg) / "herdr" / "config.toml")

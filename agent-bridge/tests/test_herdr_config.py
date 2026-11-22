@@ -177,18 +177,22 @@ def test_the_config_path_defaults_to_herdrs(monkeypatch: pytest.MonkeyPatch, tmp
     assert herdr_config_paths() == [expected / "herdr" / "config.toml"]
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="herdr reads %APPDATA% on Windows")
+@pytest.mark.parametrize("platform", ["darwin", "linux", "win32"])
 def test_xdg_config_home_elsewhere_names_both_files(monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
-                                                    set_home: Callable[[Path], None]) -> None:
+                                                    set_home: Callable[[Path], None], platform: str) -> None:
+    # herdr honours XDG_CONFIG_HOME on Windows too, instead of %APPDATA%.
+    monkeypatch.setattr(sys, "platform", platform)
     monkeypatch.delenv("HERDR_CONFIG_PATH", raising=False)
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+    monkeypatch.setenv("APPDATA", str(tmp_path / "home" / "AppData" / "Roaming"))
     set_home(tmp_path / "home")
 
+    default = tmp_path / "home" / ("AppData/Roaming" if platform == "win32" else ".config")
     assert herdr_config_paths() == [tmp_path / "xdg" / "herdr" / "config.toml",
-                                    tmp_path / "home" / ".config" / "herdr" / "config.toml"]
+                                    default / "herdr" / "config.toml"]
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="herdr reads %APPDATA% on Windows")
+@pytest.mark.skipif(sys.platform == "win32", reason="~/.config isn't herdr's default on Windows")
 @pytest.mark.parametrize("xdg", ["{home}/.config", "{home}/.config/", "relative/config"])
 def test_xdg_config_home_at_the_default_or_relative_names_one_file(
         monkeypatch: pytest.MonkeyPatch, tmp_path: Path, set_home: Callable[[Path], None], xdg: str) -> None:
