@@ -117,7 +117,14 @@ async def _restore_one(
     else:
         note = await _close(herdr, shell, found)
 
-    if entry.session_id:
+    if entry.session_id and not await asyncio.to_thread(
+        _has_conversation, service.config_dir_of(entry), entry.session_id
+    ):
+        # Never prompted: Claude Code writes no conversation until the first prompt, and
+        # refuses to --resume one it doesn't have. The same id keeps the entry's identity.
+        resume = ["--session-id", entry.session_id]
+        how = f"starting fresh as {entry.session_id}: it had no conversation yet"
+    elif entry.session_id:
         resume, how = ["--resume", entry.session_id], f"resuming {entry.session_id}"
     elif not any(
         # By the config each starts on, which for an unknown one is its folder's account.
@@ -250,6 +257,21 @@ async def _restarted(herdr: Herdr, path: Path, was_answering: bool | None) -> bo
     if any(by_pane.get(agent.pane_id, agent.terminal_id) != agent.terminal_id for agent in running):
         return True
     return fresh and not any(agent.terminal_id in terminals for agent in running)
+
+
+def _has_conversation_on_disk(config_dir: Path | None, session_id: str) -> bool:
+    """Whether Claude Code has a conversation `session_id` in that config: it keeps each at
+    <config>/projects/<folder>/<id>.jsonl, the folder named after where it ran."""
+    projects = (config_dir or Path.home() / ".claude") / "projects"
+    try:
+        return any(projects.glob(f"*/{session_id}.jsonl"))
+    except OSError:
+        # Can't tell: resuming is what a running agent with that id would want.
+        return True
+
+
+# Looked up through the module so tests can stand in for the disk.
+_has_conversation = _has_conversation_on_disk
 
 
 def _saved(path: Path) -> list[SavedAgent]:

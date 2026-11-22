@@ -888,8 +888,10 @@ class PosixSystem:
     def herdr_integration(self, binary: str, config_dir: Path) -> tuple[int, str]:
         environment = {**os.environ, "CLAUDE_CONFIG_DIR": str(config_dir)}
         try:
+            # errors="replace": a byte herdr prints that isn't UTF-8 must not end setup midway.
             result = subprocess.run([binary, "integration", "install", "claude"], env=environment,
-                                    stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=60)
+                                    stdin=subprocess.DEVNULL, capture_output=True, encoding="utf-8",
+                                    errors="replace", timeout=60)
         except (OSError, subprocess.TimeoutExpired) as error:
             return FAILED, str(error)
         return result.returncode, result.stdout + result.stderr

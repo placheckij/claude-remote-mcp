@@ -36,6 +36,16 @@ def path(tmp_path: Path) -> Path:
 
 
 @pytest.fixture(autouse=True)
+def conversations(monkeypatch: pytest.MonkeyPatch) -> set[str]:
+    """Session ids that have no conversation on disk; by default every one has. Keeps the
+    tests off the real ~/.claude."""
+    missing: set[str] = set()
+    monkeypatch.setattr(restore_module, "_has_conversation",
+                        lambda config_dir, session_id: session_id not in missing)
+    return missing
+
+
+@pytest.fixture(autouse=True)
 def environ(monkeypatch: pytest.MonkeyPatch) -> dict[str, str]:
     """The environment every live Claude in these tests reports; a test may fill it."""
     found: dict[str, str] = {}
@@ -126,6 +136,31 @@ def test_herdr_resume_with_same_account_and_args_is_kept(
     runner = runner_for([pane(session=UUID)], ["claude", "--permission-mode", "auto", "--resume", UUID])
     run(runner, path, [entry(folder, config_dir="/cfg", session_id=UUID)], tmp_path)
     assert runner.called("agent", "start") == runner.called("pane", "close") == []
+
+
+def test_an_agent_never_prompted_starts_fresh_under_its_session_id(
+    path: Path, folder: Path, tmp_path: Path, conversations: set[str]
+) -> None:
+    # Claude Code writes no conversation until the first prompt, and refuses to --resume one
+    # it doesn't have ("No conversation found with session ID").
+    conversations.add(UUID)
+    runner = runner_for([])
+    [line] = run(runner, path, [entry(folder, session_id=UUID)], tmp_path)
+
+    assert claude_args(runner) == ["--session-id", UUID, "--permission-mode", "auto"]
+    assert "no conversation yet" in line
+    [replaced] = load(path).agents
+    assert (replaced.session_id, replaced.restore_failed) == (UUID, False)
+
+
+def test_has_conversation_looks_in_the_accounts_projects(tmp_path: Path) -> None:
+    config = tmp_path / "cfg"
+    (config / "projects" / "-work-webapp").mkdir(parents=True)
+    (config / "projects" / "-work-webapp" / f"{UUID}.jsonl").write_text("{}\n")
+
+    assert restore_module._has_conversation_on_disk(config, UUID) is True
+    assert restore_module._has_conversation_on_disk(config, OTHER_UUID) is False
+    assert restore_module._has_conversation_on_disk(tmp_path / "missing", UUID) is False
 
 
 def test_herdr_resume_on_the_default_config_is_replaced_for_an_unknown_accounts_agent(

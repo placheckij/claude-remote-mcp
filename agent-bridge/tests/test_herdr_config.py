@@ -252,3 +252,31 @@ def test_hook_config_dirs_with_malformed_accounts_warns_and_goes_on(
 
     assert hook_config_dirs(values) == [agents]
     assert "warning: AGENT_BRIDGE_ACCOUNTS" in capsys.readouterr().err
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="the POSIX system runs a shell script as herdr")
+def test_posix_herdr_integration_passes_the_config_dir(tmp_path: Path) -> None:
+    from agent_bridge.install.flow import PosixSystem
+
+    record = tmp_path / "seen"
+    herdr = tmp_path / "herdr"
+    # A stand-in herdr: records its arguments and CLAUDE_CONFIG_DIR, and prints a byte that
+    # isn't UTF-8, as a localized message might.
+    herdr.write_text(f'#!/bin/sh\necho "$@ $CLAUDE_CONFIG_DIR" > "{record}"\nprintf "done \\377\\n"\n')
+    herdr.chmod(0o755)
+
+    code, output = PosixSystem().herdr_integration(str(herdr), tmp_path / "cfg")
+
+    assert code == 0
+    assert record.read_text() == f"integration install claude {tmp_path / 'cfg'}\n"
+    assert output.startswith("done ")
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="the POSIX system runs a shell script as herdr")
+def test_posix_herdr_integration_reports_a_missing_herdr(tmp_path: Path) -> None:
+    from agent_bridge.install.flow import FAILED, PosixSystem
+
+    code, output = PosixSystem().herdr_integration(str(tmp_path / "no-herdr"), tmp_path / "cfg")
+
+    assert code == FAILED
+    assert output

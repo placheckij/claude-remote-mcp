@@ -87,7 +87,8 @@ two saves without it, and `stop_agent` drops it at once.
 terminal id. It does too when herdr answers for the first time since `serve` started, or
 again after not answering, and none of the saved agents' terminals is there. Then it
 restores each saved agent that isn't running, one after another: a new workspace, its
-account, `--resume <session id>` and its arguments. Without a session id it uses
+account, `--resume <session id>` and its arguments; an agent never prompted has no
+conversation to resume, so it starts fresh under the same `--session-id`. Without a session id it uses
 `--continue`, but only if no other saved agent shares its folder and account, else a fresh
 conversation. Agents started by hand come back too. Panes herdr resumed with the wrong
 account or arguments are closed and replaced.
