@@ -342,6 +342,7 @@ def test_a_herdr_launch_agent_that_wont_load_beside_a_running_server_says_so(mac
 
     assert run.code == 0, run.out
     assert f"{HERDR_LABEL} isn't loaded (see above), so herdr's server won't start at login." in run.out
+    assert "starts at every login too" not in run.out
     assert "didn't start" not in run.out
     assert "until you open herdr" not in run.out
 

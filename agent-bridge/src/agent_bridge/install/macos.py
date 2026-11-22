@@ -102,6 +102,8 @@ class MacService:
     # The launch agent that starts herdr's server at login, and the herdr it starts.
     herdr_service: bool = True
     herdr: str = ""
+    # launchd loaded that launch agent this run.
+    herdr_loaded: bool = False
     # Lines for the end: what setup couldn't do.
     notes: list[str] = field(default_factory=list)
 
@@ -200,6 +202,7 @@ class MacService:
         self.system.launchctl("bootout", service)
         for attempt in range(BOOTSTRAPS):
             if self.system.launchctl("bootstrap", self.system.domain(), str(self.herdr_plist)) == 0:
+                self.herdr_loaded = True
                 break
             if attempt == BOOTSTRAPS - 1:
                 print(f"warning: launchctl bootstrap failed, so herdr's server won't start at login; see: "
@@ -248,9 +251,11 @@ class MacService:
             self.system.sleep(1)
 
     def done(self, url: str) -> list[str]:
+        # A herdr launch agent that didn't load has a note of its own.
+        herdr = ([f"herdr's server starts at every login too ({HERDR_LABEL})."] if self.herdr_loaded else
+                 [] if self.herdr_service else ["Open herdr after each login: its server must run for agents to start."])
         return [f"Done. agent-bridge listens on {url} and starts at every login.",
-                f"herdr's server starts at every login too ({HERDR_LABEL})." if self.herdr_service else
-                "Open herdr after each login: its server must run for agents to start.",
+                *herdr,
                 f"If a check failed: tail {self.log} (herdr failing means its server isn't running).",
                 "If the macOS firewall asks, allow incoming connections for Python.",
                 *self.notes]
