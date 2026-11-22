@@ -72,7 +72,11 @@ async def _restore_one(
     if entry.session_id:
         resume, how = ["--resume", entry.session_id], f"resuming {entry.session_id}"
     elif not any(
-        other is not entry and (other.cwd, other.config_dir) == (entry.cwd, entry.config_dir) for other in entries
+        # By the config each starts on, which for an unknown one is its folder's account.
+        other is not entry
+        and Path(other.cwd) == Path(entry.cwd)
+        and service.config_dir_of(other) == service.config_dir_of(entry)
+        for other in entries
     ):
         resume, how = ["--continue"], "continuing its folder's last conversation"
     else:

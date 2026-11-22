@@ -193,6 +193,25 @@ def test_no_id_in_a_shared_folder_with_another_account_continues(path: Path, fol
     assert claude_args(runner, 0)[-1] == claude_args(runner, 1)[-1] == "--continue"
 
 
+def test_no_id_with_unknown_config_sharing_its_accounts_folder_starts_fresh(
+    path: Path, folder: Path, tmp_path: Path
+) -> None:
+    # The unknown one starts on the folder's account, the other's: --continue could pick
+    # the conversation the other resumes.
+    folder.mkdir()
+    personal = tmp_path / "cfg-personal"
+    runner = runner_for([])
+    accounts = {"personal": {"config_dir": personal, "folders": [folder]}}
+    known = entry(folder, config_dir=str(personal), session_id=UUID)
+    unknown = entry(folder, terminal_id="t-old-2", pane_id="w2:p1", config_dir_unknown=True)
+    lines = run(runner, path, [known, unknown], tmp_path, accounts=accounts)
+
+    assert claude_args(runner, 1) == ["--permission-mode", "auto"]
+    assert "fresh conversation" in lines[1]
+    create = runner.called("workspace", "create")[1]
+    assert create[create.index("--env") + 1] == f"CLAUDE_CONFIG_DIR={personal}"
+
+
 def test_with_id_sharing_folder_still_resumes(path: Path, folder: Path, tmp_path: Path) -> None:
     runner = runner_for([])
     first = entry(folder, session_id=UUID)

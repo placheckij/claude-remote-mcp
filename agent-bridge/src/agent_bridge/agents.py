@@ -236,20 +236,22 @@ class AgentService:
         folder, on its account. None of start_agent's checks (agent limit, allowed roots,
         trust): it puts back an agent that was running, started remotely or by hand."""
         folder = Path(saved.cwd)
-        if saved.config_dir_unknown:
-            # Its environment couldn't be read: the account it would get if started now.
-            account = self.settings.account_for(folder)
-            config_dir = (
-                self.settings.accounts[account].config_dir if account is not None else self.settings.claude_config_dir
-            )
-        else:
-            config_dir = Path(saved.config_dir) if saved.config_dir is not None else None
         notice = REMOTE_CONTROL_BLOCKED_TEXT if has_remote_control(saved.args) else None
         async with self._start_lock:
             running = await self.herdr.list_agents()
             name = herdr_name(saved.name or folder.name, {agent.get("name") for agent in running})
-            agent, _ = await self._start_with_one_retry(name, folder, config_dir, saved.args + resume, notice)
+            agent, _ = await self._start_with_one_retry(
+                name, folder, self.config_dir_of(saved), saved.args + resume, notice
+            )
         return agent
+
+    def config_dir_of(self, saved: SavedAgent) -> Path | None:
+        """The CLAUDE_CONFIG_DIR `saved` is restarted with; None for Claude Code's default."""
+        if saved.config_dir_unknown:
+            # Its environment couldn't be read: the account it would get if started now.
+            account = self.settings.account_for(Path(saved.cwd))
+            return self.settings.accounts[account].config_dir if account is not None else self.settings.claude_config_dir
+        return Path(saved.config_dir) if saved.config_dir is not None else None
 
     def _project_folder(self, project: str) -> Path:
         """The folder `project` names: an absolute path as given, or a folder name under
