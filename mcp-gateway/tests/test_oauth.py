@@ -245,7 +245,8 @@ def test_tokens_survive_a_restart(make_client) -> None:
 def test_only_hashes_reach_the_disk(client: TestClient, tmp_path: Path) -> None:
     _, tokens = connect(client)
     state = tmp_path / "oauth.json"
-    assert stat.S_IMODE(state.stat().st_mode) == 0o600
+    if os.name == "posix":
+        assert stat.S_IMODE(state.stat().st_mode) == 0o600
     text = state.read_text()
     assert tokens["access_token"] not in text and tokens["refresh_token"] not in text
     assert hashlib.sha256(tokens["access_token"].encode()).hexdigest() in text
@@ -548,7 +549,9 @@ def test_a_leftover_temporary_file_does_not_loosen_the_mode(client: TestClient, 
     leftover.write_text("{}")
     leftover.chmod(0o644)
     connect(client)
-    assert stat.S_IMODE((tmp_path / "oauth.json").stat().st_mode) == 0o600
+    if os.name == "posix":
+        assert stat.S_IMODE((tmp_path / "oauth.json").stat().st_mode) == 0o600
+    # On Windows too: opening the leftover with O_EXCL would fail every save.
     assert not leftover.exists()
 
 

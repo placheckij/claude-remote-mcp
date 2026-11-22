@@ -2,6 +2,7 @@
 
 import json
 import logging
+import os
 import socket
 from pathlib import Path
 
@@ -436,7 +437,8 @@ def test_the_window_keeps_the_gateway_id(tmp_path: Path) -> None:
     enrollment.open()
 
     assert Enrollment(tmp_path / "enrollment.json").gateway_id() == gateway_id
-    assert oct((tmp_path / "enrollment.json").stat().st_mode & 0o777) == "0o600"
+    if os.name == "posix":
+        assert oct((tmp_path / "enrollment.json").stat().st_mode & 0o777) == "0o600"
 
 
 def test_an_unreadable_file_starts_over_once(tmp_path: Path) -> None:

@@ -9,6 +9,11 @@ from mcp_gateway.registry import NameTaken, Registry, RegistryError, UnknownBrid
 
 INFO = {"api_version": 2, "name": "mac", "platform": "darwin"}
 
+# Windows ignores a folder's mode bits for writes, and root ignores them anywhere.
+needs_unwritable_folders = pytest.mark.skipif(
+    os.name != "posix" or os.geteuid() == 0, reason="needs a folder this user can't write to"
+)
+
 
 class Clock:
     def __init__(self) -> None:
@@ -51,7 +56,8 @@ def test_adds_a_bridge_to_memory_and_disk_together(tmp_path: Path, clock: Clock)
         "info": INFO, "enrolled_at": 1_000_000, "last_seen": None,
     }]
     # It holds tokens: only the gateway's user may read it.
-    assert stat.S_IMODE((tmp_path / "bridges.json").stat().st_mode) == 0o600
+    if os.name == "posix":
+        assert stat.S_IMODE((tmp_path / "bridges.json").stat().st_mode) == 0o600
     assert open_registry(tmp_path, clock).bridges == [bridge]
 
 
@@ -244,6 +250,7 @@ def test_update_info_ignores_a_bridge_removed_meanwhile(tmp_path: Path, clock: C
     assert saved(tmp_path) == [] and gateway.bridges == []
 
 
+@needs_unwritable_folders
 def test_update_info_survives_a_disk_that_cant_be_written(
     tmp_path: Path, clock: Clock, caplog: pytest.LogCaptureFixture
 ) -> None:
@@ -261,6 +268,7 @@ def test_update_info_survives_a_disk_that_cant_be_written(
     assert saved(tmp_path)[0]["info"] == INFO
 
 
+@needs_unwritable_folders
 def test_info_kept_in_memory_outlasts_other_changes(tmp_path: Path, clock: Clock) -> None:
     gateway, cli = open_registry(tmp_path, clock), open_registry(tmp_path, clock)
     bridge = gateway.add("mac", "http://mac:8765", "t", INFO)
@@ -284,6 +292,7 @@ def test_info_kept_in_memory_outlasts_other_changes(tmp_path: Path, clock: Clock
     assert saved(tmp_path)[0]["info"] == newer
 
 
+@needs_unwritable_folders
 def test_info_another_process_saves_replaces_info_kept_in_memory(tmp_path: Path, clock: Clock) -> None:
     # E.g. `bridges list`, which asks every host, after the bridge was updated again.
     gateway = open_registry(tmp_path, clock)
@@ -300,6 +309,7 @@ def test_info_another_process_saves_replaces_info_kept_in_memory(tmp_path: Path,
     assert gateway.bridges[0].info == newest
 
 
+@needs_unwritable_folders
 @pytest.mark.parametrize("answer", [INFO, {**INFO, "platform": "linux"}], ids=["same", "new"])
 def test_re_enrolling_replaces_info_kept_in_memory(tmp_path: Path, clock: Clock, answer: dict) -> None:
     registry = open_registry(tmp_path, clock)
@@ -323,6 +333,7 @@ def test_re_enrolling_replaces_info_kept_in_memory(tmp_path: Path, clock: Clock,
     assert registry.bridges[0].info == answer
 
 
+@needs_unwritable_folders
 def test_a_change_that_cant_be_saved_keeps_info_kept_in_memory(tmp_path: Path, clock: Clock) -> None:
     registry = open_registry(tmp_path, clock)
     bridge = registry.enroll("1" * 32, "mac", "http://mac:8765", "t", INFO)
@@ -341,6 +352,7 @@ def test_a_change_that_cant_be_saved_keeps_info_kept_in_memory(tmp_path: Path, c
     assert saved(tmp_path)[0]["info"] == newer
 
 
+@pytest.mark.skipif(os.name != "posix", reason="no root-run CLI to guard, and links need privilege")
 def test_never_follows_a_link_in_place_of_the_file(tmp_path: Path, clock: Clock) -> None:
     # The state folder's owner could plant one for a root-run CLI to read or write through.
     elsewhere = tmp_path / "elsewhere.json"
