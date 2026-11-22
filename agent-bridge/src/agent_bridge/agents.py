@@ -12,6 +12,7 @@ import uuid
 from collections.abc import Awaitable, Sequence
 from pathlib import Path, PurePath
 
+from agent_bridge.claude_args import picks_session
 from agent_bridge.claude_process import claude_environ, claude_process  # noqa: F401 - still importable from here
 from agent_bridge.config import Settings, claude_env
 from agent_bridge.errors import BridgeError
@@ -225,8 +226,10 @@ class AgentService:
                 args += ["--remote-control", name]
                 on = True
             # Its own conversation id, so a restore resumes exactly this conversation even
-            # when other agents work in the same folder.
-            args += ["--session-id", str(uuid.uuid4())]
+            # when other agents work in the same folder. Not when AGENT_BRIDGE_CLAUDE_ARGS
+            # picks the conversation already: Claude Code refuses both together.
+            if not picks_session(args):
+                args += ["--session-id", str(uuid.uuid4())]
             notice = REMOTE_CONTROL_BLOCKED_TEXT if on else None
             agent, blocked = await self._start_with_one_retry(name, folder, config_dir, args, notice)
         state = "blocked" if blocked else "on" if on else "off"

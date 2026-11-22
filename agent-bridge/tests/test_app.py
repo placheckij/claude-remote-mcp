@@ -380,6 +380,21 @@ def test_start_agent_pins_session_id(root: Path) -> None:
     assert first != second
 
 
+@pytest.mark.parametrize("configured", [
+    ("--continue",), ("-c",), ("--resume",), ("-r", "abc"), (f"--resume={uuid.uuid4()}",),
+    ("--session-id", str(uuid.uuid4())), (f"--session-id={uuid.uuid4()}",),
+])
+def test_start_agent_pins_no_session_id_when_the_claude_args_pick_one(root: Path, configured: tuple[str, ...]) -> None:
+    # Claude Code refuses --session-id with --continue or --resume, and takes one id only.
+    runner = FakeRunner(start_responses(trust_dialog=False))
+    response = client(runner, root, claude_args=configured).post(
+        "/agents", headers=AUTH, json={"cwd": str(root / "project")}
+    )
+    assert response.status_code == 201
+    start = runner.called("agent", "start")[0]
+    assert start[start.index("--") + 1 :] == [*configured]
+
+
 def start_with_remote_control(root: Path, runner: "FakeRunner", asked: bool, **overrides) -> dict:
     response = client(runner, root, **overrides).post(
         "/agents",

@@ -1,4 +1,4 @@
-from agent_bridge.claude_args import clean_args, session_id_in
+from agent_bridge.claude_args import clean_args, picks_session, session_id_in
 
 UUID = "9f1eeae1-5463-4d93-9be4-9c5c75cf409f"
 
@@ -62,6 +62,13 @@ def test_session_id_from_each_form():
     assert session_id_in(["-r", UUID]) == UUID
     assert session_id_in(["--resume"]) is None
     assert session_id_in(["--resume", "my-session-title"]) is None  # not a uuid
+
+
+def test_picks_session_in_each_form_but_not_as_a_value_or_after_double_dash():
+    for args in (["-c"], ["--continue"], ["-r"], [f"--resume={UUID}"], ["--session-id", UUID]):
+        assert picks_session(args), args
+    assert not picks_session(["--system-prompt", "-c"])
+    assert not picks_session(["--model", "haiku", "--", "--continue"])
 
 
 def test_session_id_ignores_value_after_double_dash():

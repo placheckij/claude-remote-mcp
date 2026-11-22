@@ -30,6 +30,7 @@ DROPPED = frozenset({
     "--from-pr", "--teleport", "--cloud", "-w", "--worktree",
 })
 SESSION_FLAGS = frozenset({"--session-id", "--resume", "-r"})
+PICKS_SESSION = SESSION_FLAGS | {"--continue", "-c"}
 
 
 def _flags(args: Sequence[str]) -> Iterator[tuple[str, list[str], str | None]]:
@@ -75,6 +76,12 @@ def _kept(name: str, tokens: list[str]) -> bool:
     if name in DROPPED:
         return False
     return name in REQUIRED or name in OPTIONAL or name in VARIADIC or len(tokens) == 1
+
+
+def picks_session(args: Sequence[str]) -> bool:
+    """Whether these arguments already choose the conversation (--continue, --resume or
+    --session-id, in any form)."""
+    return any(name in PICKS_SESSION for name, _, _ in _flags(args))
 
 
 def session_id_in(args: Sequence[str]) -> str | None:
