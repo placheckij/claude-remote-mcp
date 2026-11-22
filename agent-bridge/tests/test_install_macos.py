@@ -1299,6 +1299,17 @@ def test_uninstall_leaves_the_gateway_then_removes_the_service_and_files(mac: Fa
     assert "agent-bridge is removed" in out
 
 
+def test_uninstall_after_no_herdr_service_removes_its_marker(mac: FakeMac, capsys) -> None:
+    setup(mac, capsys, *every_flag(mac), "--no-herdr-service")
+    assert (mac.support / "no-herdr-agent").exists()
+
+    code, out = uninstall(mac, capsys)
+
+    assert code == 0
+    assert not mac.support.exists()
+    assert "Left" not in out
+
+
 def test_uninstall_of_a_host_never_enrolled_says_how_to_remove_one_added_by_hand(mac: FakeMac, capsys) -> None:
     installed(mac, enrolled=False)
 

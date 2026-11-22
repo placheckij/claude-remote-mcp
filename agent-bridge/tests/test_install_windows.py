@@ -1023,6 +1023,29 @@ def test_uninstall_leaves_the_gateway_then_removes_the_task_rule_and_files(host:
         assert not path.exists(), path
 
 
+def test_uninstall_after_no_herdr_service_removes_its_marker(host: FakeWindows, capsys) -> None:
+    setup(host, capsys, *every_flag(host), "--no-herdr-service")
+    assert host.paths.no_herdr_task.exists()
+
+    assert windows.uninstall(host) == 0
+
+    assert not host.paths.no_herdr_task.exists()
+    assert not host.paths.state.exists()
+
+
+def test_uninstall_says_when_the_herdr_task_cant_be_removed(host: FakeWindows, capsys) -> None:
+    setup(host, capsys, *every_flag(host))
+    host.herdr_delete_fails = True
+
+    assert windows.uninstall(host) == 0
+
+    assert "couldn't remove the scheduled task agent-bridge-herdr; remove it in Task Scheduler" in \
+        capsys.readouterr().err
+    assert host.herdr_task is not None
+    assert host.task_xml is None
+    assert not host.env_file.exists()
+
+
 def test_uninstall_takes_a_setup_ps1_install_away_too(host: FakeWindows, capsys, tmp_path: Path) -> None:
     installed_by_setup_ps1(host, tmp_path / "claude-remote-mcp")
 
