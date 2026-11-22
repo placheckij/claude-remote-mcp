@@ -458,7 +458,7 @@ def test_herdr_service_brings_the_herdr_unit_back(host: FakeLinux, capsys) -> No
 
 
 def herdr_resume() -> bool | None:
-    path = herdr_config.herdr_config_path()
+    path = herdr_config.herdr_config_paths()[0]
     if not path.exists():
         return None
     return tomllib.loads(path.read_text(encoding="utf-8")).get("session", {}).get("resume_agents_on_restore")

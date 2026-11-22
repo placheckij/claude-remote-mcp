@@ -382,9 +382,10 @@ def test_no_herdr_service_removes_the_herdr_launch_agent_and_reruns_keep_it_off(
     assert mac.herdr_plist.exists()
 
 
-def herdr_resume() -> bool | None:
-    """herdr's resume_agents_on_restore as its config file has it, None when it isn't set."""
-    path = herdr_config.herdr_config_path()
+def herdr_resume(path: Path | None = None) -> bool | None:
+    """herdr's resume_agents_on_restore as its config file has it (the tests' HERDR_CONFIG_PATH
+    unless given), None when it isn't set."""
+    path = path or herdr_config.herdr_config_paths()[0]
     if not path.exists():
         return None
     return tomllib.loads(path.read_text(encoding="utf-8")).get("session", {}).get("resume_agents_on_restore")
@@ -410,8 +411,33 @@ def test_no_agent_restore_gives_herdr_its_resume_back_and_reruns_keep_it_off(mac
     assert herdr_resume() is False
 
 
+def test_with_xdg_config_home_elsewhere_both_herdr_configs_are_edited_and_undone(
+        mac: FakeMac, capsys, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    # herdr's server may have been started with XDG_CONFIG_HOME or without it.
+    monkeypatch.delenv("HERDR_CONFIG_PATH")
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+    xdg, default = tmp_path / "xdg" / "herdr" / "config.toml", mac.home / ".config" / "herdr" / "config.toml"
+
+    run = setup(mac, capsys, *every_flag(mac))
+
+    assert run.code == 0, run.out
+    assert herdr_resume(xdg) is False and herdr_resume(default) is False
+    for path in (xdg, default):
+        assert f"herdr's resume_agents_on_restore is off in {path}" in run.out
+
+    run = setup(mac, capsys, "--no-agent-restore")
+    assert herdr_resume(xdg) is None and herdr_resume(default) is None
+    for path in (xdg, default):
+        assert f"Took agent-bridge's resume_agents_on_restore line out of {path}" in run.out
+
+    setup(mac, capsys, "--agent-restore")
+    code, out = uninstall(mac, capsys)
+    assert code == 0, out
+    assert herdr_resume(xdg) is None and herdr_resume(default) is None
+
+
 def test_a_resume_setting_of_your_own_is_left_as_you_set_it(mac: FakeMac, capsys) -> None:
-    path = herdr_config.herdr_config_path()
+    path = herdr_config.herdr_config_paths()[0]
     path.write_text("[session]\nresume_agents_on_restore = true\n", encoding="utf-8")
 
     run = setup(mac, capsys, *every_flag(mac))
@@ -422,7 +448,7 @@ def test_a_resume_setting_of_your_own_is_left_as_you_set_it(mac: FakeMac, capsys
 
 
 def test_a_herdr_config_it_cant_read_is_a_warning(mac: FakeMac, capsys) -> None:
-    herdr_config.herdr_config_path().write_text("[session\n", encoding="utf-8")
+    herdr_config.herdr_config_paths()[0].write_text("[session\n", encoding="utf-8")
 
     run = setup(mac, capsys, *every_flag(mac))
 

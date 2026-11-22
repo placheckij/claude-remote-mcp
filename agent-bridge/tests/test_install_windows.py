@@ -472,7 +472,7 @@ def test_no_herdr_service_removes_the_task_and_later_runs_keep_it_off(host: Fake
 
 
 def herdr_resume() -> bool | None:
-    path = herdr_config.herdr_config_path()
+    path = herdr_config.herdr_config_paths()[0]
     if not path.exists():
         return None
     return tomllib.loads(path.read_text(encoding="utf-8")).get("session", {}).get("resume_agents_on_restore")

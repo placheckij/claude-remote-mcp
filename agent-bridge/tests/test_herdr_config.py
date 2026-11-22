@@ -11,7 +11,7 @@ import pytest
 from agent_bridge.install.herdr_config import (
     MARKER,
     has_claude_hook,
-    herdr_config_path,
+    herdr_config_paths,
     hook_config_dirs,
     turn_off_resume,
     undo_resume,
@@ -159,20 +159,44 @@ def test_undo_without_a_file_does_nothing(tmp_path: Path) -> None:
     assert not (tmp_path / "config.toml").exists()
 
 
-def test_the_config_path_follows_herdr_config_path(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+def test_herdr_config_path_alone_names_the_file(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.setenv("HERDR_CONFIG_PATH", str(tmp_path / "herdr.toml"))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
 
-    assert herdr_config_path() == tmp_path / "herdr.toml"
+    assert herdr_config_paths() == [tmp_path / "herdr.toml"]
 
 
 def test_the_config_path_defaults_to_herdrs(monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
                                             set_home: Callable[[Path], None]) -> None:
     monkeypatch.delenv("HERDR_CONFIG_PATH", raising=False)
+    monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
     monkeypatch.setenv("APPDATA", str(tmp_path / "AppData" / "Roaming"))
     set_home(tmp_path)
 
     expected = (tmp_path / "AppData" / "Roaming" if sys.platform == "win32" else tmp_path / ".config")
-    assert herdr_config_path() == expected / "herdr" / "config.toml"
+    assert herdr_config_paths() == [expected / "herdr" / "config.toml"]
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="herdr reads %APPDATA% on Windows")
+def test_xdg_config_home_elsewhere_names_both_files(monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+                                                    set_home: Callable[[Path], None]) -> None:
+    monkeypatch.delenv("HERDR_CONFIG_PATH", raising=False)
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+    set_home(tmp_path / "home")
+
+    assert herdr_config_paths() == [tmp_path / "xdg" / "herdr" / "config.toml",
+                                    tmp_path / "home" / ".config" / "herdr" / "config.toml"]
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="herdr reads %APPDATA% on Windows")
+@pytest.mark.parametrize("xdg", ["{home}/.config", "{home}/.config/", "relative/config"])
+def test_xdg_config_home_at_the_default_or_relative_names_one_file(
+        monkeypatch: pytest.MonkeyPatch, tmp_path: Path, set_home: Callable[[Path], None], xdg: str) -> None:
+    monkeypatch.delenv("HERDR_CONFIG_PATH", raising=False)
+    monkeypatch.setenv("XDG_CONFIG_HOME", xdg.format(home=tmp_path))
+    set_home(tmp_path)
+
+    assert herdr_config_paths() == [tmp_path / ".config" / "herdr" / "config.toml"]
 
 
 def hooked(config_dir: Path, script_dir: Path) -> Path:

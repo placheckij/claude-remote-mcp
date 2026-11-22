@@ -44,7 +44,7 @@ from agent_bridge.install.common import (
 from agent_bridge.install.herdr_config import (
     default_claude_config,
     has_claude_hook,
-    herdr_config_path,
+    herdr_config_paths,
     hook_config_dirs,
     turn_off_resume,
     undo_resume,
@@ -663,13 +663,15 @@ def _herdr_resume(plan: Plan, system: System) -> None:
     if plan.values[f"{PREFIX}RESTORE_AGENTS"] != "true":
         _give_herdr_its_resume_back()
         return
-    path = herdr_config_path()
-    try:
-        if turn_off_resume(path) == "yours":
-            print(f"note: herdr's resume_agents_on_restore is set in {path}; left as you set it", file=sys.stderr)
-    except (OSError, ValueError) as error:
-        print(f"warning: couldn't turn off herdr's resume_agents_on_restore in {path} ({_reason(error)}); set it to "
-              "false there, or herdr brings each agent back a second time", file=sys.stderr)
+    for path in herdr_config_paths():
+        try:
+            if turn_off_resume(path) == "yours":
+                print(f"note: herdr's resume_agents_on_restore is set in {path}; left as you set it", file=sys.stderr)
+            else:
+                print(f"herdr's resume_agents_on_restore is off in {path}: agent-bridge brings agents back itself")
+        except (OSError, ValueError) as error:
+            print(f"warning: couldn't turn off herdr's resume_agents_on_restore in {path} ({_reason(error)}); set it "
+                  "to false there, or herdr brings each agent back a second time", file=sys.stderr)
     herdr = plan.values[f"{PREFIX}HERDR_BIN"]
     for config_dir in hook_config_dirs(plan.values):
         if has_claude_hook(config_dir):
@@ -691,12 +693,14 @@ def _herdr_resume(plan: Plan, system: System) -> None:
 
 
 def _give_herdr_its_resume_back() -> None:
-    path = herdr_config_path()
-    try:
-        undo_resume(path)
-    except (OSError, ValueError) as error:
-        print(f"warning: couldn't take agent-bridge's resume_agents_on_restore line out of {path} "
-              f"({_reason(error)}); remove it there to have herdr bring agents back itself", file=sys.stderr)
+    for path in herdr_config_paths():
+        try:
+            if undo_resume(path):
+                print(f"Took agent-bridge's resume_agents_on_restore line out of {path}: herdr brings agents back "
+                      "itself again")
+        except (OSError, ValueError) as error:
+            print(f"warning: couldn't take agent-bridge's resume_agents_on_restore line out of {path} "
+                  f"({_reason(error)}); remove it there to have herdr bring agents back itself", file=sys.stderr)
 
 
 def _reason(error: Exception) -> str:
