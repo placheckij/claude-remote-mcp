@@ -5,6 +5,7 @@ import re
 import subprocess
 import sys
 import time
+import uuid
 from collections.abc import Callable, Sequence
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path, PurePosixPath, PureWindowsPath
@@ -20,6 +21,7 @@ from agent_bridge.errors import BridgeError
 from agent_bridge import host
 from agent_bridge.herdr import Herdr, subprocess_runner
 from agent_bridge.host import host_name, platform_name
+from agent_bridge.saved_agents import SavedAgent, SavedAgents, load, save
 from agent_bridge.state import State
 from fakes import FakeRunner, err, ok
 
@@ -344,6 +346,16 @@ def start_responses(trust_dialog: bool, running: int = 0) -> dict:
     }
 
 
+def claude_args(runner: FakeRunner, index: int = 0) -> list[str]:
+    """The arguments the `index`th agent start gave claude, checked to end in
+    `--session-id <uuid4>` and without it."""
+    start = runner.called("agent", "start")[index]
+    args = start[start.index("--") + 1 :]
+    assert args[-2] == "--session-id"
+    assert uuid.UUID(args[-1]).version == 4
+    return args[:-2]
+
+
 def test_start_uses_auto_mode_and_the_default_config(root: Path) -> None:
     runner = FakeRunner(start_responses(trust_dialog=False))
     response = client(runner, root).post(
@@ -353,8 +365,19 @@ def test_start_uses_auto_mode_and_the_default_config(root: Path) -> None:
     assert response.json()["id"] == "w5:p1"
     create = runner.called("workspace", "create")[0]
     assert not any(arg.startswith("CLAUDE_CONFIG_DIR=") for arg in create)
-    assert runner.called("agent", "start")[0][-3:] == ["--", "--permission-mode", "auto"]
+    assert claude_args(runner) == ["--permission-mode", "auto"]
     assert not runner.called("workspace", "close")
+
+
+def test_start_agent_pins_session_id(root: Path) -> None:
+    runner = FakeRunner(start_responses(trust_dialog=False))
+    started = client(runner, root)
+    for _ in range(2):
+        assert started.post("/agents", headers=AUTH, json={"cwd": str(root / "project")}).status_code == 201
+    # A fresh one for each agent, so a restore can resume exactly its conversation.
+    first, second = (runner.called("agent", "start")[i][-1] for i in range(2))
+    assert claude_args(runner, 0) == claude_args(runner, 1) == ["--permission-mode", "auto"]
+    assert first != second
 
 
 def start_with_remote_control(root: Path, runner: "FakeRunner", asked: bool, **overrides) -> dict:
@@ -370,9 +393,7 @@ def start_with_remote_control(root: Path, runner: "FakeRunner", asked: bool, **o
 def test_start_turns_on_remote_control_named_like_the_agent(root: Path) -> None:
     runner = FakeRunner(start_responses(trust_dialog=False))
     assert start_with_remote_control(root, runner, True)["remote_control"] == "on"
-    assert runner.called("agent", "start")[0][-5:] == [
-        "--", "--permission-mode", "auto", "--remote-control", "probe",
-    ]
+    assert claude_args(runner) == ["--permission-mode", "auto", "--remote-control", "probe"]
     # The trust dialog and the policy notice are looked for in one wait.
     probe = runner.called("pane", "wait-output")[0]
     assert probe[probe.index("--regex") + 1] == "Yes, I trust this folder|Remote Control is disabled"
@@ -381,7 +402,7 @@ def test_start_turns_on_remote_control_named_like_the_agent(root: Path) -> None:
 def test_start_without_remote_control_passes_no_flag(root: Path) -> None:
     runner = FakeRunner(start_responses(trust_dialog=False))
     assert start_with_remote_control(root, runner, False)["remote_control"] == "off"
-    assert runner.called("agent", "start")[0][-3:] == ["--", "--permission-mode", "auto"]
+    assert claude_args(runner) == ["--permission-mode", "auto"]
     assert "--match" in runner.called("pane", "wait-output")[0]
 
 
@@ -394,7 +415,7 @@ def test_remote_control_in_the_claude_args_is_not_passed_twice(
     body = start_with_remote_control(root, runner, asked, claude_args=configured)
     # On for every agent, asked or not: the start says so.
     assert body["remote_control"] == "on"
-    assert runner.called("agent", "start")[0][-2:] == ["--", *configured]
+    assert claude_args(runner) == [*configured]
 
 
 def test_a_start_whose_organization_disables_remote_control_says_so(root: Path) -> None:
@@ -895,6 +916,30 @@ def test_stop_closes_the_pane(root: Path) -> None:
     )
     assert client(runner, root).delete("/agents/w1:p1", headers=AUTH).status_code == 204
     assert runner.called("pane", "close") == [["pane", "close", "w1:p1"]]
+
+
+def saved(terminal_id: str) -> SavedAgent:
+    return SavedAgent(
+        name="probe", cwd="/tmp/project", config_dir=None, args=[], session_id=None,
+        pane_id="w1:p1", terminal_id=terminal_id,
+    )
+
+
+def test_stop_agent_forgets_saved_entry(root: Path, tmp_path: Path) -> None:
+    runner = FakeRunner({
+        ("agent", "get"): ok({"agent": {**agent(cwd=str(root / "project")), "terminal_id": "t1"}}),
+        ("pane", "close"): ok({"type": "ok"}),
+    })
+    path = tmp_path / "agents.json"
+    save(path, SavedAgents(agents=[saved("t1"), saved("t2")]))
+    settings = Settings(token=TOKEN, allowed_roots=(root.resolve(),))
+    service = AgentService(settings, Herdr(runner=runner), saved_path=path)
+
+    asyncio.run(service.stop_agent("w1:p1"))
+
+    assert runner.called("pane", "close") == [["pane", "close", "w1:p1"]]
+    # Stopped on purpose, so it isn't brought back after a restart.
+    assert [entry.terminal_id for entry in load(path).agents] == ["t2"]
 
 
 def rename_responses(root: Path, others: list[dict] = ()) -> dict:

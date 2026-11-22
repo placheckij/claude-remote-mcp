@@ -16,8 +16,8 @@ from pathlib import Path
 from pydantic import BaseModel, ValidationError
 
 from agent_bridge import state
-from agent_bridge.agents import claude_environ, claude_process
 from agent_bridge.claude_args import clean_args, session_id_in
+from agent_bridge.claude_process import claude_environ, claude_process
 from agent_bridge.herdr import Herdr, HerdrError
 from agent_bridge.state import state_file
 
