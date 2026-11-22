@@ -117,8 +117,10 @@ removes `agents.json`:
   `HERDR_CONFIG_PATH`, else both `$XDG_CONFIG_HOME/herdr/config.toml` and
   `~/.config/herdr/config.toml` when they differ (on Windows, `%APPDATA%\herdr\config.toml`
   in place of the second). `--no-agent-restore` and `uninstall` remove only that marked line.
-- herdr's Claude hook tells herdr which conversation each agent is in, so a restored agent
-  resumes its own rather than its folder's latest. Setup runs `herdr integration install
+- herdr's Claude hook tells herdr which conversation each agent is in, also after `/clear`
+  or `/resume`, so a restored agent resumes the one it was in. Without the hook, an agent
+  `start_agent` started comes back as the conversation it was started with (its
+  `--session-id`), and one started by hand as its folder's latest. Setup runs `herdr integration install
   claude` for each non-default config agent-bridge uses (`AGENT_BRIDGE_CLAUDE_CONFIG_DIR`
   and the accounts'), never the default `~/.claude`: it warns when that lacks the hook, and
   `agent-bridge check` notes it. Install it there yourself with `herdr integration
