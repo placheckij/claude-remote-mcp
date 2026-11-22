@@ -798,6 +798,24 @@ def test_start_herdr_fails_when_the_server_doesnt_answer(capsys, monkeypatch: py
     assert "didn't answer within 15 s" in log_file.read_text(encoding="utf-8")
 
 
+def test_start_herdr_fails_when_the_server_cant_be_started(capsys, monkeypatch: pytest.MonkeyPatch,
+                                                           tmp_path: Path) -> None:
+    server = FakeServer(monkeypatch)
+
+    def denied(binary: str, cwd: str) -> None:
+        raise PermissionError(13, "Access is denied")
+
+    monkeypatch.setattr(cli, "spawn_server", denied)
+    log_file = tmp_path / "agent-bridge.log"
+
+    code, _, err = run(capsys, "start-herdr", "--herdr-bin", "/usr/bin/herdr", "--log-file", str(log_file))
+
+    assert code == 1
+    assert "Couldn't start herdr's server (/usr/bin/herdr server): Access is denied" in err
+    assert "Couldn't start herdr's server" in log_file.read_text(encoding="utf-8")
+    assert not server.running
+
+
 def test_start_herdr_fails_when_herdr_cant_run(capsys, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     log_file = tmp_path / "agent-bridge.log"
 

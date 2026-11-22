@@ -1188,6 +1188,32 @@ def test_the_elevated_steps_that_failed_as_powershell_reports_them(monkeypatch: 
     assert "WindowsPowerShell" in scripts[0]
 
 
+@pytest.mark.parametrize(("outcome", "running"), [
+    (b'{"status":"running","running":true,"version":"0.9.5"}', True),
+    (b'{"status":"not_running","running":false,"version":null}', False),
+    (b"[]", False),
+    (b"not json", False),
+    (b"", False),
+    (FileNotFoundError(2, "No such file"), False),
+    (windows.subprocess.TimeoutExpired("herdr", 30), False),
+])
+def test_herdr_running_is_read_from_its_status(monkeypatch: pytest.MonkeyPatch, outcome: bytes | Exception,
+                                               running: bool) -> None:
+    ran: list[list[str]] = []
+
+    def run(argv: list[str], **_: object) -> object:
+        ran.append(argv)
+        if isinstance(outcome, Exception):
+            raise outcome
+        return type("Result", (), {"returncode": 0, "stdout": outcome})()
+
+    monkeypatch.setattr(windows.subprocess, "run", run)
+    monkeypatch.setattr(windows.subprocess, "CREATE_NO_WINDOW", 0, raising=False)
+
+    assert windows.WindowsSystem().herdr_running(r"C:\Herdr\herdr.exe") is running
+    assert ran == [[r"C:\Herdr\herdr.exe", "status", "server", "--json"]]
+
+
 @pytest.mark.skipif(sys.platform != "win32", reason="Windows' own firewall, read only")
 def test_a_firewall_rule_that_isnt_there_reads_as_not_there(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(windows, "RULE", "agent-bridge-test-no-such-rule")
