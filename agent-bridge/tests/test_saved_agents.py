@@ -124,6 +124,17 @@ def test_restart_keeps_misses() -> None:
     assert kept.misses == 1
 
 
+def test_a_failed_restore_entry_is_kept_unchanged_however_often_it_is_missed() -> None:
+    failed = entry("t1", misses=1, restore_failed=True)
+    assert saved_agents.merge([failed], [], False) == [failed]
+    assert saved_agents.merge([failed], [], True) == [failed]
+
+
+def test_a_failed_restore_entry_that_is_seen_is_replaced_by_what_is_seen() -> None:
+    [merged] = saved_agents.merge([entry("t1", restore_failed=True)], [entry("t1")], False)
+    assert merged.restore_failed is False
+
+
 @pytest.mark.parametrize(
     "content", [b"{", b"", b'{"version": 99, "agents": [{"unknown": 1}], "extra": true}']
 )

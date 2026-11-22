@@ -16,7 +16,10 @@ import pytest
 
 from agent_bridge import cli, gateway
 from agent_bridge.config import Settings
-from agent_bridge.herdr import Herdr
+from agent_bridge.herdr import Herdr, HerdrError
+from agent_bridge.saved_agents import SavedAgent, SavedAgents, agents_file
+from agent_bridge.saved_agents import load as load_agents
+from agent_bridge.saved_agents import save as save_agents
 from agent_bridge.state import Gateway, State, load, save
 
 TOKEN = "t" * 32
@@ -993,3 +996,49 @@ def test_the_address_report_stops_when_retrying_cant_help(
 
     assert len(fake.requests) == 1
     assert "agent-bridge enroll <string>" in caplog.text
+
+
+class FakeSnapshot:
+    """What `save-agents` sees of herdr: a snapshot, or an error."""
+
+    def __init__(self, monkeypatch: pytest.MonkeyPatch, agents: list | Exception) -> None:
+        self.agents = agents
+        monkeypatch.setattr(cli, "Herdr", lambda binary: self)
+
+        async def snapshot(herdr: object) -> list:
+            if isinstance(self.agents, Exception):
+                raise self.agents
+            return self.agents
+
+        monkeypatch.setattr(cli, "snapshot", snapshot)
+
+
+def saved_agent(terminal_id: str, **fields) -> SavedAgent:
+    values = {"name": "webapp", "cwd": "/work/webapp", "config_dir": None, "args": [], "session_id": None,
+              "pane_id": "w1:p1", "terminal_id": terminal_id, **fields}
+    return SavedAgent(**values)
+
+
+def test_save_agents_command_writes_file(capsys, settings: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    path = agents_file()
+    save_agents(path, SavedAgents(agents=[saved_agent("t-gone")]))
+    FakeSnapshot(monkeypatch, [saved_agent("t1", session_id="s1")])
+
+    code, out, err = run(capsys, "save-agents")
+
+    assert code == 0, err
+    # The agent the snapshot didn't see counts a miss, as in the service; no restore runs.
+    saved = load_agents(path).agents
+    assert [(agent.terminal_id, agent.misses) for agent in saved] == [("t1", 0), ("t-gone", 1)]
+    assert out == f"Saved 2 agents to {path}.\n"
+
+
+def test_save_agents_herdr_down_fails(capsys, settings: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    FakeSnapshot(monkeypatch, HerdrError("server_down", "herdr isn't running"))
+
+    code, out, err = run(capsys, "save-agents")
+
+    assert code == 1
+    assert out == ""
+    assert "herdr isn't running" in err
+    assert not agents_file().exists()

@@ -41,6 +41,8 @@ from agent_bridge.gateway import (
 )
 from agent_bridge.herdr import Herdr, HerdrError, spawn_server
 from agent_bridge.host import API_VERSION, BRIDGE_VERSION
+from agent_bridge.saved_agents import agents_file, load as load_agents, locked, merge
+from agent_bridge.saved_agents import save as save_agents, snapshot
 from agent_bridge.state import Gateway, State, StateError, env_file, load, load_or_create, rename, save, state_file
 
 OK, FAILED, INVALID, NAME_TAKEN, UNREACHABLE, SAVE_FAILED, OUTDATED = 0, 1, 2, 3, 4, 5, 6
@@ -74,6 +76,8 @@ def main(argv: list[str] | None = None, *, run: Callable[..., None] = uvicorn.ru
             return _setup(args)
         if args.command == "uninstall":
             return _uninstall()
+        if args.command == "save-agents":
+            return _save_agents()
         if args.command == "start-herdr":
             return _start_herdr(args.herdr_bin, args.log_file)
         if args.token_format is not None:
@@ -120,6 +124,7 @@ def _parser() -> argparse.ArgumentParser:
     setup.add_argument("--herdr-service", action=argparse.BooleanOptionalAction, default=None,
                        help="start herdr's server at boot or login too (default: as installed, else yes)")
     commands.add_parser("uninstall", help="leave the gateway, then remove the service, its settings, state and log")
+    commands.add_parser("save-agents", help="save the Claude agents running in herdr now, to restore after a restart")
     start_herdr = commands.add_parser(
         "start-herdr", help="start herdr's server in the background unless one runs (what the macOS launch "
                             "agent and the Windows task agent-bridge-herdr run at login)")
@@ -254,6 +259,24 @@ def _start_herdr(herdr_bin: str | None, log_file: Path | None) -> int:
         if handler:
             logging.getLogger().removeHandler(handler)
             handler.close()
+
+
+def _save_agents() -> int:
+    """Writes the running Claude agents to agents.json at once, e.g. before a shutdown, rather
+    than waiting for the service's next snapshot."""
+    herdr = Herdr(binary=_settings(for_service=False).herdr_bin)
+    path = agents_file()
+    try:
+        seen = asyncio.run(snapshot(herdr))
+        with locked(path):
+            saved = load_agents(path)
+            # Not a restart: an agent that isn't running counts a miss, as in the service.
+            kept = merge(saved.agents, seen, restarted=False)
+            save_agents(path, saved.model_copy(update={"agents": kept}))
+    except (HerdrError, TimeoutError) as error:
+        raise _Refused(f"Couldn't save the agents: {error}") from None
+    print(f"Saved {len(kept)} agents to {path}.")
+    return OK
 
 
 def _enroll(string: str) -> int:

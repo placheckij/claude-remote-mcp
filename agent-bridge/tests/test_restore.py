@@ -4,12 +4,16 @@ from pathlib import Path
 
 import psutil
 import pytest
+from fastapi.testclient import TestClient
 from fakes import FakeRunner, err, ok
 
 from agent_bridge.agents import AgentService
 from agent_bridge.config import Settings
 from agent_bridge.herdr import Herdr
-from agent_bridge.restore import restore
+from agent_bridge import restore as restore_module
+from agent_bridge.app import create_app
+from agent_bridge.herdr import HerdrError
+from agent_bridge.restore import restore, watch
 from agent_bridge.saved_agents import SavedAgent, SavedAgents, load, save
 
 TOKEN = "t" * 32
@@ -153,6 +157,7 @@ def test_shell_pane_is_closed_and_agent_started_with_resume(path: Path, folder: 
     # The entry now names the new agent, still with its conversation.
     [replaced] = load(path).agents
     assert (replaced.pane_id, replaced.terminal_id, replaced.session_id, replaced.misses) == ("w90:p1", "t90", UUID, 0)
+    assert replaced.restore_failed is False
     assert (replaced.name, replaced.cwd, replaced.config_dir, replaced.args) == (
         "webapp", str(folder), "/cfg", ["--permission-mode", "auto"],
     )
@@ -238,7 +243,15 @@ def test_other_failure_keeps_entry(path: Path, folder: Path, tmp_path: Path) -> 
     assert "agent_start_failed" in lines[0]
     # Kept as it was, for the next restart; the next entry is still restored.
     assert [agent.terminal_id for agent in load(path).agents] == ["t-old", "t91"]
-    assert load(path).agents[0] == failing
+    # Marked, so the snapshots neither count it a miss nor let it set off a restore.
+    assert load(path).agents[0] == failing.model_copy(update={"restore_failed": True})
+
+
+def test_a_started_agent_is_no_longer_marked_failed(path: Path, folder: Path, tmp_path: Path) -> None:
+    runner = runner_for([])
+    run(runner, path, [entry(folder, session_id=UUID, restore_failed=True)], tmp_path)
+    [replaced] = load(path).agents
+    assert (replaced.terminal_id, replaced.restore_failed) == ("t90", False)
 
 
 def test_restore_skips_agent_limit_and_roots(path: Path, folder: Path, tmp_path: Path) -> None:
@@ -301,3 +314,132 @@ def test_restore_never_prompts(path: Path, folder: Path, tmp_path: Path) -> None
     ]
     run(runner, path, saved, tmp_path)
     assert len(runner.called("agent", "start")) == 2
+
+
+class Rounds:
+    """Runs `watch` for as many rounds as `snapshots` needs, each answer an exception to
+    raise or the agents herdr lists, with `restore` replaced and herdr's panes given per
+    round."""
+
+    def __init__(self, monkeypatch: pytest.MonkeyPatch, path: Path, snapshots: list, panes: list[list[str]]) -> None:
+        self.path, self.snapshots, self.panes = path, list(snapshots), list(panes)
+        self.restores: list[int] = []
+        # The file as each round left it, None while there isn't one.
+        self.files: list[list[SavedAgent] | None] = []
+        self.round = 1
+        self.rounds = 1
+        monkeypatch.setattr(restore_module, "snapshot", self.snapshot)
+        monkeypatch.setattr(restore_module, "restore", self.restore)
+
+    async def snapshot(self, herdr) -> list[SavedAgent]:
+        answer = self.snapshots.pop(0)
+        if isinstance(answer, Exception):
+            raise answer
+        return answer
+
+    async def restore(self, service, herdr, path: Path) -> list[str]:
+        self.restores.append(self.round)
+        return []
+
+    async def list_panes(self) -> list[dict]:
+        return [{"pane_id": "w1:p1", "terminal_id": terminal} for terminal in self.panes.pop(0)]
+
+    async def sleep(self, seconds: float) -> None:
+        self.files.append(load(self.path).agents if self.path.exists() else None)
+        if self.round == self.rounds:
+            raise asyncio.CancelledError
+        self.round += 1
+
+    def watch(self, rounds: int) -> None:
+        self.rounds = rounds
+        herdr = type("FakeHerdr", (), {"list_panes": self.list_panes})()
+        with pytest.raises(asyncio.CancelledError):
+            asyncio.run(watch(None, herdr, self.path, sleep=self.sleep))
+
+
+def test_first_round_restores_then_saves(monkeypatch: pytest.MonkeyPatch, path: Path, folder: Path) -> None:
+    seen = entry(folder, terminal_id="t-new")
+    rounds = Rounds(monkeypatch, path, [[], [seen]], [])
+    rounds.watch(1)
+    assert rounds.restores == [1]
+    assert rounds.files == [[seen]]
+
+
+def test_unreachable_then_reachable_restores_once(monkeypatch: pytest.MonkeyPatch, path: Path, folder: Path) -> None:
+    seen = entry(folder, terminal_id="t1")
+    down = HerdrError("server_down", "herdr is down")
+    # Rounds 1 and 2 fail; round 3 restores (two snapshots); round 4 finds t1 among the panes.
+    rounds = Rounds(monkeypatch, path, [down, down, [], [seen], [seen]], [["t1"]])
+    rounds.watch(4)
+    assert rounds.restores == [3]
+    # Nothing is written while herdr doesn't answer.
+    assert rounds.files[:2] == [None, None]
+    assert rounds.files[2:] == [[seen], [seen]]
+
+
+def test_all_terminal_ids_new_counts_as_restart(monkeypatch: pytest.MonkeyPatch, path: Path, folder: Path) -> None:
+    old = entry(folder, terminal_id="t-old")
+    new = entry(folder, terminal_id="t-new")
+    # Round 1 saves the old agent; in round 2 herdr's panes are all new ones.
+    rounds = Rounds(monkeypatch, path, [[old], [old], [new], [new]], [["t-new"]])
+    rounds.watch(2)
+    assert rounds.restores == [1, 2]
+
+
+def test_same_server_does_not_restore_again(monkeypatch: pytest.MonkeyPatch, path: Path, folder: Path) -> None:
+    seen = entry(folder, terminal_id="t1")
+    rounds = Rounds(monkeypatch, path, [[seen], [seen], [seen]], [["t1"], ["t1"]])
+    rounds.watch(3)
+    assert rounds.restores == [1]
+
+
+def test_failed_entries_do_not_set_off_a_restore(monkeypatch: pytest.MonkeyPatch, path: Path, folder: Path) -> None:
+    failed = entry(folder, terminal_id="t-failed", restore_failed=True)
+    save(path, SavedAgents(agents=[failed]))
+    # A failed entry keeps a stale terminal id: it alone is no sign of a new server.
+    rounds = Rounds(monkeypatch, path, [[], [], [], []], [])
+    rounds.watch(3)
+    assert rounds.restores == [1]
+    assert rounds.files[-1] == [failed]
+
+
+def test_a_live_entry_among_failed_ones_still_detects_a_restart(
+    monkeypatch: pytest.MonkeyPatch, path: Path, folder: Path
+) -> None:
+    failed = entry(folder, terminal_id="t-failed", restore_failed=True)
+    running = entry(folder, terminal_id="t-old")
+    save(path, SavedAgents(agents=[failed, running]))
+    rounds = Rounds(monkeypatch, path, [[], [], [running], [running]], [["t-other"]])
+    rounds.watch(2)
+    assert rounds.restores == [1, 2]
+
+
+def test_a_round_that_fails_unexpectedly_does_not_end_the_watching(
+    monkeypatch: pytest.MonkeyPatch, path: Path, folder: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    seen = entry(folder, terminal_id="t1")
+    rounds = Rounds(monkeypatch, path, [RuntimeError("boom"), [], [seen]], [])
+    rounds.watch(2)
+    assert rounds.restores == [2]
+    assert rounds.files == [None, [seen]]
+    assert "boom" in caplog.text
+
+
+def test_watch_disabled_by_setting(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    started: list[Path] = []
+
+    async def fake_watch(service, herdr, path, *args, **kwargs) -> None:
+        started.append(path)
+        await asyncio.sleep(3600)
+
+    monkeypatch.setattr("agent_bridge.app.watch", fake_watch)
+    monkeypatch.setenv("AGENT_BRIDGE_RESTORE_AGENTS", "false")
+    herdr = Herdr(runner=FakeRunner({}))
+    for restore_agents, expected in ((False, 0), (True, 1)):
+        started.clear()
+        settings = Settings(token=TOKEN, allowed_roots=(tmp_path.resolve(),), restore_agents=restore_agents)
+        with TestClient(create_app(settings, herdr)):
+            pass
+        assert len(started) == expected
+    # The environment is read when no value is passed.
+    assert Settings(token=TOKEN, allowed_roots=(tmp_path.resolve(),)).restore_agents is False

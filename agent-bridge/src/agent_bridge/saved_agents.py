@@ -45,6 +45,9 @@ class SavedAgent(BaseModel):
     terminal_id: str
     # Snapshots in a row that didn't see it.
     misses: int = 0
+    # The last restore couldn't start it: it stays, whatever the snapshots see, until the
+    # next restart tries again.
+    restore_failed: bool = False
 
 
 class SavedAgents(BaseModel):
@@ -148,11 +151,15 @@ async def snapshot(herdr: Herdr) -> list[SavedAgent]:
 
 def merge(saved: list[SavedAgent], seen: list[SavedAgent], restarted: bool) -> list[SavedAgent]:
     """`seen` replaces what it matches; an agent not seen counts a miss (not after a restart,
-    when none of them could be seen) and goes at MAX_MISSES."""
+    when none of them could be seen) and goes at MAX_MISSES. One a restore failed to start
+    is kept as it is: it isn't running by design, and the next restart retries it."""
     seen_ids = {agent.terminal_id for agent in seen}
     merged = [agent.model_copy(update={"misses": 0}) for agent in seen]
     for agent in saved:
         if agent.terminal_id in seen_ids:
+            continue
+        if agent.restore_failed:
+            merged.append(agent)
             continue
         misses = agent.misses if restarted else agent.misses + 1
         if misses < MAX_MISSES:

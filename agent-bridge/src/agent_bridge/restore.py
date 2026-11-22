@@ -5,12 +5,13 @@ can, its conversation. A restored agent is never sent a prompt.
 
 import asyncio
 import logging
+from collections.abc import Awaitable, Callable
 from pathlib import Path
 
 from agent_bridge.agents import AgentService
 from agent_bridge.errors import BridgeError
 from agent_bridge.herdr import Herdr, HerdrError
-from agent_bridge.saved_agents import SavedAgent, forget, load, locked, save, snapshot
+from agent_bridge.saved_agents import SavedAgent, forget, load, locked, merge, save, snapshot
 
 log = logging.getLogger(__name__)
 
@@ -89,16 +90,24 @@ async def _restore_one(
         if error.code == "folder_not_trusted":
             await asyncio.to_thread(forget, path, entry.terminal_id)
             return f"{label}: not restored, and forgotten: {error.message}{note}", True
+        await _keep_failed(path, entry)
         return f"{label}: not restored ({error.code}: {error.message}), kept for the next restart{note}", True
     except Exception as error:  # noqa: BLE001 - one agent's failure mustn't stop the others
         # Any other failure is likely passing (herdr busy, a slow start): try again next time.
+        await _keep_failed(path, entry)
         return f"{label}: not restored ({error}), kept for the next restart{note}", True
 
     restarted = entry.model_copy(
-        update={"pane_id": agent["pane_id"], "terminal_id": agent["terminal_id"], "misses": 0}
+        update={"pane_id": agent["pane_id"], "terminal_id": agent["terminal_id"], "misses": 0,
+                "restore_failed": False}
     )
     await asyncio.to_thread(_replace, path, entry.terminal_id, restarted)
     return f"{label}: restored in {agent['pane_id']}, {how}{note}", False
+
+
+async def _keep_failed(path: Path, entry: SavedAgent) -> None:
+    """Mark `entry` as one the restore couldn't start, so the snapshots leave it be."""
+    await asyncio.to_thread(_replace, path, entry.terminal_id, entry.model_copy(update={"restore_failed": True}))
 
 
 def _session_of(pane: dict) -> str | None:
@@ -110,10 +119,68 @@ def _replace(path: Path, terminal_id: str, restarted: SavedAgent) -> None:
     """Put `restarted` where the entry for `terminal_id` was, or at the end if it's gone."""
     with locked(path):
         saved = load(path)
-        agents = [agent for agent in saved.agents if agent.terminal_id != restarted.terminal_id]
+        # Any other entry with the new terminal id is a stale duplicate; the one being
+        # replaced may share it (a failed start keeps its id) and stays where it is.
+        agents = [
+            agent for agent in saved.agents
+            if agent.terminal_id != restarted.terminal_id or agent.terminal_id == terminal_id
+        ]
         at = next((i for i, agent in enumerate(agents) if agent.terminal_id == terminal_id), None)
         if at is None:
             agents.append(restarted)
         else:
             agents[at] = restarted
         save(path, saved.model_copy(update={"agents": agents}))
+
+
+async def watch(
+    service: AgentService,
+    herdr: Herdr,
+    path: Path,
+    interval_s: float = 30,
+    sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
+) -> None:
+    """Keep `path` current with the agents herdr runs, and restore the saved ones whenever
+    herdr's server has restarted: on the first round it answers, on the first answer after
+    not answering, or when none of the saved agents' panes exist any more. Runs until
+    cancelled."""
+    answering = False
+    while True:
+        try:
+            restarted = not answering
+            seen = await snapshot(herdr)
+            answering = True
+            if not restarted:
+                restarted = await _server_restarted(herdr, path)
+            if restarted:
+                await restore(service, herdr, path)
+                seen = await snapshot(herdr)
+            await asyncio.to_thread(_write, path, seen, restarted)
+        except HerdrError as error:
+            if answering:
+                log.warning("herdr doesn't answer (%s); agents will be restored when it does.", error)
+            answering = False
+        except Exception:  # noqa: BLE001 - one bad round mustn't end the watching
+            log.exception("Saving the running agents failed; trying again in %g s.", interval_s)
+        await sleep(interval_s)
+
+
+async def _server_restarted(herdr: Herdr, path: Path) -> bool:
+    """Whether none of the saved agents that were running has its pane any more: herdr's
+    server is a new one. Agents a restore failed to start keep stale ids by design, so
+    they don't count."""
+    running = [agent for agent in await asyncio.to_thread(_saved, path) if not agent.restore_failed]
+    if not running:
+        return False
+    terminals = {pane.get("terminal_id") for pane in await herdr.list_panes()}
+    return not any(agent.terminal_id in terminals for agent in running)
+
+
+def _saved(path: Path) -> list[SavedAgent]:
+    return load(path).agents
+
+
+def _write(path: Path, seen: list[SavedAgent], restarted: bool) -> None:
+    with locked(path):
+        saved = load(path)
+        save(path, saved.model_copy(update={"agents": merge(saved.agents, seen, restarted)}))
