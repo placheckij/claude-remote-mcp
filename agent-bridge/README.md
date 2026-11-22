@@ -104,7 +104,8 @@ account or arguments are closed and replaced.
   agents, and herdr's layout: each agent gets a workspace of its own.
 
 For a planned herdr restart, `agent-bridge save-agents` saves the list right now.
-`AGENT_BRIDGE_RESTORE_AGENTS=false` turns the restore off, and with it the saving.
+`AGENT_BRIDGE_RESTORE_AGENTS=false` turns the restore off, and with it the saving: `serve`
+then removes `agents.json`.
 
 `agent-bridge setup` prepares herdr for this, and `--no-agent-restore` undoes it and
 removes `agents.json`:

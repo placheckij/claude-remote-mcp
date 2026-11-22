@@ -17,7 +17,7 @@ from agent_bridge import restore as restore_module
 from agent_bridge.app import create_app
 from agent_bridge.herdr import HerdrError
 from agent_bridge.restore import restore, watch
-from agent_bridge.saved_agents import SavedAgent, SavedAgents, load, save
+from agent_bridge.saved_agents import SavedAgent, SavedAgents, agents_file, load, save
 from agent_bridge.state import StateError
 
 TOKEN = "t" * 32
@@ -126,6 +126,24 @@ def test_herdr_resume_with_same_account_and_args_is_kept(
     runner = runner_for([pane(session=UUID)], ["claude", "--permission-mode", "auto", "--resume", UUID])
     run(runner, path, [entry(folder, config_dir="/cfg", session_id=UUID)], tmp_path)
     assert runner.called("agent", "start") == runner.called("pane", "close") == []
+
+
+def test_herdr_resume_on_the_default_config_is_replaced_for_an_unknown_accounts_agent(
+    path: Path, folder: Path, tmp_path: Path, environ: dict[str, str]
+) -> None:
+    # Its account couldn't be read when saved, so it starts on its folder's account; herdr's
+    # own resume runs on the default config: not "as it was".
+    folder.mkdir()
+    work = tmp_path / "cfg-work"
+    environ.pop("CLAUDE_CONFIG_DIR", None)
+    runner = runner_for([pane(session=UUID, cwd=str(folder))], ["claude", "--resume", UUID])
+    accounts = {"work": {"config_dir": work, "folders": [folder]}}
+    saved = entry(folder, config_dir_unknown=True, session_id=UUID, args=[])
+    run(runner, path, [saved], tmp_path, accounts=accounts)
+
+    assert runner.called("pane", "close") == [["pane", "close", "w1:p1"]]
+    [create] = runner.called("workspace", "create")
+    assert create[create.index("--env") + 1] == f"CLAUDE_CONFIG_DIR={work}"
 
 
 def test_herdr_resume_with_other_account_is_replaced(path: Path, folder: Path, tmp_path: Path) -> None:
@@ -539,6 +557,21 @@ def test_watch_disabled_by_setting(monkeypatch: pytest.MonkeyPatch, tmp_path: Pa
         assert len(started) == expected
     # The environment is read when no value is passed.
     assert Settings(token=TOKEN, allowed_roots=(tmp_path.resolve(),)).restore_agents is False
+
+
+def test_serving_with_restore_off_removes_a_saved_agents_file(tmp_path: Path) -> None:
+    # Turned off in the env file rather than by setup: a file kept now would bring back
+    # agents long gone once restore is on again.
+    path = agents_file()
+    save(path, SavedAgents(agents=[entry(tmp_path)]))
+    for leftover in (path.with_name(f"{path.name}.tmp"), path.with_name(f"{path.name}.lock")):
+        leftover.write_text("")
+    settings = Settings(token=TOKEN, allowed_roots=(tmp_path.resolve(),), restore_agents=False)
+
+    with TestClient(create_app(settings, Herdr(runner=FakeRunner({})))):
+        pass
+
+    assert sorted(p.name for p in path.parent.iterdir() if p.name.startswith("agents.json")) == []
 
 
 def test_closing_the_last_agent_pane_by_hand_does_not_restore(

@@ -8,6 +8,7 @@ what enrolling gives in the state file (state.py).
 
 import asyncio
 import contextlib
+import logging
 from collections.abc import AsyncIterator
 from pathlib import Path
 
@@ -24,6 +25,8 @@ from agent_bridge.routes import router
 from agent_bridge.saved_agents import agents_file
 from agent_bridge.state import State, load_or_create, state_file
 
+log = logging.getLogger(__name__)
+
 
 def create_app(
     settings: Settings, herdr: Herdr | None = None, state: State | None = None, state_path: Path | None = None
@@ -37,6 +40,9 @@ def create_app(
         keep_saved = None
         if settings.restore_agents:
             keep_saved = asyncio.create_task(watch(app.state.agents, herdr, agents_file()))
+        else:
+            # Also when restore was turned off in the env file rather than by setup.
+            await asyncio.to_thread(_drop_saved_agents)
         yield
         for task in (report, keep_saved):
             if task is not None:
@@ -60,6 +66,16 @@ def create_app(
     install_error_handlers(app)
     app.include_router(router)
     return app
+
+
+def _drop_saved_agents() -> None:
+    """Remove agents.json and what a write or a lock left beside it."""
+    path = agents_file()
+    for file in (path, path.with_name(f"{path.name}.tmp"), path.with_name(f"{path.name}.lock")):
+        try:
+            file.unlink(missing_ok=True)
+        except OSError as error:
+            log.warning("Restore is off, but %s couldn't be removed: %s", file, error)
 
 
 def main() -> FastAPI:

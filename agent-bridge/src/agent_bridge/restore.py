@@ -99,7 +99,10 @@ async def _restore_one(
     )
     if resumed is not None:
         running = found.live.get(resumed["pane_id"])
-        if running is not None and (running.config_dir, running.args) == (entry.config_dir, entry.args):
+        # By the config each starts on: for an account that couldn't be read, its folder's.
+        if running is not None and running.args == entry.args and (
+            service.config_dir_of(running) == service.config_dir_of(entry)
+        ):
             kept = entry.model_copy(
                 update={"pane_id": resumed["pane_id"], "terminal_id": resumed["terminal_id"], "misses": 0,
                         "restore_failed": False}
