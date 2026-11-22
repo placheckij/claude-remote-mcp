@@ -268,7 +268,12 @@ def _start_herdr(herdr_bin: str | None, log_file: Path | None) -> int:
 def _save_agents() -> int:
     """Writes the running Claude agents to agents.json at once, e.g. before a shutdown, rather
     than waiting for the service's next snapshot."""
-    herdr = Herdr(binary=_settings(for_service=False).herdr_bin)
+    settings = _settings(for_service=False)
+    if not settings.restore_agents:
+        # A file saved now would bring back agents long gone once restore is on again.
+        print("Agent restore is off (AGENT_BRIDGE_RESTORE_AGENTS=false), so no agents were saved.")
+        return OK
+    herdr = Herdr(binary=settings.herdr_bin)
     path = agents_file()
     try:
         seen = asyncio.run(snapshot(herdr))

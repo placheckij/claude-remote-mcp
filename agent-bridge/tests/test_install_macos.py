@@ -411,6 +411,20 @@ def test_no_agent_restore_gives_herdr_its_resume_back_and_reruns_keep_it_off(mac
     assert herdr_resume() is False
 
 
+def test_no_agent_restore_removes_the_saved_agents(mac: FakeMac, capsys) -> None:
+    setup(mac, capsys, *every_flag(mac))
+    agents = mac.state_file.with_name("agents.json")
+    files = (agents, agents.with_name("agents.json.tmp"), agents.with_name("agents.json.lock"))
+    for path in files:
+        path.write_text("{}")
+
+    run = setup(mac, capsys, "--no-agent-restore")
+
+    assert run.code == 0, run.out
+    # Kept, it would bring back agents long gone once restore is on again.
+    assert not any(path.exists() for path in files)
+
+
 def test_with_xdg_config_home_elsewhere_both_herdr_configs_are_edited_and_undone(
         mac: FakeMac, capsys, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     # herdr's server may have been started with XDG_CONFIG_HOME or without it.

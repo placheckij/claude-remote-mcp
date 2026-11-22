@@ -236,6 +236,7 @@ def setup(options: Options, system: System, service: Service, read: Read) -> int
             service.install(plan)
             _herdr_resume(plan, system)
             _start(system, service, plan.gone or plan.new_token)
+            _drop_saved_agents(plan, service)
             _enroll(plan, enrolled, system, service, read)
         except (Refused, KeyboardInterrupt):
             # However setup stops, a new token the gateway didn't confirm doesn't stay.
@@ -701,6 +702,13 @@ def _give_herdr_its_resume_back() -> None:
         except (OSError, ValueError) as error:
             print(f"warning: couldn't take agent-bridge's resume_agents_on_restore line out of {path} "
                   f"({_reason(error)}); remove it there to have herdr bring agents back itself", file=sys.stderr)
+
+
+def _drop_saved_agents(plan: Plan, service: Service) -> None:
+    """With restore off, agents.json goes: kept, it would bring back agents long gone once
+    restore is on again. Once the service has restarted, so the old one can't write it again."""
+    if plan.values[f"{PREFIX}RESTORE_AGENTS"] != "true":
+        remove_with_temporary(service.state_file.with_name("agents.json"))
 
 
 def _reason(error: Exception) -> str:

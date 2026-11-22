@@ -1075,3 +1075,14 @@ def test_save_agents_herdr_down_fails(capsys, settings: Path, monkeypatch: pytes
     assert out == ""
     assert "herdr isn't running" in err
     assert not agents_file().exists()
+
+
+def test_save_agents_with_restore_off_saves_nothing(capsys, settings: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    settings.write_text(settings.read_text() + "AGENT_BRIDGE_RESTORE_AGENTS=false\n")
+    FakeSnapshot(monkeypatch, [saved_agent("t1")])
+
+    code, out, err = run(capsys, "save-agents")
+
+    assert code == 0, err
+    assert "AGENT_BRIDGE_RESTORE_AGENTS" in out
+    assert not agents_file().exists()

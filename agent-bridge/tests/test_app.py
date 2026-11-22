@@ -21,7 +21,7 @@ from agent_bridge.errors import BridgeError
 from agent_bridge import host
 from agent_bridge.herdr import Herdr, subprocess_runner
 from agent_bridge.host import host_name, platform_name
-from agent_bridge.saved_agents import SavedAgent, SavedAgents, load, save
+from agent_bridge.saved_agents import SavedAgent, SavedAgents, agents_file, load, save
 from agent_bridge.state import State
 from fakes import FakeRunner, err, ok
 
@@ -940,6 +940,22 @@ def test_stop_agent_forgets_saved_entry(root: Path, tmp_path: Path) -> None:
     assert runner.called("pane", "close") == [["pane", "close", "w1:p1"]]
     # Stopped on purpose, so it isn't brought back after a restart.
     assert [entry.terminal_id for entry in load(path).agents] == ["t2"]
+
+
+@pytest.mark.parametrize("existing", [False, True])
+def test_with_restore_off_stopping_an_agent_leaves_agents_json_alone(root: Path, existing: bool) -> None:
+    runner = FakeRunner({
+        ("agent", "get"): ok({"agent": {**agent(cwd=str(root / "project")), "terminal_id": "t1"}}),
+        ("pane", "close"): ok({"type": "ok"}),
+    })
+    if existing:
+        save(agents_file(), SavedAgents(agents=[saved("t1")]))
+    before = agents_file().read_bytes() if existing else None
+
+    response = client(runner, root, restore_agents=False).delete("/agents/w1:p1", headers=AUTH)
+
+    assert response.status_code == 204
+    assert (agents_file().read_bytes() if agents_file().exists() else None) == before
 
 
 def rename_responses(root: Path, others: list[dict] = ()) -> dict:

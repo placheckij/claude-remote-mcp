@@ -53,7 +53,10 @@ def create_app(
     )
     bridge_id = state.bridge_id if state is not None else None
     herdr = herdr or Herdr(binary=settings.herdr_bin)
-    app.state.agents = AgentService(settings, herdr, bridge_id, saved_path=agents_file())
+    # With restore off, agents.json is neither made nor kept: a stale one would bring back
+    # agents long gone once restore is on again.
+    saved_path = agents_file() if settings.restore_agents else None
+    app.state.agents = AgentService(settings, herdr, bridge_id, saved_path=saved_path)
     install_error_handlers(app)
     app.include_router(router)
     return app
