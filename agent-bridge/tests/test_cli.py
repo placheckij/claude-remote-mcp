@@ -841,8 +841,10 @@ def test_spawn_server_runs_herdr_server_detached(monkeypatch: pytest.MonkeyPatch
     assert options["stdin"] == options["stdout"] == options["stderr"] == herdr.subprocess.DEVNULL
     if sys.platform == "win32":
         flags = options["creationflags"]
-        for flag in ("CREATE_NO_WINDOW", "CREATE_NEW_PROCESS_GROUP", "CREATE_BREAKAWAY_FROM_JOB"):
+        for flag in ("CREATE_NO_WINDOW", "CREATE_BREAKAWAY_FROM_JOB"):
             assert flags & getattr(herdr.subprocess, flag), flag
+        # A new process group would turn off Ctrl+C in herdr's panes.
+        assert not flags & herdr.subprocess.CREATE_NEW_PROCESS_GROUP
     else:
         assert options["start_new_session"]
 

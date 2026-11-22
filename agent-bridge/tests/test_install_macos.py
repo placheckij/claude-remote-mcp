@@ -335,6 +335,17 @@ def test_herdr_not_starting_is_a_warning(mac: FakeMac, capsys, failure: str) -> 
     assert mac.ran("agent-bridge") == [("check",), ("enroll", ENROLLMENT)]
 
 
+def test_a_herdr_launch_agent_that_wont_load_beside_a_running_server_says_so(mac: FakeMac, capsys) -> None:
+    mac.herdr_bootstrap_failures = macos.BOOTSTRAPS
+
+    run = setup(mac, capsys, *every_flag(mac))
+
+    assert run.code == 0, run.out
+    assert f"{HERDR_LABEL} isn't loaded (see above), so herdr's server won't start at login." in run.out
+    assert "didn't start" not in run.out
+    assert "until you open herdr" not in run.out
+
+
 def test_no_herdr_service_removes_the_herdr_launch_agent_and_reruns_keep_it_off(mac: FakeMac, capsys) -> None:
     setup(mac, capsys, *every_flag(mac))
     mac.herdr_log.write_text("log\n")

@@ -45,7 +45,9 @@ def spawn_server(binary: str, cwd: str) -> None:
     if not WINDOWS:
         start(start_new_session=True)
         return
-    flags = subprocess.CREATE_NO_WINDOW | subprocess.CREATE_NEW_PROCESS_GROUP
+    # No CREATE_NEW_PROCESS_GROUP: it turns off Ctrl+C for the server and, inherited, for
+    # what runs in its panes. Its own console already keeps the starter's Ctrl+C from it.
+    flags = subprocess.CREATE_NO_WINDOW
     try:
         start(creationflags=flags | subprocess.CREATE_BREAKAWAY_FROM_JOB)
     except PermissionError:

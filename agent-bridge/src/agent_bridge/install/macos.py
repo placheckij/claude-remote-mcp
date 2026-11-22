@@ -202,7 +202,10 @@ class MacService:
             if self.system.launchctl("bootstrap", self.system.domain(), str(self.herdr_plist)) == 0:
                 break
             if attempt == BOOTSTRAPS - 1:
-                self._herdr_failed(f"launchctl bootstrap failed; see: launchctl print {service}")
+                print(f"warning: launchctl bootstrap failed, so herdr's server won't start at login; see: "
+                      f"launchctl print {service}", file=sys.stderr)
+                self.notes.append(f"{HERDR_LABEL} isn't loaded (see above), so herdr's server won't start at login"
+                                  + ("." if running else ", and agents can't start until you open herdr."))
                 return
             self.system.sleep(1)
         if running:
@@ -214,10 +217,7 @@ class MacService:
             if self.system.herdr_running(self.herdr):
                 print("ok")
                 return
-        self._herdr_failed(f"herdr's server didn't start; see {self.herdr_log}")
-
-    def _herdr_failed(self, warning: str) -> None:
-        print(f"warning: {warning}", file=sys.stderr)
+        print(f"warning: herdr's server didn't start; see {self.herdr_log}", file=sys.stderr)
         self.notes.append("herdr's server didn't start (see above), so agents can't start until you open herdr.")
 
     def _no_herdr_agent(self) -> None:
