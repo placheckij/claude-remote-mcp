@@ -45,6 +45,9 @@ async def _restore_one(
 ) -> tuple[str, bool]:
     """The log line for `entry`, and whether it says something failed."""
     label = entry.name or entry.cwd
+    if entry.misses > 0:
+        # It had already disappeared while this herdr server ran: stopped or closed, not lost.
+        return f"{label}: not restored, it had gone before the restart; left as it is", False
     for pane in panes:
         if pane.get("terminal_id") == entry.terminal_id:
             return f"{label}: still running in {pane['pane_id']}, left as it is", False
@@ -141,21 +144,27 @@ async def watch(
     sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
 ) -> None:
     """Keep `path` current with the agents herdr runs, and restore the saved ones whenever
-    herdr's server has restarted: on the first round it answers, on the first answer after
-    not answering, or when none of the saved agents' panes exist any more. Runs until
-    cancelled."""
-    answering = False
+    herdr's server has restarted (see `_restarted`). A restore that didn't finish is run
+    again next round. Runs until cancelled."""
+    # None until herdr first answers; then whether it answered in the last round.
+    answering: bool | None = None
+    pending = False
     while True:
         try:
-            restarted = not answering
             seen = await snapshot(herdr)
-            answering = True
-            if not restarted:
-                restarted = await _server_restarted(herdr, path)
-            if restarted:
+            was, answering = answering, True
+            pending = pending or await _restarted(herdr, path, was)
+            if pending:
                 await restore(service, herdr, path)
+                # Only when it ran through: one cut short by an error starts over next round.
+                pending = False
                 seen = await snapshot(herdr)
-            await asyncio.to_thread(_write, path, seen, restarted)
+                restarted = True
+            else:
+                restarted = False
+            # Agents stopped through the bridge since the snapshot began are gone for good.
+            stopped = service.stopped
+            await asyncio.to_thread(_write, path, [agent for agent in seen if agent.terminal_id not in stopped], restarted)
         except HerdrError as error:
             if answering:
                 log.warning("herdr doesn't answer (%s); agents will be restored when it does.", error)
@@ -165,15 +174,23 @@ async def watch(
         await sleep(interval_s)
 
 
-async def _server_restarted(herdr: Herdr, path: Path) -> bool:
-    """Whether none of the saved agents that were running has its pane any more: herdr's
-    server is a new one. Agents a restore failed to start keep stale ids by design, so
-    they don't count."""
+async def _restarted(herdr: Herdr, path: Path, was_answering: bool | None) -> bool:
+    """Whether herdr's server is a new one: it answers for the first time; or a saved agent's
+    pane id is there with another terminal id (herdr brings panes back under their ids, with
+    new terminals); or it answers again after not answering and none of the saved agents has
+    its terminal. A pane closed by hand is gone entirely, which says nothing. Agents a
+    restore failed to start keep stale ids by design, so they don't count."""
+    if was_answering is None:
+        return True
     running = [agent for agent in await asyncio.to_thread(_saved, path) if not agent.restore_failed]
     if not running:
-        return False
-    terminals = {pane.get("terminal_id") for pane in await herdr.list_panes()}
-    return not any(agent.terminal_id in terminals for agent in running)
+        return was_answering is False
+    panes = await herdr.list_panes()
+    terminals = {pane.get("terminal_id") for pane in panes}
+    by_pane = {pane.get("pane_id"): pane.get("terminal_id") for pane in panes}
+    if any(by_pane.get(agent.pane_id, agent.terminal_id) != agent.terminal_id for agent in running):
+        return True
+    return was_answering is False and not any(agent.terminal_id in terminals for agent in running)
 
 
 def _saved(path: Path) -> list[SavedAgent]:

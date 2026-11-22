@@ -56,6 +56,8 @@ class AgentService:
         self.bridge_id = bridge_id
         # agents.json, which a stopped agent is taken out of so a restore doesn't bring it back.
         self.saved_path = saved_path
+        # Terminal ids of agents stopped here, which the saving of running agents leaves out.
+        self.stopped: set[str] = set()
         # Serializes count-then-start and picking a free name, so concurrent requests can
         # neither exceed the limit nor give two agents the same name.
         self._start_lock = asyncio.Lock()
@@ -337,6 +339,9 @@ class AgentService:
         self._check_controllable(agent_id, found)
         await self.herdr.close_pane(agent_id)
         terminal_id = found.get("terminal_id")
+        if terminal_id:
+            # The watcher may be midway through a snapshot that still lists this agent.
+            self.stopped.add(terminal_id)
         if self.saved_path is None or not terminal_id:
             return
         try:
