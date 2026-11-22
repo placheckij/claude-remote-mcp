@@ -1,4 +1,5 @@
 import asyncio
+import contextlib
 import os
 from collections.abc import Callable
 from pathlib import Path
@@ -17,6 +18,7 @@ from agent_bridge.app import create_app
 from agent_bridge.herdr import HerdrError
 from agent_bridge.restore import restore, watch
 from agent_bridge.saved_agents import SavedAgent, SavedAgents, load, save
+from agent_bridge.state import StateError
 
 TOKEN = "t" * 32
 UUID = "11111111-2222-3333-4444-555555555555"
@@ -258,6 +260,43 @@ def test_other_failure_keeps_entry(path: Path, folder: Path, tmp_path: Path) -> 
     assert [agent.terminal_id for agent in load(path).agents] == ["t-old", "t91"]
     # Marked, so the snapshots neither count it a miss nor let it set off a restore.
     assert load(path).agents[0] == failing.model_copy(update={"restore_failed": True})
+
+
+def test_a_file_that_cant_be_written_doesnt_stop_the_restore(
+    path: Path, folder: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    first = entry(folder, session_id=UUID)
+    second = entry(tmp_path / "api", terminal_id="t-api", pane_id="w2:p1", session_id=OTHER_UUID)
+
+    def unwritable(*args: object) -> None:
+        raise StateError(f"Can't write {path} (No space left on device).")
+
+    monkeypatch.setattr(restore_module, "_replace", unwritable)
+    runner = runner_for([])
+    lines = run(runner, path, [first, second], tmp_path)
+
+    # Both are started, and the run ends normally, so the watcher doesn't start them again.
+    assert len(runner.called("agent", "start")) == 2
+    assert all("No space left on device" in line for line in lines)
+
+
+def test_the_watcher_leaves_out_an_agent_stopped_while_it_waited_for_the_file(
+    monkeypatch: pytest.MonkeyPatch, path: Path, folder: Path
+) -> None:
+    gone = entry(folder, terminal_id="t-gone")
+    rounds = Rounds(monkeypatch, path, [[], [gone]], [])
+    real_locked = restore_module.locked
+
+    @contextlib.contextmanager
+    def stopped_meanwhile(locked_path: Path):
+        # stop_agent marks the agent stopped and forgets it just before the watcher gets the lock.
+        rounds.service.stopped.add("t-gone")
+        with real_locked(locked_path):
+            yield
+
+    monkeypatch.setattr(restore_module, "locked", stopped_meanwhile)
+    rounds.watch(1)
+    assert rounds.files == [[]]
 
 
 def test_a_started_agent_is_no_longer_marked_failed(path: Path, folder: Path, tmp_path: Path) -> None:

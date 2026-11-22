@@ -19,10 +19,11 @@ from agent_bridge.app import create_app
 from agent_bridge.config import Settings
 from agent_bridge.errors import BridgeError
 from agent_bridge import host
-from agent_bridge.herdr import Herdr, subprocess_runner
+from agent_bridge.herdr import Herdr, HerdrError, subprocess_runner
 from agent_bridge.host import host_name, platform_name
 from agent_bridge.saved_agents import SavedAgent, SavedAgents, agents_file, load, save
-from agent_bridge.state import State
+from agent_bridge.state import State, StateError
+from agent_bridge import agents as agents_module
 from fakes import FakeRunner, err, ok
 
 TOKEN = "t" * 32
@@ -955,6 +956,43 @@ def test_stop_agent_forgets_saved_entry(root: Path, tmp_path: Path) -> None:
     assert runner.called("pane", "close") == [["pane", "close", "w1:p1"]]
     # Stopped on purpose, so it isn't brought back after a restart.
     assert [entry.terminal_id for entry in load(path).agents] == ["t2"]
+
+
+def test_stop_agent_succeeds_when_agents_json_cant_be_written(
+    root: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runner = FakeRunner({
+        ("agent", "get"): ok({"agent": {**agent(cwd=str(root / "project")), "terminal_id": "t1"}}),
+        ("pane", "close"): ok({"type": "ok"}),
+    })
+
+    def unwritable(path: Path, terminal_id: str) -> None:
+        raise StateError(f"Can't write {path} (No space left on device).")
+
+    monkeypatch.setattr(agents_module, "forget", unwritable)
+    service = AgentService(Settings(token=TOKEN, allowed_roots=(root.resolve(),)), Herdr(runner=runner),
+                           saved_path=tmp_path / "agents.json")
+
+    # The pane is closed, so the stop worked; only the saved entry couldn't be dropped.
+    asyncio.run(service.stop_agent("w1:p1"))
+    assert service.stopped == {"t1"}
+
+
+def test_a_stop_that_fails_to_close_the_pane_leaves_the_agent_saved(root: Path, tmp_path: Path) -> None:
+    runner = FakeRunner({
+        ("agent", "get"): ok({"agent": {**agent(cwd=str(root / "project")), "terminal_id": "t1"}}),
+        ("pane", "close"): err("pane_not_found"),
+    })
+    path = tmp_path / "agents.json"
+    save(path, SavedAgents(agents=[saved("t1")]))
+    service = AgentService(Settings(token=TOKEN, allowed_roots=(root.resolve(),)), Herdr(runner=runner),
+                           saved_path=path)
+
+    with pytest.raises(HerdrError):
+        asyncio.run(service.stop_agent("w1:p1"))
+    # Still running, so the watcher must keep saving it.
+    assert service.stopped == set()
+    assert [entry.terminal_id for entry in load(path).agents] == ["t1"]
 
 
 @pytest.mark.parametrize("existing", [False, True])

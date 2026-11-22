@@ -19,6 +19,7 @@ from agent_bridge.errors import BridgeError
 from agent_bridge.herdr import REMOTE_CONTROL_BLOCKED_TEXT, Herdr, HerdrError
 from agent_bridge.host import API_VERSION, BRIDGE_VERSION, host_name, platform_name
 from agent_bridge.saved_agents import SavedAgent, forget
+from agent_bridge.state import StateError
 from agent_bridge.schemas import (
     AgentSummary,
     HostInfo,
@@ -341,17 +342,24 @@ class AgentService:
         # server): herdr answers agent_not_found, a 404.
         found = await self.herdr.get_agent(agent_id)
         self._check_controllable(agent_id, found)
-        await self.herdr.close_pane(agent_id)
         terminal_id = found.get("terminal_id")
         if terminal_id:
-            # The watcher may be midway through a snapshot that still lists this agent.
+            # Before the pane closes and before forget: the watcher may be midway through a
+            # snapshot that still lists this agent, and it checks this set under the file's
+            # lock, which forget takes too, so the agent can't be written back.
             self.stopped.add(terminal_id)
+        try:
+            await self.herdr.close_pane(agent_id)
+        except BaseException:
+            # Still running, so it must stay saved.
+            self.stopped.discard(terminal_id)
+            raise
         if self.saved_path is None or not terminal_id:
             return
         try:
             # In a thread: the file's lock may be waited for.
             await asyncio.to_thread(forget, self.saved_path, terminal_id)
-        except OSError as error:
+        except (OSError, StateError) as error:
             # The agent is stopped all the same; only a restart would bring it back.
             log.warning("Stopped %s but couldn't take it out of %s: %s", agent_id, self.saved_path, error)
 

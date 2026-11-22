@@ -13,6 +13,7 @@ from agent_bridge.agents import AgentService
 from agent_bridge.errors import BridgeError
 from agent_bridge.herdr import Herdr, HerdrError
 from agent_bridge.saved_agents import SavedAgent, forget, load, locked, merge, save, snapshot
+from agent_bridge.state import StateError
 
 log = logging.getLogger(__name__)
 
@@ -47,7 +48,12 @@ async def restore(service: AgentService, herdr: Herdr, path: Path) -> list[str]:
     )
     lines = []
     for entry in entries:
-        line, failed = await _restore_one(service, herdr, path, entry, entries, found)
+        try:
+            line, failed = await _restore_one(service, herdr, path, entry, entries, found)
+        except (OSError, StateError) as error:
+            # agents.json couldn't be read or written (a full disk, a held lock). The run
+            # still goes on and ends, so the watcher doesn't start this agent again.
+            line, failed = f"{entry.name or entry.cwd}: agents.json not updated: {error}", True
         (log.warning if failed else log.info)("%s", line)
         lines.append(line)
     return lines
@@ -205,9 +211,7 @@ async def watch(
                 restarted = True
             else:
                 restarted = False
-            # Agents stopped through the bridge since the snapshot began are gone for good.
-            stopped = service.stopped
-            await asyncio.to_thread(_write, path, [agent for agent in seen if agent.terminal_id not in stopped], restarted)
+            await asyncio.to_thread(_write, path, seen, restarted, service.stopped)
         except HerdrError as error:
             if answering:
                 log.warning("herdr doesn't answer (%s); agents will be restored when it does.", error)
@@ -241,7 +245,12 @@ def _saved(path: Path) -> list[SavedAgent]:
     return load(path).agents
 
 
-def _write(path: Path, seen: list[SavedAgent], restarted: bool) -> None:
+def _write(path: Path, seen: list[SavedAgent], restarted: bool, stopped: set[str] = frozenset()) -> None:
     with locked(path):
+        # Agents stopped through the bridge since the snapshot began are gone for good. Read
+        # under the lock: stop_agent adds to `stopped` before its forget takes the lock, so
+        # either it's in the set now or its forget runs after this write.
+        gone = frozenset(stopped)
+        seen = [agent for agent in seen if agent.terminal_id not in gone]
         saved = load(path)
         save(path, saved.model_copy(update={"agents": merge(saved.agents, seen, restarted)}))
