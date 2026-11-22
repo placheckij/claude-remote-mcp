@@ -6,6 +6,7 @@ import subprocess
 import sys
 import time
 from collections.abc import Callable, Sequence
+from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path, PurePosixPath, PureWindowsPath
 
 import psutil
@@ -16,6 +17,7 @@ from agent_bridge.agents import AgentService, is_project_name, project_of
 from agent_bridge.app import create_app
 from agent_bridge.config import Settings
 from agent_bridge.errors import BridgeError
+from agent_bridge import host
 from agent_bridge.herdr import Herdr, subprocess_runner
 from agent_bridge.host import host_name, platform_name
 from agent_bridge.state import State
@@ -1473,6 +1475,22 @@ def test_info_describes_the_host(tmp_path: Path) -> None:
         "accounts": ["personal", "work"],
         "max_agents": 4,
     }
+
+
+def test_info_answers_after_the_install_folder_is_gone(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # An upgrade (brew cleanup, a uv reinstall) deletes the running version's package metadata.
+    installed = version("claude-remote-mcp-agent-bridge")
+
+    def gone(name: str) -> str:
+        raise PackageNotFoundError(name)
+
+    monkeypatch.setattr(host, "version", gone)
+    runner = FakeRunner({("--version",): (0, "herdr 0.9.5\n", "")})
+    response = roots_client(runner, (tmp_path.resolve(),)).get("/info", headers=AUTH)
+    assert response.status_code == 200
+    assert response.json()["bridge_version"] == installed
 
 
 def test_info_gives_the_bridge_id_and_the_name_set(tmp_path: Path) -> None:

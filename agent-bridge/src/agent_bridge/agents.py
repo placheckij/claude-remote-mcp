@@ -15,7 +15,7 @@ import psutil
 from agent_bridge.config import Settings, claude_env
 from agent_bridge.errors import BridgeError
 from agent_bridge.herdr import REMOTE_CONTROL_BLOCKED_TEXT, Herdr, HerdrError
-from agent_bridge.host import API_VERSION, bridge_version, host_name, platform_name
+from agent_bridge.host import API_VERSION, BRIDGE_VERSION, host_name, platform_name
 from agent_bridge.schemas import (
     AgentSummary,
     HostInfo,
@@ -65,7 +65,7 @@ class AgentService:
             bridge_id=self.bridge_id,
             name=self.settings.name or host_name(),
             platform=platform_name(),
-            bridge_version=bridge_version(),
+            bridge_version=BRIDGE_VERSION,
             herdr_version=herdr_version,
             roots=roots,
             projects_root=roots[0],

@@ -8,6 +8,9 @@ from importlib.metadata import version
 # 1 is the API before /info.
 API_VERSION = 2
 
+# Read once: an upgrade can delete the running version's package metadata.
+BRIDGE_VERSION = version("claude-remote-mcp-agent-bridge")
+
 
 def host_name() -> str:
     """The hostname as a slug, e.g. "Jakubs-MacBook-Pro.local" → "jakubs-macbook-pro"."""
@@ -18,7 +21,3 @@ def host_name() -> str:
 def platform_name() -> str:
     """"darwin", "linux" or "windows" (sys.platform says "win32" on 64-bit Windows too)."""
     return "windows" if sys.platform.startswith("win") else sys.platform
-
-
-def bridge_version() -> str:
-    return version("claude-remote-mcp-agent-bridge")
