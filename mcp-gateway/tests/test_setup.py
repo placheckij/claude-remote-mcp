@@ -52,7 +52,8 @@ class Setup:
         self.runs: list[list[str]] = []
         self.code = 0
         monkeypatch.setattr(sys, "platform", "linux")
-        monkeypatch.setattr(os, "geteuid", lambda: 1000)
+        # Windows has no geteuid; setup reads it only after the Linux check, faked above.
+        monkeypatch.setattr(os, "geteuid", lambda: 1000, raising=False)
         for name in cli.SETUP_VARIABLES:
             monkeypatch.delenv(name, raising=False)
 
@@ -135,7 +136,7 @@ def test_setup_prints_what_it_passes_on_before_the_script_writes(
 
 
 def test_setup_run_as_root_runs_the_script_without_sudo(setup: Setup, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(os, "geteuid", lambda: 0)
+    monkeypatch.setattr(os, "geteuid", lambda: 0, raising=False)
     setup.site.add("claude-remote-mcp-gateway", "0.3.0")
 
     assert setup()[0] == 0

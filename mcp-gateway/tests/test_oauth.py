@@ -245,7 +245,8 @@ def test_tokens_survive_a_restart(make_client) -> None:
 def test_only_hashes_reach_the_disk(client: TestClient, tmp_path: Path) -> None:
     _, tokens = connect(client)
     state = tmp_path / "oauth.json"
-    assert stat.S_IMODE(state.stat().st_mode) == 0o600
+    if os.name == "posix":
+        assert stat.S_IMODE(state.stat().st_mode) == 0o600
     text = state.read_text()
     assert tokens["access_token"] not in text and tokens["refresh_token"] not in text
     assert hashlib.sha256(tokens["access_token"].encode()).hexdigest() in text
@@ -542,6 +543,7 @@ def test_a_state_file_error_shows_no_values(tmp_path: Path) -> None:
     assert CLIENT_SECRET not in str(error.value) and STATIC_TOKEN not in str(error.value)
 
 
+@pytest.mark.skipif(os.name != "posix", reason="Windows has no owner-only file modes")
 def test_a_leftover_temporary_file_does_not_loosen_the_mode(client: TestClient, tmp_path: Path) -> None:
     # Left by a crash, or made by hand with a looser mode.
     leftover = tmp_path / "oauth.json.tmp"
