@@ -149,7 +149,7 @@ def test_herdr_resume_with_other_args_is_replaced(path: Path, folder: Path, tmp_
 
 
 def test_shell_pane_is_closed_and_agent_started_with_resume(path: Path, folder: Path, tmp_path: Path) -> None:
-    runner = runner_for([pane(agent=None)])
+    runner = runner_for([pane(agent=None, cwd=str(folder))])
     [line] = run(runner, path, [entry(folder, session_id=UUID, config_dir="/cfg")], tmp_path)
 
     assert runner.called("pane", "close") == [["pane", "close", "w1:p1"]]
@@ -171,7 +171,7 @@ def test_shell_pane_is_closed_and_agent_started_with_resume(path: Path, folder: 
 def test_a_restored_shell_keeping_the_session_id_is_closed_as_a_shell(path: Path, folder: Path, tmp_path: Path) -> None:
     # With herdr's resume off, its restored panes are shells that still carry the saved
     # session id: the log must not call that herdr's own resume.
-    runner = runner_for([pane(agent=None, session=UUID)])
+    runner = runner_for([pane(agent=None, session=UUID, cwd=str(folder))])
     [line] = run(runner, path, [entry(folder, session_id=UUID)], tmp_path)
 
     assert runner.called("pane", "close") == [["pane", "close", "w1:p1"]]
@@ -308,11 +308,26 @@ def test_a_started_agent_is_no_longer_marked_failed(path: Path, folder: Path, tm
 
 def test_an_entry_that_had_already_gone_is_not_restored(path: Path, folder: Path, tmp_path: Path) -> None:
     runner = runner_for([])
-    saved = [entry(folder, misses=1)]
-    [line] = run(runner, path, saved, tmp_path)
-    assert "not restored: it had already gone" in line
+    [line] = run(runner, path, [entry(folder, misses=1)], tmp_path)
+    assert "not restored, and forgotten: it had already gone" in line
     assert runner.called("agent", "start") == runner.called("workspace", "create") == []
-    assert load(path).agents == saved
+    # Forgotten now: its stale pane id can't match a pane a later herdr server hands out.
+    assert load(path).agents == []
+
+
+def test_a_pane_with_its_id_in_another_folder_isnt_taken_for_its_shell(
+    path: Path, folder: Path, tmp_path: Path
+) -> None:
+    # A herdr server that lost its session numbers panes afresh: the user's own shell in
+    # another folder can have the saved pane id.
+    other = pane(agent=None, cwd=str(tmp_path / "elsewhere"))
+    runner = runner_for([other])
+
+    [line] = run(runner, path, [entry(folder, session_id=UUID, misses=1)], tmp_path)
+
+    assert runner.called("pane", "close") == []
+    assert runner.called("agent", "start") == []
+    assert "forgotten: it had already gone" in line
 
 
 def test_restore_skips_agent_limit_and_roots(path: Path, folder: Path, tmp_path: Path) -> None:
@@ -585,6 +600,17 @@ def test_an_agent_stopped_during_the_snapshot_is_not_saved_again(
     assert rounds.files == [[]]
 
 
+def test_the_watcher_drops_a_saved_agent_stopped_after_a_restore_wrote_it(
+    monkeypatch: pytest.MonkeyPatch, path: Path, folder: Path
+) -> None:
+    # The restore wrote the new agent's entry; stop_agent ran before that write, so its
+    # forget found nothing to remove.
+    restored = entry(folder, terminal_id="t-restored")
+    save(path, SavedAgents(agents=[restored]))
+    restore_module._write(path, [], True, {"t-restored"})
+    assert load(path).agents == []
+
+
 def test_a_restore_cut_short_by_an_error_runs_again_next_round(
     monkeypatch: pytest.MonkeyPatch, path: Path, folder: Path
 ) -> None:
@@ -707,14 +733,14 @@ def test_no_restore_outcome_keeps_setting_off_restores(
 
 def test_an_agent_that_had_gone_comes_back_when_its_pane_does(path: Path, folder: Path, tmp_path: Path) -> None:
     # A snapshot taken while the host shut down missed it, but herdr brought its pane back.
-    runner = runner_for([pane(agent=None)])
+    runner = runner_for([pane(agent=None, cwd=str(folder))])
     [line] = run(runner, path, [entry(folder, session_id=UUID, misses=1)], tmp_path)
     assert "restored" in line
     assert claude_args(runner) == ["--resume", UUID, "--permission-mode", "auto"]
 
 
 def test_herdr_resumed_as_it_was_takes_the_resumed_panes_ids(path: Path, folder: Path, tmp_path: Path) -> None:
-    runner = runner_for([pane(session=UUID)], ["claude", "--permission-mode", "auto", "--resume", UUID])
+    runner = runner_for([pane(session=UUID, cwd=str(folder))], ["claude", "--permission-mode", "auto", "--resume", UUID])
     run(runner, path, [entry(folder, session_id=UUID, misses=1)], tmp_path)
     [kept] = load(path).agents
     assert (kept.pane_id, kept.terminal_id, kept.misses, kept.restore_failed) == ("w1:p1", "t-new", 0, False)

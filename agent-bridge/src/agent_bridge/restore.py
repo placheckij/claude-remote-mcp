@@ -68,17 +68,25 @@ async def _restore_one(
         if pane.get("terminal_id") == entry.terminal_id:
             return f"{label}: still running in {pane['pane_id']}, left as it is", False
     open_panes = [pane for pane in found.panes if pane["pane_id"] not in found.closed]
-    # herdr brings an agent's pane back as a plain shell; it keeps its pane id.
-    shell = next((pane for pane in open_panes if pane["pane_id"] == entry.pane_id and not pane.get("agent")), None)
+    # herdr brings an agent's pane back under its pane id, in its folder. The folder matters
+    # too: a herdr server that lost its session numbers panes afresh, and a pane of the
+    # user's elsewhere can have the saved id.
+    back = [
+        pane for pane in found.panes
+        if pane["pane_id"] == entry.pane_id and pane.get("cwd") and Path(pane["cwd"]) == Path(entry.cwd)
+    ]
+    shell = next((pane for pane in back if pane["pane_id"] not in found.closed and not pane.get("agent")), None)
     if entry.session_id in found.sessions:
         # Two panes ran one conversation; a second copy of it would answer as the first.
         note = await _close(herdr, shell, found)
         await asyncio.to_thread(forget, path, entry.terminal_id)
         return f"{label}: not restored, and forgotten: its conversation {entry.session_id} already runs{note}", False
-    if entry.misses > 0 and not any(pane["pane_id"] == entry.pane_id for pane in found.panes):
+    if entry.misses > 0 and not back:
         # It had already disappeared while this herdr server ran, and herdr didn't bring its
-        # pane back: stopped or closed, not lost. The snapshots let it age out.
-        return f"{label}: not restored: it had already gone before the restart", False
+        # pane back: stopped or closed, not lost. Forgotten now rather than left to age out,
+        # so its stale pane id can't match a pane a later server hands out.
+        await asyncio.to_thread(forget, path, entry.terminal_id)
+        return f"{label}: not restored, and forgotten: it had already gone before the restart", False
     resumed = next(
         (
             # A restored shell still carries the session id it last ran: only a pane with an
@@ -253,4 +261,7 @@ def _write(path: Path, seen: list[SavedAgent], restarted: bool, stopped: set[str
         gone = frozenset(stopped)
         seen = [agent for agent in seen if agent.terminal_id not in gone]
         saved = load(path)
-        save(path, saved.model_copy(update={"agents": merge(saved.agents, seen, restarted)}))
+        # Also saved ones: a restore may have written an agent that a stop then closed before
+        # its forget could find it.
+        kept = [agent for agent in saved.agents if agent.terminal_id not in gone]
+        save(path, saved.model_copy(update={"agents": merge(kept, seen, restarted)}))

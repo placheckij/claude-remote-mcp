@@ -93,8 +93,8 @@ conversation. Agents started by hand come back too. Panes herdr resumed with the
 account or arguments are closed and replaced.
 
 - A restored agent is idle: no prompt is sent.
-- An agent that a save had already missed comes back only if herdr brought its pane back.
-  Each conversation comes back once.
+- An agent that a save had already missed comes back only if herdr brought its pane back,
+  in its folder; otherwise it's dropped. Each conversation comes back once.
 - The restore ignores `AGENT_BRIDGE_MAX_AGENTS` and the allowed roots, so every agent
   that was running comes back. [Folder trust](#folder-trust) still applies: an untrusted
   folder's entry is dropped. `start_agent` adds `--session-id <uuid>`, unless
