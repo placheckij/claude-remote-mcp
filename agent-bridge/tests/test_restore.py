@@ -135,14 +135,14 @@ def test_herdr_resume_with_other_account_is_replaced(path: Path, folder: Path, t
     [create] = runner.called("workspace", "create")
     assert runner.calls.index(["pane", "close", "w1:p1"]) < runner.calls.index(create)
     assert create[create.index("--env") + 1] == f"CLAUDE_CONFIG_DIR={Path('/cfg')}"
-    assert claude_args(runner) == ["--permission-mode", "auto", "--resume", UUID]
+    assert claude_args(runner) == ["--resume", UUID, "--permission-mode", "auto"]
 
 
 def test_herdr_resume_with_other_args_is_replaced(path: Path, folder: Path, tmp_path: Path) -> None:
     runner = runner_for([pane(session=UUID)], ["claude", "--resume", UUID])
     run(runner, path, [entry(folder, session_id=UUID)], tmp_path)
     assert runner.called("pane", "close") == [["pane", "close", "w1:p1"]]
-    assert claude_args(runner) == ["--permission-mode", "auto", "--resume", UUID]
+    assert claude_args(runner) == ["--resume", UUID, "--permission-mode", "auto"]
 
 
 def test_shell_pane_is_closed_and_agent_started_with_resume(path: Path, folder: Path, tmp_path: Path) -> None:
@@ -152,7 +152,7 @@ def test_shell_pane_is_closed_and_agent_started_with_resume(path: Path, folder: 
     assert runner.called("pane", "close") == [["pane", "close", "w1:p1"]]
     [start] = runner.called("agent", "start")
     assert start[2] == "webapp"
-    assert claude_args(runner) == ["--permission-mode", "auto", "--resume", UUID]
+    assert claude_args(runner) == ["--resume", UUID, "--permission-mode", "auto"]
     [create] = runner.called("workspace", "create")
     assert create[create.index("--cwd") + 1] == str(folder)
     assert "restored" in line
@@ -177,7 +177,7 @@ def test_no_id_alone_in_folder_uses_continue(path: Path, folder: Path, tmp_path:
     runner = runner_for([])
     other = entry(tmp_path / "api", terminal_id="t-api", pane_id="w2:p1", session_id=UUID)
     run(runner, path, [entry(folder), other], tmp_path)
-    assert claude_args(runner, 0) == ["--permission-mode", "auto", "--continue"]
+    assert claude_args(runner, 0) == ["--continue", "--permission-mode", "auto"]
     [replaced, _] = load(path).agents
     assert replaced.session_id is None
 
@@ -188,7 +188,7 @@ def test_no_id_sharing_folder_starts_fresh(path: Path, folder: Path, tmp_path: P
     without = entry(folder, terminal_id="t-old-2", pane_id="w2:p1")
     lines = run(runner, path, [with_id, without], tmp_path)
 
-    assert claude_args(runner, 0) == ["--permission-mode", "auto", "--resume", UUID]
+    assert claude_args(runner, 0) == ["--resume", UUID, "--permission-mode", "auto"]
     assert claude_args(runner, 1) == ["--permission-mode", "auto"]
     assert f"fresh conversation: another saved agent shares {folder} and its account" in lines[1]
     assert [agent.terminal_id for agent in load(path).agents] == ["t90", "t91"]
@@ -197,7 +197,7 @@ def test_no_id_sharing_folder_starts_fresh(path: Path, folder: Path, tmp_path: P
 def test_no_id_in_a_shared_folder_with_another_account_continues(path: Path, folder: Path, tmp_path: Path) -> None:
     runner = runner_for([])
     run(runner, path, [entry(folder), entry(folder, terminal_id="t-old-2", config_dir="/cfg")], tmp_path)
-    assert claude_args(runner, 0)[-1] == claude_args(runner, 1)[-1] == "--continue"
+    assert claude_args(runner, 0)[0] == claude_args(runner, 1)[0] == "--continue"
 
 
 def test_no_id_with_unknown_config_sharing_its_accounts_folder_starts_fresh(
@@ -224,8 +224,8 @@ def test_with_id_sharing_folder_still_resumes(path: Path, folder: Path, tmp_path
     first = entry(folder, session_id=UUID)
     second = entry(folder, terminal_id="t-old-2", pane_id="w2:p1", session_id=OTHER_UUID)
     run(runner, path, [first, second], tmp_path)
-    assert claude_args(runner, 0)[-2:] == ["--resume", UUID]
-    assert claude_args(runner, 1)[-2:] == ["--resume", OTHER_UUID]
+    assert claude_args(runner, 0)[:2] == ["--resume", UUID]
+    assert claude_args(runner, 1)[:2] == ["--resume", OTHER_UUID]
 
 
 def test_untrusted_folder_drops_entry(path: Path, folder: Path, tmp_path: Path) -> None:
@@ -281,10 +281,19 @@ def test_remote_control_entry_keeps_flag_and_name(path: Path, folder: Path, tmp_
 
     [start] = runner.called("agent", "start")
     assert start[2] == "webapp"
-    assert claude_args(runner) == ["--remote-control", "webapp", "--resume", UUID]
+    assert claude_args(runner) == ["--resume", UUID, "--remote-control", "webapp"]
     # Watched for, as start_agent does, so a blocked Remote Control is noticed.
     probe = runner.called("pane", "wait-output")[0]
     assert "Remote Control is disabled" in probe[probe.index("--regex") + 1]
+
+
+def test_a_trailing_flag_with_an_optional_value_does_not_take_the_resume(
+    path: Path, folder: Path, tmp_path: Path
+) -> None:
+    runner = runner_for([])
+    run(runner, path, [entry(folder, args=["--remote-control"])], tmp_path)
+    # After it, --continue would be Remote Control's name.
+    assert claude_args(runner) == ["--continue", "--remote-control"]
 
 
 def test_restored_name_avoids_running_ones_and_falls_back_to_the_folder(
@@ -651,7 +660,7 @@ def test_an_agent_that_had_gone_comes_back_when_its_pane_does(path: Path, folder
     runner = runner_for([pane(agent=None)])
     [line] = run(runner, path, [entry(folder, session_id=UUID, misses=1)], tmp_path)
     assert "restored" in line
-    assert claude_args(runner) == ["--permission-mode", "auto", "--resume", UUID]
+    assert claude_args(runner) == ["--resume", UUID, "--permission-mode", "auto"]
 
 
 def test_herdr_resumed_as_it_was_takes_the_resumed_panes_ids(path: Path, folder: Path, tmp_path: Path) -> None:

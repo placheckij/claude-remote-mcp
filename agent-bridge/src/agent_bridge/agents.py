@@ -234,16 +234,17 @@ class AgentService:
         return StartedAgent(**{**summary, "account": account, "remote_control": state})
 
     async def restart_agent(self, saved: SavedAgent, resume: list[str]) -> dict:
-        """Start a saved agent again as it was, with `resume` after its arguments: in its
-        folder, on its account. None of start_agent's checks (agent limit, allowed roots,
-        trust): it puts back an agent that was running, started remotely or by hand."""
+        """Start a saved agent again as it was, with `resume` before its arguments (after
+        them, a trailing flag with an optional value would take it): in its folder, on its
+        account. None of start_agent's checks (agent limit, allowed roots, trust): it puts
+        back an agent that was running, started remotely or by hand."""
         folder = Path(saved.cwd)
         notice = REMOTE_CONTROL_BLOCKED_TEXT if has_remote_control(saved.args) else None
         async with self._start_lock:
             running = await self.herdr.list_agents()
             name = herdr_name(saved.name or folder.name, {agent.get("name") for agent in running})
             agent, _ = await self._start_with_one_retry(
-                name, folder, self.config_dir_of(saved), saved.args + resume, notice
+                name, folder, self.config_dir_of(saved), resume + saved.args, notice
             )
         return agent
 

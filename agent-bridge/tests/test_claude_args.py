@@ -32,8 +32,16 @@ def test_equals_form():
     assert clean_args(["--model=haiku", f"--session-id={UUID}"]) == ["--model=haiku"]
 
 
-def test_unknown_flag_is_boolean_so_next_word_is_dropped():
-    assert clean_args(["--brand-new-flag", "fix X"]) == ["--brand-new-flag"]
+def test_unknown_flag_followed_by_a_word_is_dropped_with_it():
+    # The word may be the flag's value or a prompt: neither may come back alone.
+    assert clean_args(["--brand-new-flag", "fix X"]) == []
+    assert clean_args(["--brand-new-flag", "fix X", "--model", "haiku"]) == ["--model", "haiku"]
+
+
+def test_unknown_flag_followed_by_a_flag_or_nothing_is_kept():
+    assert clean_args(["--brand-new-flag", "--model", "haiku"]) == ["--brand-new-flag", "--model", "haiku"]
+    assert clean_args(["--model", "haiku", "--brand-new-flag"]) == ["--model", "haiku", "--brand-new-flag"]
+    assert clean_args(["--brand-new-flag=value"]) == ["--brand-new-flag=value"]
 
 
 def test_print_mode_dropped():

@@ -1,8 +1,9 @@
 """Clean the arguments a Claude Code agent was started with so they can be restored.
 
 Parsed the way Claude Code (commander.js) does, using the value tables from
-`claude --help` (Claude Code 2.1). A flag missing from the tables is treated as boolean,
-so a new flag survives a restore but a prompt word after it would be dropped.
+`claude --help` (Claude Code 2.1). A flag missing from the tables is kept only when another
+flag or nothing follows it: a word after it may be its value or a prompt, and a prompt must
+never come back, so both go.
 """
 
 import uuid
@@ -58,13 +59,22 @@ def _flags(args: Sequence[str]) -> Iterator[tuple[str, list[str], str | None]]:
         elif token in VARIADIC:
             while end < len(args) and not args[end].startswith("-"):
                 end += 1
+        elif end < len(args) and not args[end].startswith("-"):
+            # Unknown: the word is its value or a prompt; clean_args drops both.
+            end += 1
         yield token, list(args[i:end]), args[i + 1] if end > i + 1 else None
         i = end
 
 
 def clean_args(args: Sequence[str]) -> list[str]:
     """The arguments after `claude` without session flags, print mode or a positional prompt."""
-    return [t for name, tokens, _ in _flags(args) if name not in DROPPED for t in tokens]
+    return [t for name, tokens, _ in _flags(args) if _kept(name, tokens) for t in tokens]
+
+
+def _kept(name: str, tokens: list[str]) -> bool:
+    if name in DROPPED:
+        return False
+    return name in REQUIRED or name in OPTIONAL or name in VARIADIC or len(tokens) == 1
 
 
 def session_id_in(args: Sequence[str]) -> str | None:
