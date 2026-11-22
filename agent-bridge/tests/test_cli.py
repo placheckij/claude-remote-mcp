@@ -738,6 +738,138 @@ def test_check_fails_when_herdr_cant_say_how_its_server_is(capsys, settings: Pat
     assert any(line.startswith("FAIL  herdr's server runs (bad_output") for line in out.splitlines())
 
 
+class FakeServer:
+    """herdr's server as `herdr status server` tells it: `running`, or up from the `starts`th
+    look after spawn_server started it (never when None)."""
+
+    def __init__(self, monkeypatch: pytest.MonkeyPatch, running: bool = False, starts: int | None = 1) -> None:
+        self.running, self.starts, self.looks = running, starts, 0
+        self.spawned: list[tuple[str, str]] = []
+        monkeypatch.setattr(cli, "Herdr", lambda binary: self)
+        monkeypatch.setattr(cli, "spawn_server", self.spawn)
+        monkeypatch.setattr(cli.time, "sleep", lambda seconds: None)
+
+    def spawn(self, binary: str, cwd: str) -> None:
+        self.spawned.append((binary, cwd))
+
+    async def server_status(self) -> dict:
+        if self.spawned and not self.running:
+            self.looks += 1
+            self.running = self.starts is not None and self.looks >= self.starts
+        return {"running": self.running}
+
+
+def test_start_herdr_starts_the_server_in_the_home_folder_and_waits_for_it(
+        capsys, settings: Path, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    server = FakeServer(monkeypatch, starts=3)
+    log_file = tmp_path / "agent-bridge.log"
+
+    code, _, err = run(capsys, "start-herdr", "--log-file", str(log_file))
+
+    assert code == 0, err
+    # The env file's herdr.
+    assert server.spawned == [("/opt/herdr", str(Path.home()))]
+    log = log_file.read_text(encoding="utf-8")
+    assert "starting herdr's server\n" in log
+    assert "started herdr's server (/opt/herdr server)" in log
+
+
+def test_start_herdr_leaves_a_running_server_alone(capsys, monkeypatch: pytest.MonkeyPatch,
+                                                   caplog: pytest.LogCaptureFixture) -> None:
+    server = FakeServer(monkeypatch, running=True)
+
+    with caplog.at_level(logging.INFO):
+        code, _, _ = run(capsys, "start-herdr", "--herdr-bin", "/usr/bin/herdr")
+
+    assert code == 0
+    assert server.spawned == []
+    assert "herdr's server already runs" in caplog.messages
+
+
+def test_start_herdr_fails_when_the_server_doesnt_answer(capsys, monkeypatch: pytest.MonkeyPatch,
+                                                         tmp_path: Path) -> None:
+    FakeServer(monkeypatch, starts=None)
+    log_file = tmp_path / "agent-bridge.log"
+
+    code, _, err = run(capsys, "start-herdr", "--herdr-bin", "/usr/bin/herdr", "--log-file", str(log_file))
+
+    assert code == 1
+    assert "herdr's server (/usr/bin/herdr server) didn't answer within 15 s" in err
+    assert "didn't answer within 15 s" in log_file.read_text(encoding="utf-8")
+
+
+def test_start_herdr_fails_when_the_server_cant_be_started(capsys, monkeypatch: pytest.MonkeyPatch,
+                                                           tmp_path: Path) -> None:
+    server = FakeServer(monkeypatch)
+
+    def denied(binary: str, cwd: str) -> None:
+        raise PermissionError(13, "Access is denied")
+
+    monkeypatch.setattr(cli, "spawn_server", denied)
+    log_file = tmp_path / "agent-bridge.log"
+
+    code, _, err = run(capsys, "start-herdr", "--herdr-bin", "/usr/bin/herdr", "--log-file", str(log_file))
+
+    assert code == 1
+    assert "Couldn't start herdr's server (/usr/bin/herdr server): Access is denied" in err
+    assert "Couldn't start herdr's server" in log_file.read_text(encoding="utf-8")
+    assert not server.running
+
+
+def test_start_herdr_fails_when_herdr_cant_run(capsys, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    log_file = tmp_path / "agent-bridge.log"
+
+    code, _, err = run(capsys, "start-herdr", "--herdr-bin", str(tmp_path / "missing" / "herdr"),
+                       "--log-file", str(log_file))
+
+    assert code == 1
+    assert "herdr_not_found" in err
+    assert "herdr_not_found" in log_file.read_text(encoding="utf-8")
+
+
+def test_spawn_server_runs_herdr_server_detached(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    from agent_bridge import herdr
+
+    started: list[tuple[list[str], dict]] = []
+    monkeypatch.setattr(herdr.subprocess, "Popen", lambda argv, **kwargs: started.append((argv, kwargs)))
+
+    herdr.spawn_server("herdr", str(tmp_path))
+
+    (argv, options), = started
+    assert argv == ["herdr", "server"]
+    assert options["cwd"] == str(tmp_path)
+    assert options["stdin"] == options["stdout"] == options["stderr"] == herdr.subprocess.DEVNULL
+    if sys.platform == "win32":
+        flags = options["creationflags"]
+        for flag in ("CREATE_NO_WINDOW", "CREATE_BREAKAWAY_FROM_JOB"):
+            assert flags & getattr(herdr.subprocess, flag), flag
+        # A new process group would turn off Ctrl+C in herdr's panes.
+        assert not flags & herdr.subprocess.CREATE_NEW_PROCESS_GROUP
+    else:
+        assert options["start_new_session"]
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows jobs")
+def test_spawn_server_starts_in_the_job_when_it_cant_break_away(monkeypatch: pytest.MonkeyPatch,
+                                                                 tmp_path: Path) -> None:
+    from agent_bridge import herdr
+
+    flags: list[int] = []
+
+    def popen(argv: list[str], **kwargs: object) -> None:
+        flags.append(kwargs["creationflags"])
+        if kwargs["creationflags"] & herdr.subprocess.CREATE_BREAKAWAY_FROM_JOB:
+            raise PermissionError(5, "Access is denied")
+
+    monkeypatch.setattr(herdr.subprocess, "Popen", popen)
+
+    herdr.spawn_server("herdr", str(tmp_path))
+
+    assert len(flags) == 2
+    assert not flags[1] & herdr.subprocess.CREATE_BREAKAWAY_FROM_JOB
+    assert flags[1] & herdr.subprocess.CREATE_NO_WINDOW
+
+
 def test_check_keeps_the_name_the_gateway_has_now(
     capsys, settings: Path, fake: FakeGateway, monkeypatch: pytest.MonkeyPatch
 ) -> None:

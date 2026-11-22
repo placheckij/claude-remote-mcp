@@ -32,7 +32,7 @@ class FakeWindows:
     """What setup asks of Windows. Processes are Listeners with a port (0: not listening);
     registering the task starts it, as its registration trigger does, unless it runs already.
     `enroll_codes` are the exit codes `agent-bridge enroll` gives, in turn (0 once they run
-    out)."""
+    out). Registering the herdr task starts herdr's server, unless `herdr_starts` is off."""
 
     home: Path
     paths: windows.Paths
@@ -63,6 +63,11 @@ class FakeWindows:
     gateway_token: str | None = None
     gateway_name: str = ""
     calls: list[tuple[str, ...]] = field(default_factory=list)
+    herdr_task: str | None = None
+    herdr_up: bool = False
+    herdr_starts: bool = True
+    herdr_register_fails: bool = False
+    herdr_delete_fails: bool = False
 
     # --- flow.System
 
@@ -178,6 +183,12 @@ class FakeWindows:
 
     def schtasks(self, *args: str) -> int:
         self.calls.append(("schtasks", *args))
+        if args[2] == f"\\{windows.HERDR_TASK}":
+            # Deleting it leaves herdr's server running.
+            if args[0] != "/Delete" or self.herdr_task is None or self.herdr_delete_fails:
+                return 1
+            self.herdr_task = None
+            return 0
         if self.task_xml is None:
             return 1
         if args[0] == "/Change":
@@ -193,13 +204,28 @@ class FakeWindows:
             self.task_xml = None
         return 0
 
-    def task(self) -> str | None:
+    def task(self, name: str = windows.TASK) -> str | None:
+        if name == windows.HERDR_TASK:
+            return self.herdr_task
         if self.task_xml is None:
             return None
         return self.task_xml if self.task_on else self.task_xml.replace(
             "<Enabled>true</Enabled>\n    <Hidden>", "<Enabled>false</Enabled>\n    <Hidden>")
 
-    def register(self, xml: str, file: Path) -> bool:
+    def herdr_running(self, herdr: str) -> bool:
+        self.calls.append(("herdr status", herdr))
+        return self.herdr_up
+
+    def register(self, xml: str, file: Path, name: str = windows.TASK) -> bool:
+        if name == windows.HERDR_TASK:
+            self.calls.append(("register herdr", xml))
+            if self.herdr_register_fails:
+                return False
+            file.parent.mkdir(parents=True, exist_ok=True)
+            file.write_text(xml, encoding="utf-16")
+            # Its registration trigger runs start-herdr.
+            self.herdr_task, self.herdr_up = xml, self.herdr_up or self.herdr_starts
+            return True
         self.calls.append(("register", windows.Task.parse(xml).command))
         if self.register_fails:
             return False
@@ -371,14 +397,124 @@ def test_the_default_name_starts_with_pc_when_the_computer_name_doesnt_start_wit
     assert host.env("NAME") == "pc-7-desktop"
 
 
-@pytest.mark.parametrize("flag", ["--herdr-service", "--no-herdr-service"])
-def test_the_herdr_service_flags_are_refused(host: FakeWindows, capsys, flag: str) -> None:
-    run = setup(host, capsys, *every_flag(host), flag)
+# --- herdr's server --------------------------------------------------------------------
+
+
+def test_the_herdr_task_starts_herdrs_server_at_logon_and_now(host: FakeWindows, capsys) -> None:
+    run = setup(host, capsys, *every_flag(host))
+
+    assert run.code == 0, run.out
+    task = host.paths.herdr_task_file.read_text(encoding="utf-16")
+    assert task == host.herdr_task
+    # The windowless agent-bridge starts it: herdr.exe, a console program, would open a window.
+    assert windows.Task.parse(task).command == host.service_command()
+    assert (f"start-herdr --herdr-bin &quot;{host.herdr}&quot; --log-file &quot;{host.paths.log}&quot;"
+            in task)
+    assert f"<UserId>{SID}</UserId>" in task
+    assert "<LogonTrigger>" in task and "<Repetition>" not in task
+    # Registered before the bridge's task, so the bridge's checks find the server.
+    kinds = [call[0] for call in host.calls if call[0].startswith("register")]
+    assert kinds == ["register herdr", "register"]
+    assert host.herdr_up
+    assert "Starting herdr's server\nok" in run.out
+    assert "herdr's server starts at every logon too (the task agent-bridge-herdr)." in run.out
+
+
+def test_a_running_herdr_server_is_left_as_it_is(host: FakeWindows, capsys) -> None:
+    host.herdr_up = True
+
+    run = setup(host, capsys, *every_flag(host))
+
+    assert run.code == 0, run.out
+    assert host.herdr_task is not None
+    assert "herdr's server already runs; it is left as it is." in run.out
+    assert "Starting herdr's server" not in run.out
+
+
+def test_a_herdr_server_that_doesnt_start_is_said_at_the_end(host: FakeWindows, capsys) -> None:
+    host.herdr_starts = False
+
+    run = setup(host, capsys, *every_flag(host))
+
+    assert run.code == 0, run.out
+    assert f"warning: herdr's server didn't start; see {host.paths.log}" in run.out
+    assert "agents can't start until you open herdr" in run.out.rsplit("Done.", 1)[1]
+
+
+def test_no_herdr_service_removes_the_task_and_later_runs_keep_it_off(host: FakeWindows, capsys) -> None:
+    setup(host, capsys, *every_flag(host))
+
+    run = setup(host, capsys, "--no-herdr-service")
+
+    assert run.code == 0, run.out
+    assert host.herdr_task is None
+    assert not host.paths.herdr_task_file.exists()
+    # Its server keeps running, with its agents.
+    assert host.herdr_up
+    assert "Removing the scheduled task agent-bridge-herdr (herdr's server keeps running)" in run.out
+    assert "Open herdr after each logon" in run.out
+    host.calls.clear()
+
+    assert setup(host, capsys).code == 0
+
+    assert host.herdr_task is None
+    assert host.ran("register herdr") == []
+
+    assert setup(host, capsys, "--herdr-service").code == 0
+
+    assert host.herdr_task is not None
+    assert not host.paths.no_herdr_task.exists()
+
+
+def test_a_host_set_up_before_the_herdr_task_gets_it(host: FakeWindows, capsys, tmp_path: Path) -> None:
+    installed_by_setup_ps1(host, tmp_path / "claude-remote-mcp")
+
+    run = setup(host, capsys)
+
+    assert run.code == 0, run.out
+    assert run.asked == []
+    assert host.herdr_task is not None
+    assert host.herdr_up
+
+
+def test_a_herdr_task_that_cant_be_removed_is_said_at_the_end(host: FakeWindows, capsys) -> None:
+    setup(host, capsys, *every_flag(host))
+    host.herdr_delete_fails = True
+
+    run = setup(host, capsys, "--no-herdr-service")
+
+    assert run.code == 0, run.out
+    assert "The scheduled task agent-bridge-herdr is still there" in run.out.rsplit("Done.", 1)[1]
+
+
+def test_a_herdr_path_task_scheduler_would_expand_is_refused_before_anything(host: FakeWindows, capsys,
+                                                                              tmp_path: Path) -> None:
+    herdr = tmp_path / "%HERDR%" / "herdr.exe"
+    herdr.parent.mkdir()
+    herdr.write_text("")
+    herdr.chmod(0o755)
+
+    run = setup(host, capsys, *every_flag(host, herdr_bin=str(herdr)))
 
     assert run.code == 1
-    assert "--herdr-service and --no-herdr-service are for Linux" in run.out
-    assert host.calls == []
+    assert "the task agent-bridge-herdr can't run a path with % in it" in run.out
     assert not host.env_file.exists()
+
+    # Not when it isn't installed.
+    assert setup(host, capsys, *every_flag(host, herdr_bin=str(herdr)), "--no-herdr-service").code == 0
+
+
+def test_a_herdr_task_that_cant_be_registered_puts_the_bridge_task_back(host: FakeWindows, capsys,
+                                                                         tmp_path: Path) -> None:
+    installed_by_setup_ps1(host, tmp_path / "claude-remote-mcp")
+    host.herdr_register_fails = True
+
+    run = setup(host, capsys)
+
+    assert run.code == 1
+    assert "schtasks couldn't register the task agent-bridge-herdr" in run.out
+    assert host.task_on
+    assert SERVER in host.pids()
 
 
 def test_another_account_than_the_desktops_is_refused_before_anything(host: FakeWindows, capsys) -> None:
@@ -640,7 +776,9 @@ def test_a_setup_stopped_after_the_bridge_puts_the_task_back_on(host: FakeWindow
     tries = iter([False, True])
     real = host.register
 
-    def register(xml: str, file: Path) -> bool:
+    def register(xml: str, file: Path, name: str = windows.TASK) -> bool:
+        if name != windows.TASK:
+            return real(xml, file, name)
         if next(tries):
             return real(xml, file)
         host.calls.append(("register", windows.Task.parse(xml).command))
@@ -672,7 +810,9 @@ def test_after_a_killed_setup_a_failed_one_puts_the_task_back_on(host: FakeWindo
     tries = iter([False, True])
     real = host.register
 
-    def register(xml: str, file: Path) -> bool:
+    def register(xml: str, file: Path, name: str = windows.TASK) -> bool:
+        if name != windows.TASK:
+            return real(xml, file, name)
         if next(tries):
             return real(xml, file)
         host.calls.append(("register", windows.Task.parse(xml).command))
@@ -741,7 +881,9 @@ def test_setup_stopped_by_ctrl_c_puts_the_task_back_on(host: FakeWindows, capsys
     before = host.task_xml
     real = host.register
 
-    def interrupted(xml: str, file: Path) -> bool:
+    def interrupted(xml: str, file: Path, name: str = windows.TASK) -> bool:
+        if name != windows.TASK:
+            return real(xml, file, name)
         host.register = real  # type: ignore[method-assign]
         raise KeyboardInterrupt
 
@@ -764,7 +906,9 @@ def test_a_failed_restart_after_the_takeover_puts_back_the_new_task(host: FakeWi
     registered = iter([True, False, True])
     real = host.register
 
-    def register(xml: str, file: Path) -> bool:
+    def register(xml: str, file: Path, name: str = windows.TASK) -> bool:
+        if name != windows.TASK:
+            return real(xml, file, name)
         if next(registered):
             return real(xml, file)
         host.calls.append(("register", windows.Task.parse(xml).command))
@@ -807,7 +951,11 @@ def test_a_restore_that_cant_write_its_file_warns_once_and_keeps_the_marker(host
                                                                            tmp_path: Path) -> None:
     installed_by_setup_ps1(host, tmp_path / "claude-remote-mcp")
 
-    def register(xml: str, file: Path) -> bool:
+    real = host.register
+
+    def register(xml: str, file: Path, name: str = windows.TASK) -> bool:
+        if name != windows.TASK:
+            return real(xml, file, name)
         raise Refused(f"can't write {file} (No space left on device)")
 
     host.register = register  # type: ignore[method-assign]
@@ -866,9 +1014,36 @@ def test_uninstall_leaves_the_gateway_then_removes_the_task_rule_and_files(host:
     assert host.pids() == set()
     assert host.ran("elevated") == [(windows.remove_rule_command(),)]
     assert host.rule is None
-    for path in (host.env_file, host.state_file, host.paths.log, host.paths.task_file, host.paths.settings,
-                 host.paths.state):
+    # The herdr task goes; herdr's server and its agents stay.
+    assert host.herdr_task is None
+    assert host.herdr_up
+    assert "herdr's server, if it runs, keeps running with its agents" in out.out
+    for path in (host.env_file, host.state_file, host.paths.log, host.paths.task_file, host.paths.herdr_task_file,
+                 host.paths.settings, host.paths.state):
         assert not path.exists(), path
+
+
+def test_uninstall_after_no_herdr_service_removes_its_marker(host: FakeWindows, capsys) -> None:
+    setup(host, capsys, *every_flag(host), "--no-herdr-service")
+    assert host.paths.no_herdr_task.exists()
+
+    assert windows.uninstall(host) == 0
+
+    assert not host.paths.no_herdr_task.exists()
+    assert not host.paths.state.exists()
+
+
+def test_uninstall_says_when_the_herdr_task_cant_be_removed(host: FakeWindows, capsys) -> None:
+    setup(host, capsys, *every_flag(host))
+    host.herdr_delete_fails = True
+
+    assert windows.uninstall(host) == 0
+
+    assert "couldn't remove the scheduled task agent-bridge-herdr; remove it in Task Scheduler" in \
+        capsys.readouterr().err
+    assert host.herdr_task is not None
+    assert host.task_xml is None
+    assert not host.env_file.exists()
 
 
 def test_uninstall_takes_a_setup_ps1_install_away_too(host: FakeWindows, capsys, tmp_path: Path) -> None:
@@ -1034,6 +1209,32 @@ def test_the_elevated_steps_that_failed_as_powershell_reports_them(monkeypatch: 
     assert windows.WindowsSystem().elevated(["a", "b"]) == failed
     assert "-Verb RunAs" in scripts[0]
     assert "WindowsPowerShell" in scripts[0]
+
+
+@pytest.mark.parametrize(("outcome", "running"), [
+    (b'{"status":"running","running":true,"version":"0.9.5"}', True),
+    (b'{"status":"not_running","running":false,"version":null}', False),
+    (b"[]", False),
+    (b"not json", False),
+    (b"", False),
+    (FileNotFoundError(2, "No such file"), False),
+    (windows.subprocess.TimeoutExpired("herdr", 30), False),
+])
+def test_herdr_running_is_read_from_its_status(monkeypatch: pytest.MonkeyPatch, outcome: bytes | Exception,
+                                               running: bool) -> None:
+    ran: list[list[str]] = []
+
+    def run(argv: list[str], **_: object) -> object:
+        ran.append(argv)
+        if isinstance(outcome, Exception):
+            raise outcome
+        return type("Result", (), {"returncode": 0, "stdout": outcome})()
+
+    monkeypatch.setattr(windows.subprocess, "run", run)
+    monkeypatch.setattr(windows.subprocess, "CREATE_NO_WINDOW", 0, raising=False)
+
+    assert windows.WindowsSystem().herdr_running(r"C:\Herdr\herdr.exe") is running
+    assert ran == [[r"C:\Herdr\herdr.exe", "status", "server", "--json"]]
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="Windows' own firewall, read only")

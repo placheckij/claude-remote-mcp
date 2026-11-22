@@ -19,7 +19,7 @@ whose folder is under the allowed roots.
 | | |
 |---|---|
 | OS | macOS, Linux or Windows (natively), wherever [herdr](https://github.com/herdrdev/herdr) runs. Tested on macOS 27.2 (Apple silicon), Ubuntu 26.04 LTS (x86_64, systemd 259) and Windows 11 25H2 (Windows PowerShell 5.1). The service setup needs launchd on macOS, systemd user units on Linux, and Windows 10 version 1809 or later. |
-| herdr | 0.8.0 or newer (tested with 0.8.0 and 0.9.5); its server must be running for the same user (it is whenever herdr is open, and keeps running after you detach) |
+| herdr | 0.8.0 or newer (tested with 0.8.0 and 0.9.5); its server must be running for the same user (it is whenever herdr is open, and keeps running after you detach; `agent-bridge setup` starts it at boot or login) |
 | Claude Code | the `claude` CLI, installed and logged in for that user |
 | Python | 3.11+, via [uv](https://docs.astral.sh/uv/) (uv installs it if needed); on Windows, uv 0.12.4 or newer, as older ones install a windowless agent-bridge that opens a console window |
 | Network | reachable from the gateway host on one TCP port (default 8765), and able to reach the gateway on its port (8766) to enroll and, at every start, to report its address. Give the host a fixed LAN address, e.g. a DHCP reservation. Nothing is exposed to the internet. |
@@ -42,11 +42,11 @@ answers "The agent host is not reachable". The gateway host can't wake it: macOS
 - A laptop with the lid closed sleeps anyway, unless it's on power with an external
   display. `sudo pmset -c disablesleep 1` keeps it awake with the lid closed too (an
   undocumented setting; undo with `0`; mind the heat).
-- Stay logged in. agent-bridge is a launchd agent, which only runs in a logged-in
-  session; a locked screen is fine. After a restart (for example an overnight macOS
-  update) FileVault waits for your password, so nothing runs until you log in again.
-  Consider turning off automatic installation of macOS updates.
-- Keep herdr open, or detached; its server must be running.
+- Stay logged in. The [launch agents](#as-a-service-on-macos-launchd) start agent-bridge
+  and herdr's server at login and only run in a logged-in session; a locked screen is
+  fine. After a restart (for example an overnight macOS update) FileVault waits for your
+  password, so nothing runs until you log in again. Consider turning off automatic
+  installation of macOS updates.
 
 **Linux**
 
@@ -59,8 +59,17 @@ answers "The agent host is not reachable". The gateway host can't wake it: macOS
 **Windows**
 
 - Turn off sleep on power (Settings → System → Power).
-- Stay logged on. The [scheduled task](#as-a-service-on-windows-task-scheduler) starts at
-  logon and only runs in your session; a locked screen is fine.
+- Stay logged on. The [scheduled tasks](#as-a-service-on-windows-task-scheduler) start
+  agent-bridge and herdr's server at logon and only run in your session; a locked screen
+  is fine.
+- Windows Update restarts the PC outside its active hours (Settings → Windows Update →
+  Advanced options) to finish an update, which signs you out and ends the agents. Windows
+  usually signs you back in by itself afterwards ("Use my sign-in info to automatically
+  finish setting up after an update", under Settings → Accounts → Sign-in options), and the
+  tasks then bring agent-bridge and herdr's server back without you, so new agents can
+  start; the ones that ran before are gone. If Windows doesn't sign you in, nothing runs
+  until you do. Set active hours to when you need the agents, or pause updates (Settings →
+  Windows Update) while you're away.
 
 **Before you leave**, ask Claude to list your agents. If it answers that the agent host
 is not reachable, the host is asleep, logged out, or agent-bridge isn't running.
@@ -310,7 +319,9 @@ The examples below use `/Users/me` for your home folder; replace it with yours.
 launchd, macOS's service manager, starts agent-bridge at login and restarts it if it
 stops. It is configured by a *plist* file in `~/Library/LaunchAgents`, which runs
 `agent-bridge serve`; the settings are in the [env file](#configuration).
-`agent-bridge setup` writes both and enrolls the bridge.
+`agent-bridge setup` writes both and enrolls the bridge. A second launch agent starts
+herdr's server at login, headless, unless one runs, so agents can start after a restart
+before you open herdr.
 
 #### With agent-bridge setup
 
@@ -342,11 +353,25 @@ Then it:
    a free port;
 2. writes the env file, readable only by you. Other settings in it are kept, but not its
    comments;
-3. writes the plist and (re)starts the service;
-4. runs `agent-bridge check`. Before the first enrollment its last line is
+3. writes and loads a second launch agent, `dev.claude-remote.agent-bridge-herdr`, which
+   runs `agent-bridge start-herdr` at every login: that starts `herdr server` in the
+   background unless a herdr server runs, waits until it answers, and exits. Loading it
+   runs it once, so setup starts herdr's server if none runs. It never restarts a running
+   one, so running agents stay, and it doesn't start one again after `herdr server stop`
+   until the next login. Its log is `~/Library/Logs/agent-bridge-herdr.log`;
+4. writes the plist and (re)starts the service;
+5. runs `agent-bridge check`. Before the first enrollment its last line is
    `--    not enrolled with a gateway`, which isn't a failure;
-5. enrolls with the gateway. If the gateway has another host by that name, it asks for
+6. enrolls with the gateway. If the gateway has another host by that name, it asks for
    another one.
+
+You can still open herdr, which attaches to the server the launch agent started. The
+agents in that server get macOS folder permissions as herdr, not as your terminal app, so
+an agent working under Desktop, Documents or Downloads may wait on a permission prompt
+until you answer it at the Mac. `--no-herdr-service` removes the herdr launch agent
+without stopping herdr's server, if you start it yourself; re-runs keep it off until
+`--herdr-service` brings it back. A Mac set up before the launch agent existed gets it at
+its next setup.
 
 The last lines name the host as the gateway knows it. Nothing needs copying to the
 gateway host. The plist runs agent-bridge at a path upgrades keep:
@@ -478,15 +503,21 @@ launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/dev.claude-remote.agent-
 launchctl disable gui/$(id -u)/dev.claude-remote.agent-bridge
 launchctl enable gui/$(id -u)/dev.claude-remote.agent-bridge      # undo
 
-# Uninstall: leaves the gateway, then removes the service, the env and state files and
-# the log. ~/Library/Application Support/agent-bridge goes too, unless it holds other
-# files. Then `brew uninstall agent-bridge` (or `uv tool uninstall
+# herdr's launch agent: whether it ran at login ("last exit code = 0") and its log.
+launchctl print gui/$(id -u)/dev.claude-remote.agent-bridge-herdr | grep -E 'state|last exit'
+cat ~/Library/Logs/agent-bridge-herdr.log
+
+# Uninstall: leaves the gateway, then removes both launch agents, the env and state files
+# and the logs. ~/Library/Application Support/agent-bridge goes too, unless it holds other
+# files. herdr's server keeps running with its agents until you stop it (herdr server
+# stop) or log out. Then `brew uninstall agent-bridge` (or `uv tool uninstall
 # claude-remote-mcp-agent-bridge`) removes the package.
 agent-bridge uninstall
 ```
 
-By hand, uninstalling is `agent-bridge unenroll`, `launchctl bootout` as above, then
-removing the plist, `~/Library/Application Support/agent-bridge` and the log.
+By hand, uninstalling is `agent-bridge unenroll`, `launchctl bootout` as above for both
+labels, then removing both plists, `~/Library/Application Support/agent-bridge` and the
+logs.
 
 ### As a service on Linux (systemd user unit)
 
@@ -568,7 +599,9 @@ or reboot; until then `systemctl --user` lists `agent-bridge-herdr.service` as
 ### As a service on Windows (Task Scheduler)
 
 A scheduled task starts agent-bridge when you log on. It runs as you, in your session
-(where the herdr server runs), with no window.
+(where the herdr server runs), with no window. A second task starts herdr's server at
+logon, headless, unless one runs, so agents can start after a restart before you open
+herdr; you can still open herdr, which attaches to it.
 
 #### With agent-bridge setup
 
@@ -601,18 +634,28 @@ which isn't on `PATH`: herdr's installer links that folder to the current releas
    as Public, it asks whether to make it Private (answer `y`): the gateway can't reach
    agent-bridge otherwise. If you decline the prompt, it prints the commands to run as
    administrator;
-4. stops the running agent-bridge, if any, and registers the `agent-bridge` task, which
+4. registers the `agent-bridge-herdr` task, which runs `agent-bridgew.exe start-herdr` at
+   every logon: that starts `herdr server` with no window (herdr.exe itself would open
+   one) unless a herdr server runs, waits until it answers, and exits. Registering the task
+   runs it once, so setup starts herdr's server if none runs. It never restarts a running
+   one, so running agents stay, and it doesn't start one again after `herdr server stop`
+   until the next logon;
+5. stops the running agent-bridge, if any, and registers the `agent-bridge` task, which
    starts it. The task runs `agent-bridgew.exe serve --log-file …`: `agent-bridgew` is
    agent-bridge without a console window, as `pythonw` is to `python`. Nothing runs in
    between, so ending the task ends agent-bridge. It is tried every minute while you're
    logged on, which does nothing while it runs. That way it starts once Wi-Fi brings up
    the LAN address, and starts again if it stops;
-5. runs `agent-bridge check` (`--    not enrolled with a gateway` before the first
+6. runs `agent-bridge check` (`--    not enrolled with a gateway` before the first
    enrollment isn't a failure), and enrolls with the gateway (asking for another name if
    the gateway already has a host by that name).
 
+`--no-herdr-service` removes the `agent-bridge-herdr` task without stopping herdr's
+server, if you start it yourself; re-runs keep it off until `--herdr-service` brings it
+back. A host set up before the task existed gets it at its next setup.
+
 Its log is `%LOCALAPPDATA%\agent-bridge\agent-bridge.log`, with a line for each start and one
-per request. Once it passes 1 MB it is moved to `agent-bridge.log.1`, replacing the one
+per request; `start-herdr` adds its lines there too. Once it passes 1 MB it is moved to `agent-bridge.log.1`, replacing the one
 before, also while agent-bridge runs (while another program has it open, such as
 `Get-Content -Wait`, that waits until it lets go). It holds only what agent-bridge logs, not
 what it prints; an exception is logged by its type alone, without its message or traceback,
@@ -666,8 +709,9 @@ schtasks /Change /TN agent-bridge /DISABLE; schtasks /End /TN agent-bridge
 # which disabling ended, until your next logon.
 agent-bridge setup
 
-# Uninstall: leaves the gateway, then removes the task, the firewall rule (one UAC
-# prompt), the env file, the state file and the log.
+# Uninstall: leaves the gateway, then removes both tasks, the firewall rule (one UAC
+# prompt), the env file, the state file and the log. herdr's server keeps running with its
+# agents until you stop it (herdr server stop) or log off.
 agent-bridge uninstall
 uv tool uninstall claude-remote-mcp-agent-bridge
 ```
