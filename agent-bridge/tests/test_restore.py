@@ -72,6 +72,16 @@ def pane(pane_id: str = "w1:p1", terminal_id: str = "t-new", agent: str | None =
     return found
 
 
+def shell_info(running: str | None = None) -> tuple[int, str, str]:
+    """process-info of a plain shell: idle (its only foreground process is the shell), or
+    running `running`, as herdr reports them."""
+    process = {"pid": 9000, "name": "zsh", "argv0": "zsh", "argv": ["-zsh"]}
+    if running:
+        process = {"pid": 9001, "name": running, "argv0": running, "argv": [running]}
+    return ok({"process_info": {"foreground_process_group_id": process["pid"],
+                                "foreground_processes": [process], "shell_pid": 9000}})
+
+
 def process_info(argv: list[str]) -> tuple[int, str, str]:
     pid = os.getpid()
     claude = {"pid": pid, "name": "claude", "argv0": "claude", "argv": argv}
@@ -98,6 +108,8 @@ def runner_for(panes: list[dict], argv: list[str] | None = None, starts: int = 3
         ("agent", "start"): [ok({"agent": started(n)}) for n in range(starts)],
         ("pane", "wait-output"): err("timeout"),
         ("workspace", "close"): ok({"type": "ok"}),
+        # A pane with no agent is an idle shell, unless a test says otherwise.
+        **{("pane", "process-info", "--pane", found["pane_id"]): shell_info() for found in panes if not found["agent"]},
     }
     responses.update({tuple(key.split()): value for key, value in overrides.items()})
     return FakeRunner(responses)
@@ -395,6 +407,16 @@ def test_an_entry_that_had_already_gone_is_not_restored(path: Path, folder: Path
     assert runner.called("agent", "start") == runner.called("workspace", "create") == []
     # Forgotten now: its stale pane id can't match a pane a later herdr server hands out.
     assert load(path).agents == []
+
+
+def test_a_shell_pane_running_a_program_is_never_closed(path: Path, folder: Path, tmp_path: Path) -> None:
+    # Same id and folder, but the user runs something in it (an editor, a dev server).
+    runner = runner_for([pane(agent=None, cwd=str(folder))], **{"pane process-info --pane w1:p1": shell_info("vim")})
+    [line] = run(runner, path, [entry(folder, session_id=UUID)], tmp_path)
+
+    assert runner.called("pane", "close") == []
+    assert len(runner.called("agent", "start")) == 1
+    assert "closed" not in line
 
 
 def test_a_pane_with_its_id_in_another_folder_isnt_taken_for_its_shell(
@@ -740,6 +762,8 @@ class Host:
         if args[:2] == ["agent", "list"]:
             return ok({"agents": [found for found in self.panes.values() if found["agent"]]})
         if args[:2] == ["pane", "process-info"]:
+            if not self.panes.get(args[-1], {}).get("agent"):
+                return shell_info()
             return process_info(self.argv.get(args[-1], ["claude"]))
         if args[:2] in (["pane", "close"], ["workspace", "close"]):
             self.panes.pop(args[-1], None)

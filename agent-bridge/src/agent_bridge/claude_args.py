@@ -85,8 +85,12 @@ def picks_session(args: Sequence[str]) -> bool:
 
 
 def session_id_in(args: Sequence[str]) -> str | None:
-    """The uuid given to --session-id, --resume or -r, or None (a title is not a uuid)."""
-    for name, _, value in _flags(args):
+    """The uuid given to --session-id, --resume or -r, or None (a title is not a uuid). None
+    too with --fork-session: the conversation then runs under a new id argv doesn't give."""
+    flags = list(_flags(args))
+    if any(name == "--fork-session" for name, _, _ in flags):
+        return None
+    for name, _, value in flags:
         if name in SESSION_FLAGS and value is not None:
             try:
                 return str(uuid.UUID(value))

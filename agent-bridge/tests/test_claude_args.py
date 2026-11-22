@@ -64,6 +64,12 @@ def test_session_id_from_each_form():
     assert session_id_in(["--resume", "my-session-title"]) is None  # not a uuid
 
 
+def test_a_forked_session_has_no_known_id():
+    # --fork-session runs the resumed conversation under a new id, which argv doesn't say.
+    assert session_id_in(["--resume", UUID, "--fork-session"]) is None
+    assert session_id_in(["--fork-session", "-r", UUID]) is None
+
+
 def test_picks_session_in_each_form_but_not_as_a_value_or_after_double_dash():
     for args in (["-c"], ["--continue"], ["-r"], [f"--resume={UUID}"], ["--session-id", UUID]):
         assert picks_session(args), args

@@ -76,6 +76,9 @@ async def _restore_one(
         if pane["pane_id"] == entry.pane_id and pane.get("cwd") and Path(pane["cwd"]) == Path(entry.cwd)
     ]
     shell = next((pane for pane in back if pane["pane_id"] not in found.closed and not pane.get("agent")), None)
+    if shell is not None and not await _idle_shell(herdr, shell):
+        # Something runs in it (an editor, a dev server): the user's, not a leftover.
+        shell = None
     if entry.session_id in found.sessions:
         # Two panes ran one conversation; a second copy of it would answer as the first.
         note = await _close(herdr, shell, found)
@@ -166,6 +169,18 @@ async def _restore_one(
     )
     await asyncio.to_thread(_replace, path, entry.terminal_id, restarted)
     return f"{label}: restored in {agent['pane_id']}, {how}{note}", False
+
+
+async def _idle_shell(herdr: Herdr, pane: dict) -> bool:
+    """Whether the pane's shell runs nothing: its only foreground process is the shell itself.
+    False when herdr can't say, so an unknown pane is left alone."""
+    try:
+        info = await herdr.process_info(pane["pane_id"])
+    except HerdrError:
+        return False
+    shell = info.get("shell_pid")
+    processes = info.get("foreground_processes") or []
+    return shell is not None and all(isinstance(p, dict) and p.get("pid") == shell for p in processes)
 
 
 async def _close(herdr: Herdr, pane: dict | None, found: _Found, what: str = "the shell left") -> str:
