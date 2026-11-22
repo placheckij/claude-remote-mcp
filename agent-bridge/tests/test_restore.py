@@ -1,5 +1,6 @@
 import asyncio
 import os
+from collections.abc import Callable
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -259,7 +260,7 @@ def test_an_entry_that_had_already_gone_is_not_restored(path: Path, folder: Path
     runner = runner_for([])
     saved = [entry(folder, misses=1)]
     [line] = run(runner, path, saved, tmp_path)
-    assert "left as it is" in line
+    assert "not restored: it had already gone" in line
     assert runner.called("agent", "start") == runner.called("workspace", "create") == []
     assert load(path).agents == saved
 
@@ -429,7 +430,8 @@ def test_a_live_entry_among_failed_ones_still_detects_a_restart(
     failed = entry(folder, terminal_id="t-failed", restore_failed=True)
     running = entry(folder, terminal_id="t-old")
     save(path, SavedAgents(agents=[failed, running]))
-    rounds = Rounds(monkeypatch, path, [[], [], [running], [running]], [["t-other"]])
+    # Rounds 1 and 2 each find a new terminal in the running agent's pane.
+    rounds = Rounds(monkeypatch, path, [[], [], [running], [running]], [["t-other"], ["t-other"]])
     rounds.watch(2)
     assert rounds.restores == [1, 2]
 
@@ -533,3 +535,169 @@ def test_a_restore_cut_short_by_an_error_runs_again_next_round(
     rounds.watch(2)
     # Round 2 has nothing that signals a restart; the unfinished restore alone brings it.
     assert rounds.restores == [1, 2]
+
+
+class Host:
+    """A herdr whose panes change as agents are started and closed, for running `watch` with
+    the real snapshot and restore. Each pane runs `claude` with the arguments it was started
+    with; a start of an agent named in `failing` fails."""
+
+    def __init__(
+        self, panes: list[dict], argv: dict[str, list[str]] | None = None, failing: frozenset[str] = frozenset()
+    ) -> None:
+        self.panes = {found["pane_id"]: found for found in panes}
+        self.argv = dict(argv or {})
+        self.failing = failing
+        self.workspaces = 0
+        self.started: list[str] = []
+
+    async def __call__(self, argv) -> tuple[int, str, str]:
+        args = list(argv[1:])
+        if args[:2] == ["pane", "list"]:
+            return ok({"panes": list(self.panes.values())})
+        if args[:2] == ["agent", "list"]:
+            return ok({"agents": [found for found in self.panes.values() if found["agent"]]})
+        if args[:2] == ["pane", "process-info"]:
+            return process_info(self.argv.get(args[-1], ["claude"]))
+        if args[:2] in (["pane", "close"], ["workspace", "close"]):
+            self.panes.pop(args[-1], None)
+            return ok({"type": "ok"})
+        if args[:2] == ["workspace", "create"]:
+            self.workspaces += 1
+            return ok({"workspace": {"workspace_id": f"w9{self.workspaces}"},
+                       "root_pane": {"pane_id": f"w9{self.workspaces}:p1"}})
+        if args[:2] == ["agent", "start"]:
+            name, pane_id = args[2], args[args.index("--pane") + 1]
+            if name in self.failing:
+                return err("agent_start_failed")
+            claude = args[args.index("--") + 1 :]
+            session = claude[claude.index("--resume") + 1] if "--resume" in claude else None
+            found = pane(pane_id, terminal_id=f"t9{self.workspaces}", session=session) | {"name": name}
+            self.panes[pane_id] = found
+            self.argv[pane_id] = ["claude", *claude]
+            self.started.append(name)
+            return ok({"agent": found})
+        if args[:2] == ["pane", "wait-output"]:
+            return err("timeout")
+        raise AssertionError(f"unexpected herdr call: {args}")
+
+    def close(self, name: str) -> None:
+        """The user closes the agent named `name` by hand."""
+        [pane_id] = [found["pane_id"] for found in self.panes.values() if found.get("name") == name]
+        del self.panes[pane_id]
+
+
+def watch_host(
+    monkeypatch: pytest.MonkeyPatch, host: Host, path: Path, saved: list[SavedAgent], tmp_path: Path, rounds: int,
+    between: dict[int, Callable[[], object]] | None = None,
+) -> list[int]:
+    """Runs `watch` against `host` for `rounds` rounds, calling between[n] after round n; the
+    rounds that restored."""
+    save(path, SavedAgents(agents=saved))
+    herdr = Herdr(runner=host)
+    service = AgentService(Settings(token=TOKEN, allowed_roots=(tmp_path.resolve(),)), herdr)
+    restores: list[int] = []
+    current = [1]
+    real_restore = restore_module.restore
+
+    async def counted(*args) -> list[str]:
+        restores.append(current[0])
+        return await real_restore(*args)
+
+    async def sleep(seconds: float) -> None:
+        (between or {}).get(current[0], lambda: None)()
+        if current[0] == rounds:
+            raise asyncio.CancelledError
+        current[0] += 1
+
+    monkeypatch.setattr(restore_module, "restore", counted)
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(watch(service, herdr, path, sleep=sleep))
+    return restores
+
+
+def test_no_restore_outcome_keeps_setting_off_restores(
+    monkeypatch: pytest.MonkeyPatch, path: Path, folder: Path, tmp_path: Path
+) -> None:
+    # herdr restarted: each pane it brought back has its old id and a new terminal.
+    saved = [
+        # Its pane came back as a plain shell: restored.
+        entry(folder, name="shell", terminal_id="t1", pane_id="w1:p1", session_id=UUID, args=[]),
+        # herdr resumed it itself, with its account and arguments: left running.
+        entry(folder, name="resumed", terminal_id="t2", pane_id="w2:p1", session_id=OTHER_UUID, args=[]),
+        # Gone already before the restart, its pane too: not restored.
+        entry(folder, name="gone", terminal_id="t3", pane_id="w3:p1", misses=1),
+        # Its start fails: kept for the next restart.
+        entry(folder, name="failing", terminal_id="t4", pane_id="w4:p1", args=[]),
+    ]
+    resumed = pane("w2:p1", terminal_id="n2", session=OTHER_UUID) | {"name": "resumed"}
+    host = Host(
+        [pane("w1:p1", terminal_id="n1", agent=None), resumed, pane("w4:p1", terminal_id="n4", agent=None)],
+        argv={"w2:p1": ["claude", "--resume", OTHER_UUID]},
+        failing=frozenset({"failing"}),
+    )
+    # After round 2 the user closes by hand the agents that run.
+    restores = watch_host(monkeypatch, host, path, saved, tmp_path, 5,
+                          {2: lambda: (host.close("shell"), host.close("resumed"))})
+
+    assert restores == [1]
+    assert host.started == ["shell"]
+    # The closed ones age out; the failed one waits for the next restart.
+    assert [(agent.name, agent.restore_failed) for agent in load(path).agents] == [("failing", True)]
+
+
+def test_an_agent_that_had_gone_comes_back_when_its_pane_does(path: Path, folder: Path, tmp_path: Path) -> None:
+    # A snapshot taken while the host shut down missed it, but herdr brought its pane back.
+    runner = runner_for([pane(agent=None)])
+    [line] = run(runner, path, [entry(folder, session_id=UUID, misses=1)], tmp_path)
+    assert "restored" in line
+    assert claude_args(runner) == ["--permission-mode", "auto", "--resume", UUID]
+
+
+def test_herdr_resumed_as_it_was_takes_the_resumed_panes_ids(path: Path, folder: Path, tmp_path: Path) -> None:
+    runner = runner_for([pane(session=UUID)], ["claude", "--permission-mode", "auto", "--resume", UUID])
+    run(runner, path, [entry(folder, session_id=UUID, misses=1)], tmp_path)
+    [kept] = load(path).agents
+    assert (kept.pane_id, kept.terminal_id, kept.misses, kept.restore_failed) == ("w1:p1", "t-new", 0, False)
+
+
+def test_a_survivors_pane_is_not_taken_for_herdrs_resume(path: Path, folder: Path, tmp_path: Path) -> None:
+    # The survivor runs the conversation the other entry saved too, on another account.
+    survivor = entry(folder, terminal_id="t-live", pane_id="w2:p1", session_id=UUID, config_dir="/cfg")
+    runner = runner_for([pane("w2:p1", terminal_id="t-live", session=UUID)], ["claude", "--resume", UUID])
+    lines = run(runner, path, [entry(folder, session_id=UUID), survivor], tmp_path)
+    assert runner.called("pane", "close") == runner.called("agent", "start") == []
+    assert "already" in lines[0]
+    assert [agent.terminal_id for agent in load(path).agents] == ["t-live"]
+
+
+def test_a_conversation_is_resumed_once(path: Path, folder: Path, tmp_path: Path) -> None:
+    first = entry(folder, session_id=UUID)
+    second = entry(tmp_path / "api", terminal_id="t-old-2", pane_id="w2:p1", session_id=UUID)
+    lines = run(runner_for([]), path, [first, second], tmp_path)
+    assert "restored" in lines[0]
+    assert "already" in lines[1]
+    assert [agent.terminal_id for agent in load(path).agents] == ["t90"]
+
+
+def test_first_round_with_a_survivor_does_not_restore_agents_closed_meanwhile(
+    monkeypatch: pytest.MonkeyPatch, path: Path, folder: Path
+) -> None:
+    # Only agent-bridge restarted; while it was down the user closed the second agent.
+    live = entry(folder, terminal_id="t1", pane_id="w1:p1")
+    closed = entry(folder, terminal_id="t2", pane_id="w2:p1")
+    save(path, SavedAgents(agents=[live, closed]))
+    rounds = Rounds(monkeypatch, path, [[live]], [[("w1:p1", "t1")]])
+    rounds.watch(1)
+    assert rounds.restores == []
+    assert rounds.files == [[live, closed.model_copy(update={"misses": 1})]]
+
+
+def test_first_round_with_no_saved_terminal_live_restores(
+    monkeypatch: pytest.MonkeyPatch, path: Path, folder: Path
+) -> None:
+    old, new = entry(folder, terminal_id="t-old", pane_id="w5:p1"), entry(folder, terminal_id="t-new")
+    save(path, SavedAgents(agents=[old]))
+    rounds = Rounds(monkeypatch, path, [[], [new]], [[("w1:p1", "t-new")]])
+    rounds.watch(1)
+    assert rounds.restores == [1]

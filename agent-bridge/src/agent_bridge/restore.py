@@ -6,6 +6,7 @@ can, its conversation. A restored agent is never sent a prompt.
 import asyncio
 import logging
 from collections.abc import Awaitable, Callable
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from agent_bridge.agents import AgentService
@@ -16,62 +17,86 @@ from agent_bridge.saved_agents import SavedAgent, forget, load, locked, merge, s
 log = logging.getLogger(__name__)
 
 
+@dataclass
+class _Found:
+    """What one restore found in herdr, and what it has done so far."""
+
+    panes: list[dict]
+    # What runs in each Claude pane, to tell whether herdr resumed a conversation as it was.
+    live: dict[str, SavedAgent]
+    # Terminals of the saved agents and of those restored so far: a pane of theirs runs that
+    # agent, never herdr's resume of another.
+    claimed: set[str]
+    # Conversations a saved agent still runs, or one restored so far does: each runs once.
+    sessions: set[str]
+    closed: set[str] = field(default_factory=set)
+
+
 async def restore(service: AgentService, herdr: Herdr, path: Path) -> list[str]:
     """Start each saved agent that isn't running, one after another in the file's order.
     Each outcome is logged; the lines are returned too. A HerdrError from listing herdr's
     panes or agents propagates: herdr isn't up."""
     entries = load(path).agents
     panes = await herdr.list_panes()
-    # What runs in each Claude pane, to tell whether herdr resumed a conversation as it was.
-    live = {agent.pane_id: agent for agent in await snapshot(herdr)}
-    closed: set[str] = set()
+    terminals = {pane.get("terminal_id") for pane in panes}
+    found = _Found(
+        panes=panes,
+        live={agent.pane_id: agent for agent in await snapshot(herdr)},
+        claimed={entry.terminal_id for entry in entries},
+        sessions={entry.session_id for entry in entries if entry.session_id and entry.terminal_id in terminals},
+    )
     lines = []
     for entry in entries:
-        line, failed = await _restore_one(service, herdr, path, entry, entries, panes, live, closed)
+        line, failed = await _restore_one(service, herdr, path, entry, entries, found)
         (log.warning if failed else log.info)("%s", line)
         lines.append(line)
     return lines
 
 
 async def _restore_one(
-    service: AgentService,
-    herdr: Herdr,
-    path: Path,
-    entry: SavedAgent,
-    entries: list[SavedAgent],
-    panes: list[dict],
-    live: dict[str, SavedAgent],
-    closed: set[str],
+    service: AgentService, herdr: Herdr, path: Path, entry: SavedAgent, entries: list[SavedAgent], found: _Found
 ) -> tuple[str, bool]:
     """The log line for `entry`, and whether it says something failed."""
     label = entry.name or entry.cwd
-    if entry.misses > 0:
-        # It had already disappeared while this herdr server ran: stopped or closed, not lost.
-        return f"{label}: not restored, it had gone before the restart; left as it is", False
-    for pane in panes:
+    for pane in found.panes:
         if pane.get("terminal_id") == entry.terminal_id:
             return f"{label}: still running in {pane['pane_id']}, left as it is", False
-    open_panes = [pane for pane in panes if pane["pane_id"] not in closed]
+    open_panes = [pane for pane in found.panes if pane["pane_id"] not in found.closed]
+    # herdr brings an agent's pane back as a plain shell; it keeps its pane id.
+    shell = next((pane for pane in open_panes if pane["pane_id"] == entry.pane_id and not pane.get("agent")), None)
+    if entry.session_id in found.sessions:
+        # Two panes ran one conversation; a second copy of it would answer as the first.
+        note = await _close(herdr, shell, found)
+        await asyncio.to_thread(forget, path, entry.terminal_id)
+        return f"{label}: not restored, and forgotten: its conversation {entry.session_id} already runs{note}", False
+    if entry.misses > 0 and not any(pane["pane_id"] == entry.pane_id for pane in found.panes):
+        # It had already disappeared while this herdr server ran, and herdr didn't bring its
+        # pane back: stopped or closed, not lost. The snapshots let it age out.
+        return f"{label}: not restored: it had already gone before the restart", False
     resumed = next(
-        (pane for pane in open_panes if entry.session_id and _session_of(pane) == entry.session_id), None
+        (
+            pane for pane in open_panes
+            if entry.session_id and pane.get("terminal_id") not in found.claimed
+            and _session_of(pane) == entry.session_id
+        ),
+        None,
     )
     if resumed is not None:
-        found = live.get(resumed["pane_id"])
-        if found is not None and (found.config_dir, found.args) == (entry.config_dir, entry.args):
+        running = found.live.get(resumed["pane_id"])
+        if running is not None and (running.config_dir, running.args) == (entry.config_dir, entry.args):
+            kept = entry.model_copy(
+                update={"pane_id": resumed["pane_id"], "terminal_id": resumed["terminal_id"], "misses": 0,
+                        "restore_failed": False}
+            )
+            await asyncio.to_thread(_replace, path, entry.terminal_id, kept)
+            found.claimed.add(resumed["terminal_id"])
+            found.sessions.add(entry.session_id)
             return f"{label}: herdr resumed it in {resumed['pane_id']} as it was, left as it is", False
         # herdr's own resume runs plain `claude --resume <id>`: without the account's
         # CLAUDE_CONFIG_DIR or the agent's arguments.
-        stale = resumed
+        note = await _close(herdr, resumed, found)
     else:
-        # herdr brings an agent's pane back as a plain shell; it keeps its pane id.
-        stale = next((pane for pane in open_panes if pane["pane_id"] == entry.pane_id and not pane.get("agent")), None)
-    note = ""
-    if stale is not None:
-        closed.add(stale["pane_id"])
-        try:
-            await herdr.close_pane(stale["pane_id"])
-        except HerdrError as error:
-            note = f" (couldn't close pane {stale['pane_id']}: {error})"
+        note = await _close(herdr, shell, found)
 
     if entry.session_id:
         resume, how = ["--resume", entry.session_id], f"resuming {entry.session_id}"
@@ -100,12 +125,27 @@ async def _restore_one(
         await _keep_failed(path, entry)
         return f"{label}: not restored ({error}), kept for the next restart{note}", True
 
+    found.claimed.add(agent["terminal_id"])
+    if entry.session_id:
+        found.sessions.add(entry.session_id)
     restarted = entry.model_copy(
         update={"pane_id": agent["pane_id"], "terminal_id": agent["terminal_id"], "misses": 0,
                 "restore_failed": False}
     )
     await asyncio.to_thread(_replace, path, entry.terminal_id, restarted)
     return f"{label}: restored in {agent['pane_id']}, {how}{note}", False
+
+
+async def _close(herdr: Herdr, pane: dict | None, found: _Found) -> str:
+    """Close what herdr left of an agent, if anything; a note for the log line when it can't."""
+    if pane is None:
+        return ""
+    found.closed.add(pane["pane_id"])
+    try:
+        await herdr.close_pane(pane["pane_id"])
+    except HerdrError as error:
+        return f" (couldn't close pane {pane['pane_id']}: {error})"
+    return ""
 
 
 async def _keep_failed(path: Path, entry: SavedAgent) -> None:
@@ -175,22 +215,23 @@ async def watch(
 
 
 async def _restarted(herdr: Herdr, path: Path, was_answering: bool | None) -> bool:
-    """Whether herdr's server is a new one: it answers for the first time; or a saved agent's
-    pane id is there with another terminal id (herdr brings panes back under their ids, with
-    new terminals); or it answers again after not answering and none of the saved agents has
-    its terminal. A pane closed by hand is gone entirely, which says nothing. Agents a
-    restore failed to start keep stale ids by design, so they don't count."""
-    if was_answering is None:
-        return True
+    """Whether herdr's server is a new one. It is when a saved agent's pane id is there with
+    another terminal id: herdr brings panes back under their ids, with new terminals. It is
+    too when herdr answers for the first time, or again after not answering, and none of the
+    saved agents' terminals is there.
+
+    A pane closed by hand is gone entirely, which says nothing. Agents a restore failed to
+    start keep stale ids by design, so they don't count."""
+    fresh = was_answering is not True
     running = [agent for agent in await asyncio.to_thread(_saved, path) if not agent.restore_failed]
     if not running:
-        return was_answering is False
+        return fresh
     panes = await herdr.list_panes()
     terminals = {pane.get("terminal_id") for pane in panes}
     by_pane = {pane.get("pane_id"): pane.get("terminal_id") for pane in panes}
     if any(by_pane.get(agent.pane_id, agent.terminal_id) != agent.terminal_id for agent in running):
         return True
-    return was_answering is False and not any(agent.terminal_id in terminals for agent in running)
+    return fresh and not any(agent.terminal_id in terminals for agent in running)
 
 
 def _saved(path: Path) -> list[SavedAgent]:
