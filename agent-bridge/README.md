@@ -79,30 +79,35 @@ is not reachable, the host is asleep, logged out, or agent-bridge isn't running.
 When herdr's server restarts, whether after a host restart or `herdr server stop`, its
 agents end. While it runs, `serve` saves every herdr pane running Claude Code to
 `agents.json`, beside `state.json`, every 30 seconds: its name, folder, `CLAUDE_CONFIG_DIR`,
-Claude arguments (without session flags or a prompt typed on the command line) and
-session id. An agent drops out of the file after two saves without it, and `stop_agent`
-drops it at once.
+Claude arguments (without session flags, a prompt typed on the command line, or a flag
+it doesn't know followed by a word) and session id. An agent drops out of the file after
+two saves without it, and `stop_agent` drops it at once.
 
-When `serve` starts, or notices herdr's server restarted (a saved pane id back with a
-new terminal id, or herdr answering again after not answering, with none of the saved
-agents running), it restores each saved agent that isn't running, one after another: a
-new workspace, its account, its arguments and `--resume <session id>`. Without a session id
-it uses `--continue`, but only if no other saved agent shares its folder and account,
-else a fresh conversation. Agents started by hand come back too. Panes herdr resumed with
-the wrong account or arguments are closed and replaced.
+`serve` takes herdr's server as restarted when a saved agent's pane id is back with a new
+terminal id. It does too when herdr answers for the first time since `serve` started, or
+again after not answering, and none of the saved agents' terminals is there. Then it
+restores each saved agent that isn't running, one after another: a new workspace, its
+account, `--resume <session id>` and its arguments. Without a session id it uses
+`--continue`, but only if no other saved agent shares its folder and account, else a fresh
+conversation. Agents started by hand come back too. Panes herdr resumed with the wrong
+account or arguments are closed and replaced.
 
 - A restored agent is idle: no prompt is sent.
+- An agent that a save had already missed comes back only if herdr brought its pane back.
+  Each conversation comes back once.
 - The restore ignores `AGENT_BRIDGE_MAX_AGENTS` and the allowed roots, so every agent
   that was running comes back. [Folder trust](#folder-trust) still applies: an untrusted
-  folder's entry is dropped. `start_agent` adds `--session-id <uuid>`, so a new agent's
-  conversation is known from its first save.
+  folder's entry is dropped. `start_agent` adds `--session-id <uuid>`, unless
+  `AGENT_BRIDGE_CLAUDE_ARGS` picks the conversation itself, so a new agent's conversation
+  is known from its first save.
 - Not brought back: the turn a busy agent was in the middle of, panes that weren't Claude
   agents, and herdr's layout: each agent gets a workspace of its own.
 
 For a planned herdr restart, `agent-bridge save-agents` saves the list right now.
-`AGENT_BRIDGE_RESTORE_AGENTS=false` turns the restore off.
+`AGENT_BRIDGE_RESTORE_AGENTS=false` turns the restore off, and with it the saving.
 
-`agent-bridge setup` prepares herdr for this, and `--no-agent-restore` undoes it:
+`agent-bridge setup` prepares herdr for this, and `--no-agent-restore` undoes it and
+removes `agents.json`:
 
 - herdr resumes agents on its own too, which would bring each back a second time. Setup
   turns that off with `resume_agents_on_restore = false` under `[session]`, on a line it
