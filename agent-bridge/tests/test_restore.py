@@ -529,6 +529,26 @@ def test_an_agent_stopped_while_its_restore_starts_it_doesnt_come_back(
     assert load(path).agents == []
 
 
+@pytest.mark.parametrize("stopped", ["t-old", "t-new"])
+def test_an_agent_stopped_through_the_bridge_is_never_restored(
+    path: Path, folder: Path, tmp_path: Path, stopped: str
+) -> None:
+    # Stopped, but its forget couldn't write agents.json (t-old); or the pane resuming its
+    # conversation was stopped since the restore listed the panes (t-new). Otherwise its
+    # pane would be closed and the agent started again.
+    runner = runner_for([pane(session=UUID, cwd=str(folder))], ["claude", "--resume", UUID])
+    save(path, SavedAgents(agents=[entry(folder, session_id=UUID)]))
+    herdr = Herdr(runner=runner)
+    service = AgentService(Settings(token=TOKEN, allowed_roots=(tmp_path.resolve(),)), herdr)
+    service.stopped.add(stopped)
+
+    [line] = asyncio.run(restore(service, herdr, path))
+
+    assert runner.called("agent", "start") == runner.called("pane", "close") == []
+    assert "stopped" in line
+    assert load(path).agents == []
+
+
 def test_a_started_agent_is_no_longer_marked_failed(path: Path, folder: Path, tmp_path: Path) -> None:
     runner = runner_for([])
     run(runner, path, [entry(folder, session_id=UUID, restore_failed=True)], tmp_path)

@@ -64,6 +64,10 @@ async def _restore_one(
 ) -> tuple[str, bool]:
     """The log line for `entry`, and whether it says something failed."""
     label = entry.name or entry.cwd
+    if entry.terminal_id in service.stopped:
+        # Stopped through the bridge, whose forget couldn't take it out of agents.json.
+        await asyncio.to_thread(forget, path, entry.terminal_id)
+        return f"{label}: not restored, and forgotten: it was stopped through the bridge", False
     for pane in found.panes:
         if pane.get("terminal_id") == entry.terminal_id:
             return f"{label}: still running in {pane['pane_id']}, left as it is", False
@@ -102,6 +106,11 @@ async def _restore_one(
         ),
         None,
     )
+    if resumed is not None and resumed.get("terminal_id") in service.stopped:
+        # Stopped through the bridge since the panes were listed.
+        await asyncio.to_thread(forget, path, entry.terminal_id)
+        return (f"{label}: not restored, and forgotten: {resumed['pane_id']}, which ran its conversation, "
+                "was stopped through the bridge"), False
     if resumed is not None:
         running = found.live.get(resumed["pane_id"])
         # By the config each starts on: for an account that couldn't be read, its folder's.
