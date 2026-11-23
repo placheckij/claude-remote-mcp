@@ -36,8 +36,10 @@ the gateway first, see [Updating](README.md#updating)).
 - agent restore: `agents.json` (mode 0600 on macOS and Linux) and the restore after a
   herdr restart, which starts only agents that were running in herdr, ones started by
   hand included, on their saved folder, account (if theirs couldn't be read, the one the
-  folder would get if started now) and arguments, and the panes it closes (herdr's own
-  resume of a saved agent, an idle leftover shell);
+  folder would get if started now) and arguments; the panes it closes (an idle pane
+  running a saved agent's conversation under other arguments or another account, whether
+  herdr resumed it or someone did by hand, and an idle leftover shell); and reading each
+  Claude agent's process environment every 30 s, of which only `CLAUDE_CONFIG_DIR` is kept;
   it skips the allowed-roots and agent-count limits and the trust root by design, and
   doesn't restore a folder Claude Code doesn't already trust
 - `mcp-gateway setup` (its `deploy/setup.sh`): the root-owned copy in `/opt/mcp-gateway`

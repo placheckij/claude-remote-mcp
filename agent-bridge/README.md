@@ -92,16 +92,16 @@ restores each saved agent that isn't running, one after another: a new workspace
 account, `--resume <session id>` and its arguments; an agent never prompted has no
 conversation to resume, so it starts fresh under the same `--session-id`. Without a session id it uses
 `--continue`, but only if no other saved agent shares its folder and account, else a fresh
-conversation. Agents started by hand come back too. Panes herdr resumed with the wrong
-account or arguments are closed and replaced, unless busy in a turn: those are left as
-they are.
+conversation. Agents started by hand come back too. A pane running a saved agent's
+conversation with the wrong account or arguments, whether herdr resumed it or you did, is
+closed and replaced, unless busy in a turn: then it's left as it is.
 
 - A restored agent is idle: no prompt is sent.
 - An agent that a save had already missed comes back only if herdr brought its pane back,
   in its folder; otherwise it's dropped. Each conversation comes back once.
 - The restore ignores `AGENT_BRIDGE_MAX_AGENTS` and the allowed roots, so every agent
-  that was running comes back. [Folder trust](#folder-trust) still applies: an untrusted
-  folder's entry is dropped. An agent that fails to start for another reason stays in
+  that was running comes back. It marks no folder trusted, even under the
+  [trust root](#folder-trust): an entry whose folder Claude Code doesn't trust is dropped. An agent that fails to start for another reason stays in
   `agents.json` and is tried again at the next restart. `start_agent` adds `--session-id <uuid>`, unless
   `AGENT_BRIDGE_CLAUDE_ARGS` picks the conversation itself, so a new agent's conversation
   is known from its first save.
@@ -435,8 +435,9 @@ without stopping herdr's server, if you start it yourself; re-runs keep it off u
 `--herdr-service` brings it back. A Mac set up before the launch agent existed gets it at
 its next setup.
 
-`--no-agent-restore` keeps [agents from coming back](#after-a-restart) after herdr's
-server restarts and gives herdr its own resume back; re-runs keep what is installed.
+`--no-agent-restore` turns off agent-bridge's [restore](#after-a-restart) and gives herdr
+its own resume back (which brings agents back without their account or arguments);
+re-runs keep what is installed.
 
 The last lines name the host as the gateway knows it. Nothing needs copying to the
 gateway host. The plist runs agent-bridge at a path upgrades keep:
@@ -630,8 +631,9 @@ installed yet, and takes the same flags. Then it:
 and removes one installed before without stopping its server; `--herdr-service` brings it
 back. Re-runs keep what is installed.
 
-`--no-agent-restore` keeps [agents from coming back](#after-a-restart) after herdr's
-server restarts and gives herdr its own resume back; re-runs keep what is installed.
+`--no-agent-restore` turns off agent-bridge's [restore](#after-a-restart) and gives herdr
+its own resume back (which brings agents back without their account or arguments);
+re-runs keep what is installed.
 
 The unit runs `~/.local/bin/agent-bridge`, which `uv tool upgrade
 claude-remote-mcp-agent-bridge` keeps; re-run `agent-bridge setup` after upgrading, which
@@ -731,8 +733,9 @@ which isn't on `PATH`: herdr's installer links that folder to the current releas
 server, if you start it yourself; re-runs keep it off until `--herdr-service` brings it
 back. A host set up before the task existed gets it at its next setup.
 
-`--no-agent-restore` keeps [agents from coming back](#after-a-restart) after herdr's
-server restarts and gives herdr its own resume back; re-runs keep what is installed.
+`--no-agent-restore` turns off agent-bridge's [restore](#after-a-restart) and gives herdr
+its own resume back (which brings agents back without their account or arguments);
+re-runs keep what is installed.
 
 Its log is `%LOCALAPPDATA%\agent-bridge\agent-bridge.log`, with a line for each start and one
 per request; `start-herdr` adds its lines there too. Once it passes 1 MB it is moved to `agent-bridge.log.1`, replacing the one
