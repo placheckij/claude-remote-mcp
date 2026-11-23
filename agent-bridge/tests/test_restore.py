@@ -569,6 +569,47 @@ def test_herdrs_resume_whose_claude_exited_and_whose_pane_has_gone_is_replaced(
     assert restored.terminal_id == "t90"
 
 
+@pytest.mark.parametrize("by", ["hook", "command line"])
+def test_a_conversation_resumed_in_another_pane_while_the_restore_ran_isnt_started_again(
+    path: Path, folder: Path, tmp_path: Path, by: str
+) -> None:
+    # It appeared after the panes were listed: resumed by hand, or by herdr, during the
+    # seconds the restore runs. Listed again before the start, it's found and kept.
+    shell = pane(agent=None, cwd=str(folder))
+    late = pane("w5:p1", "t-late", session=UUID if by == "hook" else None, cwd=str(folder)) | {"agent_status": "working"}
+    runner = runner_for([shell], **{"pane list": [ok({"panes": [shell]}), ok({"panes": [shell, late]})],
+                                    "pane process-info --pane w5:p1": process_info(["claude", "--resume", UUID])})
+    [line] = run(runner, path, [entry(folder, session_id=UUID)], tmp_path)
+
+    assert runner.called("agent", "start") == []
+    assert runner.called("pane", "close") == [["pane", "close", "w1:p1"]]
+    assert "busy in w5:p1" in line and "closed the shell left in w1:p1" in line
+    [kept] = load(path).agents
+    assert (kept.pane_id, kept.terminal_id) == ("w5:p1", "t-late")
+
+
+def test_a_conversation_resumed_idle_in_another_pane_while_the_restore_ran_with_other_args_is_replaced(
+    path: Path, folder: Path, tmp_path: Path
+) -> None:
+    late = pane("w5:p1", "t-late", session=UUID, cwd=str(folder))
+    runner = runner_for([], **{"pane list": [ok({"panes": []}), ok({"panes": [late]})],
+                               "pane process-info --pane w5:p1": process_info(["claude", "--resume", UUID]),
+                               "agent get w5:p1": ok({"agent": late})})
+    [line] = run(runner, path, [entry(folder, session_id=UUID)], tmp_path)
+
+    assert runner.called("pane", "close") == [["pane", "close", "w5:p1"]]
+    assert claude_args(runner) == ["--resume", UUID, "--permission-mode", "auto"]
+    assert "closed herdr's own resume in w5:p1" in line
+
+
+def test_a_failed_list_before_the_start_doesnt_stop_it(path: Path, folder: Path, tmp_path: Path) -> None:
+    runner = runner_for([], **{"pane list": [ok({"panes": []}), err("timeout")]})
+    run(runner, path, [entry(folder, session_id=UUID)], tmp_path)
+
+    assert len(runner.called("agent", "start")) == 1
+    assert len(runner.called("pane", "list")) == 2
+
+
 def test_herdr_resume_with_other_args_is_replaced(path: Path, folder: Path, tmp_path: Path) -> None:
     runner = runner_for([pane(session=UUID)], ["claude", "--resume", UUID])
     run(runner, path, [entry(folder, session_id=UUID)], tmp_path)
