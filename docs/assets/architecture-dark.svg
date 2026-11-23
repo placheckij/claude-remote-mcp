@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="960" height="900" viewBox="0 0 960 900" role="img" aria-labelledby="title desc">
   <title id="title">claude-remote-mcp architecture</title>
-  <desc id="desc">Three layers and four trust boundaries. Interaction: the Claude app (voice, mobile, CarPlay, web, desktop). It reaches the orchestration layer on the gateway host over MCP over HTTPS through a Cloudflare Tunnel with an OAuth access token: mcp-gateway handles OAuth, authentication, tool routing, agent operations and enrollment, and keeps clients and token hashes in oauth.json, its agent hosts in bridges.json and the enrollment window in enrollment.json. mcp-gateway reaches the execution layer over HTTP on the LAN with each host's bearer token, and agent hosts enroll with the gateway over the LAN with the window's secret. There are three agent hosts: macOS, Linux and Windows. On each, agent-bridge runs as a launchd service, a systemd user unit or a scheduled task and keeps its id and gateway in state.json; only agents under its allowed roots can be changed. It drives herdr workspaces and panes through the herdr CLI, and herdr runs Claude Code sessions, one per pane, each on the Claude account set up for its folder, with ids that name the host, such as mac/w1:p1.</desc>
+  <desc id="desc">Three layers and four trust boundaries. Interaction: the Claude app (voice, mobile, CarPlay, web, desktop). It reaches the orchestration layer on the gateway host over MCP over HTTPS through a Cloudflare Tunnel with an OAuth access token: mcp-gateway handles OAuth, authentication, tool routing, agent operations and enrollment, and keeps clients and token hashes in oauth.json, its agent hosts in bridges.json and the enrollment window in enrollment.json. mcp-gateway reaches the execution layer over HTTP on the LAN with each host's bearer token, and agent hosts enroll with the gateway over the LAN with the window's secret. There are three agent hosts: macOS, Linux and Windows. On each, agent-bridge runs as a launchd service, a systemd user unit or a scheduled task and keeps its id and gateway in state.json and the agents to restore after herdr restarts in agents.json; only agents under its allowed roots can be changed. It drives herdr workspaces and panes through the herdr CLI, and herdr runs Claude Code sessions, one per pane, each on the Claude account set up for its folder, with ids that name the host, such as mac/w1:p1.</desc>
   <style>
     .sans { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', sans-serif; }
     .mono { font-family: ui-monospace, 'SF Mono', 'JetBrains Mono', Menlo, Consolas, monospace; }
@@ -163,10 +163,13 @@
   <path class="accent" d="M88,572 H118"/>
   <text class="sans title" x="138" y="596" text-anchor="middle">agent-bridge</text>
   <text class="mono sub" x="138" y="615" text-anchor="middle">launchd service</text>
-  <path class="store" d="M230,580 H316 V610 L306,620 H220 V590 Z"/>
-  <text class="mono storetitle" x="268" y="597" text-anchor="middle">state.json</text>
-  <text class="mono sub" x="268" y="612" text-anchor="middle">id · gateway</text>
-  <path class="dotted" d="M208,600 H220"/>
+  <path class="store" d="M230,570 H316 V592 L308,600 H220 V578 Z"/>
+  <text class="mono storetitle" x="268" y="584" text-anchor="middle">state.json</text>
+  <text class="mono sub" x="268" y="594" text-anchor="middle">id · gateway</text>
+  <path class="store" d="M230,606 H316 V628 L308,636 H220 V614 Z"/>
+  <text class="mono storetitle" x="268" y="620" text-anchor="middle">agents.json</text>
+  <text class="mono sub" x="268" y="630" text-anchor="middle">to restore</text>
+  <path class="dotted" d="M208,585 H220 M208,621 H220"/>
   <path class="wire" d="M96,628 V690"/>
   <path class="head" d="M91,682 L96,690 L101,682 Z"/>
   <text class="mono wirelabel" x="104" y="682">herdr CLI</text>
@@ -195,10 +198,13 @@
   <path class="accent" d="M376,572 H406"/>
   <text class="sans title" x="426" y="596" text-anchor="middle">agent-bridge</text>
   <text class="mono sub" x="426" y="615" text-anchor="middle">systemd user unit</text>
-  <path class="store" d="M518,580 H604 V610 L594,620 H508 V590 Z"/>
-  <text class="mono storetitle" x="556" y="597" text-anchor="middle">state.json</text>
-  <text class="mono sub" x="556" y="612" text-anchor="middle">id · gateway</text>
-  <path class="dotted" d="M496,600 H508"/>
+  <path class="store" d="M518,570 H604 V592 L596,600 H508 V578 Z"/>
+  <text class="mono storetitle" x="556" y="584" text-anchor="middle">state.json</text>
+  <text class="mono sub" x="556" y="594" text-anchor="middle">id · gateway</text>
+  <path class="store" d="M518,606 H604 V628 L596,636 H508 V614 Z"/>
+  <text class="mono storetitle" x="556" y="620" text-anchor="middle">agents.json</text>
+  <text class="mono sub" x="556" y="630" text-anchor="middle">to restore</text>
+  <path class="dotted" d="M496,585 H508 M496,621 H508"/>
   <path class="wire" d="M384,628 V690"/>
   <path class="head" d="M379,682 L384,690 L389,682 Z"/>
   <text class="mono wirelabel" x="392" y="682">herdr CLI</text>
@@ -227,10 +233,13 @@
   <path class="accent" d="M664,572 H694"/>
   <text class="sans title" x="714" y="596" text-anchor="middle">agent-bridge</text>
   <text class="mono sub" x="714" y="615" text-anchor="middle">scheduled task</text>
-  <path class="store" d="M806,580 H892 V610 L882,620 H796 V590 Z"/>
-  <text class="mono storetitle" x="844" y="597" text-anchor="middle">state.json</text>
-  <text class="mono sub" x="844" y="612" text-anchor="middle">id · gateway</text>
-  <path class="dotted" d="M784,600 H796"/>
+  <path class="store" d="M806,570 H892 V592 L884,600 H796 V578 Z"/>
+  <text class="mono storetitle" x="844" y="584" text-anchor="middle">state.json</text>
+  <text class="mono sub" x="844" y="594" text-anchor="middle">id · gateway</text>
+  <path class="store" d="M806,606 H892 V628 L884,636 H796 V614 Z"/>
+  <text class="mono storetitle" x="844" y="620" text-anchor="middle">agents.json</text>
+  <text class="mono sub" x="844" y="630" text-anchor="middle">to restore</text>
+  <path class="dotted" d="M784,585 H796 M784,621 H796"/>
   <path class="wire" d="M672,628 V690"/>
   <path class="head" d="M667,682 L672,690 L677,682 Z"/>
   <text class="mono wirelabel" x="680" y="682">herdr CLI</text>

@@ -6,7 +6,7 @@ the map; the component READMEs have the details.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/assets/architecture-dark.svg">
-  <img src="docs/assets/architecture-light.svg" width="100%" alt="Three layers and four trust boundaries. The Claude app reaches mcp-gateway on the gateway host over MCP over HTTPS, through a Cloudflare Tunnel, with an OAuth access token; mcp-gateway keeps clients and token hashes in oauth.json, its agent hosts in bridges.json and the enrollment window in enrollment.json. mcp-gateway reaches agent-bridge on each agent host (macOS, Linux, Windows) over HTTP on the LAN with that host's bearer token, and agent hosts enroll with the gateway over the LAN with the window's secret. Each agent-bridge keeps its id and gateway in state.json, only changes agents under its allowed roots, and drives herdr through the herdr CLI; herdr runs Claude Code sessions, one per pane, each on the Claude account set up for its folder, with ids that name the host, such as mac/w1:p1.">
+  <img src="docs/assets/architecture-light.svg" width="100%" alt="Three layers and four trust boundaries. The Claude app reaches mcp-gateway on the gateway host over MCP over HTTPS, through a Cloudflare Tunnel, with an OAuth access token; mcp-gateway keeps clients and token hashes in oauth.json, its agent hosts in bridges.json and the enrollment window in enrollment.json. mcp-gateway reaches agent-bridge on each agent host (macOS, Linux, Windows) over HTTP on the LAN with that host's bearer token, and agent hosts enroll with the gateway over the LAN with the window's secret. Each agent-bridge keeps its id and gateway in state.json and the agents to restore after herdr restarts in agents.json, only changes agents under its allowed roots, and drives herdr through the herdr CLI; herdr runs Claude Code sessions, one per pane, each on the Claude account set up for its folder, with ids that name the host, such as mac/w1:p1.">
 </picture>
 
 ## Interaction layer: the Claude app
@@ -73,8 +73,9 @@ The machine where Claude Code runs. See [agent-bridge/README.md](agent-bridge/RE
 - **agent-bridge** is a small HTTP API on the LAN with its own bearer token. It turns
   each agent request into `herdr` CLI calls. Its settings are an env file, and a state
   file holds its id and, once enrolled, its gateway. `agent-bridge setup` installs it as a
-  service and enrolls it; its commands are `serve`, `enroll`, `rename`, `unenroll`,
-  `check`, `setup` and `uninstall`.
+  service, with a second one that starts herdr's server, and enrolls it; its commands are
+  `serve`, `enroll`, `rename`, `unenroll`, `save-agents`, `check`, `setup` and
+  `uninstall`.
 - **Workspace management.** herdr owns the agents. Each agent started here gets its own
   herdr workspace, named after the agent; renaming renames both. Agents are addressed by
   their herdr pane id, e.g. `w1:p1`.
@@ -90,6 +91,13 @@ The machine where Claude Code runs. See [agent-bridge/README.md](agent-bridge/RE
   With a trust root and a separate Claude config set, a new agent's folder under the
   trust root is marked trusted in its account's config, so it starts without Claude's
   trust dialog; the default config is never changed.
+- **Agent restore.** While it runs, agent-bridge saves the Claude agents in herdr to
+  `agents.json`, and when herdr's server restarts it starts them again, idle, each on its
+  account with `--resume` and its arguments. Setup turns herdr's own resume off in herdr's
+  config and installs herdr's Claude hook in the non-default Claude configs, so herdr
+  knows each agent's conversation. `AGENT_BRIDGE_RESTORE_AGENTS=false` (setup
+  `--no-agent-restore`) turns this off. See
+  [After a restart](agent-bridge/README.md#after-a-restart).
 
 ## Where state lives
 
@@ -104,10 +112,12 @@ The machine where Claude Code runs. See [agent-bridge/README.md](agent-bridge/RE
 | mcp-gateway's settings: the passphrase, the public hostname | its env file on the gateway host (`/etc/mcp-gateway/env` from `mcp-gateway setup`) |
 | agent-bridge's settings | its env file on the agent host |
 | agent-bridge's id and the gateway it enrolled with | its `state.json` on the agent host |
+| Claude agents to restore after herdr restarts: name, folder, Claude config, arguments, session id | `agents.json` beside `state.json` |
 | Agents, their workspaces and output | herdr on the agent host |
 | Claude logins and trusted folders | each account's Claude config on the agent host |
 
-agent-bridge holds no agents: after a restart it sees the same ones through herdr.
+herdr owns the agents: after an agent-bridge restart, agent-bridge sees the same ones
+through herdr. After a herdr restart, it starts the saved ones again.
 What each file holds and where it is: [mcp-gateway](mcp-gateway/README.md#what-it-creates),
 [agent-bridge](agent-bridge/README.md#configuration).
 
@@ -124,6 +134,8 @@ What each file holds and where it is: [mcp-gateway](mcp-gateway/README.md#what-i
    changing a host's record that host's token. Enrollment refuses callers off the LAN
    and anything the tunnel forwards.
 4. **agent-bridge to agents:** allowed roots, the agent limit and the trust root bound
-   what a request can start or change.
+   what a request can start or change. Restoring after a herdr restart skips the roots
+   and the limit: it starts only agents that were running, from `agents.json`, and folder
+   trust still applies.
 
 [SECURITY.md](SECURITY.md) says how to report a vulnerability and what is in scope.

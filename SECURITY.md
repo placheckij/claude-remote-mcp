@@ -15,7 +15,8 @@ steps to reproduce, and what they gain. You'll get a reply within a week.
 ## Supported versions
 
 Only the latest PyPI release of each package is supported: `claude-remote-mcp-gateway`
-and `claude-remote-mcp-agent-bridge`. Fixes ship as a new release of the package
+and `claude-remote-mcp-agent-bridge` (also the Homebrew formula in `placheckij/tap`,
+built from the same release). Fixes ship as a new release of the package
 affected, built from `main`; there are no maintained release branches. To get one,
 upgrade the package and run its setup again (`mcp-gateway setup`, `agent-bridge setup`;
 the gateway first, see [Updating](README.md#updating)).
@@ -32,11 +33,15 @@ the gateway first, see [Updating](README.md#updating)).
 - agent-bridge: its token check, the allowed-roots and agent-count limits, which Claude
   account (login and config) an agent starts under, and folder trust (it must never
   write the default Claude config, or trust a folder outside the trust root)
+- agent restore: `agents.json` (mode 0600) and the restore after a herdr restart, which
+  starts only agents that were running, on their saved folder, account and arguments;
+  it skips the allowed-roots and agent-count limits by design, but not folder trust
 - `mcp-gateway setup` (its `deploy/setup.sh`): the root-owned copy in `/opt/mcp-gateway`
   the service runs, the `/usr/local/bin/mcp-gateway` wrapper that runs commands as the
   service user, file permissions, where tokens end up, the tunnel's ingress rules
 - `agent-bridge setup` (its installers for macOS, Linux and Windows): the service files,
-  where the bridge's token ends up, the Windows firewall rule
+  where the bridge's token ends up, the Windows firewall rule, the line it adds to herdr's
+  config, and herdr's Claude hook it installs in the agents' non-default Claude configs
 - the releases: the tag-triggered workflows (`.github/workflows/release.yml`,
   `release-mcp-gateway.yml`) and the packages they publish to PyPI through Trusted
   Publishing and attach to the GitHub Release, and the agent-bridge formula they push to
