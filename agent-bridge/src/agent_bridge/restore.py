@@ -225,13 +225,14 @@ async def _close(
 
 async def _adopt(path: Path, entry: SavedAgent, resumed: dict, found: _Found) -> None:
     """Take `resumed`, which runs `entry`'s conversation, as the agent's own pane from now on."""
+    # First: a write that fails mustn't let a later entry close the pane.
+    found.claimed.add(resumed["terminal_id"])
+    found.sessions.add(entry.session_id)
     kept = entry.model_copy(
         update={"pane_id": resumed["pane_id"], "terminal_id": resumed["terminal_id"], "misses": 0,
                 "restore_failed": False}
     )
     await asyncio.to_thread(_replace, path, entry.terminal_id, kept)
-    found.claimed.add(resumed["terminal_id"])
-    found.sessions.add(entry.session_id)
 
 
 async def _keep_failed(path: Path, entry: SavedAgent) -> None:

@@ -443,6 +443,24 @@ def test_a_file_that_cant_be_written_doesnt_stop_the_restore(
     assert all("No space left on device" in line for line in lines)
 
 
+def test_a_pane_kept_for_one_entry_isnt_closed_for_another_when_the_file_cant_be_written(
+    path: Path, folder: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # herdr resumed the first one as it was; the second saved the same conversation with
+    # other arguments, so it would take that pane for a resume to replace.
+    def unwritable(*args: object) -> None:
+        raise StateError(f"Can't write {path} (No space left on device).")
+
+    monkeypatch.setattr(restore_module, "_replace", unwritable)
+    runner = runner_for([pane(session=UUID)], ["claude", "--permission-mode", "auto", "--resume", UUID])
+    first = entry(folder, session_id=UUID)
+    second = entry(tmp_path / "api", terminal_id="t-old-2", pane_id="w2:p1", session_id=UUID, args=[])
+    lines = run(runner, path, [first, second], tmp_path)
+
+    assert runner.called("pane", "close") == runner.called("agent", "start") == []
+    assert "already runs" in lines[1]
+
+
 def test_a_restored_agent_whose_entry_couldnt_be_written_drops_its_stale_entry(
     path: Path, folder: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
