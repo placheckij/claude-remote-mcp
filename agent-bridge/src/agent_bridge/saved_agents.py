@@ -19,7 +19,7 @@ from agent_bridge import state
 from agent_bridge.claude_args import clean_args, session_id_in
 from agent_bridge.claude_process import claude_environ, claude_process
 from agent_bridge.herdr import Herdr, HerdrError
-from agent_bridge.state import state_file
+from agent_bridge.state import StateError, state_file
 
 log = logging.getLogger(__name__)
 
@@ -59,13 +59,20 @@ def agents_file() -> Path:
     return state_file().with_name("agents.json")
 
 
-def load(path: Path) -> SavedAgents:
-    """The saved agents; empty when there are none, or the file can't be used (warned)."""
+def load(path: Path, for_writing: bool = False) -> SavedAgents:
+    """The saved agents; empty when there are none, or the file can't be used (warned).
+
+    `for_writing`, for a caller that saves over the file next: a file that couldn't be read,
+    or that a newer agent-bridge wrote, raises StateError instead, so writing never wipes
+    agents that are saved but not running now. A corrupt one still reads as empty: nothing
+    in it can be restored, and writing over it is how it recovers."""
     try:
         data = path.read_bytes()
     except FileNotFoundError:
         return SavedAgents()
     except OSError as error:
+        if for_writing:
+            raise StateError(f"Can't read {path} ({error.strerror}), so it isn't written either.") from None
         log.warning("Can't read %s (%s); no agents will be restored from it.", path, error.strerror)
         return SavedAgents()
     try:
@@ -74,6 +81,8 @@ def load(path: Path) -> SavedAgents:
         log.warning("%s isn't a list of saved agents; no agents will be restored from it.", path)
         return SavedAgents()
     if saved.version > SavedAgents().version:
+        if for_writing:
+            raise StateError(f"{path} is from a newer agent-bridge, so this one leaves it as it is.")
         log.warning("%s is from a newer agent-bridge; no agents will be restored from it.", path)
         return SavedAgents()
     return saved
@@ -170,7 +179,7 @@ def merge(saved: list[SavedAgent], seen: list[SavedAgent], restarted: bool) -> l
 
 def forget(path: Path, terminal_id: str) -> None:
     with locked(path):
-        saved = load(path)
+        saved = load(path, for_writing=True)
         save(path, saved.model_copy(update={
             "agents": [agent for agent in saved.agents if agent.terminal_id != terminal_id]
         }))

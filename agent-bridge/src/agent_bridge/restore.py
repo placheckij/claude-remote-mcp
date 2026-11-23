@@ -211,7 +211,7 @@ def _session_of(pane: dict) -> str | None:
 def _replace(path: Path, terminal_id: str, restarted: SavedAgent) -> None:
     """Put `restarted` where the entry for `terminal_id` was, or at the end if it's gone."""
     with locked(path):
-        saved = load(path)
+        saved = load(path, for_writing=True)
         # Any other entry with the new terminal id is a stale duplicate; the one being
         # replaced may share it (a failed start keeps its id) and stays where it is.
         agents = [
@@ -308,7 +308,7 @@ def _write(path: Path, seen: list[SavedAgent], restarted: bool, stopped: set[str
         # either it's in the set now or its forget runs after this write.
         gone = frozenset(stopped)
         seen = [agent for agent in seen if agent.terminal_id not in gone]
-        saved = load(path)
+        saved = load(path, for_writing=True)
         # Also saved ones: a restore may have written an agent that a stop then closed before
         # its forget could find it.
         kept = [agent for agent in saved.agents if agent.terminal_id not in gone]

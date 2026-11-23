@@ -10,6 +10,7 @@ from fakes import FakeRunner, err, ok
 from agent_bridge import saved_agents
 from agent_bridge.herdr import Herdr, HerdrError
 from agent_bridge.saved_agents import SavedAgent, SavedAgents
+from agent_bridge.state import StateError
 
 UUID = "11111111-2222-3333-4444-555555555555"
 OTHER = "99999999-2222-3333-4444-555555555555"
@@ -154,6 +155,57 @@ def test_corrupt_file_reads_as_empty(tmp_path: Path, caplog: pytest.LogCaptureFi
     path.write_bytes(content)
     assert saved_agents.load(path) == SavedAgents()
     assert len(caplog.records) == 1
+
+
+def newer_file(path: Path) -> bytes:
+    """A file a newer agent-bridge wrote: valid agents, a higher version."""
+    content = SavedAgents(agents=[entry("t1")]).model_copy(update={"version": 2}).model_dump_json().encode()
+    path.write_bytes(content)
+    return content
+
+
+def test_a_newer_agent_bridges_file_reads_as_empty(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+    path = tmp_path / "agents.json"
+    newer_file(path)
+    assert saved_agents.load(path) == SavedAgents()
+    assert "newer agent-bridge" in caplog.text
+
+
+def test_writers_never_overwrite_a_newer_agent_bridges_file(tmp_path: Path) -> None:
+    # A downgrade must not wipe what the newer version saved.
+    path = tmp_path / "agents.json"
+    content = newer_file(path)
+    with pytest.raises(StateError):
+        saved_agents.forget(path, "t1")
+    assert path.read_bytes() == content
+
+
+def test_writers_never_overwrite_a_file_they_couldnt_read(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "agents.json"
+    saved_agents.save(path, SavedAgents(agents=[entry("t1"), entry("t2")]))
+    content = path.read_bytes()
+    real_read = Path.read_bytes
+
+    def denied(self: Path) -> bytes:
+        if self == path:
+            raise PermissionError(13, "Permission denied")
+        return real_read(self)
+
+    monkeypatch.setattr(Path, "read_bytes", denied)
+    with pytest.raises(StateError):
+        saved_agents.forget(path, "t1")
+    monkeypatch.undo()
+    assert path.read_bytes() == content
+
+
+def test_writers_replace_a_corrupt_file(tmp_path: Path) -> None:
+    # Nothing in it can be restored, so writing over it is how it recovers.
+    path = tmp_path / "agents.json"
+    path.write_bytes(b"{")
+    saved_agents.forget(path, "t1")
+    assert saved_agents.load(path) == SavedAgents()
 
 
 def test_missing_file_reads_as_empty_without_warning(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:

@@ -284,12 +284,12 @@ def _save_agents() -> int:
             # forget takes too, never writes a stopped agent back.
             live = {pane.get("terminal_id") for pane in asyncio.run(herdr.list_panes())}
             seen = [agent for agent in seen if agent.terminal_id in live]
-            saved = load_agents(path)
+            saved = load_agents(path, for_writing=True)
             # Counts no misses: herdr may have just restarted, and a miss would get an agent
             # forgotten at the restore. Ageing entries is left to the service's saves.
             kept = merge(saved.agents, seen, restarted=True)
             save_agents(path, saved.model_copy(update={"agents": kept}))
-    except (HerdrError, TimeoutError) as error:
+    except (HerdrError, OSError, StateError) as error:
         raise _Refused(f"Couldn't save the agents: {error}") from None
     print(f"Saved {len(kept)} agents to {path}.")
     return OK
