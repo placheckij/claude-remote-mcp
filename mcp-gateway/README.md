@@ -44,19 +44,21 @@ or with a NUL character) come back the same way as one sentence.
 | `send_prompt` | prompt, wait up to `wait_seconds` (default and most 20, see below), return status + output; flags `blocked`, a question the agent ended its turn with, still-working, and a prompt typed but not yet started on (not to be sent again). A `blocked` agent refuses prompts until its question is answered. If agent-bridge doesn't answer in time, it says the prompt may have been sent instead of failing, so it isn't sent twice |
 | `wait_for_agent` | keep waiting for an agent still working (e.g. after `send_prompt` ran out of time); same result format |
 | `answer_agent` | key presses for a blocked agent's question, e.g. `["1"]`, `["Enter"]`; with `wait_seconds` also waits for the result. Marked destructive, so Claude asks first. If agent-bridge doesn't answer the key presses in time, or the wait after them fails, it says so and to check with `agent_details` instead of failing, so the next question isn't answered by mistake |
-| `start_agent` | new agent in a project: one folder name in agent-bridge's allowed roots, or an absolute path. The gateway passes it on as it is; agent-bridge resolves and checks it. Optional `host`; without it and with several hosts, the gateway asks each (`GET /projects/{name}`) and starts on the one that has the project, or answers which hosts do. An absolute path needs `host` when there are several. Optional `name`: any words, made into a slug (by default the folder's name). Optional `account` (e.g. `work`) picks the Claude login; by default agent-bridge uses the one set up for the folder, and the reply names it. `remote_control` (default true) starts it with Claude Code's Remote Control, named like the agent at start (a later rename doesn't reach it); the reply says when it ended up off (the organization's policy, or an agent-bridge too old for it) or on though not asked (`AGENT_BRIDGE_CLAUDE_ARGS`). The whole call gets 25 s, asking the hosts about themselves and for the project included; the start gets what's left (at least 1 s), and if agent-bridge doesn't answer by then, it says the agent may still be starting instead of failing |
+| `start_agent` | new agent in a project: one folder name in agent-bridge's allowed roots, or an absolute path. The gateway passes it on as it is; agent-bridge resolves and checks it. Optional `host`; without it and with several hosts, the gateway asks each (`GET /projects/{name}`) and starts on the one that has the project, or answers which hosts do; a host whose agent-bridge can't look up project names (one without `/info`) isn't searched, and the reply says it couldn't ask it when one host or none has the project. An absolute path needs `host` when there are several. Optional `name`: any words, made into a slug (by default the folder's name). Optional `account` (e.g. `work`) picks the Claude login; by default agent-bridge uses the one set up for the folder, and the reply names it. `remote_control` (default true) starts it with Claude Code's Remote Control, named like the agent at start (a later rename doesn't reach it); the reply says when it ended up off (the organization's policy, or an agent-bridge too old for it) or on though not asked (`AGENT_BRIDGE_CLAUDE_ARGS`). The whole call gets 25 s, asking the hosts about themselves and for the project included; the start gets what's left (at least 1 s), and if agent-bridge doesn't answer by then, it says the agent may still be starting instead of failing |
 | `rename_agent` | new name for an agent and its herdr workspace, any words; agent-bridge turns it into a slug (`Webapp fix!` → `webapp-fix`, `-2` if another agent has it) and the reply says the name it got. agent-bridge renames it only after an agent start under way, so during a slow start or a restore it can answer that the host didn't answer in time though the rename still happens: check with `list_agents` before renaming again |
 | `stop_agent` | close an agent's pane; agent-bridge 0.3.0+ also won't restore it after a restart (marked destructive, so Claude asks first). agent-bridge 0.3.0+ stops it only after an agent start under way; if that outlasts the request, it says the agent may still stop instead of failing |
 
 The server's instructions tell Claude the user is probably driving: short, speakable
-answers, no code read aloud, and no approvals without asking.
+answers, no code read aloud, and no approvals without asking. They also name the agent
+hosts (or say none is set up yet), and change with them when `bridges.json` changes.
 
 **Waits are capped at 20 s** because claude.ai gives up on a tool call long before its
 docs' 240 s. Through the connector in Claude Code a 55 s wait comes back and a 60 s one
 fails with *The operation timed out*; in voice mode a prompt that took 30 s came back as
 *MCP tool call failed*, though it had been typed. Nothing is sent before a tool returns,
 so a longer wait would end in a generic failure after the prompt was typed. For longer
-work Claude calls `wait_for_agent` again. agent-bridge's answer gets `wait_seconds` + 5 s
+work Claude calls `wait_for_agent` again. `wait_seconds` is 5 to 20 on `send_prompt`,
+`wait_for_agent` and `answer_agent`. agent-bridge's answer gets `wait_seconds` + 5 s
 before mcp-gateway gives up on it.
 
 Voice mode also asks you to approve each tool call, reading ones included, and gives up
@@ -73,11 +75,11 @@ unset. An invalid setting stops startup with one line per problem, naming the va
 |---|---|
 | `MCP_GATEWAY_OAUTH_PASSPHRASE` | required, 16+ chars; typed on the [sign-in page](#oauth-sign-in) when the connector is added |
 | `MCP_GATEWAY_STATE_DIR` | required; where the gateway keeps its state, all mode 600: signed-in clients and token hashes (`oauth.json`), agent hosts (`bridges.json`) and the enrollment window (`enrollment.json`), e.g. `/var/lib/mcp-gateway`. The running gateway locks it (`oauth.lock`); see [One process](#one-process) |
-| `MCP_GATEWAY_TOKEN` | optional, 32+ chars; the static token from before OAuth, still accepted as `Authorization: Bearer …` while set. Leave it unset unless a connector added with request headers still uses it |
-| `MCP_GATEWAY_PUBLIC_HOST` | required; the tunnel hostname, e.g. `mcp.example.com` (`/mcp` refuses any other `Host` but `127.0.0.1:*` and `localhost:*`). The OAuth issuer is `https://<host>` and the connector URL `https://<host>/mcp` |
+| `MCP_GATEWAY_TOKEN` | optional, 32+ chars (the setup script takes only letters, digits, `. _ ~ + / -` and trailing `=`); the static token from before OAuth, still accepted as `Authorization: Bearer …` while set. Leave it unset unless a connector added with request headers still uses it |
+| `MCP_GATEWAY_PUBLIC_HOST` | required; the tunnel hostname in lowercase, e.g. `mcp.example.com`, as the `Host` check is exact (the setup script lowercases it). `/mcp` refuses any other `Host` but `127.0.0.1:*` and `localhost:*`. The OAuth issuer is `https://<host>` and the connector URL `https://<host>/mcp` |
 | `MCP_GATEWAY_BRIDGE_URL`, `MCP_GATEWAY_BRIDGE_TOKEN` | legacy, both or neither; see [Agent hosts](#agent-hosts) |
 | `MCP_GATEWAY_PORT` | optional, CLI only, and read from the environment only, not from `.env`; the port `mcp-gateway enroll` puts in the enrollment string (default 8766; the setup script's wrapper sets it to `PORT`) |
-| `MCP_GATEWAY_PROJECTS_ROOT` | optional; only for an agent-bridge without `GET /info`, which can't look up project names: where `start_agent` finds them, as a path on the agent host, e.g. `/home/me/projects`. Unset, such a host takes absolute paths only |
+| `MCP_GATEWAY_PROJECTS_ROOT` | optional; only for an agent-bridge without `GET /info`, which can't look up project names: where `start_agent` finds them, as a path on the agent host, e.g. `/home/me/projects`, when `start_agent` is given `host` or it is the only host (with several, such a host can't be searched by project). Unset, such a host takes absolute paths only. For such a host it also shortens the folder `list_agents` and `agent_details` show (`webapp` for `/home/me/projects/webapp`) and so what the `project` filter matches |
 
 ## Agent hosts
 
@@ -99,7 +101,10 @@ sudo mcp-gateway bridges remove studio
 ```
 
 `add` takes the name and everything else from the bridge's `/info`, and refuses a
-bridge without it (`--name` picks another name). It takes the token from an exported
+bridge without it (`--name` picks another name). A host's name is the host part of its
+agent ids: a lowercase letter, then up to 31 lowercase letters, digits or `-`. `add`
+refuses an `/info` name that doesn't fit and asks for `--name`; `rename`, agent-bridge's
+`AGENT_BRIDGE_NAME` and enrollment (`422`) refuse one too. It takes the token from an exported
 `AGENT_BRIDGE_TOKEN` when set (`sudo --preserve-env=AGENT_BRIDGE_TOKEN`), and otherwise
 asks for it. `list` asks every host's `/info` first (5 s at most), so it shows each
 host's current version, or why it didn't answer. The
@@ -135,9 +140,10 @@ as a warning.
   refused (`409`), and `agent-bridge enroll` exits with 3: set another
   `AGENT_BRIDGE_NAME` and run it again.
 - **Afterwards** each agent-bridge sends its address on every start
-  (`PUT /bridges/{id}/address`), renames itself when its setup is given a new name
-  (`PUT /bridges/{id}/name`, `409` for a taken name) and removes itself on uninstall
-  (`DELETE /bridges/{id}`), all with its own token. On each address report the gateway
+  (`PUT /bridges/{id}/address`), renames itself when its setup is given a new name or on
+  `agent-bridge rename <name>` (`PUT /bridges/{id}/name`, `409` for a taken name) and
+  removes itself on uninstall or `agent-bridge unenroll` (`DELETE /bridges/{id}`), all
+  with its own token. On each address report the gateway
   asks `/info` there and records the answer. A new address is kept only once its `/info`
   answers with the same id. An unchanged one is kept even if `/info` doesn't answer.
 - **Who may call these routes:** only callers on a private, loopback or link-local
@@ -207,10 +213,11 @@ the connector is added, claude.ai:
 |---|---|
 | Access token | 1 hour; claude.ai refreshes it by itself |
 | Refresh token | 90 days; replaced on every refresh (the old one stops working) |
+| Sign-in link | 10 minutes, and the code it hands claude.ai 5 minutes. An expired or used link answers `400` with *This sign-in link has expired or was already used. Connect again from the Claude app.* |
 | Callback | only `https://claude.ai/api/mcp/auth_callback` can be registered, so a sign-in can't hand a code to anyone else. Claude Code's loopback callback isn't accepted |
 | Wrong passphrases | logged with the source address; a sign-in link dies after 5, and an address with 10 within 15 minutes is refused until they age out, so one stranger guessing doesn't lock you out. The address is Cloudflare's `CF-Connecting-IP` when the request comes from the local cloudflared, the last `X-Forwarded-For` entry from another reverse proxy on this host, else the peer's; IPv6 counts by /64. Changing addresses doesn't buy more: 100 from all sources together stop every sign-in for those 15 minutes (tokens already issued keep working) |
 | Phishing | someone could send you a sign-in link they started. The code can only go to claude.ai, where it only completes the sign-in that claude.ai itself started (its `state`), and the page says to continue only while you are connecting in Claude |
-| Storage | `MCP_GATEWAY_STATE_DIR/oauth.json`: the clients that signed in and SHA-256 hashes of their tokens, never the tokens. A registration that never signs in is kept in memory only (at most 100). Written to a new temporary file, synced to disk and renamed over the old one, so a crash leaves either the old file or the new one; on Linux, so does a power cut. Checked whole at startup: a damaged file stops the gateway with a message naming the file, the bad fields and the client ids involved (not secret), never field values or token hashes |
+| Storage | `MCP_GATEWAY_STATE_DIR/oauth.json`: the clients that signed in and SHA-256 hashes of their tokens, never the tokens. Registrations that haven't signed in yet, sign-ins in progress and unused codes are kept in memory only, at most 100 of each; the oldest is dropped for a new one. Written to a new temporary file, synced to disk and renamed over the old one, so a crash leaves either the old file or the new one; on Linux, so does a power cut. Checked whole at startup: a damaged file stops the gateway with a message naming the file, the bad fields and the client ids involved (not secret), never field values or token hashes |
 | Failed saves | A sign-in or refresh whose save fails (e.g. a full disk) fails and changes nothing: a refresh can be retried with the same refresh token, a sign-in is started again. A revocation whose save fails still revokes at once, and `oauth.json`, which still lists the revoked tokens, is deleted (that needs no space): a restart before the next successful save signs every client out instead of bringing them back, and that save writes the file again. When a revocation can't be made safe on disk (the file can't be deleted, or the folder won't sync, so a power cut could undo it), an error in the log says so and what to do in that case; the usual fix, once the disk can be written, is to stop mcp-gateway, delete `oauth.json` and start it again, but on a read-only disk stopping it only loses the revocation. Until a save is fully on disk, every save that isn't is logged as an error too, also after a restart if the state folder won't sync then |
 | Revocation | `/revoke` ends a token and its pair |
 | Restart | tokens survive it, except after a revocation that couldn't be saved (see *Failed saves*); a sign-in page or code that was open is lost (sign in again) |
@@ -333,6 +340,9 @@ the tunnel checks fail, try again shortly:
 
 ### What it creates
 
+Paths and commands in this README use the default `TUNNEL_NAME`, `claude-remote`; with
+another, that name replaces it in the tunnel's files and its `cloudflared-<name>` service.
+
 | Path | |
 |---|---|
 | `/opt/mcp-gateway/` | the service's own install of the version setup ran from: `venv/` with the same packages as the tool, and `python/` if uv downloaded Python. Owned by root, so the service can run the code but not change it; the tool's environment in your home folder is out of the service's reach (`ProtectHome=yes`) |
@@ -346,6 +356,8 @@ the tunnel checks fail, try again shortly:
 | `/etc/cloudflared/claude-remote.json` | the tunnel's credentials (owned by the `cloudflared` user) |
 | `/etc/cloudflared/claude-remote.yml` | tunnel config with the ingress rules |
 | `/etc/systemd/system/cloudflared-claude-remote.service` | runs the tunnel as the `cloudflared` system user |
+| system users `mcp-gateway`, `cloudflared` | no home folder and no login shell, only if missing |
+| apt packages | `curl`, `ca-certificates`, `gnupg`, `openssl`, `python3`, `git` (for a gateway installed from a git URL), and `cloudflared` if none is on the `PATH` |
 
 ### Update and rotate
 
@@ -382,7 +394,9 @@ the tunnel checks fail, try again shortly:
   itself when it starts; after a new token, enroll it again (`sudo mcp-gateway enroll`,
   then `agent-bridge enroll '<string>'` on the agent host). One added by hand:
   `sudo mcp-gateway bridges remove <name>`, then `sudo mcp-gateway bridges add <url>`.
-- **Change the projects folder:** re-run with `PROJECTS_ROOT`.
+- **Change the projects folder:** re-run with `PROJECTS_ROOT`. setup can't remove it (an
+  empty one counts as not given): delete its line from `/etc/mcp-gateway/env`, then
+  `sudo systemctl restart mcp-gateway`.
 - **Change the hostname:** re-run with the new `PUBLIC_HOST`. It gets a new DNS record
   in the zone picked at the first login; for a hostname in another domain, first delete
   `/etc/cloudflared/cert.pem` so setup logs in again and you can pick that zone. Delete the
@@ -493,8 +507,10 @@ reverse proxy:
    `/.well-known/oauth-authorization-server` and
    `/.well-known/oauth-protected-resource/mcp`. Use a
    [Cloudflare Tunnel](#cloudflare-tunnel) set up by hand, or any reverse proxy on the
-   same host (mcp-gateway serves those paths to loopback only) that terminates TLS, with a request timeout of at least 30 s (`wait_seconds` goes up to
-   20 s, plus up to 5 s for agent-bridge's answer).
+   same host (mcp-gateway serves those paths to loopback only) that terminates TLS, with a request timeout of about 60 s. A wait takes up to 25 s
+   (`wait_seconds`, plus 5 s for agent-bridge's answer), but some calls take longer:
+   `list_agents` with one host asks `/info` (up to 5 s) and then `/agents` (up to 30 s),
+   and `answer_agent` with `wait_seconds` sends the keys (up to 30 s) before it waits.
    Don't publish `/healthz` or anything else. mcp-gateway needs a writable
    `MCP_GATEWAY_STATE_DIR`.
 4. As the user the server runs as, open an enrollment window for the agent hosts:
@@ -608,6 +624,8 @@ including the mobile app (and with it, on iPhone, CarPlay).
 ```sh
 uv sync --all-packages
 uv run --package claude-remote-mcp-gateway pytest mcp-gateway
+# From the repo root: both packages and the root tests (tests/, e.g. enrollment end to end), as CI runs them
+uv run --exact pytest
 
 # Local run against an agent-bridge on this machine
 uv run --package claude-remote-mcp-gateway mcp-gateway --state-dir /tmp/mcp-gateway-state bridges add http://127.0.0.1:8765
@@ -618,7 +636,10 @@ MCP_GATEWAY_TOKEN=$(openssl rand -hex 32) MCP_GATEWAY_PUBLIC_HOST=localhost \
 
 Tests drive the real MCP app over JSON-RPC with a fake agent-bridge behind
 `httpx.MockTransport`; `test_oauth.py` goes through the whole sign-in the way claude.ai
-does. `src/mcp_gateway/deploy/setup.sh` is checked with `shellcheck`.
+does. `src/mcp_gateway/deploy/setup.sh` is checked with `shellcheck`. On pull requests that
+change how the two talk to each other, the [Mixed versions](https://github.com/placheckij/claude-remote-mcp/blob/main/.github/workflows/compat.yml)
+check also runs this branch's gateway against the last agent-bridge release, and its
+agent-bridge against the last gateway release.
 
 ### Releasing mcp-gateway
 
