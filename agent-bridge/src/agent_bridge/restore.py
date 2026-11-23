@@ -167,7 +167,14 @@ async def _restore_one(
         update={"pane_id": agent["pane_id"], "terminal_id": agent["terminal_id"], "misses": 0,
                 "restore_failed": False}
     )
-    await asyncio.to_thread(_replace, path, entry.terminal_id, restarted)
+    try:
+        await asyncio.to_thread(_replace, path, entry.terminal_id, restarted)
+    except (OSError, StateError) as error:
+        # The old terminal is gone for good, as a stopped agent's is: the watcher's next write
+        # drops the stale entry, whose old pane id could otherwise make later rounds look like
+        # a herdr restart, and saves the new agent from its snapshot.
+        service.stopped.add(entry.terminal_id)
+        return f"{label}: restored in {agent['pane_id']}, {how}{note}, but agents.json not updated: {error}", True
     return f"{label}: restored in {agent['pane_id']}, {how}{note}", False
 
 

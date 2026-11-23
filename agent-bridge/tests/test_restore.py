@@ -374,6 +374,28 @@ def test_a_file_that_cant_be_written_doesnt_stop_the_restore(
     assert all("No space left on device" in line for line in lines)
 
 
+def test_a_restored_agent_whose_entry_couldnt_be_written_drops_its_stale_entry(
+    path: Path, folder: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Its stale entry keeps the old pane id; were it kept, a pane still open there would make
+    # every later round look like a herdr restart and start the agent again.
+    def unwritable(*args: object) -> None:
+        raise StateError(f"Can't write {path} (No space left on device).")
+
+    monkeypatch.setattr(restore_module, "_replace", unwritable)
+    save(path, SavedAgents(agents=[entry(folder, session_id=UUID)]))
+    herdr = Herdr(runner=runner_for([]))
+    service = AgentService(Settings(token=TOKEN, allowed_roots=(tmp_path.resolve(),)), herdr)
+
+    [line] = asyncio.run(restore(service, herdr, path))
+
+    assert "restored in w90:p1" in line and "No space left on device" in line
+    # Gone for good: the watcher's next write drops it and saves the new agent instead.
+    assert service.stopped == {"t-old"}
+    restore_module._write(path, [], True, service.stopped)
+    assert load(path).agents == []
+
+
 def test_the_watcher_leaves_out_an_agent_stopped_while_it_waited_for_the_file(
     monkeypatch: pytest.MonkeyPatch, path: Path, folder: Path
 ) -> None:
