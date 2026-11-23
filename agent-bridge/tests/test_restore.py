@@ -886,6 +886,76 @@ def test_after_replacing_herdrs_resume_a_late_pane_that_cant_be_told_doesnt_stop
     assert len(runner.called("agent", "start")) == 1
 
 
+def test_a_pane_stopped_while_the_restore_decides_to_keep_its_agent_doesnt_bring_it_back(
+    path: Path, folder: Path, tmp_path: Path
+) -> None:
+    # The pane showing the conversation can't be read, so the agent is to be kept for the
+    # next restart; meanwhile the pane is stopped through the bridge. The conversation was
+    # stopped: the entry goes, rather than bring it back.
+    resumed = pane("w2:p1", "t-r", session=UUID, cwd=str(folder))
+    runner = runner_for([resumed], **{"pane process-info --pane w2:p1": err("timeout")})
+    herdr = Herdr(runner=runner)
+    service = AgentService(Settings(token=TOKEN, allowed_roots=(tmp_path.resolve(),)), herdr, saved_path=path)
+    save(path, SavedAgents(agents=[entry(folder, terminal_id="t-old", pane_id="w1:p1", session_id=UUID)]))
+    reads = 0
+    answer = runner.__call__
+
+    async def stopping_during_the_second_read(argv):
+        nonlocal reads
+        if list(argv[1:5]) == ["pane", "process-info", "--pane", "w2:p1"]:
+            reads += 1
+            if reads == 2:
+                service.herdr = Herdr(runner=runner_for([resumed]))
+                await service.stop_agent("w2:p1")
+                service.herdr = herdr
+        return await answer(argv)
+
+    herdr.runner = stopping_during_the_second_read
+    asyncio.run(restore(service, herdr, path))
+    restore_module._write(path, [], True, service.stopped, service.stopped_sessions)
+
+    assert load(path).agents == []
+
+
+def test_a_restore_kept_entry_for_a_stopped_conversation_goes_even_if_the_stops_forget_failed(
+    path: Path, folder: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from agent_bridge import agents as agents_module
+
+    resumed = pane("w2:p1", "t-r", session=UUID, cwd=str(folder))
+    kept = entry(folder, terminal_id="t-old", pane_id="w1:p1", session_id=UUID, restore_failed=True)
+    save(path, SavedAgents(agents=[kept, entry(folder, terminal_id="t-r", pane_id="w2:p1", session_id=UUID)]))
+
+    def held(*args, **kwargs):
+        raise TimeoutError("agents.json.lock is held by another process.")
+
+    monkeypatch.setattr(agents_module, "forget", held)
+    service = AgentService(Settings(token=TOKEN, allowed_roots=(tmp_path.resolve(),)),
+                           Herdr(runner=runner_for([resumed])), saved_path=path)
+    asyncio.run(service.stop_agent("w2:p1"))
+    # The watcher's next write goes through.
+    restore_module._write(path, [], False, service.stopped, service.stopped_sessions)
+
+    assert load(path).agents == []
+
+
+def test_an_idle_pane_showing_its_conversation_listed_late_that_cant_be_read_keeps_the_agent_for_the_next_restart(
+    path: Path, folder: Path, tmp_path: Path
+) -> None:
+    # As one listed at the start: Claude Code may have exited from it.
+    resumed = pane("w2:p1", "t-r", session=UUID, cwd=str(folder))
+    runner = runner_for([resumed], **{
+        "pane process-info --pane w2:p1": err("timeout"),
+        "pane list": [ok({"panes": []}), ok({"panes": [resumed]})],
+        "agent list": [ok({"agents": []}), ok({"agents": [resumed]})],
+    })
+    run(runner, path, [entry(folder, terminal_id="t-old", pane_id="w1:p1", session_id=UUID)], tmp_path)
+
+    assert runner.called("agent", "start") == []
+    [kept] = load(path).agents
+    assert (kept.terminal_id, kept.restore_failed) == ("t-old", True)
+
+
 @pytest.mark.parametrize("why", ["timeout", "no processes", "jobs unknown"])
 def test_an_idle_pane_running_its_conversation_whose_process_cant_be_read_keeps_the_agent_for_the_next_restart(
     path: Path, folder: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, why: str
@@ -1517,7 +1587,7 @@ class Rounds:
         self.rounds = 1
         self.restore_errors: list[Exception] = []
         # What AgentService.stopped is to watch.
-        self.service = SimpleNamespace(stopped=set())
+        self.service = SimpleNamespace(stopped=set(), stopped_sessions=set())
         monkeypatch.setattr(restore_module, "snapshot", self.snapshot)
         monkeypatch.setattr(restore_module, "restore", self.restore)
 

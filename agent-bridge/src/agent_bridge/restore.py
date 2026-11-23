@@ -45,6 +45,9 @@ class _Found:
     # Saved agents (by terminal) whose conversation's pane was closed in this restore while
     # it still ran it: each is started whatever else may run it.
     replaced: set[str] = field(default_factory=set)
+    # Conversations stopped through the bridge (the service's set): an entry kept for one
+    # would bring it back.
+    stopped_sessions: set[str] = field(default_factory=set)
 
 
 async def restore(service: AgentService, herdr: Herdr, path: Path) -> list[str]:
@@ -59,6 +62,7 @@ async def restore(service: AgentService, herdr: Herdr, path: Path) -> list[str]:
         live={agent.pane_id: agent for agent in await snapshot(herdr)},
         claimed={entry.terminal_id for entry in entries},
         sessions={entry.session_id for entry in entries if entry.session_id and entry.terminal_id in terminals},
+        stopped_sessions=service.stopped_sessions,
     )
     lines = []
     for entry in entries:
@@ -78,8 +82,11 @@ async def _restore_one(
 ) -> tuple[str, bool]:
     """The log line for `entry`, and whether it says something failed."""
     label = entry.name or entry.cwd
-    if entry.terminal_id in service.stopped:
-        # Stopped through the bridge, whose forget couldn't take it out of agents.json.
+    if entry.terminal_id in service.stopped or (
+        entry.restore_failed and entry.session_id and entry.session_id in service.stopped_sessions
+    ):
+        # Stopped through the bridge, whose forget couldn't take it out of agents.json; or
+        # kept by a restore for a conversation stopped through the bridge since.
         await _forget(path, entry, service.stopped)
         return f"{label}: not restored, and forgotten: it was stopped through the bridge", False
     for pane in found.panes:
@@ -134,7 +141,7 @@ async def _restore_one(
             # pane run its conversation, the snapshots save it from there. The shell herdr left
             # goes now: later restores skip the old pane id of an entry marked failed.
             _, note = await _close(herdr, shell, found)
-            await _keep_failed(path, entry)
+            await _keep_failed(path, entry, found)
             return (f"{label}: not restored, kept for the next restart: {unsure['pane_id']}, a Claude agent "
                     f"in its folder whose process couldn't be read, may run its conversation{note}"), True
     if resumed is not None:
@@ -143,7 +150,7 @@ async def _restore_one(
             return note
     elif stopped_claude is not None:
         # A second copy would answer as the first, once it's brought back with fg.
-        await _keep_failed(path, entry)
+        await _keep_failed(path, entry, found)
         return (f"{label}: not restored, kept for the next restart: {stopped_claude['pane_id']}, where it "
                 "was, has a Claude Code stopped with ctrl-Z, which may run its conversation, left as it is"), True
     else:
@@ -174,7 +181,7 @@ async def _restore_one(
     if late is None and unsure is not None and entry.terminal_id not in found.replaced:
         # As for such a pane listed at the start. Not when its conversation's pane was closed
         # to be replaced: it ran there, so the start goes ahead.
-        await _keep_failed(path, entry)
+        await _keep_failed(path, entry, found)
         return (f"{label}: not restored, kept for the next restart: {unsure['pane_id']}, a Claude agent "
                 f"in its folder whose process couldn't be read, may run its conversation{note}"), True
     if late is not None:
@@ -192,11 +199,11 @@ async def _restore_one(
         if error.code == "folder_not_trusted":
             await _forget(path, entry, service.stopped)
             return f"{label}: not restored, and forgotten: {error.message}{note}", True
-        await _keep_failed(path, entry)
+        await _keep_failed(path, entry, found)
         return f"{label}: not restored ({error.code}: {error.message}), kept for the next restart{note}", True
     except Exception as error:  # noqa: BLE001 - one agent's failure mustn't stop the others
         # Any other failure is likely passing (herdr busy, a slow start): try again next time.
-        await _keep_failed(path, entry)
+        await _keep_failed(path, entry, found)
         return f"{label}: not restored ({error}), kept for the next restart{note}", True
 
     found.claimed.add(agent["terminal_id"])
@@ -249,7 +256,11 @@ async def _take_resumed(
     unreadable = running is None or reread_failed or (running.config_dir_unknown and running.args == entry.args)
     # Not read before, but read now without Claude Code among its processes: it has exited
     # (herdr's listing lags), which isn't one that can't be read.
-    exited = await _claude_exited(herdr, resumed) if running is None and not reread_failed and not busy else False
+    if running is None and not busy:
+        # Nothing ever read of it: listed late and its read failed, it can't be told either.
+        exited = None if reread_failed else await _claude_exited(herdr, resumed)
+    else:
+        exited = False
     if exited is None:
         # Nothing read of it, and whether Claude Code still runs in it can't be told now. Left;
         # tied to it, the entry would age out if it had exited, so the agent is kept for the
@@ -259,7 +270,7 @@ async def _take_resumed(
         if entry.terminal_id in found.replaced:
             # Its conversation ran in the pane just closed to be replaced: started all the same.
             return f"{note} ({resumed['pane_id']}, whose process couldn't be read, left as it is)"
-        await _keep_failed(path, entry)
+        await _keep_failed(path, entry, found)
         return (f"{label}: not restored, kept for the next restart: {resumed['pane_id']} shows its "
                 f"conversation but its process couldn't be read, left as it is{note}"), True
     if not exited and (as_it_was or busy or unreadable):
@@ -291,7 +302,7 @@ async def _take_resumed(
         if entry.terminal_id in found.replaced:
             # Its conversation ran in the pane just closed to be replaced: started all the same.
             return f"{note} ({resumed['pane_id']}, where Claude Code no longer runs but {why}, left as it is)"
-        await _keep_failed(path, entry)
+        await _keep_failed(path, entry, found)
         return (f"{label}: not restored, kept for the next restart: Claude Code no longer runs in "
                 f"{resumed['pane_id']}, which ran its conversation, but {why}, left as it is{note}"), True
     if status == _NO_AGENT:
@@ -308,7 +319,7 @@ async def _take_resumed(
             if entry.terminal_id in found.replaced:
                 # Its conversation ran in the pane just closed to be replaced.
                 return f"{note} ({resumed['pane_id']}, no longer an agent nor known to be an idle shell, left as it is)"
-            await _keep_failed(path, entry)
+            await _keep_failed(path, entry, found)
             return (f"{label}: not restored, kept for the next restart: herdr no longer shows an agent in "
                     f"{resumed['pane_id']}, which ran its conversation, and it isn't known to be an idle "
                     f"shell, left as it is{note}"), True
@@ -588,11 +599,17 @@ async def _forget(path: Path, entry: SavedAgent, stopped: set[str]) -> None:
         raise
 
 
-async def _keep_failed(path: Path, entry: SavedAgent) -> None:
+async def _keep_failed(path: Path, entry: SavedAgent, found: _Found) -> None:
     """Mark `entry` as one the restore couldn't start, so the snapshots leave it be. Its misses
-    go back to 0: an earlier miss would otherwise get it forgotten at the next restart."""
+    go back to 0: an earlier miss would otherwise get it forgotten at the next restart.
+    Forgotten instead if its conversation was stopped through the bridge meanwhile."""
+    if entry.session_id and entry.session_id in found.stopped_sessions:
+        log.info("%s: forgotten rather than kept: its conversation %s was stopped through the bridge",
+                 entry.name or entry.cwd, entry.session_id)
+        await asyncio.to_thread(forget, path, entry.terminal_id)
+        return
     failed = entry.model_copy(update={"restore_failed": True, "misses": 0})
-    await asyncio.to_thread(_replace, path, entry.terminal_id, failed)
+    await asyncio.to_thread(_replace, path, entry.terminal_id, failed, found.stopped_sessions)
 
 
 def _session_in(pane: dict, found: _Found) -> str | None:
@@ -616,9 +633,16 @@ def _hook_session(pane: dict) -> str | None:
     return session.get("value") if isinstance(session, dict) else None
 
 
-def _replace(path: Path, terminal_id: str, restarted: SavedAgent) -> None:
-    """Put `restarted` where the entry for `terminal_id` was, or at the end if it's gone."""
+def _replace(path: Path, terminal_id: str, restarted: SavedAgent, stopped_sessions: set[str] = frozenset()) -> None:
+    """Put `restarted` where the entry for `terminal_id` was, or at the end if it's gone; not a
+    restore-failed one whose conversation was stopped through the bridge."""
     with locked(path):
+        if restarted.restore_failed and restarted.session_id in stopped_sessions:
+            # Checked under the lock, which stop_agent's forget takes too.
+            saved = load(path, for_writing=True)
+            save(path, saved.model_copy(update={
+                "agents": [agent for agent in saved.agents if agent.terminal_id != terminal_id]}))
+            return
         saved = load(path, for_writing=True)
         # Any other entry with the new terminal id is a stale duplicate; the one being
         # replaced may share it (a failed start keeps its id) and stays where it is.
@@ -662,7 +686,7 @@ async def watch(
                 restarted = True
             else:
                 restarted = False
-            await asyncio.to_thread(_write, path, seen, restarted, service.stopped)
+            await asyncio.to_thread(_write, path, seen, restarted, service.stopped, service.stopped_sessions)
         except HerdrError as error:
             if error.code != SERVER_NOT_RUNNING:
                 # Its server still runs (a timeout, output it couldn't parse): only this round
@@ -722,7 +746,10 @@ def _saved(path: Path) -> list[SavedAgent]:
         return load(path, must_read=True).agents
 
 
-def _write(path: Path, seen: list[SavedAgent], restarted: bool, stopped: set[str] = frozenset()) -> None:
+def _write(
+    path: Path, seen: list[SavedAgent], restarted: bool, stopped: set[str] = frozenset(),
+    stopped_sessions: set[str] = frozenset(),
+) -> None:
     with locked(path):
         # Agents stopped through the bridge since the snapshot began are gone for good. Read
         # under the lock: stop_agent adds to `stopped` before its forget takes the lock, so
@@ -732,5 +759,10 @@ def _write(path: Path, seen: list[SavedAgent], restarted: bool, stopped: set[str
         saved = load(path, for_writing=True)
         # Also saved ones: a restore may have written an agent that a stop then closed before
         # its forget could find it.
-        kept = [agent for agent in saved.agents if agent.terminal_id not in gone]
+        # And entries a restore kept for a conversation stopped through the bridge, which
+        # would bring it back; unless something runs it again, saved from its pane.
+        running = {agent.session_id for agent in seen if agent.session_id}
+        ended = frozenset(stopped_sessions) - running
+        kept = [agent for agent in saved.agents if agent.terminal_id not in gone
+                and not (agent.restore_failed and agent.session_id in ended)]
         save(path, saved.model_copy(update={"agents": merge(kept, seen, restarted)}))
