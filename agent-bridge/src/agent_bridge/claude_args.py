@@ -51,6 +51,11 @@ def _flags(args: Sequence[str]) -> Iterator[tuple[str, list[str], str | None]]:
             yield name, [token], value
             i += 1
             continue
+        if not token.startswith("--") and len(token) > 2 and token[:2] in REQUIRED | OPTIONAL:
+            # A short flag with its value attached, as commander takes it: -r<value>.
+            yield token[:2], [token], token[2:]
+            i += 1
+            continue
         end = i + 1
         if token in REQUIRED:
             end = min(end + 1, len(args))

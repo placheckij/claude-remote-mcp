@@ -64,6 +64,14 @@ def test_session_id_from_each_form():
     assert session_id_in(["--resume", "my-session-title"]) is None  # not a uuid
 
 
+def test_a_short_flag_with_its_value_attached():
+    # Commander takes -r<value> as -r <value>.
+    assert clean_args([f"-r{UUID}", "--model", "haiku"]) == ["--model", "haiku"]
+    assert session_id_in([f"-r{UUID}"]) == UUID
+    assert picks_session([f"-r{UUID}"]) is True
+    assert clean_args(["-nwebapp", "-c"]) == ["-nwebapp"]
+
+
 def test_a_forked_session_has_no_known_id():
     # --fork-session runs the resumed conversation under a new id, which argv doesn't say.
     assert session_id_in(["--resume", UUID, "--fork-session"]) is None

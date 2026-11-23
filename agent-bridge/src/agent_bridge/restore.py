@@ -71,7 +71,9 @@ async def _restore_one(
     # herdr brings an agent's pane back under its pane id, in its folder. The folder matters
     # too: a herdr server that lost its session numbers panes afresh, and a pane of the
     # user's elsewhere can have the saved id.
-    back = [
+    # Not for an entry whose restore failed: its leftover was dealt with then, and it keeps
+    # its old pane id on purpose, so a pane there now is someone else's.
+    back = [] if entry.restore_failed else [
         pane for pane in found.panes
         if pane["pane_id"] == entry.pane_id and pane.get("cwd") and Path(pane["cwd"]) == Path(entry.cwd)
     ]

@@ -431,6 +431,16 @@ def test_an_entry_that_had_already_gone_is_not_restored(path: Path, folder: Path
     assert load(path).agents == []
 
 
+def test_a_failed_entrys_old_pane_id_isnt_taken_for_its_shell(path: Path, folder: Path, tmp_path: Path) -> None:
+    # Its leftover was dealt with at the restore that failed; its pane id is stale by design,
+    # so an idle shell there now is someone else's.
+    runner = runner_for([pane(agent=None, cwd=str(folder))])
+    run(runner, path, [entry(folder, session_id=UUID, restore_failed=True)], tmp_path)
+
+    assert runner.called("pane", "close") == []
+    assert len(runner.called("agent", "start")) == 1
+
+
 def test_a_shell_pane_running_a_program_is_never_closed(path: Path, folder: Path, tmp_path: Path) -> None:
     # Same id and folder, but the user runs something in it (an editor, a dev server).
     runner = runner_for([pane(agent=None, cwd=str(folder))], **{"pane process-info --pane w1:p1": shell_info("vim")})
