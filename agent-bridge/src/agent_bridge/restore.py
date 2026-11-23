@@ -319,8 +319,10 @@ async def watch(
     while True:
         try:
             seen = await snapshot(herdr)
-            was, answering = answering, True
-            pending = pending or await _restarted(herdr, path, was)
+            # Answering only once the check has gone through: one that fails on herdr's first
+            # round must be made again as a first round, or a lost layout goes unnoticed.
+            pending = pending or await _restarted(herdr, path, answering)
+            answering = True
             if pending:
                 await restore(service, herdr, path)
                 # Only when it ran through: one cut short by an error starts over next round.

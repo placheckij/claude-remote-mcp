@@ -978,6 +978,27 @@ def test_a_passing_herdr_error_doesnt_make_the_next_round_look_like_a_new_server
     assert rounds.restores == [1]
 
 
+def test_a_failed_restart_check_on_herdrs_first_round_is_made_again_next_round(
+    monkeypatch: pytest.MonkeyPatch, path: Path, folder: Path
+) -> None:
+    # The host rebooted and herdr came back without its layout. Its first answer lists the
+    # agents, but looking at its panes then fails once: the next round is still herdr's
+    # first, or the saved agents would age out unrestored.
+    save(path, SavedAgents(agents=[entry(folder, terminal_id="t-old", pane_id="w5:p1")]))
+    rounds = Rounds(monkeypatch, path, [[], [], []], [])
+    answers: list = [HerdrError("timeout", "slow"), [], []]
+
+    async def list_panes(_herdr: object = None) -> list[dict]:
+        answer = answers.pop(0)
+        if isinstance(answer, Exception):
+            raise answer
+        return answer
+
+    rounds.list_panes = list_panes
+    rounds.watch(3)
+    assert rounds.restores == [2]
+
+
 def test_an_agent_stopped_during_the_snapshot_is_not_saved_again(
     monkeypatch: pytest.MonkeyPatch, path: Path, folder: Path
 ) -> None:
