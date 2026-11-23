@@ -102,7 +102,8 @@ account read from it that isn't the saved one, and it is gone after closing. Oth
 it's left as it is and kept as the agent's: one working, waiting for an approval, that
 herdr can't classify, or that herdr doesn't show as an agent yet but whose command line
 resumes the conversation. An idle one whose process can't be read is left too, but the
-agent is kept for the next restart: Claude Code may have exited from it. If herdr's resume
+agent is kept for the next restart: Claude Code may have exited from it. One read earlier
+in the restore but not again is left and kept as the agent's. If herdr's resume
 exited and left a shell, an idle one (only the shell in the foreground, no Claude Code
 among its jobs) is closed and the agent started; any other is left, and the agent kept for
 the next restart, as it is when herdr, asked again, can't say what runs there or still
