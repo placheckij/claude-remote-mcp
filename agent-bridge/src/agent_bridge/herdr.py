@@ -66,6 +66,11 @@ class Started(NamedTuple):
     notice_shown: bool = False
 
 
+# herdr's code when no server answers at its socket: none is there, or the one there
+# refuses the connection (its server died).
+SERVER_NOT_RUNNING = "server_not_running"
+
+
 class HerdrError(Exception):
     def __init__(self, code: str, message: str):
         super().__init__(f"{code}: {message}")

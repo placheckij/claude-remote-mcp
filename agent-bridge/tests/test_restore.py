@@ -1,6 +1,7 @@
 import asyncio
 import contextlib
 import os
+import threading
 from collections.abc import Callable
 from pathlib import Path
 from types import SimpleNamespace
@@ -46,6 +47,15 @@ def conversations(monkeypatch: pytest.MonkeyPatch) -> set[str]:
 
 
 @pytest.fixture(autouse=True)
+def jobs(monkeypatch: pytest.MonkeyPatch) -> set[int]:
+    """Shell pids with a Claude Code among their jobs (one suspended, say); by default none.
+    Keeps the tests off the real process table."""
+    found: set[int] = set()
+    monkeypatch.setattr(restore_module, "_claude_among_jobs", lambda shell_pid: shell_pid in found)
+    return found
+
+
+@pytest.fixture(autouse=True)
 def environ(monkeypatch: pytest.MonkeyPatch) -> dict[str, str]:
     """The environment every live Claude in these tests reports; a test may fill it."""
     found: dict[str, str] = {}
@@ -66,6 +76,8 @@ def pane(pane_id: str = "w1:p1", terminal_id: str = "t-new", agent: str | None =
     found = {
         "pane_id": pane_id, "terminal_id": terminal_id, "agent": agent, "cwd": cwd,
         "workspace_id": pane_id.split(":")[0], "name": "webapp" if agent else None,
+        # As herdr's pane list gives it: every pane has one, a shell's is "unknown".
+        "agent_status": "idle" if agent else "unknown",
     }
     if session is not None:
         found["agent_session"] = {"agent": "claude", "kind": "id", "source": "herdr:claude", "value": session}
@@ -110,6 +122,8 @@ def runner_for(panes: list[dict], argv: list[str] | None = None, starts: int = 3
         ("workspace", "close"): ok({"type": "ok"}),
         # A pane with no agent is an idle shell, unless a test says otherwise.
         **{("pane", "process-info", "--pane", found["pane_id"]): shell_info() for found in panes if not found["agent"]},
+        # An agent's status, read again, is the listed one unless a test says otherwise.
+        **{("agent", "get", found["pane_id"]): ok({"agent": found}) for found in panes if found["agent"]},
     }
     responses.update({tuple(key.split()): value for key, value in overrides.items()})
     return FakeRunner(responses)
@@ -175,6 +189,34 @@ def test_has_conversation_looks_in_the_accounts_projects(tmp_path: Path) -> None
     assert restore_module._has_conversation_on_disk(tmp_path / "missing", UUID) is False
 
 
+def test_claude_among_jobs_looks_under_the_shell(monkeypatch: pytest.MonkeyPatch) -> None:
+    class Child:
+        def __init__(self, name: str, argv0: str | None = None) -> None:
+            self._name, self._argv0 = name, argv0 or name
+
+        def name(self) -> str:
+            return self._name
+
+        def cmdline(self) -> list[str]:
+            if self._argv0 == "denied":
+                raise psutil.AccessDenied()
+            return [self._argv0]
+
+    children: list[Child] = []
+    monkeypatch.setattr(psutil.Process, "children", lambda self, recursive=False: children)
+    assert restore_module._claude_among_jobs_in_os(os.getpid()) is False
+    children[:] = [Child("node"), Child("claude.exe")]
+    assert restore_module._claude_among_jobs_in_os(os.getpid()) is True
+    # On macOS a process started through a symlink is named after its target: the native
+    # install's is its version.
+    children[:] = [Child("2.1.330", "/Users/me/.local/bin/claude")]
+    assert restore_module._claude_among_jobs_in_os(os.getpid()) is True
+    children[:] = [Child("2.1.330", "denied")]
+    assert restore_module._claude_among_jobs_in_os(os.getpid()) is None
+    monkeypatch.setattr(psutil.Process, "children", lambda self, recursive=False: (_ for _ in ()).throw(psutil.AccessDenied()))
+    assert restore_module._claude_among_jobs_in_os(os.getpid()) is None
+
+
 def test_herdr_resume_on_the_default_config_is_replaced_for_an_unknown_accounts_agent(
     path: Path, folder: Path, tmp_path: Path, environ: dict[str, str]
 ) -> None:
@@ -206,11 +248,248 @@ def test_herdr_resume_with_other_account_is_replaced(path: Path, folder: Path, t
     assert claude_args(runner) == ["--resume", UUID, "--permission-mode", "auto"]
 
 
-def test_a_busy_pane_running_its_conversation_is_never_closed(
+def test_herdrs_resume_that_cant_be_closed_is_left_rather_than_run_twice(
     path: Path, folder: Path, tmp_path: Path
 ) -> None:
-    # The user resumed it by hand, with other arguments, and is in the middle of a turn.
-    busy = pane(session=UUID, cwd=str(folder)) | {"agent_status": "working"}
+    # Still running its conversation: a second copy would answer as the first.
+    runner = runner_for([pane(session=UUID)], ["claude", "--resume", UUID], **{"pane close": err("close_failed")})
+    [line] = run(runner, path, [entry(folder, session_id=UUID)], tmp_path)
+
+    assert runner.called("agent", "start") == []
+    assert "couldn't be closed" in line and "left" in line
+    # Taken as the agent's own pane from now on, as a busy one is.
+    [kept] = load(path).agents
+    assert (kept.pane_id, kept.terminal_id) == ("w1:p1", "t-new")
+
+
+def test_herdrs_resume_gone_though_its_close_failed_is_replaced(
+    path: Path, folder: Path, tmp_path: Path
+) -> None:
+    # The close timed out after it went through, or `claude --resume` exited meanwhile.
+    # Adopted, the entry would point at a terminal that's gone and age out unrestored.
+    resumed = pane(session=UUID)
+    runner = runner_for([resumed], ["claude", "--resume", UUID],
+                        **{"pane close": err("timeout"), "pane list": [ok({"panes": [resumed]}), ok({"panes": []})]})
+    [line] = run(runner, path, [entry(folder, session_id=UUID)], tmp_path)
+
+    assert claude_args(runner) == ["--resume", UUID, "--permission-mode", "auto"]
+    assert "restored in w90:p1" in line and "couldn't close herdr's own resume in w1:p1" in line
+    [restored] = load(path).agents
+    assert restored.terminal_id == "t90"
+
+
+def test_herdrs_resume_that_cant_be_closed_is_left_when_herdr_cant_say_whether_its_gone(
+    path: Path, folder: Path, tmp_path: Path
+) -> None:
+    resumed = pane(session=UUID)
+    runner = runner_for([resumed], ["claude", "--resume", UUID],
+                        **{"pane close": err("timeout"), "pane list": [ok({"panes": [resumed]}), err("timeout")]})
+    [line] = run(runner, path, [entry(folder, session_id=UUID)], tmp_path)
+
+    assert runner.called("agent", "start") == []
+    assert "couldn't be closed" in line
+    [kept] = load(path).agents
+    assert (kept.pane_id, kept.terminal_id) == ("w1:p1", "t-new")
+
+
+def test_a_leftover_shell_that_cant_be_closed_doesnt_stop_the_start(
+    path: Path, folder: Path, tmp_path: Path
+) -> None:
+    runner = runner_for([pane(agent=None, cwd=str(folder))], **{"pane close": err("close_failed")})
+    [line] = run(runner, path, [entry(folder, session_id=UUID)], tmp_path)
+
+    assert len(runner.called("agent", "start")) == 1
+    assert "couldn't close the shell left in w1:p1" in line
+
+
+def test_a_pane_running_its_conversation_without_the_hook_is_found_by_its_command_line(
+    path: Path, folder: Path, tmp_path: Path
+) -> None:
+    # Resumed by hand in a config without herdr's hook: herdr reports no session, but the
+    # command line names it. Not started a second time beside it.
+    runner = runner_for([pane()], ["claude", "--resume", UUID])
+    [line] = run(runner, path, [entry(folder, session_id=UUID)], tmp_path)
+
+    assert runner.called("pane", "close") == [["pane", "close", "w1:p1"]]
+    assert len(runner.called("agent", "start")) == 1
+    assert "closed" in line
+
+
+@pytest.mark.parametrize("pane_id", ["w1:p1", "w5:p1"])
+@pytest.mark.parametrize("flag", ["--resume", "--session-id"])
+def test_a_pane_herdr_doesnt_know_as_an_agent_yet_running_its_conversation_is_left(
+    path: Path, folder: Path, tmp_path: Path, pane_id: str, flag: str
+) -> None:
+    # Just started, likely on herdr's first answering round: herdr hasn't seen Claude Code in
+    # it yet, but its command line names the conversation.
+    unclassified = pane(pane_id, agent=None, cwd=str(folder))
+    runner = runner_for([unclassified], **{f"pane process-info --pane {pane_id}": process_info(["claude", flag, UUID])})
+    [line] = run(runner, path, [entry(folder, session_id=UUID)], tmp_path)
+
+    assert runner.called("pane", "close") == runner.called("agent", "start") == []
+    assert "left as it is" in line
+    [kept] = load(path).agents
+    assert (kept.pane_id, kept.terminal_id) == (pane_id, "t-new")
+
+
+def test_an_agent_pane_without_a_session_whose_process_the_snapshot_missed_is_read_again(
+    path: Path, folder: Path, tmp_path: Path
+) -> None:
+    # No session from herdr's hook, and the snapshot couldn't read its process, so nothing
+    # said which conversation it runs; its command line, read again, names the agent's.
+    working = pane(cwd=str(folder)) | {"agent_status": "working"}
+    runner = runner_for([working], **{"pane process-info": [err("timeout"), process_info(["claude", "--resume", UUID])]})
+    [line] = run(runner, path, [entry(folder, session_id=UUID)], tmp_path)
+
+    assert runner.called("pane", "close") == runner.called("agent", "start") == []
+    assert "left as it is" in line
+    [kept] = load(path).agents
+    assert (kept.pane_id, kept.terminal_id) == ("w1:p1", "t-new")
+
+
+@pytest.mark.parametrize("status", ["idle", "done"])
+def test_an_idle_agent_pane_without_a_session_whose_process_the_snapshot_missed_running_its_conversation_is_replaced(
+    path: Path, folder: Path, tmp_path: Path, status: str
+) -> None:
+    # Read again, its command line resumes the agent's conversation with other arguments:
+    # closed and replaced as herdr's own resume is, not started a second time beside it.
+    idle = pane(cwd=str(folder)) | {"agent_status": status}
+    runner = runner_for([idle], **{"pane process-info": [err("timeout"), process_info(["claude", "--resume", UUID])]})
+    [line] = run(runner, path, [entry(folder, session_id=UUID)], tmp_path)
+
+    assert runner.called("pane", "close") == [["pane", "close", "w1:p1"]]
+    assert claude_args(runner) == ["--resume", UUID, "--permission-mode", "auto"]
+    assert "closed herdr's own resume in w1:p1" in line
+
+
+def test_an_idle_agent_pane_without_a_session_whose_process_the_snapshot_missed_running_it_as_it_was_is_kept(
+    path: Path, folder: Path, tmp_path: Path
+) -> None:
+    idle = pane(cwd=str(folder))
+    runner = runner_for([idle], **{"pane process-info": [
+        err("timeout"), process_info(["claude", "--permission-mode", "auto", "--resume", UUID])]})
+    [line] = run(runner, path, [entry(folder, session_id=UUID)], tmp_path)
+
+    assert runner.called("pane", "close") == runner.called("agent", "start") == []
+    assert "as it was" in line
+    [kept] = load(path).agents
+    assert (kept.pane_id, kept.terminal_id) == ("w1:p1", "t-new")
+
+
+@pytest.mark.parametrize("status", ["working", "idle", "done"])
+def test_an_agent_pane_in_its_folder_whose_process_cant_be_read_holds_off_the_start(
+    path: Path, folder: Path, tmp_path: Path, status: str
+) -> None:
+    # It may run the agent's conversation, which a second copy would answer as, whether or
+    # not it's in the middle of a turn. Left, and the agent kept for the next restart: if it
+    # runs the conversation, the snapshots save it.
+    working = pane(cwd=str(folder)) | {"agent_status": status}
+    runner = runner_for([working], **{"pane process-info": err("timeout")})
+    [line] = run(runner, path, [entry(folder, session_id=UUID)], tmp_path)
+
+    assert runner.called("pane", "close") == runner.called("agent", "start") == []
+    assert "w1:p1" in line and "couldn't be read" in line
+    [kept] = load(path).agents
+    assert (kept.terminal_id, kept.restore_failed) == ("t-old", True)
+
+
+def test_a_held_off_start_still_closes_the_shell_herdr_left(path: Path, folder: Path, tmp_path: Path) -> None:
+    # Later restores skip the old pane id of an entry marked failed, so the shell would stay.
+    shell = pane("w1:p1", "t-new1", agent=None, cwd=str(folder))
+    working = pane("w2:p1", "t-new2", cwd=str(folder)) | {"agent_status": "working"}
+    runner = runner_for([shell, working], **{"pane process-info --pane w2:p1": err("timeout")})
+    [line] = run(runner, path, [entry(folder, session_id=UUID)], tmp_path)
+
+    assert runner.called("pane", "close") == [["pane", "close", "w1:p1"]]
+    assert runner.called("agent", "start") == []
+    assert "w2:p1" in line and "couldn't be read" in line and "closed the shell left in w1:p1" in line
+    [kept] = load(path).agents
+    assert (kept.terminal_id, kept.restore_failed) == ("t-old", True)
+
+
+@pytest.mark.parametrize("unlike", ["folder", "session"])
+def test_an_agent_pane_whose_process_cant_be_read_but_cant_run_its_conversation_doesnt_stop_the_start(
+    path: Path, folder: Path, tmp_path: Path, unlike: str
+) -> None:
+    # Elsewhere, where Claude Code doesn't find the conversation; or running another
+    # conversation.
+    other = pane(cwd=str(tmp_path / "other") if unlike == "folder" else str(folder),
+                 session=OTHER_UUID if unlike == "session" else None)
+    other["agent_status"] = "working"
+    runner = runner_for([other], **{"pane process-info": err("timeout")})
+    [line] = run(runner, path, [entry(folder, session_id=UUID)], tmp_path)
+
+    assert len(runner.called("agent", "start")) == 1
+    assert "restored" in line
+
+
+@pytest.mark.parametrize("status", ["unknown", None])
+def test_a_pane_herdr_cant_classify_running_its_conversation_is_left(
+    path: Path, folder: Path, tmp_path: Path, status: str | None
+) -> None:
+    # herdr can't tell whether it's idle: it may be in the middle of a turn.
+    unsure = pane(session=UUID, cwd=str(folder)) | {"agent_status": status}
+    runner = runner_for([unsure], ["claude", "--resume", UUID])
+    run(runner, path, [entry(folder, session_id=UUID)], tmp_path)
+
+    assert runner.called("pane", "close") == []
+    assert runner.called("agent", "start") == []
+
+
+def test_a_pane_whose_process_cant_be_read_running_its_conversation_is_left(
+    path: Path, folder: Path, tmp_path: Path
+) -> None:
+    # Whether it runs as it was, or at all, can't be told, as with a shell that can't be read:
+    # left, and the agent kept for the next restart rather than tied to it.
+    idle = pane(session=UUID, cwd=str(folder)) | {"agent_status": "idle"}
+    runner = runner_for([idle], **{"pane process-info": err("pane_not_found")})
+    [line] = run(runner, path, [entry(folder, session_id=UUID)], tmp_path)
+
+    assert runner.called("pane", "close") == []
+    assert runner.called("agent", "start") == []
+    assert "couldn't be read" in line
+    [kept] = load(path).agents
+    assert kept.terminal_id == "t-old" and kept.restore_failed
+
+
+def test_a_pane_whose_account_cant_be_read_running_its_conversation_with_its_args_is_left(
+    path: Path, folder: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Its command line was read, its environment wasn't: it may well run on the agent's account.
+    def denied(self: psutil.Process) -> dict[str, str]:
+        raise psutil.AccessDenied(self.pid)
+
+    monkeypatch.setattr(psutil.Process, "environ", denied)
+    runner = runner_for([pane(session=UUID, cwd=str(folder))], ["claude", "--permission-mode", "auto", "--resume", UUID])
+    [line] = run(runner, path, [entry(folder, session_id=UUID, config_dir="/cfg")], tmp_path)
+
+    assert runner.called("pane", "close") == runner.called("agent", "start") == []
+    assert "couldn't be read" in line
+    [kept] = load(path).agents
+    assert (kept.pane_id, kept.terminal_id) == ("w1:p1", "t-new")
+
+
+def test_a_pane_whose_account_cant_be_read_running_its_conversation_with_other_args_is_replaced(
+    path: Path, folder: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def denied(self: psutil.Process) -> dict[str, str]:
+        raise psutil.AccessDenied(self.pid)
+
+    monkeypatch.setattr(psutil.Process, "environ", denied)
+    runner = runner_for([pane(session=UUID, cwd=str(folder))], ["claude", "--resume", UUID])
+    run(runner, path, [entry(folder, session_id=UUID, config_dir="/cfg")], tmp_path)
+
+    assert runner.called("pane", "close") == [["pane", "close", "w1:p1"]]
+    assert len(runner.called("agent", "start")) == 1
+
+
+@pytest.mark.parametrize("status", ["working", "blocked"])
+def test_a_busy_pane_running_its_conversation_is_never_closed(
+    path: Path, folder: Path, tmp_path: Path, status: str
+) -> None:
+    # The user resumed it by hand, with other arguments, and is in the middle of a turn:
+    # working, or waiting for an approval.
+    busy = pane(session=UUID, cwd=str(folder)) | {"agent_status": status}
     runner = runner_for([busy], ["claude", "--resume", UUID])
     [line] = run(runner, path, [entry(folder, session_id=UUID)], tmp_path)
 
@@ -220,6 +499,780 @@ def test_a_busy_pane_running_its_conversation_is_never_closed(
     # Taken as the agent's own pane from now on.
     [kept] = load(path).agents
     assert (kept.pane_id, kept.terminal_id, kept.misses) == ("w1:p1", "t-new", 0)
+
+
+def test_a_pane_prompted_while_earlier_agents_restarted_is_never_closed(
+    path: Path, folder: Path, tmp_path: Path
+) -> None:
+    # Idle when the panes were listed; the first agent's start takes seconds, and the user
+    # prompts the second's resumed pane meanwhile. Closing it would end that turn.
+    first = entry(folder, terminal_id="t-a", pane_id="w1:p1", session_id=OTHER_UUID)
+    second = entry(folder, terminal_id="t-b", pane_id="w2:p1", session_id=UUID)
+    shell = pane("w1:p1", "t-new1", agent=None, cwd=str(folder))
+    idle = pane("w2:p1", "t-new2", session=UUID, cwd=str(folder))
+    working = idle | {"agent_status": "working"}
+    runner = runner_for([shell, idle], ["claude", "--resume", UUID], **{"agent get w2:p1": ok({"agent": working})})
+    [_, line] = run(runner, path, [first, second], tmp_path)
+
+    assert len(runner.called("agent", "start")) == 1
+    assert ["pane", "close", "w2:p1"] not in runner.calls
+    assert "busy in w2:p1" in line
+    kept = load(path).agents[1]
+    assert (kept.pane_id, kept.terminal_id) == ("w2:p1", "t-new2")
+
+
+@pytest.mark.parametrize("gone", [False, True])
+def test_herdrs_resume_whose_status_cant_be_read_again_is_closed_only_once_gone(
+    path: Path, folder: Path, tmp_path: Path, gone: bool
+) -> None:
+    # herdr can't say whether it's still idle: left, unless its terminal has gone meanwhile.
+    resumed = pane(session=UUID)
+    runner = runner_for([resumed], ["claude", "--resume", UUID],
+                        **{"agent get w1:p1": err("timeout"), "pane list": [ok({"panes": [resumed]}),
+                                                                      ok({"panes": [] if gone else [resumed]})]})
+    [line] = run(runner, path, [entry(folder, session_id=UUID)], tmp_path)
+
+    assert runner.called("pane", "close") == []
+    assert len(runner.called("agent", "start")) == int(gone)
+    [kept] = load(path).agents
+    assert kept.terminal_id == ("t90" if gone else "t-new")
+    if not gone:
+        assert "left as it is" in line
+
+
+def _no_agent_answers(resumed: dict) -> dict:
+    """How herdr may answer `agent get` for a pane whose Claude Code has exited."""
+    shell = {key: value for key, value in resumed.items() if key not in ("agent", "agent_status", "agent_session")}
+    return {
+        "agent_not_found": err("agent_not_found"),
+        "shell": ok({"agent": resumed | {"agent": None, "agent_status": "unknown"}}),
+        "no_agent_fields": ok({"agent": shell}),
+    }
+
+
+@pytest.mark.parametrize("answer", ["agent_not_found", "shell", "no_agent_fields"])
+def test_herdrs_resume_whose_claude_exited_leaving_an_idle_shell_is_closed_and_replaced(
+    path: Path, folder: Path, tmp_path: Path, answer: str
+) -> None:
+    # herdr's own resume runs plain `claude --resume <id>`, without the account's config:
+    # Claude Code can't find the conversation there and exits, leaving a shell. Adopted, the
+    # entry would point at a shell no save lists, and age out unrestored.
+    resumed = pane(session=UUID, cwd=str(folder))
+    runner = runner_for([resumed], ["claude", "--resume", UUID],
+                        **{"agent get w1:p1": _no_agent_answers(resumed)[answer],
+                           "pane process-info --pane w1:p1": [process_info(["claude", "--resume", UUID]), shell_info()]})
+    [line] = run(runner, path, [entry(folder, config_dir="/cfg", session_id=UUID)], tmp_path)
+
+    assert runner.called("pane", "close") == [["pane", "close", "w1:p1"]]
+    assert claude_args(runner) == ["--resume", UUID, "--permission-mode", "auto"]
+    assert line.endswith(f"resuming {UUID} (closed the shell left in w1:p1)")
+    [restored] = load(path).agents
+    assert (restored.terminal_id, restored.restore_failed) == ("t90", False)
+
+
+@pytest.mark.parametrize("answer", ["agent_not_found", "shell", "no_agent_fields"])
+@pytest.mark.parametrize("left", ["running", "unreadable"])
+def test_herdrs_resume_whose_claude_exited_leaving_a_pane_not_known_idle_is_left_and_kept_for_the_next_restart(
+    path: Path, folder: Path, tmp_path: Path, answer: str, left: str
+) -> None:
+    # Something runs in it, or what does can't be read: left. Not adopted either: no save
+    # lists a pane herdr doesn't show as an agent, so the entry would age out unrestored.
+    resumed = pane(session=UUID, cwd=str(folder))
+    now = shell_info("vim") if left == "running" else err("timeout")
+    runner = runner_for([resumed], ["claude", "--resume", UUID],
+                        **{"agent get w1:p1": _no_agent_answers(resumed)[answer],
+                           "pane process-info --pane w1:p1": [process_info(["claude", "--resume", UUID]), now]})
+    [line] = run(runner, path, [entry(folder, config_dir="/cfg", session_id=UUID)], tmp_path)
+
+    assert runner.called("pane", "close") == runner.called("agent", "start") == []
+    assert "kept for the next restart" in line and "w1:p1" in line
+    [kept] = load(path).agents
+    assert (kept.terminal_id, kept.restore_failed) == ("t-old", True)
+
+
+def test_herdrs_resume_whose_claude_exited_and_whose_pane_has_gone_is_replaced(
+    path: Path, folder: Path, tmp_path: Path
+) -> None:
+    resumed = pane(session=UUID, cwd=str(folder))
+    runner = runner_for([resumed], ["claude", "--resume", UUID],
+                        **{"agent get w1:p1": err("agent_not_found"),
+                           "pane process-info --pane w1:p1": [process_info(["claude", "--resume", UUID]),
+                                                              err("pane_not_found")],
+                           "pane list": [ok({"panes": [resumed]}), ok({"panes": []})]})
+    run(runner, path, [entry(folder, config_dir="/cfg", session_id=UUID)], tmp_path)
+
+    assert runner.called("pane", "close") == []
+    assert claude_args(runner) == ["--resume", UUID, "--permission-mode", "auto"]
+    [restored] = load(path).agents
+    assert restored.terminal_id == "t90"
+
+
+@pytest.mark.parametrize("by", ["hook", "command line"])
+def test_a_conversation_resumed_in_another_pane_while_the_restore_ran_isnt_started_again(
+    path: Path, folder: Path, tmp_path: Path, by: str
+) -> None:
+    # It appeared after the panes were listed: resumed by hand, or by herdr, during the
+    # seconds the restore runs. Listed again before the start, it's found and kept.
+    shell = pane(agent=None, cwd=str(folder))
+    late = pane("w5:p1", "t-late", session=UUID if by == "hook" else None, cwd=str(folder)) | {"agent_status": "working"}
+    runner = runner_for([shell], **{"pane list": [ok({"panes": [shell]}), ok({"panes": [shell, late]})],
+                                    "pane process-info --pane w5:p1": process_info(["claude", "--resume", UUID])})
+    [line] = run(runner, path, [entry(folder, session_id=UUID)], tmp_path)
+
+    assert runner.called("agent", "start") == []
+    assert runner.called("pane", "close") == [["pane", "close", "w1:p1"]]
+    assert "busy in w5:p1" in line and "closed the shell left in w1:p1" in line
+    [kept] = load(path).agents
+    assert (kept.pane_id, kept.terminal_id) == ("w5:p1", "t-late")
+
+
+@pytest.mark.parametrize("by", ["hook", "command line"])
+def test_a_conversation_resumed_in_a_pane_already_open_while_the_restore_ran_isnt_started_again(
+    path: Path, folder: Path, tmp_path: Path, by: str
+) -> None:
+    # Both panes were shells when listed. While the first agent starts, the user resumes the
+    # second's conversation in the shell herdr left at its old pane id.
+    first = entry(folder, terminal_id="t-a", pane_id="w1:p1", session_id=OTHER_UUID)
+    second = entry(folder, terminal_id="t-b", pane_id="w2:p1", session_id=UUID)
+    shell_a = pane("w1:p1", "t-new1", agent=None, cwd=str(folder))
+    shell_b = pane("w2:p1", "t-new2", agent=None, cwd=str(folder))
+    now_b = pane("w2:p1", "t-new2", session=UUID if by == "hook" else None, cwd=str(folder)) | {
+        "agent_status": "working"}
+    runner = runner_for([shell_a, shell_b], **{
+        "pane list": [ok({"panes": [shell_a, shell_b]}), ok({"panes": [shell_a, shell_b]}),
+                      ok({"panes": [shell_a, now_b]})],
+        "pane process-info --pane w2:p1": [shell_info(), process_info(["claude", "--resume", UUID])],
+    })
+    lines = run(runner, path, [first, second], tmp_path)
+
+    assert len(runner.called("agent", "start")) == 1
+    # Found as busy, or before herdr shows it as an agent: kept either way.
+    assert "w2:p1" in lines[1] and "left as it is" in lines[1]
+    kept = load(path).agents[1]
+    assert (kept.pane_id, kept.terminal_id) == ("w2:p1", "t-new2")
+
+
+def test_herdrs_resume_with_other_args_whose_hook_session_shows_up_during_the_restore_is_replaced(
+    path: Path, folder: Path, tmp_path: Path
+) -> None:
+    # Listed before herdr's hook gave its session, which shows up while the first agent
+    # starts: what was read of its process still tells it runs without the saved arguments.
+    first = entry(tmp_path / "other", terminal_id="t-a", pane_id="w1:p1", session_id=OTHER_UUID)
+    second = entry(folder, terminal_id="t-b", pane_id="w2:p1", session_id=UUID)
+    before = pane("w2:p1", "t-r", cwd=str(folder))
+    after = pane("w2:p1", "t-r", session=UUID, cwd=str(folder))
+    runner = runner_for([before], argv=["claude", "--resume", UUID],
+                        **{"pane list": [ok({"panes": [before]}), ok({"panes": [after]})]})
+    run(runner, path, [first, second], tmp_path)
+
+    assert runner.called("pane", "close") == [["pane", "close", "w2:p1"]]
+    assert len(runner.called("agent", "start")) == 2
+
+
+def test_a_claude_pane_without_the_hook_resumed_by_hand_while_the_restore_ran_isnt_started_again(
+    path: Path, folder: Path, tmp_path: Path
+) -> None:
+    # herdr lists it the same before and after: Claude Code without herdr's hook, quit and
+    # started again with the second agent's conversation while the first agent started.
+    first = entry(tmp_path / "other", terminal_id="t-a", pane_id="w1:p1", session_id=OTHER_UUID)
+    second = entry(folder, terminal_id="t-b", pane_id="w2:p1", session_id=UUID)
+    hand = pane("w7:p1", "t-hand", cwd=str(folder)) | {"agent_status": "working"}
+    runner = runner_for([hand], **{
+        "pane process-info --pane w7:p1": [process_info(["claude"]), process_info(["claude", "--resume", UUID])],
+    })
+    lines = run(runner, path, [first, second], tmp_path)
+
+    assert len(runner.called("agent", "start")) == 1
+    assert "busy in w7:p1" in lines[1]
+
+
+def test_herdrs_resume_replaced_isnt_held_off_by_another_pane_in_its_folder_that_cant_be_read_again(
+    path: Path, folder: Path, tmp_path: Path
+) -> None:
+    # The conversation was found and its pane closed to be replaced: another Claude pane in
+    # the folder, read before as running none, failing a read now doesn't stop the start.
+    resumed = pane("w2:p1", "t-r", session=UUID, cwd=str(folder))
+    other = pane("w7:p1", "t-u", cwd=str(folder))
+    runner = runner_for([resumed, other], **{
+        "pane process-info --pane w2:p1": process_info(["claude", "--resume", UUID]),
+        "pane process-info --pane w7:p1": [process_info(["claude"]), err("timeout"), process_info(["claude"])],
+    })
+    run(runner, path, [entry(folder, terminal_id="t-b", pane_id="w2:p1", session_id=UUID)], tmp_path)
+
+    assert runner.called("pane", "close") == [["pane", "close", "w2:p1"]]
+    assert len(runner.called("agent", "start")) == 1
+
+
+def test_a_hand_resume_read_before_stays_its_conversations_when_it_cant_be_read_again(
+    path: Path, folder: Path, tmp_path: Path
+) -> None:
+    # Read at the snapshot as running the second agent's conversation; every read after
+    # fails. Still taken as running it: kept, not started a second time beside it.
+    first = entry(tmp_path / "other", terminal_id="t-a", pane_id="w1:p1", session_id=OTHER_UUID)
+    second = entry(folder, terminal_id="t-b", pane_id="w2:p1", session_id=UUID)
+    hand = pane("w7:p1", "t-hand", cwd=str(tmp_path / "elsewhere"))
+    runner = runner_for([hand], **{
+        "pane process-info --pane w7:p1": [process_info(["claude", "--resume", UUID]), err("timeout")],
+    })
+    lines = run(runner, path, [first, second], tmp_path)
+
+    assert len(runner.called("agent", "start")) == 1
+    assert runner.called("pane", "close") == []
+    assert "w7:p1 runs its conversation but its process couldn't be read" in lines[1]
+
+
+def test_an_agent_pane_in_its_folder_with_no_foreground_processes_listed_holds_off_the_start(
+    path: Path, folder: Path, tmp_path: Path
+) -> None:
+    # herdr listing none is as good as not answering: what runs in it can't be told.
+    empty = ok({"process_info": {"foreground_process_group_id": 9000, "foreground_processes": [], "shell_pid": 9000}})
+    runner = runner_for([pane("w7:p1", "t-u", cwd=str(folder))], **{"pane process-info --pane w7:p1": empty})
+    [line] = run(runner, path, [entry(folder, session_id=UUID)], tmp_path)
+
+    assert runner.called("agent", "start") == []
+    assert "kept for the next restart: w7:p1" in line
+
+
+THIRD_UUID = "33333333-2222-3333-4444-555555555555"
+
+
+def test_a_conversation_the_hook_shows_in_a_pane_that_cant_be_read_again_isnt_started_again(
+    path: Path, folder: Path, tmp_path: Path
+) -> None:
+    # Read as running a third conversation; while the first agent starts, the second's is
+    # resumed in it (the hook says so), and reading it again fails once. What was read before
+    # the change doesn't hide what the hook shows.
+    first = entry(tmp_path / "other", terminal_id="t-a", pane_id="w1:p1", session_id=OTHER_UUID)
+    second = entry(folder, terminal_id="t-b", pane_id="w2:p1", session_id=UUID)
+    before = pane("w5:p1", "t-x", session=THIRD_UUID, cwd=str(folder))
+    after = pane("w5:p1", "t-x", session=UUID, cwd=str(folder)) | {"agent_status": "working"}
+    runner = runner_for([before], **{
+        "pane list": [ok({"panes": [before]}), ok({"panes": [after]})],
+        "pane process-info --pane w5:p1": [process_info(["claude", "--resume", THIRD_UUID]), err("timeout"),
+                                           process_info(["claude", "--resume", UUID])],
+    })
+    run(runner, path, [first, second], tmp_path)
+
+    assert len(runner.called("agent", "start")) == 1
+
+
+def test_a_pane_that_left_the_conversation_isnt_taken_for_it_when_it_cant_be_read_again(
+    path: Path, folder: Path, tmp_path: Path
+) -> None:
+    # herdr's resume of the second agent's conversation switches to another while the first
+    # agent starts (the hook says so), and reading it again fails once: the agent is started.
+    first = entry(tmp_path / "other", terminal_id="t-a", pane_id="w1:p1", session_id=OTHER_UUID)
+    second = entry(folder, terminal_id="t-b", pane_id="w2:p1", session_id=UUID)
+    before = pane("w2:p1", "t-x", session=UUID, cwd=str(folder))
+    after = pane("w2:p1", "t-x", session=THIRD_UUID, cwd=str(folder))
+    runner = runner_for([before], **{
+        "pane list": [ok({"panes": [before]}), ok({"panes": [after]})],
+        "pane process-info --pane w2:p1": [process_info(["claude", "--resume", UUID]), err("timeout"),
+                                           process_info(["claude", "--resume", THIRD_UUID])],
+    })
+    run(runner, path, [first, second], tmp_path)
+
+    assert len(runner.called("agent", "start")) == 2
+
+
+def test_a_claude_pane_without_the_hook_in_its_folder_that_cant_be_read_again_holds_off_the_start(
+    path: Path, folder: Path, tmp_path: Path
+) -> None:
+    # Read as running a conversation no saved agent has; it may have been started again by
+    # hand with the agent's since, which herdr's listing doesn't show without the hook.
+    hand = pane("w5:p1", "t-p", cwd=str(folder))
+    runner = runner_for([hand], **{
+        "pane process-info --pane w5:p1": [process_info(["claude", "--resume", THIRD_UUID]), err("timeout"),
+                                           process_info(["claude", "--resume", UUID])],
+    })
+    [line] = run(runner, path, [entry(folder, terminal_id="t-b", pane_id="w2:p1", session_id=UUID)], tmp_path)
+
+    assert runner.called("agent", "start") == []
+    assert "kept for the next restart: w5:p1" in line
+
+
+def test_a_conversation_resumed_in_a_shell_that_couldnt_be_closed_isnt_started_again(
+    path: Path, folder: Path, tmp_path: Path
+) -> None:
+    # The first agent's leftover shell couldn't be closed; the second's conversation is then
+    # resumed in it by hand, without the hook.
+    other = tmp_path / "other"
+    first = entry(other, terminal_id="t-a", pane_id="w1:p1", session_id=OTHER_UUID)
+    second = entry(folder, terminal_id="t-b", pane_id="w2:p1", session_id=UUID)
+    shell = pane("w1:p1", "t-s", agent=None, cwd=str(other))
+    hand = pane("w1:p1", "t-s", cwd=str(other)) | {"agent_status": "working"}
+    runner = runner_for([shell], **{
+        "pane list": [ok({"panes": [shell]}), ok({"panes": [shell]}), ok({"panes": [hand]})],
+        "pane close": err("timeout"),
+        "pane process-info --pane w1:p1": [shell_info(), process_info(["claude", "--resume", UUID])],
+    })
+    lines = run(runner, path, [first, second], tmp_path)
+
+    assert len(runner.called("agent", "start")) == 1
+    assert "busy in w1:p1" in lines[1]
+
+
+def test_herdrs_resume_whose_claude_exited_before_its_process_was_read_is_closed_and_replaced(
+    path: Path, folder: Path, tmp_path: Path
+) -> None:
+    # herdr still listed it as a Claude agent, but its processes, read, show only the shell:
+    # not one that couldn't be read, so not kept, which would age the agent out unrestored.
+    resumed = pane("w2:p1", "t-r", session=UUID, cwd=str(folder))
+    runner = runner_for([resumed], **{"pane process-info --pane w2:p1": shell_info(),
+                                      "agent get w2:p1": ok({"agent": resumed | {"agent": None}})})
+    [line] = run(runner, path, [entry(folder, terminal_id="t-b", pane_id="w2:p1", session_id=UUID)], tmp_path)
+
+    assert runner.called("pane", "close") == [["pane", "close", "w2:p1"]]
+    assert len(runner.called("agent", "start")) == 1
+    assert "restored in" in line
+
+
+def test_a_busy_pane_running_its_conversation_with_claude_suspended_isnt_closed(
+    path: Path, folder: Path, tmp_path: Path
+) -> None:
+    # Claude Code stopped with ctrl-Z: only the shell is in the foreground, but herdr calls it
+    # busy, which may be mid-turn.
+    resumed = pane("w2:p1", "t-r", session=UUID, cwd=str(folder)) | {"agent_status": "working"}
+    runner = runner_for([resumed], **{"pane process-info --pane w2:p1": shell_info()})
+    [line] = run(runner, path, [entry(folder, terminal_id="t-b", pane_id="w2:p1", session_id=UUID)], tmp_path)
+
+    assert runner.called("pane", "close") == runner.called("agent", "start") == []
+    assert "busy in w2:p1" in line
+
+
+def test_an_idle_pane_running_its_conversation_with_claude_among_its_jobs_isnt_closed(
+    path: Path, folder: Path, tmp_path: Path, jobs: set[int]
+) -> None:
+    # Suspended, so not in the foreground, but still under the shell: not exited.
+    jobs.add(9000)
+    resumed = pane("w2:p1", "t-r", session=UUID, cwd=str(folder))
+    runner = runner_for([resumed], **{"pane process-info --pane w2:p1": shell_info(),
+                                      "agent get w2:p1": ok({"agent": resumed})})
+    run(runner, path, [entry(folder, terminal_id="t-b", pane_id="w2:p1", session_id=UUID)], tmp_path)
+
+    assert runner.called("pane", "close") == runner.called("agent", "start") == []
+
+
+def test_a_claude_stopped_in_the_shell_at_its_old_pane_id_holds_off_the_start(
+    path: Path, folder: Path, tmp_path: Path, jobs: set[int]
+) -> None:
+    # herdr brought the pane back and resumed the conversation in it, then it was stopped
+    # with ctrl-Z: not an idle shell, and it may run the conversation.
+    jobs.add(9000)
+    runner = runner_for([pane(agent=None, cwd=str(folder))], **{"pane process-info --pane w1:p1": shell_info()})
+    [line] = run(runner, path, [entry(folder, session_id=UUID)], tmp_path)
+
+    assert runner.called("pane", "close") == runner.called("agent", "start") == []
+    assert "kept for the next restart" in line and "ctrl-Z" in line
+    [kept] = load(path).agents
+    assert kept.restore_failed
+
+
+def test_after_replacing_herdrs_resume_a_late_pane_that_cant_be_told_doesnt_stop_the_start(
+    path: Path, folder: Path, tmp_path: Path
+) -> None:
+    # The conversation ran in the pane just closed to be replaced: a pane listed since, which
+    # herdr shows with it though only a shell runs there and its status can't be read again,
+    # is left, and the agent started.
+    resumed = pane("w2:p1", "t-r", session=UUID, cwd=str(folder))
+    late = pane("w3:p1", "t-l", session=UUID, cwd=str(folder))
+    runner = runner_for([resumed], ["claude", "--resume", UUID], **{
+        "pane list": [ok({"panes": [resumed]}), ok({"panes": [late]})],
+        "pane process-info --pane w3:p1": shell_info(),
+        "agent get w3:p1": err("timeout"),
+    })
+    run(runner, path, [entry(folder, terminal_id="t-b", pane_id="w7:p1", session_id=UUID)], tmp_path)
+
+    assert runner.called("pane", "close") == [["pane", "close", "w2:p1"]]
+    assert len(runner.called("agent", "start")) == 1
+
+
+def test_a_pane_stopped_while_the_restore_decides_to_keep_its_agent_doesnt_bring_it_back(
+    path: Path, folder: Path, tmp_path: Path
+) -> None:
+    # The pane showing the conversation can't be read, so the agent is to be kept for the
+    # next restart; meanwhile the pane is stopped through the bridge. The conversation was
+    # stopped: the entry goes, rather than bring it back.
+    resumed = pane("w2:p1", "t-r", session=UUID, cwd=str(folder))
+    runner = runner_for([resumed], **{"pane process-info --pane w2:p1": err("timeout")})
+    herdr = Herdr(runner=runner)
+    service = AgentService(Settings(token=TOKEN, allowed_roots=(tmp_path.resolve(),)), herdr, saved_path=path)
+    save(path, SavedAgents(agents=[entry(folder, terminal_id="t-old", pane_id="w1:p1", session_id=UUID)]))
+    reads = 0
+    answer = runner.__call__
+
+    async def stopping_during_the_second_read(argv):
+        nonlocal reads
+        if list(argv[1:5]) == ["pane", "process-info", "--pane", "w2:p1"]:
+            reads += 1
+            if reads == 2:
+                service.herdr = Herdr(runner=runner_for([resumed]))
+                await service.stop_agent("w2:p1")
+                service.herdr = herdr
+        return await answer(argv)
+
+    herdr.runner = stopping_during_the_second_read
+    asyncio.run(restore(service, herdr, path))
+    restore_module._write(path, [], True, service.stopped, service.stopped_sessions)
+
+    assert load(path).agents == []
+
+
+def test_a_restore_kept_entry_for_a_stopped_conversation_goes_even_if_the_stops_forget_failed(
+    path: Path, folder: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from agent_bridge import agents as agents_module
+
+    resumed = pane("w2:p1", "t-r", session=UUID, cwd=str(folder))
+    kept = entry(folder, terminal_id="t-old", pane_id="w1:p1", session_id=UUID, restore_failed=True)
+    save(path, SavedAgents(agents=[kept, entry(folder, terminal_id="t-r", pane_id="w2:p1", session_id=UUID)]))
+
+    def held(*args, **kwargs):
+        raise TimeoutError("agents.json.lock is held by another process.")
+
+    monkeypatch.setattr(agents_module, "forget", held)
+    service = AgentService(Settings(token=TOKEN, allowed_roots=(tmp_path.resolve(),)),
+                           Herdr(runner=runner_for([resumed])), saved_path=path)
+    asyncio.run(service.stop_agent("w2:p1"))
+    # The watcher's next write goes through.
+    restore_module._write(path, [], False, service.stopped, service.stopped_sessions, service.unforgotten_sessions)
+
+    assert load(path).agents == []
+
+
+def test_a_conversation_run_again_by_hand_after_its_stop_is_kept_when_its_restore_fails(
+    path: Path, folder: Path, tmp_path: Path
+) -> None:
+    # Stopped through the bridge, then resumed by hand and saved from its pane: wanted again.
+    # herdr's server restarts and the start fails once: kept for the next restart.
+    settings = Settings(token=TOKEN, allowed_roots=(tmp_path.resolve(),))
+    save(path, SavedAgents(agents=[entry(folder, terminal_id="t-a", pane_id="w1:p1", session_id=UUID)]))
+    service = AgentService(settings, Herdr(runner=runner_for([pane(session=UUID, cwd=str(folder))])),
+                           saved_path=path)
+    asyncio.run(service.stop_agent("w1:p1"))
+    by_hand = entry(folder, terminal_id="t-h", pane_id="w2:p1", session_id=UUID)
+    restore_module._write(path, [by_hand], False, service.stopped, service.stopped_sessions)
+    runner = runner_for([pane("w2:p1", "t-h2", agent=None, cwd=str(folder))], **{"agent start": err("server_error")})
+    herdr = Herdr(runner=runner)
+    service.herdr = herdr
+    asyncio.run(restore(service, herdr, path))
+    restore_module._write(path, [], True, service.stopped, service.stopped_sessions)
+
+    [kept] = load(path).agents
+    assert (kept.session_id, kept.restore_failed) == (UUID, True)
+
+
+def test_a_conversation_saved_again_by_hand_after_its_stop_is_restored(
+    path: Path, folder: Path, tmp_path: Path
+) -> None:
+    # Stopped through the bridge, then resumed by hand and saved with save-agents before the
+    # watcher saw it run; herdr's server restarts: written on purpose, so restored.
+    settings = Settings(token=TOKEN, allowed_roots=(tmp_path.resolve(),))
+    save(path, SavedAgents(agents=[entry(folder, terminal_id="t-a", pane_id="w1:p1", session_id=UUID)]))
+    service = AgentService(settings, Herdr(runner=runner_for([pane(session=UUID, cwd=str(folder))])),
+                           saved_path=path)
+    asyncio.run(service.stop_agent("w1:p1"))
+    save(path, SavedAgents(agents=[entry(folder, terminal_id="t-h", pane_id="w2:p1", session_id=UUID)]))
+    runner = runner_for([])
+    herdr = Herdr(runner=runner)
+    service.herdr = herdr
+    asyncio.run(restore(service, herdr, path))
+
+    assert len(runner.called("agent", "start")) == 1
+
+
+def test_herdrs_resume_stopped_before_the_restore_ran_isnt_started_again(
+    path: Path, folder: Path, tmp_path: Path
+) -> None:
+    # Its entry, saved before herdr restarted, isn't one a restore kept: it goes all the same.
+    settings = Settings(token=TOKEN, allowed_roots=(tmp_path.resolve(),))
+    save(path, SavedAgents(agents=[entry(folder, terminal_id="t-old", pane_id="w1:p1", session_id=UUID)]))
+    resumed = pane("w1:p1", "t-new", session=UUID, cwd=str(folder))
+    service = AgentService(settings, Herdr(runner=runner_for([resumed])), saved_path=path)
+    asyncio.run(service.stop_agent("w1:p1"))
+    runner = runner_for([])
+    herdr = Herdr(runner=runner)
+    service.herdr = herdr
+    asyncio.run(restore(service, herdr, path))
+
+    assert runner.called("agent", "start") == []
+    assert load(path).agents == []
+
+
+def test_an_idle_pane_showing_its_conversation_listed_late_that_cant_be_read_keeps_the_agent_for_the_next_restart(
+    path: Path, folder: Path, tmp_path: Path
+) -> None:
+    # As one listed at the start: Claude Code may have exited from it.
+    resumed = pane("w2:p1", "t-r", session=UUID, cwd=str(folder))
+    runner = runner_for([resumed], **{
+        "pane process-info --pane w2:p1": err("timeout"),
+        "pane list": [ok({"panes": []}), ok({"panes": [resumed]})],
+        "agent list": [ok({"agents": []}), ok({"agents": [resumed]})],
+    })
+    run(runner, path, [entry(folder, terminal_id="t-old", pane_id="w1:p1", session_id=UUID)], tmp_path)
+
+    assert runner.called("agent", "start") == []
+    [kept] = load(path).agents
+    assert (kept.terminal_id, kept.restore_failed) == ("t-old", True)
+
+
+@pytest.mark.parametrize("why", ["timeout", "no processes", "jobs unknown"])
+def test_an_idle_pane_running_its_conversation_whose_process_cant_be_read_keeps_the_agent_for_the_next_restart(
+    path: Path, folder: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, why: str
+) -> None:
+    # Nothing read of it, and it can't be read now: Claude Code may have exited from it.
+    # Tied to the pane, the entry would age out; kept, and the pane left. If it does run the
+    # conversation, the saves keep it, and the next restart drops the second entry.
+    resumed = pane("w2:p1", "t-r", session=UUID, cwd=str(folder))
+    answer = {"timeout": err("timeout"),
+              "no processes": ok({"process_info": {"foreground_processes": [], "shell_pid": 9000}}),
+              "jobs unknown": shell_info()}[why]
+    if why == "jobs unknown":
+        monkeypatch.setattr(restore_module, "_claude_among_jobs", lambda shell_pid: None)
+    runner = runner_for([resumed], **{"pane process-info --pane w2:p1": answer})
+    [line] = run(runner, path, [entry(folder, terminal_id="t-b", pane_id="w7:p1", session_id=UUID)], tmp_path)
+
+    assert runner.called("pane", "close") == runner.called("agent", "start") == []
+    assert "kept for the next restart" in line
+    restore_module._write(path, [], False)
+    restore_module._write(path, [], False)
+    [kept] = load(path).agents
+    assert kept.session_id == UUID and kept.restore_failed
+
+
+@pytest.mark.parametrize("status", [err("timeout"), "working"])
+def test_herdrs_resume_that_exited_whose_status_isnt_idle_now_keeps_the_agent_for_the_next_restart(
+    path: Path, folder: Path, tmp_path: Path, status
+) -> None:
+    # Only the shell runs in it, but herdr can't say, or still calls it busy: left, and the
+    # agent kept rather than tied to a pane no save lists, where it would age out.
+    resumed = pane("w2:p1", "t-r", session=UUID, cwd=str(folder))
+    answer = status if isinstance(status, tuple) else ok({"agent": resumed | {"agent_status": status}})
+    runner = runner_for([resumed], **{"pane process-info --pane w2:p1": shell_info(), "agent get w2:p1": answer})
+    [line] = run(runner, path, [entry(folder, terminal_id="t-b", pane_id="w7:p1", session_id=UUID)], tmp_path)
+
+    assert runner.called("pane", "close") == runner.called("agent", "start") == []
+    assert "kept for the next restart" in line
+    restore_module._write(path, [], False)
+    restore_module._write(path, [], False)
+    [kept] = load(path).agents
+    assert kept.session_id == UUID and kept.restore_failed
+
+
+def test_a_pane_whose_claude_was_suspended_since_it_was_read_isnt_closed_as_a_shell(
+    path: Path, folder: Path, tmp_path: Path, jobs: set[int]
+) -> None:
+    # Read running the conversation with other arguments; then stopped with ctrl-Z, so herdr
+    # shows no agent and only the shell is in the foreground. Not idle: it still runs.
+    jobs.add(9000)
+    resumed = pane("w2:p1", "t-r", session=UUID, cwd=str(folder))
+    runner = runner_for([resumed], **{
+        "pane process-info --pane w2:p1": [process_info(["claude", "--resume", UUID]), shell_info()],
+        "agent get w2:p1": ok({"agent": resumed | {"agent": None}}),
+    })
+    run(runner, path, [entry(folder, terminal_id="t-b", pane_id="w7:p1", session_id=UUID)], tmp_path)
+
+    assert runner.called("pane", "close") == runner.called("agent", "start") == []
+
+
+@pytest.mark.parametrize("read_before", [False, True])
+def test_herdrs_resume_that_exited_doesnt_lift_the_hold_off_for_a_pane_in_its_folder_that_cant_be_read(
+    path: Path, folder: Path, tmp_path: Path, read_before: bool
+) -> None:
+    # It never ran the conversation: a pane opened meanwhile in the folder, which can't be
+    # read, may, so the start is held off.
+    resumed = pane("w2:p1", "t-r", session=UUID, cwd=str(folder))
+    hand = pane("w3:p1", "t-u", cwd=str(folder)) | {"agent_status": "working"}
+    reads = [process_info(["claude", "--resume", UUID]), shell_info()] if read_before else shell_info()
+    runner = runner_for([resumed], **{
+        "pane list": [ok({"panes": [resumed]}), ok({"panes": [resumed, hand]})],
+        "pane process-info --pane w2:p1": reads,
+        "agent get w2:p1": ok({"agent": resumed | {"agent": None}}),
+        "pane process-info --pane w3:p1": err("timeout"),
+    })
+    [line] = run(runner, path, [entry(folder, terminal_id="t-b", pane_id="w7:p1", session_id=UUID)], tmp_path)
+
+    assert runner.called("agent", "start") == []
+    assert "kept for the next restart: w3:p1" in line
+
+
+@pytest.mark.parametrize("where", ["opened meanwhile", "shell in its folder"])
+def test_a_pane_herdr_doesnt_show_as_an_agent_yet_running_its_conversation_since_the_restore_began_isnt_started_again(
+    path: Path, folder: Path, tmp_path: Path, where: str
+) -> None:
+    # Resumed by hand while the first agent started: in a new pane, or in a shell already open
+    # in its folder; herdr hasn't seen Claude Code in it yet, but its command line names the
+    # conversation. Kept, as one listed at the start is.
+    first = entry(tmp_path / "other", terminal_id="t-a", pane_id="w1:p1", session_id=OTHER_UUID)
+    second = entry(folder, terminal_id="t-b", pane_id="w2:p1", session_id=UUID)
+    hand = pane("w5:p1", "t-h", agent=None, cwd=str(folder))
+    if where == "opened meanwhile":
+        # Only by the second agent's last look before its start.
+        overrides = {"pane list": [ok({"panes": []}), ok({"panes": []}), ok({"panes": [hand]})],
+                     "pane process-info --pane w5:p1": process_info(["claude", "--resume", UUID])}
+    else:
+        overrides = {"pane process-info --pane w5:p1": [shell_info(), process_info(["claude", "--resume", UUID])]}
+    runner = runner_for([hand] if where != "opened meanwhile" else [], **overrides)
+    lines = run(runner, path, [first, second], tmp_path)
+
+    assert len(runner.called("agent", "start")) == 1
+    assert "w5:p1 runs its conversation, though herdr doesn't know it as an agent yet" in lines[1]
+
+
+def test_a_pane_read_running_a_later_agents_conversation_that_exited_since_doesnt_stop_its_start(
+    path: Path, folder: Path, tmp_path: Path
+) -> None:
+    # Opened while the restore ran, its Claude Code named the second agent's conversation when
+    # the first agent's last look read it, then exited ("No conversation found") while the
+    # first agent started. Read again, it's a shell: the second agent is started.
+    first = entry(tmp_path / "other", terminal_id="t-a", pane_id="w1:p1", session_id=OTHER_UUID)
+    second = entry(folder, terminal_id="t-c", pane_id="w2:p1", session_id=UUID)
+    hand = pane("w5:p1", "t-h", agent=None, cwd=str(folder))
+    runner = runner_for([], **{"pane list": [ok({"panes": []}), ok({"panes": [hand]})]})
+    answer = runner.__call__
+
+    async def exiting_after_the_first_start(argv):
+        if list(argv[1:]) == ["pane", "process-info", "--pane", "w5:p1"]:
+            runner.calls.append(list(argv[1:]))
+            return shell_info() if runner.called("agent", "start") else process_info(["claude", "--resume", UUID])
+        return await answer(argv)
+
+    save(path, SavedAgents(agents=[first, second]))
+    herdr = Herdr(runner=exiting_after_the_first_start)
+    service = AgentService(Settings(token=TOKEN, allowed_roots=(tmp_path.resolve(),)), herdr)
+    asyncio.run(restore(service, herdr, path))
+
+    assert len(runner.called("agent", "start")) == 2
+
+
+@pytest.mark.parametrize("where", ["its folder", "elsewhere"])
+def test_a_pane_an_earlier_agent_read_running_a_later_agents_conversation_that_exited_since_doesnt_stop_its_start(
+    path: Path, folder: Path, tmp_path: Path, where: str
+) -> None:
+    # Open from the start, herdr showing no agent in it: Claude Code there named the second
+    # agent's conversation when the first agent's checks read it, then exited while the first
+    # agent started. Read again, it's a shell: the second agent is started.
+    first = entry(tmp_path / "other", terminal_id="t-a", pane_id="w1:p1", session_id=OTHER_UUID)
+    second = entry(folder, terminal_id="t-c", pane_id="w2:p1", session_id=UUID)
+    cwd = folder if where == "its folder" else tmp_path / "elsewhere"
+    hand = pane("w5:p1", "t-h", agent=None, cwd=str(cwd))
+    runner = runner_for([hand])
+    answer = runner.__call__
+
+    async def exiting_after_the_first_start(argv):
+        if list(argv[1:]) == ["pane", "process-info", "--pane", "w5:p1"]:
+            runner.calls.append(list(argv[1:]))
+            return shell_info() if runner.called("agent", "start") else process_info(["claude", "--resume", UUID])
+        return await answer(argv)
+
+    save(path, SavedAgents(agents=[first, second]))
+    herdr = Herdr(runner=exiting_after_the_first_start)
+    service = AgentService(Settings(token=TOKEN, allowed_roots=(tmp_path.resolve(),)), herdr)
+    asyncio.run(restore(service, herdr, path))
+
+    assert len(runner.called("agent", "start")) == 2
+
+
+@pytest.mark.parametrize("kind", ["not an agent yet", "claude agent without the hook"])
+@pytest.mark.parametrize("where", ["its folder", "elsewhere"])
+def test_a_pane_read_running_a_later_agents_conversation_that_cant_be_read_again_isnt_run_beside(
+    path: Path, folder: Path, tmp_path: Path, where: str, kind: str
+) -> None:
+    # It runs the second agent's conversation throughout; read again in that agent's turn,
+    # the read fails once. What was read before still says so: not started beside it.
+    first = entry(tmp_path / "other", terminal_id="t-a", pane_id="w1:p1", session_id=OTHER_UUID)
+    second = entry(folder, terminal_id="t-c", pane_id="w2:p1", session_id=UUID)
+    cwd = folder if where == "its folder" else tmp_path / "elsewhere"
+    hand = pane("w5:p1", "t-h", agent=None if kind == "not an agent yet" else "claude", cwd=str(cwd))
+    runner = runner_for([hand])
+    answer = runner.__call__
+    reads = 0
+
+    async def failing_the_second_read(argv):
+        nonlocal reads
+        if list(argv[1:]) == ["pane", "process-info", "--pane", "w5:p1"]:
+            runner.calls.append(list(argv[1:]))
+            reads += 1
+            return err("timeout") if reads == 2 else process_info(["claude", "--resume", UUID])
+        return await answer(argv)
+
+    save(path, SavedAgents(agents=[first, second]))
+    herdr = Herdr(runner=failing_the_second_read)
+    service = AgentService(Settings(token=TOKEN, allowed_roots=(tmp_path.resolve(),)), herdr)
+    asyncio.run(restore(service, herdr, path))
+
+    assert len(runner.called("agent", "start")) == 1
+    assert runner.called("pane", "close") == []
+
+
+@pytest.mark.parametrize("where", ["another restored shell in its folder", "its own old pane"])
+def test_a_restored_shell_still_carrying_a_session_is_checked_by_command_line_before_the_start(
+    path: Path, folder: Path, tmp_path: Path, where: str
+) -> None:
+    # herdr's resume off, restored panes are shells that keep the session they last ran. The
+    # second agent's conversation is resumed in one while the first agent starts, and herdr
+    # doesn't show it as an agent yet.
+    first = entry(tmp_path / "other", terminal_id="t-a", pane_id="w1:p1", session_id=OTHER_UUID)
+    second = entry(folder, terminal_id="t-c", pane_id="w2:p1", session_id=UUID)
+    if where == "its own old pane":
+        hand = pane("w2:p1", "t-h", agent=None, session=UUID, cwd=str(folder))
+    else:
+        hand = pane("w5:p1", "t-h", agent=None, session=THIRD_UUID, cwd=str(folder))
+    runner = runner_for([hand], **{
+        f"pane process-info --pane {hand['pane_id']}": [shell_info(), process_info(["claude", "--resume", UUID])],
+    })
+    run(runner, path, [first, second], tmp_path)
+
+    assert len(runner.called("agent", "start")) == 1
+
+
+def test_a_claude_agent_opened_in_its_folder_while_the_restore_ran_that_cant_be_read_holds_off_the_start(
+    path: Path, folder: Path, tmp_path: Path
+) -> None:
+    # As for one listed at the start: it may run the conversation, so the start waits.
+    late = pane("w5:p1", "t-late", cwd=str(folder))
+    runner = runner_for([], **{"pane list": [ok({"panes": []}), ok({"panes": [late]})],
+                               "pane process-info --pane w5:p1": err("timeout")})
+    [line] = run(runner, path, [entry(folder, session_id=UUID)], tmp_path)
+
+    assert runner.called("agent", "start") == []
+    assert runner.called("pane", "close") == []
+    assert "kept for the next restart: w5:p1" in line
+    [kept] = load(path).agents
+    assert kept.restore_failed
+
+
+def test_a_claude_agent_opened_elsewhere_while_the_restore_ran_that_cant_be_read_doesnt_stop_the_start(
+    path: Path, folder: Path, tmp_path: Path
+) -> None:
+    late = pane("w5:p1", "t-late", cwd=str(tmp_path))
+    runner = runner_for([], **{"pane list": [ok({"panes": []}), ok({"panes": [late]})],
+                               "pane process-info --pane w5:p1": err("timeout")})
+    run(runner, path, [entry(folder, session_id=UUID)], tmp_path)
+
+    assert len(runner.called("agent", "start")) == 1
+
+
+def test_a_conversation_resumed_idle_in_another_pane_while_the_restore_ran_with_other_args_is_replaced(
+    path: Path, folder: Path, tmp_path: Path
+) -> None:
+    late = pane("w5:p1", "t-late", session=UUID, cwd=str(folder))
+    runner = runner_for([], **{"pane list": [ok({"panes": []}), ok({"panes": [late]})],
+                               "pane process-info --pane w5:p1": process_info(["claude", "--resume", UUID]),
+                               "agent get w5:p1": ok({"agent": late})})
+    [line] = run(runner, path, [entry(folder, session_id=UUID)], tmp_path)
+
+    assert runner.called("pane", "close") == [["pane", "close", "w5:p1"]]
+    assert claude_args(runner) == ["--resume", UUID, "--permission-mode", "auto"]
+    assert "closed herdr's own resume in w5:p1" in line
+
+
+def test_a_failed_list_before_the_start_doesnt_stop_it(path: Path, folder: Path, tmp_path: Path) -> None:
+    runner = runner_for([], **{"pane list": [ok({"panes": []}), err("timeout")]})
+    run(runner, path, [entry(folder, session_id=UUID)], tmp_path)
+
+    assert len(runner.called("agent", "start")) == 1
+    assert len(runner.called("pane", "list")) == 2
 
 
 def test_herdr_resume_with_other_args_is_replaced(path: Path, folder: Path, tmp_path: Path) -> None:
@@ -374,6 +1427,24 @@ def test_a_file_that_cant_be_written_doesnt_stop_the_restore(
     assert all("No space left on device" in line for line in lines)
 
 
+def test_a_pane_kept_for_one_entry_isnt_closed_for_another_when_the_file_cant_be_written(
+    path: Path, folder: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # herdr resumed the first one as it was; the second saved the same conversation with
+    # other arguments, so it would take that pane for a resume to replace.
+    def unwritable(*args: object) -> None:
+        raise StateError(f"Can't write {path} (No space left on device).")
+
+    monkeypatch.setattr(restore_module, "_replace", unwritable)
+    runner = runner_for([pane(session=UUID)], ["claude", "--permission-mode", "auto", "--resume", UUID])
+    first = entry(folder, session_id=UUID)
+    second = entry(tmp_path / "api", terminal_id="t-old-2", pane_id="w2:p1", session_id=UUID, args=[])
+    lines = run(runner, path, [first, second], tmp_path)
+
+    assert runner.called("pane", "close") == runner.called("agent", "start") == []
+    assert "already runs" in lines[1]
+
+
 def test_a_restored_agent_whose_entry_couldnt_be_written_drops_its_stale_entry(
     path: Path, folder: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -396,6 +1467,57 @@ def test_a_restored_agent_whose_entry_couldnt_be_written_drops_its_stale_entry(
     assert load(path).agents == []
 
 
+def test_an_adopted_agent_whose_entry_couldnt_be_written_drops_its_stale_entry(
+    path: Path, folder: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # As for a restored one: the stale entry's old pane id, now another terminal's, would
+    # make the next round look like a herdr restart.
+    def unwritable(*args: object) -> None:
+        raise StateError(f"Can't write {path} (No space left on device).")
+
+    monkeypatch.setattr(restore_module, "_replace", unwritable)
+    busy = pane(session=UUID, cwd=str(folder)) | {"agent_status": "working"}
+    save(path, SavedAgents(agents=[entry(folder, session_id=UUID)]))
+    herdr = Herdr(runner=runner_for([busy], ["claude", "--resume", UUID]))
+    service = AgentService(Settings(token=TOKEN, allowed_roots=(tmp_path.resolve(),)), herdr)
+
+    [line] = asyncio.run(restore(service, herdr, path))
+
+    assert "No space left on device" in line
+    assert service.stopped == {"t-old"}
+
+
+def test_agents_json_is_read_under_its_lock_off_the_event_loop(
+    monkeypatch: pytest.MonkeyPatch, path: Path, folder: Path, tmp_path: Path
+) -> None:
+    # On Windows a read while a forget or save-agents replaces the file fails; and the lock
+    # may be waited for, which mustn't hold up the event loop.
+    held: list[bool] = []
+    reads: list[tuple[bool, bool]] = []
+    real_locked, real_load = restore_module.locked, restore_module.load
+
+    @contextlib.contextmanager
+    def recording(locked_path: Path):
+        with real_locked(locked_path):
+            held.append(True)
+            try:
+                yield
+            finally:
+                held.pop()
+
+    def checked(read_path: Path, **kwargs: bool):
+        reads.append((bool(held), threading.current_thread() is threading.main_thread()))
+        return real_load(read_path, **kwargs)
+
+    monkeypatch.setattr(restore_module, "locked", recording)
+    monkeypatch.setattr(restore_module, "load", checked)
+    run(runner_for([]), path, [entry(folder, session_id=UUID)], tmp_path)
+    asyncio.run(restore_module._restarted(Herdr(runner=runner_for([])), path, True))
+
+    # (under the lock, on the event loop's thread), for each read.
+    assert reads and reads == [(True, False)] * len(reads)
+
+
 def test_the_watcher_leaves_out_an_agent_stopped_while_it_waited_for_the_file(
     monkeypatch: pytest.MonkeyPatch, path: Path, folder: Path
 ) -> None:
@@ -413,6 +1535,99 @@ def test_the_watcher_leaves_out_an_agent_stopped_while_it_waited_for_the_file(
     monkeypatch.setattr(restore_module, "locked", stopped_meanwhile)
     rounds.watch(1)
     assert rounds.files == [[]]
+
+
+def test_an_agent_stopped_while_its_restore_starts_it_doesnt_come_back(
+    path: Path, folder: Path, tmp_path: Path
+) -> None:
+    # The new pane shows up while herdr still waits for Claude Code in it, and the user stops it.
+    new = started(0) | {"cwd": str(folder)}
+    fake = runner_for([], **{"agent get": ok({"agent": new})})
+    start_reached, release = asyncio.Event(), asyncio.Event()
+    closed: list[str] = []
+
+    async def runner(argv) -> tuple[int, str, str]:
+        args = list(argv[1:])
+        if args[:2] == ["agent", "start"]:
+            start_reached.set()
+            await release.wait()
+            if args[args.index("--pane") + 1] in closed:
+                return err("pane_not_found")
+        if args[:2] == ["pane", "close"]:
+            closed.append(args[2])
+        return await fake(argv)
+
+    save(path, SavedAgents(agents=[entry(folder, session_id=UUID)]))
+    herdr = Herdr(runner=runner)
+    service = AgentService(Settings(token=TOKEN, allowed_roots=(tmp_path.resolve(),)), herdr, saved_path=path)
+
+    async def stop_meanwhile() -> None:
+        await start_reached.wait()
+        stopping = asyncio.create_task(service.stop_agent("w90:p1"))
+        # Long enough for a stop that doesn't wait for the start to close the pane.
+        await asyncio.sleep(0.1)
+        release.set()
+        await stopping
+
+    async def both() -> list[str]:
+        lines, _ = await asyncio.gather(restore(service, herdr, path), stop_meanwhile())
+        return lines
+
+    [line] = asyncio.run(both())
+
+    assert "restored in w90:p1" in line
+    assert closed == ["w90:p1"]
+    # The watcher's next write leaves nothing that a restart would bring back.
+    restore_module._write(path, [], True, service.stopped)
+    assert load(path).agents == []
+
+
+@pytest.mark.parametrize("stopped", ["t-old", "t-new"])
+def test_an_agent_stopped_through_the_bridge_is_never_restored(
+    path: Path, folder: Path, tmp_path: Path, stopped: str
+) -> None:
+    # Stopped, but its forget couldn't write agents.json (t-old); or the pane resuming its
+    # conversation was stopped since the restore listed the panes (t-new). Otherwise its
+    # pane would be closed and the agent started again.
+    runner = runner_for([pane(session=UUID, cwd=str(folder))], ["claude", "--resume", UUID])
+    save(path, SavedAgents(agents=[entry(folder, session_id=UUID)]))
+    herdr = Herdr(runner=runner)
+    service = AgentService(Settings(token=TOKEN, allowed_roots=(tmp_path.resolve(),)), herdr)
+    service.stopped.add(stopped)
+
+    [line] = asyncio.run(restore(service, herdr, path))
+
+    assert runner.called("agent", "start") == runner.called("pane", "close") == []
+    assert "stopped" in line
+    assert load(path).agents == []
+
+
+@pytest.mark.parametrize("during", ["agent get", "pane close"])
+def test_herdrs_resume_stopped_through_the_bridge_as_the_restore_closes_it_doesnt_come_back(
+    path: Path, folder: Path, tmp_path: Path, during: str
+) -> None:
+    # stop_agent closed it just before the restore read its status again or closed it, so
+    # that failed and the pane is gone: its conversation isn't started again.
+    resumed = pane(session=UUID, cwd=str(folder))
+    fake = runner_for([resumed], ["claude", "--resume", UUID],
+                      **{"pane list": [ok({"panes": [resumed]}), ok({"panes": []})]})
+    herdr = Herdr(runner=None)
+    service = AgentService(Settings(token=TOKEN, allowed_roots=(tmp_path.resolve(),)), herdr)
+
+    async def runner(argv) -> tuple[int, str, str]:
+        if " ".join(argv[1:]).startswith(during):
+            fake.calls.append(list(argv[1:]))
+            service.stopped.add("t-new")
+            return err("pane_not_found" if during == "pane close" else "agent_not_found")
+        return await fake(argv)
+
+    herdr.runner = runner
+    save(path, SavedAgents(agents=[entry(folder, session_id=UUID)]))
+    [line] = asyncio.run(restore(service, herdr, path))
+
+    assert fake.called("agent", "start") == []
+    assert "stopped" in line
+    assert load(path).agents == []
 
 
 def test_a_started_agent_is_no_longer_marked_failed(path: Path, folder: Path, tmp_path: Path) -> None:
@@ -444,6 +1659,17 @@ def test_a_failed_entrys_old_pane_id_isnt_taken_for_its_shell(path: Path, folder
 def test_a_shell_pane_running_a_program_is_never_closed(path: Path, folder: Path, tmp_path: Path) -> None:
     # Same id and folder, but the user runs something in it (an editor, a dev server).
     runner = runner_for([pane(agent=None, cwd=str(folder))], **{"pane process-info --pane w1:p1": shell_info("vim")})
+    [line] = run(runner, path, [entry(folder, session_id=UUID)], tmp_path)
+
+    assert runner.called("pane", "close") == []
+    assert len(runner.called("agent", "start")) == 1
+    assert "closed" not in line
+
+
+def test_a_shell_pane_with_no_foreground_processes_listed_isnt_closed(path: Path, folder: Path, tmp_path: Path) -> None:
+    # herdr gave none: what runs in it isn't known, so it isn't known to be idle.
+    empty = ok({"process_info": {"foreground_process_group_id": 9000, "foreground_processes": [], "shell_pid": 9000}})
+    runner = runner_for([pane(agent=None, cwd=str(folder))], **{"pane process-info --pane w1:p1": empty})
     [line] = run(runner, path, [entry(folder, session_id=UUID)], tmp_path)
 
     assert runner.called("pane", "close") == []
@@ -551,7 +1777,7 @@ class Rounds:
         self.rounds = 1
         self.restore_errors: list[Exception] = []
         # What AgentService.stopped is to watch.
-        self.service = SimpleNamespace(stopped=set())
+        self.service = SimpleNamespace(stopped=set(), stopped_sessions=set(), unforgotten_sessions=set())
         monkeypatch.setattr(restore_module, "snapshot", self.snapshot)
         monkeypatch.setattr(restore_module, "restore", self.restore)
 
@@ -598,7 +1824,7 @@ def test_first_round_restores_then_saves(monkeypatch: pytest.MonkeyPatch, path: 
 
 def test_unreachable_then_reachable_restores_once(monkeypatch: pytest.MonkeyPatch, path: Path, folder: Path) -> None:
     seen = entry(folder, terminal_id="t1")
-    down = HerdrError("server_down", "herdr is down")
+    down = HerdrError("server_not_running", "herdr is down")
     # Rounds 1 and 2 fail; round 3 restores (two snapshots); round 4 finds t1 among the panes.
     rounds = Rounds(monkeypatch, path, [down, down, [], [seen], [seen]], [["t1"]])
     rounds.watch(4)
@@ -609,12 +1835,14 @@ def test_unreachable_then_reachable_restores_once(monkeypatch: pytest.MonkeyPatc
 
 
 def test_all_terminal_ids_new_counts_as_restart(monkeypatch: pytest.MonkeyPatch, path: Path, folder: Path) -> None:
-    old = entry(folder, terminal_id="t-old")
-    new = entry(folder, terminal_id="t-new")
-    # Round 1 saves the old agent; in round 2 herdr's panes are all new ones.
-    rounds = Rounds(monkeypatch, path, [[old], [old], [new], [new]], [["t-new"]])
-    rounds.watch(2)
-    assert rounds.restores == [1, 2]
+    first, second = entry(folder, terminal_id="t-a", pane_id="w1:p1"), entry(folder, terminal_id="t-b", pane_id="w2:p1")
+    save(path, SavedAgents(agents=[first, second]))
+    # herdr's first answer: its panes have new terminals, and ids no saved agent had, so the
+    # pane-id rule can't tell; that no saved terminal is live does.
+    new = [entry(folder, terminal_id="t-a2", pane_id="w5:p1"), entry(folder, terminal_id="t-b2", pane_id="w6:p1")]
+    rounds = Rounds(monkeypatch, path, [[], new], [[("w5:p1", "t-a2"), ("w6:p1", "t-b2")]])
+    rounds.watch(1)
+    assert rounds.restores == [1]
 
 
 def test_same_server_does_not_restore_again(monkeypatch: pytest.MonkeyPatch, path: Path, folder: Path) -> None:
@@ -715,7 +1943,7 @@ def test_answering_again_with_the_saved_terminals_live_is_not_a_restart(
     monkeypatch: pytest.MonkeyPatch, path: Path, folder: Path
 ) -> None:
     seen = entry(folder, terminal_id="t1")
-    down = HerdrError("server_down", "herdr is down")
+    down = HerdrError("server_not_running", "herdr is down")
     # Round 3 answers after an outage; t1 is still there, in a pane elsewhere.
     rounds = Rounds(monkeypatch, path, [[seen], [seen], down, [seen]], [[("w2:p1", "t1")]])
     rounds.watch(3)
@@ -726,10 +1954,43 @@ def test_answering_again_with_no_saved_terminal_live_is_a_restart(
     monkeypatch: pytest.MonkeyPatch, path: Path, folder: Path
 ) -> None:
     old, new = entry(folder, terminal_id="t-old"), entry(folder, terminal_id="t-new")
-    down = HerdrError("server_down", "herdr is down")
+    down = HerdrError("server_not_running", "herdr is down")
     rounds = Rounds(monkeypatch, path, [[old], [old], down, [new], [new]], [[("w2:p1", "t-new")]])
     rounds.watch(3)
     assert rounds.restores == [1, 3]
+
+
+@pytest.mark.parametrize("code", ["timeout", "bad_output", "cli_failed"])
+def test_a_passing_herdr_error_doesnt_make_the_next_round_look_like_a_new_server(
+    monkeypatch: pytest.MonkeyPatch, path: Path, folder: Path, code: str
+) -> None:
+    # herdr's server ran on: round 2 failed for another reason, and before round 3 the user
+    # closed the only agent by hand, which no restore may bring back.
+    seen = entry(folder, terminal_id="t1")
+    rounds = Rounds(monkeypatch, path, [[seen], [seen], HerdrError(code, "passing"), []], [[]])
+    rounds.watch(3)
+    assert rounds.restores == [1]
+
+
+def test_a_failed_restart_check_on_herdrs_first_round_is_made_again_next_round(
+    monkeypatch: pytest.MonkeyPatch, path: Path, folder: Path
+) -> None:
+    # The host rebooted and herdr came back without its layout. Its first answer lists the
+    # agents, but looking at its panes then fails once: the next round is still herdr's
+    # first, or the saved agents would age out unrestored.
+    save(path, SavedAgents(agents=[entry(folder, terminal_id="t-old", pane_id="w5:p1")]))
+    rounds = Rounds(monkeypatch, path, [[], [], []], [])
+    answers: list = [HerdrError("timeout", "slow"), [], []]
+
+    async def list_panes(_herdr: object = None) -> list[dict]:
+        answer = answers.pop(0)
+        if isinstance(answer, Exception):
+            raise answer
+        return answer
+
+    rounds.list_panes = list_panes
+    rounds.watch(3)
+    assert rounds.restores == [2]
 
 
 def test_an_agent_stopped_during_the_snapshot_is_not_saved_again(
@@ -767,7 +2028,8 @@ def test_a_restore_cut_short_by_an_error_runs_again_next_round(
 ) -> None:
     seen = entry(folder, terminal_id="t1")
     rounds = Rounds(monkeypatch, path, [[], [], [seen], [seen]], [[("w1:p1", "t1")]])
-    rounds.restore_errors = [TimeoutError("lock held")]
+    # Listing herdr's panes failed: unlike an entry's own failure, that ends the whole run.
+    rounds.restore_errors = [HerdrError("timeout", "herdr pane list timed out")]
     rounds.watch(2)
     # Round 2 has nothing that signals a restart; the unfinished restore alone brings it.
     assert rounds.restores == [1, 2]
@@ -882,6 +2144,111 @@ def test_no_restore_outcome_keeps_setting_off_restores(
     assert host.started == ["shell"]
     # The closed ones age out; the failed one waits for the next restart.
     assert [(agent.name, agent.restore_failed) for agent in load(path).agents] == [("failing", True)]
+
+
+def unreadable_once(monkeypatch: pytest.MonkeyPatch, path: Path, read: int) -> None:
+    """The `read`th read of `path` fails as a Windows sharing violation would."""
+    real_read = Path.read_bytes
+    reads = [0]
+
+    def flaky(self: Path) -> bytes:
+        if self == path:
+            reads[0] += 1
+            if reads[0] == read:
+                raise PermissionError(13, "Access is denied")
+        return real_read(self)
+
+    monkeypatch.setattr(Path, "read_bytes", flaky)
+
+
+def test_a_restore_that_couldnt_read_agents_json_runs_again_next_round(
+    monkeypatch: pytest.MonkeyPatch, path: Path, folder: Path, tmp_path: Path
+) -> None:
+    # herdr came back without its layout. The restart check reads the file; the restore's own
+    # read then fails once. Read as no saved agents, the restore would end normally and the
+    # agent age out unrestored.
+    unreadable_once(monkeypatch, path, 2)
+    restores = watch_host(monkeypatch, Host([]), path, [entry(folder, session_id=UUID)], tmp_path, 2)
+
+    assert restores == [1, 2]
+    [restored] = load(path).agents
+    assert (restored.pane_id, restored.session_id) == ("w91:p1", UUID)
+
+
+def lock_held_for_forget(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The restore's first forget times out on agents.json's lock."""
+    real_forget = restore_module.forget
+    calls = [0]
+
+    def flaky(forget_path: Path, terminal_id: str) -> None:
+        calls[0] += 1
+        if calls[0] == 1:
+            raise TimeoutError("agents.json.lock is held by another process.")
+        real_forget(forget_path, terminal_id)
+
+    monkeypatch.setattr(restore_module, "forget", flaky)
+
+
+def test_an_entry_whose_forget_failed_doesnt_set_off_another_restore(
+    monkeypatch: pytest.MonkeyPatch, path: Path, folder: Path, tmp_path: Path
+) -> None:
+    # The new server numbered panes afresh: w1:p1 is now the user's shell elsewhere. The
+    # entry that had already gone keeps that pane id when its forget fails; in the next
+    # round it would look like a restart again, and bring back the agent the user closed.
+    lock_held_for_forget(monkeypatch)
+    restored = entry(folder, name="restored", terminal_id="t-a", pane_id="w2:p1")
+    gone = entry(tmp_path / "api", name="gone", terminal_id="t-g", pane_id="w1:p1", misses=1)
+    host = Host([pane("w1:p1", terminal_id="t-x", agent=None, cwd=str(tmp_path / "other"))])
+    restores = watch_host(monkeypatch, host, path, [restored, gone], tmp_path, 2,
+                          {1: lambda: host.close("restored")})
+
+    assert restores == [1]
+    assert host.started == ["restored"]
+
+
+@pytest.mark.parametrize("case", ["gone before", "conversation runs", "untrusted", "resume stopped"])
+def test_an_entry_whose_forget_failed_is_dropped_by_the_next_write(
+    monkeypatch: pytest.MonkeyPatch, path: Path, folder: Path, tmp_path: Path, case: str
+) -> None:
+    lock_held_for_forget(monkeypatch)
+    runner = runner_for([])
+    saved = [entry(folder, session_id=UUID)]
+    stopped: set[str] = set()
+    if case == "gone before":
+        saved = [entry(folder, misses=1)]
+    elif case == "conversation runs":
+        survivor = entry(folder, terminal_id="t-live", pane_id="w2:p1", session_id=UUID)
+        runner = runner_for([pane("w2:p1", terminal_id="t-live", session=UUID)], ["claude", "--resume", UUID])
+        saved = [saved[0], survivor]
+    elif case == "untrusted":
+        runner = runner_for([], **{"pane wait-output": ok({"matched_line": "Yes, I trust this folder"})})
+    else:
+        runner = runner_for([pane(session=UUID, cwd=str(folder))], ["claude", "--resume", UUID])
+        stopped.add("t-new")
+    save(path, SavedAgents(agents=saved))
+    herdr = Herdr(runner=runner)
+    service = AgentService(Settings(token=TOKEN, allowed_roots=(tmp_path.resolve(),)), herdr)
+    service.stopped |= stopped
+
+    lines = asyncio.run(restore(service, herdr, path))
+
+    assert "is held by another process" in lines[0]
+    assert "t-old" in service.stopped
+    restore_module._write(path, [], True, service.stopped)
+    assert "t-old" not in [agent.terminal_id for agent in load(path).agents]
+
+
+def test_a_restart_check_that_couldnt_read_agents_json_fails(
+    monkeypatch: pytest.MonkeyPatch, path: Path, folder: Path
+) -> None:
+    # Read as no saved agents, it would say "no restart" for a server that brought the
+    # agent's pane back with a new terminal; failing, it's made again next round.
+    save(path, SavedAgents(agents=[entry(folder)]))
+    herdr = Herdr(runner=runner_for([pane(terminal_id="t-other")]))
+    unreadable_once(monkeypatch, path, 1)
+
+    with pytest.raises(StateError):
+        asyncio.run(restore_module._restarted(herdr, path, True))
 
 
 def test_an_agent_that_had_gone_comes_back_when_its_pane_does(path: Path, folder: Path, tmp_path: Path) -> None:

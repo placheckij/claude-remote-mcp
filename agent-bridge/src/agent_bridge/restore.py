@@ -5,14 +5,19 @@ can, its conversation. A restored agent is never sent a prompt.
 
 import asyncio
 import logging
+from pathlib import PureWindowsPath
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from agent_bridge.agents import AgentService
+import psutil
+
+from agent_bridge.agents import FINISHED, AgentService
+from agent_bridge.claude_args import session_id_in
+from agent_bridge.claude_process import claude_process
 from agent_bridge.errors import BridgeError
-from agent_bridge.herdr import Herdr, HerdrError
-from agent_bridge.saved_agents import SavedAgent, forget, load, locked, merge, save, snapshot
+from agent_bridge.herdr import SERVER_NOT_RUNNING, Herdr, HerdrError
+from agent_bridge.saved_agents import SavedAgent, forget, load, locked, merge, read_agent, save, snapshot
 from agent_bridge.state import StateError
 
 log = logging.getLogger(__name__)
@@ -31,13 +36,30 @@ class _Found:
     # Conversations a saved agent still runs, or one restored so far does: each runs once.
     sessions: set[str]
     closed: set[str] = field(default_factory=set)
+    # The foreground processes of panes herdr doesn't know as agents, by pane id, as read
+    # once; {} when they couldn't be.
+    processes: dict[str, dict] = field(default_factory=dict)
+    # Claude panes whose process couldn't be read again before a start: what `live` holds of
+    # them was read earlier, still what they're taken to run, but they're never closed.
+    unread: set[str] = field(default_factory=set)
+    # Saved agents (by terminal) whose conversation's pane was closed in this restore while
+    # it still ran it: each is started whatever else may run it.
+    replaced: set[str] = field(default_factory=set)
+    # Conversations stopped through the bridge (the service's set): an entry kept for one
+    # would bring it back.
+    stopped_sessions: set[str] = field(default_factory=set)
+    # Those stopped before this restore began; their stops took their entries out, so an
+    # entry for one still in the file was written since, on purpose (save-agents).
+    stopped_before: frozenset[str] = frozenset()
+    # Those whose stop couldn't take their entries out (the service's set).
+    unforgotten: set[str] = field(default_factory=set)
 
 
 async def restore(service: AgentService, herdr: Herdr, path: Path) -> list[str]:
     """Start each saved agent that isn't running, one after another in the file's order.
     Each outcome is logged; the lines are returned too. A HerdrError from listing herdr's
     panes or agents propagates: herdr isn't up."""
-    entries = load(path).agents
+    entries = await asyncio.to_thread(_saved, path)
     panes = await herdr.list_panes()
     terminals = {pane.get("terminal_id") for pane in panes}
     found = _Found(
@@ -45,6 +67,9 @@ async def restore(service: AgentService, herdr: Herdr, path: Path) -> list[str]:
         live={agent.pane_id: agent for agent in await snapshot(herdr)},
         claimed={entry.terminal_id for entry in entries},
         sessions={entry.session_id for entry in entries if entry.session_id and entry.terminal_id in terminals},
+        stopped_sessions=service.stopped_sessions,
+        stopped_before=frozenset(service.stopped_sessions),
+        unforgotten=service.unforgotten_sessions,
     )
     lines = []
     for entry in entries:
@@ -64,6 +89,11 @@ async def _restore_one(
 ) -> tuple[str, bool]:
     """The log line for `entry`, and whether it says something failed."""
     label = entry.name or entry.cwd
+    if entry.terminal_id in service.stopped or _conversation_stopped(entry, found):
+        # Stopped through the bridge, whose forget couldn't take it out of agents.json; or its
+        # conversation was, in another pane (herdr's resume).
+        await _forget(path, entry, service.stopped)
+        return f"{label}: not restored, and forgotten: it was stopped through the bridge", False
     for pane in found.panes:
         if pane.get("terminal_id") == entry.terminal_id:
             return f"{label}: still running in {pane['pane_id']}, left as it is", False
@@ -78,19 +108,26 @@ async def _restore_one(
         if pane["pane_id"] == entry.pane_id and pane.get("cwd") and Path(pane["cwd"]) == Path(entry.cwd)
     ]
     shell = next((pane for pane in back if pane["pane_id"] not in found.closed and not pane.get("agent")), None)
-    if shell is not None and not await _idle_shell(herdr, shell):
-        # Something runs in it (an editor, a dev server): the user's, not a leftover.
-        shell = None
+    # A Claude Code stopped with ctrl-Z in the shell herdr brought back: it may run the
+    # agent's conversation.
+    stopped_claude = None
+    if shell is not None:
+        idle = await _idle_shell(herdr, shell)
+        if idle is None:
+            stopped_claude = shell
+        if not idle:
+            # Something runs in it (an editor, a dev server): the user's, not a leftover.
+            shell = None
     if entry.session_id in found.sessions:
         # Two panes ran one conversation; a second copy of it would answer as the first.
-        note = await _close(herdr, shell, found)
-        await asyncio.to_thread(forget, path, entry.terminal_id)
+        _, note = await _close(herdr, shell, found)
+        await _forget(path, entry, service.stopped)
         return f"{label}: not restored, and forgotten: its conversation {entry.session_id} already runs{note}", False
     if entry.misses > 0 and not back:
         # It had already disappeared while this herdr server ran, and herdr didn't bring its
         # pane back: stopped or closed, not lost. Forgotten now rather than left to age out,
         # so its stale pane id can't match a pane a later server hands out.
-        await asyncio.to_thread(forget, path, entry.terminal_id)
+        await _forget(path, entry, service.stopped)
         return f"{label}: not restored, and forgotten: it had already gone before the restart", False
     resumed = next(
         (
@@ -98,35 +135,31 @@ async def _restore_one(
             # agent in it is herdr's own resume.
             pane for pane in open_panes
             if entry.session_id and pane.get("agent") and pane.get("terminal_id") not in found.claimed
-            and _session_of(pane) == entry.session_id
+            and _session_in(pane, found) == entry.session_id
         ),
         None,
     )
+    if resumed is None and entry.session_id:
+        resumed, unsure = await _unclassified(herdr, entry, open_panes, found)
+        if resumed is None and unsure is not None:
+            # A second copy would answer as the first. Kept for the next restart: should the
+            # pane run its conversation, the snapshots save it from there. The shell herdr left
+            # goes now: later restores skip the old pane id of an entry marked failed.
+            _, note = await _close(herdr, shell, found)
+            await _keep_failed(path, entry, found)
+            return (f"{label}: not restored, kept for the next restart: {unsure['pane_id']}, a Claude agent "
+                    f"in its folder whose process couldn't be read, may run its conversation{note}"), True
     if resumed is not None:
-        running = found.live.get(resumed["pane_id"])
-        # By the config each starts on: for an account that couldn't be read, its folder's.
-        as_it_was = running is not None and running.args == entry.args and (
-            service.config_dir_of(running) == service.config_dir_of(entry)
-        )
-        # Busy: someone resumed it and is in the middle of a turn, likely by hand, since
-        # setup turns herdr's own resume off. Closing it would end that turn.
-        busy = resumed.get("agent_status") == "working"
-        if as_it_was or busy:
-            kept = entry.model_copy(
-                update={"pane_id": resumed["pane_id"], "terminal_id": resumed["terminal_id"], "misses": 0,
-                        "restore_failed": False}
-            )
-            await asyncio.to_thread(_replace, path, entry.terminal_id, kept)
-            found.claimed.add(resumed["terminal_id"])
-            found.sessions.add(entry.session_id)
-            if as_it_was:
-                return f"{label}: herdr resumed it in {resumed['pane_id']} as it was, left as it is", False
-            return f"{label}: busy in {resumed['pane_id']}, which runs its conversation, left as it is", False
-        # herdr's own resume runs plain `claude --resume <id>`: without the account's
-        # CLAUDE_CONFIG_DIR or the agent's arguments.
-        note = await _close(herdr, resumed, found, "herdr's own resume")
+        note = await _take_resumed(service, herdr, path, entry, resumed, shell, found)
+        if isinstance(note, tuple):
+            return note
+    elif stopped_claude is not None:
+        # A second copy would answer as the first, once it's brought back with fg.
+        await _keep_failed(path, entry, found)
+        return (f"{label}: not restored, kept for the next restart: {stopped_claude['pane_id']}, where it "
+                "was, has a Claude Code stopped with ctrl-Z, which may run its conversation, left as it is"), True
     else:
-        note = await _close(herdr, shell, found)
+        _, note = await _close(herdr, shell, found)
 
     if entry.session_id and not await asyncio.to_thread(
         _has_conversation, service.config_dir_of(entry), entry.session_id
@@ -149,17 +182,37 @@ async def _restore_one(
         # --continue would pick the same conversation for both of them.
         resume, how = [], f"fresh conversation: another saved agent shares {entry.cwd} and its account"
 
+    late, unsure = await _resumed_since(herdr, entry, found) if entry.session_id else (None, None)
+    if late is None and unsure is not None and entry.terminal_id not in found.replaced:
+        # As for such a pane listed at the start. Not when its conversation's pane was closed
+        # to be replaced: it ran there, so the start goes ahead.
+        await _keep_failed(path, entry, found)
+        return (f"{label}: not restored, kept for the next restart: {unsure['pane_id']}, a Claude agent "
+                f"in its folder whose process couldn't be read, may run its conversation{note}"), True
+    if late is not None:
+        # Resumed in a pane that appeared after the panes were listed, by hand or by herdr,
+        # while earlier agents started: taken as herdr's own resume is.
+        late_note = await _take_resumed(service, herdr, path, entry, late, None, found)
+        if isinstance(late_note, tuple):
+            line, failed = late_note
+            return line + note, failed
+        note += late_note
+
+    if _conversation_stopped(entry, found):
+        # Its conversation was stopped through the bridge while this restore ran.
+        await _forget(path, entry, service.stopped)
+        return f"{label}: not restored, and forgotten: its conversation was stopped through the bridge{note}", False
     try:
         agent = await service.restart_agent(entry, resume)
     except BridgeError as error:
         if error.code == "folder_not_trusted":
-            await asyncio.to_thread(forget, path, entry.terminal_id)
+            await _forget(path, entry, service.stopped)
             return f"{label}: not restored, and forgotten: {error.message}{note}", True
-        await _keep_failed(path, entry)
+        await _keep_failed(path, entry, found)
         return f"{label}: not restored ({error.code}: {error.message}), kept for the next restart{note}", True
     except Exception as error:  # noqa: BLE001 - one agent's failure mustn't stop the others
         # Any other failure is likely passing (herdr busy, a slow start): try again next time.
-        await _keep_failed(path, entry)
+        await _keep_failed(path, entry, found)
         return f"{label}: not restored ({error}), kept for the next restart{note}", True
 
     found.claimed.add(agent["terminal_id"])
@@ -180,46 +233,476 @@ async def _restore_one(
     return f"{label}: restored in {agent['pane_id']}, {how}{note}", False
 
 
-async def _idle_shell(herdr: Herdr, pane: dict) -> bool:
-    """Whether the pane's shell runs nothing: its only foreground process is the shell itself.
-    False when herdr can't say, so an unknown pane is left alone."""
+async def _take_resumed(
+    service: AgentService, herdr: Herdr, path: Path, entry: SavedAgent, resumed: dict, shell: dict | None,
+    found: _Found,
+) -> tuple[str, bool] | str:
+    """Keep `resumed`, which runs `entry`'s conversation, as the agent's pane, or close it so
+    the agent is started: the log line and whether it says something failed when that's
+    settled, else a note for the start's line. `shell` is what herdr left where the
+    agent was, closed when the start is held off."""
+    label = entry.name or entry.cwd
+    if resumed.get("terminal_id") in service.stopped:
+        # Stopped through the bridge since the panes were listed.
+        await _forget(path, entry, service.stopped)
+        return (f"{label}: not restored, and forgotten: {resumed['pane_id']}, which ran its conversation, "
+                "was stopped through the bridge"), False
+    running = found.live.get(resumed["pane_id"])
+    reread_failed = resumed["pane_id"] in found.unread
+    # By the config each starts on (for a saved agent whose account couldn't be read, its
+    # folder's). The running one's own account is never guessed.
+    as_it_was = running is not None and not reread_failed and not running.config_dir_unknown and running.args == entry.args and (
+        service.config_dir_of(running) == service.config_dir_of(entry)
+    )
+    # Busy: someone resumed it and is in the middle of a turn (working, or blocked on an
+    # approval), likely by hand, since setup turns herdr's own resume off. Closing it
+    # would end that turn. Whatever herdr doesn't know to be idle counts: "unknown" may
+    # be mid-turn too.
+    busy = resumed.get("agent_status") not in FINISHED
+    # Its process couldn't be read, so whether it runs as it was can't be told: left, as
+    # a shell that can't be read is. So is one with the agent's arguments whose
+    # environment, so its account, couldn't be read.
+    unreadable = running is None or reread_failed or (running.config_dir_unknown and running.args == entry.args)
+    # Not read before, but read now without Claude Code among its processes: it has exited
+    # (herdr's listing lags), which isn't one that can't be read.
+    if running is None and not busy:
+        # Nothing ever read of it: listed late and its read failed, it can't be told either.
+        exited = None if reread_failed else await _claude_exited(herdr, resumed)
+    else:
+        exited = False
+    if exited is None:
+        # Nothing read of it, and whether Claude Code still runs in it can't be told now. Left;
+        # tied to it, the entry would age out if it had exited, so the agent is kept for the
+        # next restart instead. If it runs the conversation, the saves keep it from there,
+        # and the next restart drops this entry as a second copy.
+        _, note = await _close(herdr, shell, found)
+        if entry.terminal_id in found.replaced:
+            # Its conversation ran in the pane just closed to be replaced: started all the same.
+            return f"{note} ({resumed['pane_id']}, whose process couldn't be read, left as it is)"
+        await _keep_failed(path, entry, found)
+        return (f"{label}: not restored, kept for the next restart: {resumed['pane_id']} shows its "
+                f"conversation but its process couldn't be read, left as it is{note}"), True
+    if not exited and (as_it_was or busy or unreadable):
+        await _adopt(path, entry, resumed, found, service.stopped)
+        if as_it_was:
+            return f"{label}: herdr resumed it in {resumed['pane_id']} as it was, left as it is", False
+        if not resumed.get("agent"):
+            return (f"{label}: {resumed['pane_id']} runs its conversation, though herdr doesn't know it "
+                    "as an agent yet, left as it is"), False
+        if busy:
+            return f"{label}: busy in {resumed['pane_id']}, which runs its conversation, left as it is", False
+        what = "process" if running is None or reread_failed else "account"
+        return (f"{label}: {resumed['pane_id']} runs its conversation but its {what} couldn't be read, "
+                "left as it is"), False
+    # herdr's own resume runs plain `claude --resume <id>`: without the account's
+    # CLAUDE_CONFIG_DIR or the agent's arguments. Its status is read again first: the
+    # listed one may be stale, as earlier agents' starts take seconds each, and the user
+    # may have prompted it since.
+    status = await _status_now(herdr, resumed)
+    if exited and status in FINISHED:
+        # herdr still shows the agent it no longer runs: its listing lags.
+        status = _NO_AGENT
+    elif exited and status != _NO_AGENT:
+        # Only the shell runs in it, but herdr can't say now, or still calls it busy: left,
+        # and the agent kept for the next restart. Tied to the pane, which no save lists, the
+        # entry would age out. As when a start is held off, the shell herdr left goes.
+        _, note = await _close(herdr, shell, found)
+        why = "herdr can't say what it runs now" if status is None else "herdr still calls it busy"
+        if entry.terminal_id in found.replaced:
+            # Its conversation ran in the pane just closed to be replaced: started all the same.
+            return f"{note} ({resumed['pane_id']}, where Claude Code no longer runs but {why}, left as it is)"
+        await _keep_failed(path, entry, found)
+        return (f"{label}: not restored, kept for the next restart: Claude Code no longer runs in "
+                f"{resumed['pane_id']}, which ran its conversation, but {why}, left as it is{note}"), True
+    if status == _NO_AGENT:
+        # Claude Code in it has exited since the panes were listed (herdr's own resume
+        # doesn't find a conversation kept in another account's config), leaving a shell.
+        # Adopted, the entry would point at a pane no save lists, and age out unrestored.
+        if await _idle_shell(herdr, resumed):
+            # A leftover shell: the agent starts even if it couldn't be closed.
+            closed, note = await _close(herdr, resumed, found)
+        elif await _still_there(herdr, resumed):
+            # Something runs in it, or what does can't be read: left, and the agent kept
+            # for the next restart. As when a start is held off, the shell herdr left goes.
+            _, note = await _close(herdr, shell, found)
+            if entry.terminal_id in found.replaced:
+                # Its conversation ran in the pane just closed to be replaced.
+                return f"{note} ({resumed['pane_id']}, no longer an agent nor known to be an idle shell, left as it is)"
+            await _keep_failed(path, entry, found)
+            return (f"{label}: not restored, kept for the next restart: herdr no longer shows an agent in "
+                    f"{resumed['pane_id']}, which ran its conversation, and it isn't known to be an idle "
+                    f"shell, left as it is{note}"), True
+        else:
+            closed, note = False, ""
+    else:
+        if status is not None and status not in FINISHED:
+            await _adopt(path, entry, resumed, found, service.stopped)
+            return f"{label}: busy in {resumed['pane_id']}, which runs its conversation, left as it is", False
+        if status is None:
+            closed, note = (False, f" (the status of herdr's own resume in {resumed['pane_id']} couldn't be "
+                                   "read again)")
+        else:
+            closed, note = await _close(herdr, resumed, found, "herdr's own resume")
+            if closed:
+                found.replaced.add(entry.terminal_id)
+        if not closed and await _still_there(herdr, resumed):
+            # Still running its conversation: a second copy would answer as the first.
+            await _adopt(path, entry, resumed, found, service.stopped)
+            what = "couldn't be closed" if status is not None else "wasn't closed"
+            return f"{label}: {resumed['pane_id']} runs its conversation but {what}{note}, left as it is", True
+    if not closed and resumed.get("terminal_id") in service.stopped:
+        # Gone because it was stopped through the bridge meanwhile, which made the read
+        # or the close fail.
+        await _forget(path, entry, service.stopped)
+        return (f"{label}: not restored, and forgotten: {resumed['pane_id']}, which ran its conversation, "
+                "was stopped through the bridge"), False
+    return note
+
+
+async def _claude_exited(herdr: Herdr, pane: dict) -> bool | None:
+    """Whether the pane's processes, read, don't include Claude Code; None when that can't be
+    told."""
+    try:
+        info = await herdr.process_info(pane["pane_id"])
+    except HerdrError:
+        return None
+    if _unread(info):
+        return None
+    if claude_process(info) is not None:
+        return False
+    shell = info.get("shell_pid")
+    if not (type(shell) is int and shell > 0):
+        return None
+    # Stopped with ctrl-Z, it's no longer in the foreground, but still runs.
+    jobs = await asyncio.to_thread(_claude_among_jobs, shell)
+    return None if jobs is None else not jobs
+
+
+def _claude_among_jobs_in_os(shell_pid: int) -> bool | None:
+    """Whether a Claude Code process runs under the shell; None when it can't be told."""
+    try:
+        children = psutil.Process(shell_pid).children(recursive=True)
+    except psutil.NoSuchProcess:
+        return False
+    except (psutil.Error, OSError):
+        return None
+    for child in children:
+        try:
+            # By its command line too: on macOS one started through a symlink is named after
+            # the link's target, which for Claude Code's native install is its version.
+            names = [child.name(), *child.cmdline()[:1]]
+        except psutil.NoSuchProcess:
+            continue
+        except (psutil.Error, OSError):
+            return None
+        if any(PureWindowsPath(name).name.lower().removesuffix(".exe") == "claude" for name in names):
+            return True
+    return False
+
+
+# Looked up through the module so tests can stand in for the process table.
+_claude_among_jobs = _claude_among_jobs_in_os
+
+
+async def _idle_shell(herdr: Herdr, pane: dict) -> bool | None:
+    """Whether the pane's shell runs nothing: its only foreground process is the shell itself,
+    and no Claude Code runs among its jobs. False when something else runs in it, or herdr
+    can't say or lists none, so an unknown pane is left alone. None, also falsy, when only
+    the shell is in the foreground but a Claude Code may run among its jobs (stopped with
+    ctrl-Z), so it may run a conversation."""
     try:
         info = await herdr.process_info(pane["pane_id"])
     except HerdrError:
         return False
     shell = info.get("shell_pid")
     processes = info.get("foreground_processes") or []
-    return shell is not None and all(isinstance(p, dict) and p.get("pid") == shell for p in processes)
+    if not (type(shell) is int and shell > 0 and processes
+            and all(isinstance(p, dict) and p.get("pid") == shell for p in processes)):
+        return False
+    return True if await asyncio.to_thread(_claude_among_jobs, shell) is False else None
 
 
-async def _close(herdr: Herdr, pane: dict | None, found: _Found, what: str = "the shell left") -> str:
-    """Close what herdr left of an agent, if anything; a note for the log line either way, so
-    the log says which pane went and why."""
+async def _unclassified(
+    herdr: Herdr, entry: SavedAgent, panes: list[dict], found: _Found
+) -> tuple[dict | None, dict | None]:
+    """A pane whose Claude Code's command line runs `entry`'s conversation, though nothing
+    else said so: one herdr doesn't know as an agent yet (Claude Code in it has only just
+    started), or a Claude agent with no session from herdr's hook whose process the snapshot
+    couldn't read, whatever its status: what the read finds goes into `found.live`, so it's
+    kept or replaced as herdr's own resume is. A pane herdr doesn't know as an agent isn't
+    one herdr calls idle or done; it has no status of its own, or none known to be idle, so
+    it's taken as busy.
+
+    Second, when none is found: such a Claude agent in `entry`'s folder whose process can't
+    be read now either, so it may run the conversation (Claude Code finds a conversation in
+    the folder it ran in)."""
+    unsure = None
+    for pane in panes:
+        if pane.get("terminal_id") in found.claimed:
+            continue
+        pane_id = pane["pane_id"]
+        unread_agent = pane.get("agent") == "claude" and pane_id not in found.live and _session_in(pane, found) is None
+        if pane.get("agent") and not unread_agent:
+            continue
+        if not unread_agent and pane.get("agent_status") in FINISHED:
+            continue
+        # Read once for all entries; again when that read, made in an earlier entry's turn,
+        # names this one's conversation: the Claude Code it saw may have exited since.
+        earlier = found.processes.get(pane_id)
+        if earlier is None or _names_conversation(earlier, entry):
+            try:
+                info = await herdr.process_info(pane_id)
+            except HerdrError:
+                info = {}
+            if earlier is not None and _unread(info):
+                # Can't tell now: what was read still says it runs the conversation. Kept,
+                # and never closed.
+                found.unread.add(pane_id)
+            else:
+                found.processes[pane_id] = info
+        if _names_conversation(found.processes[pane_id], entry):
+            if unread_agent and pane.get("cwd") and pane.get("terminal_id"):
+                running = await read_agent(pane, found.processes[pane_id])
+                if running is not None:
+                    found.live[pane_id] = running
+            return pane, None
+        if (unread_agent and _unread(found.processes[pane_id]) and unsure is None
+                and pane.get("cwd") and Path(pane["cwd"]) == Path(entry.cwd)):
+            unsure = pane
+    return None, unsure
+
+
+async def _resumed_since(herdr: Herdr, entry: SavedAgent, found: _Found) -> tuple[dict | None, dict | None]:
+    """A Claude agent pane that appeared since the panes were listed, or whose agent or
+    session changed since (resumed by hand in a pane that was open), running `entry`'s
+    conversation: herdr's hook says, else its command line. What's read of its process goes
+    into `found.live`. Or such a pane herdr doesn't show as an agent yet, whose command line
+    names it: one that appeared or changed since, or one in `entry`'s folder. Second, when none is found, as in `_unclassified`: such a pane in
+    `entry`'s folder with no session from the hook whose process can't be read. Neither
+    when herdr can't list its panes: the start goes ahead, as it did before this check."""
+    try:
+        panes = await herdr.list_panes()
+    except HerdrError:
+        return None, None
+    known = {pane.get("terminal_id"): pane for pane in found.panes}
+    late = []
+    # Terminals that appeared or changed since the panes were listed.
+    fresh = set()
+    for pane in panes:
+        before = known.get(pane.get("terminal_id"))
+        if before is None:
+            # Seen from now on: a later entry's own checks find it.
+            found.panes.append(pane)
+            fresh.add(pane.get("terminal_id"))
+        elif (pane.get("agent"), pane.get("agent_session")) != (before.get("agent"), before.get("agent_session")):
+            # Later entries' checks see it as it is now, and read what runs in it again. What
+            # was read of it before the change no longer says what it runs. Closed in this
+            # restore, it would be gone: that close failed, and something new runs in it.
+            found.processes.pop(before["pane_id"], None)
+            found.live.pop(before["pane_id"], None)
+            found.closed.discard(before["pane_id"])
+            before.clear()
+            before.update(pane)
+            fresh.add(pane.get("terminal_id"))
+        elif pane.get("agent") and _hook_session(pane) is not None:
+            # herdr's hook says which conversation it runs, and that hasn't changed. Not a
+            # restored shell's: it keeps the session it last ran.
+            continue
+        # Else Claude Code without herdr's hook: it may have been started again by hand with
+        # another conversation, which herdr's listing doesn't show.
+        late.append(pane)
+    unsure = None
+    for pane in late:
+        if (pane.get("terminal_id") in found.claimed or pane["pane_id"] in found.closed
+                or not pane.get("cwd") or not pane.get("terminal_id")):
+            # A pane closed in this restore that's still listed was kept if it was still
+            # there (claimed), or is going.
+            continue
+        if not pane.get("agent"):
+            # Claude Code started in it may not show yet. Read where it would likely run the
+            # conversation: Claude Code finds one in the folder it ran in.
+            if pane.get("terminal_id") in fresh or Path(pane["cwd"]) == Path(entry.cwd):
+                if await _runs_by_command_line(herdr, pane, entry):
+                    return pane, None
+            continue
+        if pane.get("agent") != "claude":
+            continue
+        # Read even when it runs another conversation: a later entry whose conversation it is
+        # keeps or replaces it by what's read.
+        try:
+            info = await herdr.process_info(pane["pane_id"])
+        except HerdrError:
+            info = {}
+        if _unread(info):
+            # What was read of it before still says what it runs, but not that it runs it
+            # as read: it's never closed.
+            found.unread.add(pane["pane_id"])
+        else:
+            found.unread.discard(pane["pane_id"])
+            running = await read_agent(pane, info)
+            if running is not None:
+                found.live[pane["pane_id"]] = running
+            else:
+                # Claude Code isn't among its processes now.
+                found.live.pop(pane["pane_id"], None)
+        session = _session_in(pane, found)
+        if session == entry.session_id:
+            return pane, None
+        if (_unread(info) and _hook_session(pane) is None and unsure is None
+                and Path(pane["cwd"]) == Path(entry.cwd)):
+            # As in `_unclassified`: it may run the conversation. What was read of it before
+            # doesn't rule that out: without the hook, starting another one in it doesn't show.
+            unsure = pane
+    return None, unsure
+
+
+async def _runs_by_command_line(herdr: Herdr, pane: dict, entry: SavedAgent) -> bool:
+    """Whether the Claude Code in a pane herdr doesn't show as an agent names `entry`'s
+    conversation on its command line. What's read isn't kept: it may have exited by a later
+    entry's turn, which reads it again."""
+    try:
+        info = await herdr.process_info(pane["pane_id"])
+    except HerdrError:
+        return False
+    return _names_conversation(info, entry)
+
+
+def _names_conversation(info: dict, entry: SavedAgent) -> bool:
+    """Whether the Claude Code in a pane's process-info names `entry`'s conversation on its
+    command line."""
+    process = claude_process(info)
+    argv = process.get("argv") if process is not None else None
+    return isinstance(argv, list) and session_id_in([arg for arg in argv if isinstance(arg, str)]) == entry.session_id
+
+
+async def _close(
+    herdr: Herdr, pane: dict | None, found: _Found, what: str = "the shell left"
+) -> tuple[bool, str]:
+    """Close what herdr left of an agent, if anything: whether it's gone (True when there was
+    none), and a note for the log line either way, so the log says which pane went and why."""
     if pane is None:
-        return ""
+        return True, ""
     found.closed.add(pane["pane_id"])
     try:
         await herdr.close_pane(pane["pane_id"])
     except HerdrError as error:
-        return f" (couldn't close {what} in {pane['pane_id']}: {error})"
-    return f" (closed {what} in {pane['pane_id']})"
+        return False, f" (couldn't close {what} in {pane['pane_id']}: {error})"
+    return True, f" (closed {what} in {pane['pane_id']})"
 
 
-async def _keep_failed(path: Path, entry: SavedAgent) -> None:
+# What `_status_now` gives for a pane herdr shows no agent in now: Claude Code has exited.
+_NO_AGENT = "no agent"
+
+
+async def _status_now(herdr: Herdr, pane: dict) -> str | None:
+    """The status herdr gives `pane`'s agent now, or _NO_AGENT; None when herdr can't say, or
+    the pane id is another terminal's."""
+    try:
+        agent = await herdr.get_agent(pane["pane_id"])
+    except HerdrError as error:
+        return _NO_AGENT if error.code == "agent_not_found" else None
+    if agent.get("terminal_id") != pane.get("terminal_id"):
+        return None
+    if not agent.get("agent"):
+        return _NO_AGENT
+    return agent.get("agent_status", "unknown")
+
+
+async def _still_there(herdr: Herdr, pane: dict) -> bool:
+    """Whether `pane`'s terminal is still open, after a close that failed: it may have timed
+    out after going through, or what ran in it exited. True when herdr can't say."""
+    try:
+        panes = await herdr.list_panes()
+    except HerdrError:
+        return True
+    return any(other.get("terminal_id") == pane.get("terminal_id") for other in panes)
+
+
+async def _adopt(path: Path, entry: SavedAgent, resumed: dict, found: _Found, stopped: set[str]) -> None:
+    """Take `resumed`, which runs `entry`'s conversation, as the agent's own pane from now on."""
+    # First: a write that fails mustn't let a later entry close the pane.
+    found.claimed.add(resumed["terminal_id"])
+    found.sessions.add(entry.session_id)
+    kept = entry.model_copy(
+        update={"pane_id": resumed["pane_id"], "terminal_id": resumed["terminal_id"], "misses": 0,
+                "restore_failed": False}
+    )
+    try:
+        await asyncio.to_thread(_replace, path, entry.terminal_id, kept)
+    except (OSError, StateError):
+        # As for a restored agent: the old terminal is gone for good, so the watcher's next
+        # write drops the stale entry, whose old pane id now another terminal's would make the
+        # next round look like a herdr restart, and saves the pane from its snapshot.
+        stopped.add(entry.terminal_id)
+        raise
+
+
+async def _forget(path: Path, entry: SavedAgent, stopped: set[str]) -> None:
+    """Take `entry` out of agents.json for good."""
+    try:
+        await asyncio.to_thread(forget, path, entry.terminal_id)
+    except (OSError, StateError):
+        # As for a restored agent whose entry couldn't be written: the watcher's next write
+        # drops it, whose old pane id, should a new server hand it to another terminal, would
+        # make the next round look like a herdr restart and start the agent again.
+        stopped.add(entry.terminal_id)
+        raise
+
+
+async def _keep_failed(path: Path, entry: SavedAgent, found: _Found) -> None:
     """Mark `entry` as one the restore couldn't start, so the snapshots leave it be. Its misses
-    go back to 0: an earlier miss would otherwise get it forgotten at the next restart."""
+    go back to 0: an earlier miss would otherwise get it forgotten at the next restart.
+    Forgotten instead if its conversation was stopped through the bridge meanwhile."""
+    if entry.session_id and entry.session_id in found.stopped_sessions:
+        log.info("%s: forgotten rather than kept: its conversation %s was stopped through the bridge",
+                 entry.name or entry.cwd, entry.session_id)
+        await asyncio.to_thread(forget, path, entry.terminal_id)
+        return
     failed = entry.model_copy(update={"restore_failed": True, "misses": 0})
-    await asyncio.to_thread(_replace, path, entry.terminal_id, failed)
+    await asyncio.to_thread(_replace, path, entry.terminal_id, failed, found.stopped_sessions)
 
 
-def _session_of(pane: dict) -> str | None:
+def _conversation_stopped(entry: SavedAgent, found: _Found) -> bool:
+    """Whether `entry`'s conversation was stopped through the bridge, so the entry would bring
+    it back: kept by a restore, left behind by a stop that couldn't take it out, or read
+    before a stop during this restore took it out of the file."""
+    session = entry.session_id
+    return bool(session) and session in found.stopped_sessions and (
+        entry.restore_failed or session in found.unforgotten or session not in found.stopped_before
+    )
+
+
+def _session_in(pane: dict, found: _Found) -> str | None:
+    """The conversation a Claude pane runs, as a save would record it: herdr's hook says,
+    else its command line (a conversation resumed in a config without the hook)."""
+    running = found.live.get(pane.get("pane_id"))
+    if running is not None:
+        return running.session_id
+    return _hook_session(pane)
+
+
+def _unread(info: dict) -> bool:
+    """Whether a pane's process-info tells nothing of what runs in it: herdr couldn't be
+    asked ({}), or listed no foreground processes."""
+    return not info or not info.get("foreground_processes")
+
+
+def _hook_session(pane: dict) -> str | None:
+    """The conversation herdr's hook gives for the pane, if any."""
     session = pane.get("agent_session")
     return session.get("value") if isinstance(session, dict) else None
 
 
-def _replace(path: Path, terminal_id: str, restarted: SavedAgent) -> None:
-    """Put `restarted` where the entry for `terminal_id` was, or at the end if it's gone."""
+def _replace(path: Path, terminal_id: str, restarted: SavedAgent, stopped_sessions: set[str] = frozenset()) -> None:
+    """Put `restarted` where the entry for `terminal_id` was, or at the end if it's gone; not a
+    restore-failed one whose conversation was stopped through the bridge."""
     with locked(path):
+        if restarted.restore_failed and restarted.session_id in stopped_sessions:
+            # Checked under the lock, which stop_agent's forget takes too.
+            saved = load(path, for_writing=True)
+            save(path, saved.model_copy(update={
+                "agents": [agent for agent in saved.agents if agent.terminal_id != terminal_id]}))
+            return
         saved = load(path, for_writing=True)
         # Any other entry with the new terminal id is a stale duplicate; the one being
         # replaced may share it (a failed start keeps its id) and stays where it is.
@@ -251,8 +734,10 @@ async def watch(
     while True:
         try:
             seen = await snapshot(herdr)
-            was, answering = answering, True
-            pending = pending or await _restarted(herdr, path, was)
+            # Answering only once the check has gone through: one that fails on herdr's first
+            # round must be made again as a first round, or a lost layout goes unnoticed.
+            pending = pending or await _restarted(herdr, path, answering)
+            answering = True
             if pending:
                 await restore(service, herdr, path)
                 # Only when it ran through: one cut short by an error starts over next round.
@@ -261,11 +746,18 @@ async def watch(
                 restarted = True
             else:
                 restarted = False
-            await asyncio.to_thread(_write, path, seen, restarted, service.stopped)
+            await asyncio.to_thread(_write, path, seen, restarted, service.stopped, service.stopped_sessions,
+                                    service.unforgotten_sessions)
         except HerdrError as error:
-            if answering:
-                log.warning("herdr doesn't answer (%s); agents will be restored when it does.", error)
-            answering = False
+            if error.code != SERVER_NOT_RUNNING:
+                # Its server still runs (a timeout, output it couldn't parse): only this round
+                # failed. Counted as not answering, it would make the next round look like a
+                # new server, and bring back an agent closed by hand meanwhile.
+                log.warning("Saving the running agents failed (%s); trying again in %g s.", error, interval_s)
+            else:
+                if answering:
+                    log.warning("herdr doesn't answer (%s); agents will be restored when it does.", error)
+                answering = False
         except Exception:  # noqa: BLE001 - one bad round mustn't end the watching
             log.exception("Saving the running agents failed; trying again in %g s.", interval_s)
         await sleep(interval_s)
@@ -307,10 +799,18 @@ _has_conversation = _has_conversation_on_disk
 
 
 def _saved(path: Path) -> list[SavedAgent]:
-    return load(path).agents
+    """The saved agents, read under the file's lock: on Windows a read while another process
+    replaces the file fails. In a thread: the lock may be waited for. A read that fails
+    anyway raises: taken for no saved agents, it would end a restore that restored nothing,
+    or answer the restart check wrongly."""
+    with locked(path):
+        return load(path, must_read=True).agents
 
 
-def _write(path: Path, seen: list[SavedAgent], restarted: bool, stopped: set[str] = frozenset()) -> None:
+def _write(
+    path: Path, seen: list[SavedAgent], restarted: bool, stopped: set[str] = frozenset(),
+    stopped_sessions: set[str] | None = None, unforgotten: set[str] | None = None,
+) -> None:
     with locked(path):
         # Agents stopped through the bridge since the snapshot began are gone for good. Read
         # under the lock: stop_agent adds to `stopped` before its forget takes the lock, so
@@ -320,5 +820,17 @@ def _write(path: Path, seen: list[SavedAgent], restarted: bool, stopped: set[str
         saved = load(path, for_writing=True)
         # Also saved ones: a restore may have written an agent that a stop then closed before
         # its forget could find it.
-        kept = [agent for agent in saved.agents if agent.terminal_id not in gone]
+        # And entries for a conversation stopped through the bridge that would bring it
+        # back: kept by a restore, or left by a stop that couldn't take them out. One that
+        # runs again (resumed by hand) is wanted again: no longer stopped.
+        running = {agent.session_id for agent in seen if agent.session_id}
+        if stopped_sessions:
+            stopped_sessions.difference_update(running)
+        ended = frozenset(stopped_sessions or ())
+        unforgotten_now = frozenset(unforgotten or ()) & ended
+        kept = [agent for agent in saved.agents if agent.terminal_id not in gone and not (
+            agent.session_id in ended and (agent.restore_failed or agent.session_id in unforgotten_now))]
+        if unforgotten is not None:
+            # Taken out now, as the stop would have; any written later is on purpose.
+            unforgotten.difference_update(unforgotten_now | running)
         save(path, saved.model_copy(update={"agents": merge(kept, seen, restarted)}))

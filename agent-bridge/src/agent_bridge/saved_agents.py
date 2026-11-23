@@ -59,13 +59,16 @@ def agents_file() -> Path:
     return state_file().with_name("agents.json")
 
 
-def load(path: Path, for_writing: bool = False) -> SavedAgents:
+def load(path: Path, for_writing: bool = False, must_read: bool = False) -> SavedAgents:
     """The saved agents; empty when there are none, or the file can't be used (warned).
 
     `for_writing`, for a caller that saves over the file next: a file that couldn't be read,
     or that a newer agent-bridge wrote, raises StateError instead, so writing never wipes
     agents that are saved but not running now. A corrupt one still reads as empty: nothing
-    in it can be restored, and writing over it is how it recovers."""
+    in it can be restored, and writing over it is how it recovers.
+
+    `must_read`: a file that couldn't be read (a passing error, such as a sharing violation
+    on Windows) raises StateError too, rather than read as no saved agents."""
     try:
         data = path.read_bytes()
     except FileNotFoundError:
@@ -73,6 +76,8 @@ def load(path: Path, for_writing: bool = False) -> SavedAgents:
     except OSError as error:
         if for_writing:
             raise StateError(f"Can't read {path} ({error.strerror}), so it isn't written either.") from None
+        if must_read:
+            raise StateError(f"Can't read {path} ({error.strerror}).") from None
         log.warning("Can't read %s (%s); no agents will be restored from it.", path, error.strerror)
         return SavedAgents()
     try:
@@ -132,39 +137,53 @@ async def snapshot(herdr: Herdr) -> list[SavedAgent]:
             info = await herdr.process_info(agent["pane_id"])
         except HerdrError:
             continue
-        process = claude_process(info)
-        if process is None:
-            continue
-        argv = process.get("argv")
-        argv = [arg for arg in argv if isinstance(arg, str)] if isinstance(argv, list) else []
-        # Off the event loop: reading another process's memory may block, on Windows above all.
-        environ = await asyncio.to_thread(claude_environ, info)
-        session = agent.get("agent_session")
-        if isinstance(session, dict) and session.get("kind") == "id" and session.get("value"):
-            session_id = session["value"]
-        else:
-            session_id = session_id_in(argv)
-        found.append(
-            SavedAgent(
-                name=agent.get("name"),
-                cwd=agent["cwd"],
-                config_dir=(environ.get("CLAUDE_CONFIG_DIR") or None) if environ is not None else None,
-                config_dir_unknown=environ is None,
-                args=clean_args(argv[1:]),
-                session_id=session_id,
-                pane_id=agent["pane_id"],
-                terminal_id=agent["terminal_id"],
-            )
-        )
+        saved = await read_agent(agent, info)
+        if saved is not None:
+            found.append(saved)
     return found
+
+
+async def read_agent(agent: dict, info: dict) -> SavedAgent | None:
+    """The entry for herdr's Claude `agent`, whose pane's processes are `info`; None when
+    Claude Code isn't among them."""
+    process = claude_process(info)
+    if process is None:
+        return None
+    argv = process.get("argv")
+    argv = [arg for arg in argv if isinstance(arg, str)] if isinstance(argv, list) else []
+    # Off the event loop: reading another process's memory may block, on Windows above all.
+    environ = await asyncio.to_thread(claude_environ, info)
+    session = agent.get("agent_session")
+    if isinstance(session, dict) and session.get("kind") == "id" and session.get("value"):
+        session_id = session["value"]
+    else:
+        session_id = session_id_in(argv)
+    return SavedAgent(
+        name=agent.get("name"),
+        cwd=agent["cwd"],
+        config_dir=(environ.get("CLAUDE_CONFIG_DIR") or None) if environ is not None else None,
+        config_dir_unknown=environ is None,
+        args=clean_args(argv[1:]),
+        session_id=session_id,
+        pane_id=agent["pane_id"],
+        terminal_id=agent["terminal_id"],
+    )
 
 
 def merge(saved: list[SavedAgent], seen: list[SavedAgent], restarted: bool) -> list[SavedAgent]:
     """`seen` replaces what it matches; an agent not seen counts a miss (not after a restart,
     when none of them could be seen) and goes at MAX_MISSES. One a restore failed to start
-    is kept as it is: it isn't running by design, and the next restart retries it."""
+    is kept as it is: it isn't running by design, and the next restart retries it. A seen
+    agent whose account couldn't be read keeps the one saved for it, rather than leave a
+    restore to guess."""
     seen_ids = {agent.terminal_id for agent in seen}
-    merged = [agent.model_copy(update={"misses": 0}) for agent in seen]
+    known = {agent.terminal_id: agent.config_dir for agent in saved if not agent.config_dir_unknown}
+    merged = []
+    for agent in seen:
+        update: dict = {"misses": 0}
+        if agent.config_dir_unknown and agent.terminal_id in known:
+            update |= {"config_dir": known[agent.terminal_id], "config_dir_unknown": False}
+        merged.append(agent.model_copy(update=update))
     for agent in saved:
         if agent.terminal_id in seen_ids:
             continue
@@ -177,9 +196,17 @@ def merge(saved: list[SavedAgent], seen: list[SavedAgent], restarted: bool) -> l
     return merged
 
 
-def forget(path: Path, terminal_id: str) -> None:
+def forget(path: Path, terminal_id: str, stopped_session: str | None = None, *, stopped: bool = False) -> None:
+    """Take the agent of `terminal_id` out. `stopped`: its pane was stopped, which stops its
+    conversation (`stopped_session`, or the one saved for it), so any entry for that
+    conversation under another terminal goes too: it would bring it back."""
     with locked(path):
         saved = load(path, for_writing=True)
+        sessions = {stopped_session} if stopped_session else set()
+        if stopped:
+            sessions |= {agent.session_id for agent in saved.agents
+                         if agent.terminal_id == terminal_id and agent.session_id}
         save(path, saved.model_copy(update={
-            "agents": [agent for agent in saved.agents if agent.terminal_id != terminal_id]
+            "agents": [agent for agent in saved.agents if agent.terminal_id != terminal_id
+                       and not (stopped and agent.session_id in sessions)]
         }))

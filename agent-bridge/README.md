@@ -3,12 +3,13 @@
 A small HTTP service on the machine where your Claude Code agents run (the *agent
 host*). [`mcp-gateway`](https://github.com/placheckij/claude-remote-mcp/tree/main/mcp-gateway) calls it over the LAN. It turns each request
 into `herdr` CLI calls and returns trimmed results. herdr owns the agents, which are
-addressed by their herdr pane id (e.g. `w1:p1`); agent-bridge's own state is only its id
-and the gateway it [enrolled](#enroll-with-the-gateway) with.
+addressed by their herdr pane id (e.g. `w1:p1`); agent-bridge's own state is its id, the
+gateway it [enrolled](#enroll-with-the-gateway) with, and the agents to
+[restore](#after-a-restart) after herdr restarts.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/placheckij/claude-remote-mcp/main/docs/assets/architecture-dark.svg">
-  <img src="https://raw.githubusercontent.com/placheckij/claude-remote-mcp/main/docs/assets/architecture-light.svg" width="100%" alt="Three layers and four trust boundaries. The Claude app reaches mcp-gateway on the gateway host over MCP over HTTPS, through a Cloudflare Tunnel, with an OAuth access token; mcp-gateway keeps clients and token hashes in oauth.json, its agent hosts in bridges.json and the enrollment window in enrollment.json. mcp-gateway reaches agent-bridge on each agent host (macOS, Linux, Windows) over HTTP on the LAN with that host's bearer token, and agent hosts enroll with the gateway over the LAN with the window's secret. Each agent-bridge keeps its id and gateway in state.json, only changes agents under its allowed roots, and drives herdr through the herdr CLI; herdr runs Claude Code sessions, one per pane, each on the Claude account set up for its folder, with ids that name the host, such as mac/w1:p1.">
+  <img src="https://raw.githubusercontent.com/placheckij/claude-remote-mcp/main/docs/assets/architecture-light.svg" width="100%" alt="Three layers and four trust boundaries. The Claude app reaches mcp-gateway on the gateway host over MCP over HTTPS, through a Cloudflare Tunnel, with an OAuth access token; mcp-gateway keeps clients and token hashes in oauth.json, its agent hosts in bridges.json and the enrollment window in enrollment.json. mcp-gateway reaches agent-bridge on each agent host (macOS, Linux, Windows) over HTTP on the LAN with that host's bearer token, and agent hosts enroll with the gateway over the LAN with the window's secret. Each agent-bridge keeps its id and gateway in state.json and the agents to restore after herdr restarts in agents.json, only changes agents under its allowed roots on request, and drives herdr through the herdr CLI; herdr runs Claude Code sessions, one per pane, each on the Claude account set up for its folder, with ids that name the host, such as mac/w1:p1.">
 </picture>
 
 It sees every herdr agent of its user, including ones started by hand, and controls those
@@ -19,7 +20,7 @@ whose folder is under the allowed roots.
 | | |
 |---|---|
 | OS | macOS, Linux or Windows (natively), wherever [herdr](https://github.com/herdrdev/herdr) runs. Tested on macOS 27.2 (Apple silicon), Ubuntu 26.04 LTS (x86_64, systemd 259) and Windows 11 25H2 (Windows PowerShell 5.1). The service setup needs launchd on macOS, systemd user units on Linux, and Windows 10 version 1809 or later. |
-| herdr | 0.8.0 or newer (tested with 0.8.0 and 0.9.5); its server must be running for the same user (it is whenever herdr is open, and keeps running after you detach; `agent-bridge setup` starts it at boot or login) |
+| herdr | 0.8.0 or newer (tested with 0.8.0 and 0.9.5; [restoring agents](#after-a-restart) only with 0.9.5); its server must be running for the same user (it is whenever herdr is open, and keeps running after you detach; `agent-bridge setup` starts it at boot or login) |
 | Claude Code | the `claude` CLI, installed and logged in for that user |
 | Python | 3.11+, via [uv](https://docs.astral.sh/uv/) (uv installs it if needed); on Windows, uv 0.12.4 or newer, as older ones install a windowless agent-bridge that opens a console window |
 | Network | reachable from the gateway host on one TCP port (default 8765), and able to reach the gateway on its port (8766) to enroll and, at every start, to report its address. Give the host a fixed LAN address, e.g. a DHCP reservation. Nothing is exposed to the internet. |
@@ -79,26 +80,65 @@ is not reachable, the host is asleep, logged out, or agent-bridge isn't running.
 When herdr's server restarts, whether after a host restart or `herdr server stop`, its
 agents end. While it runs, `serve` saves every herdr pane running Claude Code to
 `agents.json`, beside `state.json`, every 30 seconds: its name, folder, `CLAUDE_CONFIG_DIR`,
-Claude arguments (without session flags, a prompt typed on the command line, or a flag
-it doesn't know followed by a word) and session id. An agent drops out of the file after
-two saves without it, and `stop_agent` drops it at once.
+Claude arguments (without session flags, `--print`, `--worktree`, `--from-pr`,
+`--teleport`, `--cloud`, a prompt typed on the command line, or a flag it doesn't know
+followed by a word) and session id. An agent drops out of the file after
+two saves without it, and `stop_agent` drops it, and any other entry for its conversation,
+at once.
 
 `serve` takes herdr's server as restarted when a saved agent's pane id is back with a new
 terminal id. It does too when herdr answers for the first time since `serve` started, or
-again after not answering, and none of the saved agents' terminals is there. Then it
+again after its server wasn't running, and none of the saved agents' terminals is there. Then it
 restores each saved agent that isn't running, one after another: a new workspace, its
-account, `--resume <session id>` and its arguments; an agent never prompted has no
+account (if its environment couldn't be read, the one its folder would get now),
+`--resume <session id>` and its arguments; an agent never prompted has no
 conversation to resume, so it starts fresh under the same `--session-id`. Without a session id it uses
 `--continue`, but only if no other saved agent shares its folder and account, else a fresh
-conversation. Agents started by hand come back too. Panes herdr resumed with the wrong
-account or arguments are closed and replaced.
+conversation. Agents started by hand come back too. A pane running a saved agent's
+conversation with the wrong account or arguments, whether herdr resumed it or you did, is
+closed and replaced, but only when herdr reports it idle or done, also when asked again
+right before closing it, its process could be read and shows other arguments, or an
+account read from it that isn't the saved one, and it is gone after closing. Otherwise
+it's left as it is and kept as the agent's: one working, waiting for an approval, that
+herdr can't classify, one with its arguments whose account can't be read, or one herdr
+doesn't show as an agent yet but whose command line resumes the conversation. An idle one
+whose process couldn't be read when the panes were listed is kept as the agent's if Claude
+Code is found in it at its turn; if it can't be read then either, it's left and the agent
+kept for the next restart: Claude Code may have exited from it. One read earlier in the
+restore, unchanged since, but not again is left and kept as the agent's. If herdr's resume
+exits during the restore and leaves a shell, an idle one (only the shell in the foreground, no Claude Code
+among its jobs) is closed and the agent started; any other is left, and the agent kept for
+the next restart, as it is when herdr, asked again, can't say what runs there or still
+calls it busy. So is the agent while a Claude agent in its folder with no conversation from
+herdr's hook and a process that can't be read, or a Claude Code stopped with ctrl-Z in the
+shell herdr left (or that shell's jobs can't be read), may be running its conversation.
+None of these holds off an agent whose conversation's pane was just closed to be replaced.
+An idle shell herdr left where the agent was, in its folder, is closed, also when the
+start is then held off, unless a pane seen before its turn that runs its conversation is
+kept as the agent's, replaced, gone or stopped through agent-bridge; a shell running
+something is left alone. Right before
+starting an agent, the restore looks for its conversation again in panes opened or resumed
+meanwhile, and in its folder's panes herdr doesn't show as agents yet. A conversation can
+still start twice whenever the restore doesn't see it running: for example outside herdr,
+in a pane whose process can't be read and that herdr's hook gives no conversation for, in
+a Claude Code stopped with ctrl-Z outside the shell herdr left, under `--continue` or
+`/resume` without the hook, or when it's resumed by hand after the restore's last look. An
+agent stopped through agent-bridge is never restored, nor is its
+conversation from another entry until it runs again, even if it's stopped while a restore
+runs; the exception is when `agents.json` can't be written then and agent-bridge restarts
+before it can be, and, for its conversation from another entry, when herdr's hook didn't
+give it.
 
 - A restored agent is idle: no prompt is sent.
 - An agent that a save had already missed comes back only if herdr brought its pane back,
   in its folder; otherwise it's dropped. Each conversation comes back once.
 - The restore ignores `AGENT_BRIDGE_MAX_AGENTS` and the allowed roots, so every agent
-  that was running comes back. [Folder trust](#folder-trust) still applies: an untrusted
-  folder's entry is dropped. `start_agent` adds `--session-id <uuid>`, unless
+  that was running comes back. It marks no folder trusted, even under the
+  [trust root](#folder-trust): an entry whose folder Claude Code doesn't trust is dropped. An agent that fails to start for another reason stays in
+  `agents.json` until it starts, or its conversation runs elsewhere or is stopped through
+  the bridge: it is tried again at the next restart, and whenever herdr
+  answers for the first time since `serve` started, or again after its server wasn't
+  running, while every saved agent is one that failed to start. `start_agent` adds `--session-id <uuid>`, unless
   `AGENT_BRIDGE_CLAUDE_ARGS` picks the conversation itself, so a new agent's conversation
   is known from its first save.
 - Not brought back: the turn a busy agent was in the middle of, panes that weren't Claude
@@ -108,23 +148,28 @@ For a planned herdr restart, `agent-bridge save-agents` saves the list right now
 `AGENT_BRIDGE_RESTORE_AGENTS=false` turns the restore off, and with it the saving: `serve`
 then removes `agents.json`.
 
-`agent-bridge setup` prepares herdr for this, and `--no-agent-restore` undoes it and
-removes `agents.json`:
+`agent-bridge setup` prepares herdr for this, and `--no-agent-restore` undoes the first
+step below and removes `agents.json`:
 
-- herdr resumes agents on its own too, which would bring each back a second time. Setup
+- herdr resumes agents on its own too, without their account or arguments. The restore
+  replaces those it finds, but one that hasn't come up yet when it runs would make a second
+  copy. Setup
   turns that off with `resume_agents_on_restore = false` under `[session]`, on a line it
   marks with a comment, and only if you haven't set the key yourself. It edits
   `HERDR_CONFIG_PATH`, else both `$XDG_CONFIG_HOME/herdr/config.toml` and
   `~/.config/herdr/config.toml` when they differ (on Windows, `%APPDATA%\herdr\config.toml`
-  in place of the second). `--no-agent-restore` and `uninstall` remove only that marked line.
+  in place of the second). `--no-agent-restore` and `uninstall` remove only that marked line
+  (and the `[session]` header right above it, if nothing else is left under it).
 - herdr's Claude hook tells herdr which conversation each agent is in, also after `/clear`
   or `/resume`, so a restored agent resumes the one it was in. Without the hook, an agent
   `start_agent` started comes back as the conversation it was started with (its
-  `--session-id`), and one started by hand as its folder's latest. Setup runs `herdr integration install
+  `--session-id`), and one started by hand as the conversation its command line named by id, else
+  its folder's latest (or fresh, if another saved agent shares its folder and account). Setup runs `herdr integration install
   claude` for each non-default config agent-bridge uses (`AGENT_BRIDGE_CLAUDE_CONFIG_DIR`
   and the accounts'), never the default `~/.claude`: it warns when that lacks the hook, and
   `agent-bridge check` notes it. Install it there yourself with `herdr integration
-  install claude`.
+  install claude`. `--no-agent-restore` and `uninstall` leave the hook in place; it only
+  reports to herdr and can stay.
 - `--agent-restore` and `--no-agent-restore` are kept across re-runs unless you pass one.
 
 ## API
@@ -344,10 +389,11 @@ From a checkout: `uv sync --all-packages`, then
 | `agent-bridge rename <name>` | renames this host on that gateway | 0 renamed, 2 name won't do, 3 name taken, 4 gateway unreachable, 5 renamed but the state file couldn't be saved, 6 gateway too old to rename hosts, 1 otherwise (e.g. not enrolled); 4, 6 and a refusal from the gateway print the gateway's command, but a gateway without this host says to enroll again |
 | `agent-bridge unenroll` | leaves that gateway | 0, also when the gateway can't be reached or refuses (prints the gateway's command); 1 if the state file can't be read or written |
 | `agent-bridge save-agents` | saves the Claude agents running in herdr now, to [restore](#after-a-restart) after a planned restart | 0 saved, or restore is off and there's nothing to save; 1 otherwise |
+| `agent-bridge start-herdr [--herdr-bin PATH] [--log-file PATH]` | starts herdr's server in the background unless one runs, and waits until it answers; the macOS launch agent and the Windows task run it at login | 0 running or started, 1 otherwise |
 | `agent-bridge check` | checks the settings, the files' modes, herdr, herdr's server (running, and not one herdr says to restart; one still on an older version, e.g. started before `herdr update`, passes with a note), the running service and the gateway, one line each | 0 all passed, 1 one failed |
 | `agent-bridge check --token-format <token>`, `--name-format <name>` | checks a value before it goes in the env file | 0 fine, 2 not (why, on stderr) |
 | `agent-bridge setup` | installs or updates the service and enrolls it ([macOS](#with-agent-bridge-setup), [Linux](#as-a-service-on-linux-systemd-user-unit), [Windows](#as-a-service-on-windows-task-scheduler)) | 0 installed (enrolled or not), 1 refused or failed |
-| `agent-bridge uninstall` | leaves the gateway, then removes the service, its settings, state and log (on Windows, also the firewall rule). Their folders go too, except one holding other files, which it names | 0 removed, also when leaving the gateway failed (prints the gateway's command); 1 run with sudo, on Linux without a systemd user manager, or on Windows as another account than the desktop's (nothing is removed then); 1 also if the service couldn't be removed, after the host has left the gateway |
+| `agent-bridge uninstall` | leaves the gateway, then removes the service, its settings, state, `agents.json` and log (on Windows, also the firewall rule). Their folders go too, except one holding other files, which it names | 0 removed, also when leaving the gateway failed (prints the gateway's command); 1 run with sudo, on Linux without a systemd user manager, or on Windows as another account than the desktop's (nothing is removed then); 1 also if the service couldn't be removed, after the host has left the gateway |
 | `agent-bridge --version` | prints the installed version | 0 |
 
 ### Enroll with the gateway
@@ -408,13 +454,14 @@ Then it:
    a free port;
 2. writes the env file, readable only by you. Other settings in it are kept, but not its
    comments;
-3. writes and loads a second launch agent, `dev.claude-remote.agent-bridge-herdr`, which
+3. writes the plist, then writes and loads a second launch agent, `dev.claude-remote.agent-bridge-herdr`, which
    runs `agent-bridge start-herdr` at every login: that starts `herdr server` in the
    background unless a herdr server runs, waits until it answers, and exits. Loading it
    runs it once, so setup starts herdr's server if none runs. It never restarts a running
    one, so running agents stay, and it doesn't start one again after `herdr server stop`
    until the next login. Its log is `~/Library/Logs/agent-bridge-herdr.log`;
-4. writes the plist and (re)starts the service;
+4. prepares herdr for [restoring agents](#after-a-restart) (or undoes that with
+   `--no-agent-restore`), and (re)starts the service;
 5. runs `agent-bridge check`. Before the first enrollment its last line is
    `--    not enrolled with a gateway`, which isn't a failure;
 6. enrolls with the gateway. If the gateway has another host by that name, it asks for
@@ -428,8 +475,9 @@ without stopping herdr's server, if you start it yourself; re-runs keep it off u
 `--herdr-service` brings it back. A Mac set up before the launch agent existed gets it at
 its next setup.
 
-`--no-agent-restore` keeps [agents from coming back](#after-a-restart) after herdr's
-server restarts and gives herdr its own resume back; re-runs keep what is installed.
+`--no-agent-restore` turns off agent-bridge's [restore](#after-a-restart) and gives herdr
+its own resume back (which brings agents back without their account or arguments);
+re-runs keep what is installed.
 
 The last lines name the host as the gateway knows it. Nothing needs copying to the
 gateway host. The plist runs agent-bridge at a path upgrades keep:
@@ -528,9 +576,15 @@ What setup does, step by step:
    launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/dev.claude-remote.agent-bridge.plist
    ```
 
-4. Run `agent-bridge check`, then [enroll](#enroll-with-the-gateway) it.
+4. Prepare herdr as in [After a restart](#after-a-restart): add
+   `resume_agents_on_restore = false` under `[session]` in herdr's config, and run
+   `CLAUDE_CONFIG_DIR=<config dir> herdr integration install claude` for each
+   non-default config the agents use. Or set `AGENT_BRIDGE_RESTORE_AGENTS=false`;
+   without either, herdr resumes agents too, and one it brings back late can run twice.
+5. Run `agent-bridge check`, then [enroll](#enroll-with-the-gateway) it.
 
-If the macOS firewall is on, allow incoming connections for Python when asked.
+This leaves starting herdr's server at login to you (setup's second launch agent does
+it). If the macOS firewall is on, allow incoming connections for Python when asked.
 
 #### Restart, stop, uninstall
 
@@ -565,17 +619,17 @@ launchctl enable gui/$(id -u)/dev.claude-remote.agent-bridge      # undo
 launchctl print gui/$(id -u)/dev.claude-remote.agent-bridge-herdr | grep -E 'state|last exit'
 cat ~/Library/Logs/agent-bridge-herdr.log
 
-# Uninstall: leaves the gateway, then removes both launch agents, the env and state files
-# and the logs. ~/Library/Application Support/agent-bridge goes too, unless it holds other
+# Uninstall: leaves the gateway, then removes both launch agents, the env and state files,
+# agents.json and the logs. ~/Library/Application Support/agent-bridge goes too, unless it holds other
 # files. herdr's server keeps running with its agents until you stop it (herdr server
 # stop) or log out. Then `brew uninstall agent-bridge` (or `uv tool uninstall
 # claude-remote-mcp-agent-bridge`) removes the package.
 agent-bridge uninstall
 ```
 
-By hand, uninstalling is `agent-bridge unenroll`, `launchctl bootout` as above for both
-labels, then removing both plists, `~/Library/Application Support/agent-bridge` and the
-logs.
+By hand, uninstalling is `agent-bridge unenroll`, `launchctl bootout` as above for each
+label you loaded, then removing their plists, `~/Library/Application Support/agent-bridge`
+and the logs, and the `resume_agents_on_restore` line if you added it.
 
 ### As a service on Linux (systemd user unit)
 
@@ -607,16 +661,19 @@ installed yet, and takes the same flags. Then it:
    running, and never restarts it, so running agents stay;
 4. turns on lingering (`loginctl enable-linger`). If that is refused, it prints the
    `sudo` command to run;
-5. (re)starts agent-bridge, runs `agent-bridge check` (`--    not enrolled with a gateway`
-   before the first enrollment isn't a failure), and enrolls. If the gateway has another
+5. prepares herdr for [restoring agents](#after-a-restart) (or undoes that with
+   `--no-agent-restore`), (re)starts agent-bridge, runs `agent-bridge check`
+   (`--    not enrolled with a gateway` before the first enrollment isn't a failure), and
+   enrolls. If the gateway has another
    host by that name, it asks for another one.
 
 `--no-herdr-service` installs no service for herdr's server, if you start it yourself,
 and removes one installed before without stopping its server; `--herdr-service` brings it
 back. Re-runs keep what is installed.
 
-`--no-agent-restore` keeps [agents from coming back](#after-a-restart) after herdr's
-server restarts and gives herdr its own resume back; re-runs keep what is installed.
+`--no-agent-restore` turns off agent-bridge's [restore](#after-a-restart) and gives herdr
+its own resume back (which brings agents back without their account or arguments);
+re-runs keep what is installed.
 
 The unit runs `~/.local/bin/agent-bridge`, which `uv tool upgrade
 claude-remote-mcp-agent-bridge` keeps; re-run `agent-bridge setup` after upgrading, which
@@ -651,7 +708,7 @@ uv tool uninstall claude-remote-mcp-agent-bridge
 ```
 
 `agent-bridge uninstall` leaves the gateway (`agent-bridge unenroll`), then removes both
-services, the env file and the state file. Its log is in the journal, which systemd ages
+services, the env file, the state file and `agents.json`. Its log is in the journal, which systemd ages
 out. herdr's server keeps running with its agents until you stop it (`herdr server stop`)
 or reboot; until then `systemctl --user` lists `agent-bridge-herdr.service` as
 `not-found active running`. Lingering stays on; `loginctl disable-linger` turns it off.
@@ -701,8 +758,9 @@ which isn't on `PATH`: herdr's installer links that folder to the current releas
    runs it once, so setup starts herdr's server if none runs. It never restarts a running
    one, so running agents stay, and it doesn't start one again after `herdr server stop`
    until the next logon;
-5. stops the running agent-bridge, if any, and registers the `agent-bridge` task, which
-   starts it. The task runs `agent-bridgew.exe serve --log-file …`: `agent-bridgew` is
+5. prepares herdr for [restoring agents](#after-a-restart) (or undoes that with
+   `--no-agent-restore`), then stops the running agent-bridge, if any, and registers the
+   `agent-bridge` task, which starts it. The task runs `agent-bridgew.exe serve --log-file …`: `agent-bridgew` is
    agent-bridge without a console window, as `pythonw` is to `python`. Nothing runs in
    between, so ending the task ends agent-bridge. It is tried every minute while you're
    logged on, which does nothing while it runs. That way it starts once Wi-Fi brings up
@@ -715,8 +773,9 @@ which isn't on `PATH`: herdr's installer links that folder to the current releas
 server, if you start it yourself; re-runs keep it off until `--herdr-service` brings it
 back. A host set up before the task existed gets it at its next setup.
 
-`--no-agent-restore` keeps [agents from coming back](#after-a-restart) after herdr's
-server restarts and gives herdr its own resume back; re-runs keep what is installed.
+`--no-agent-restore` turns off agent-bridge's [restore](#after-a-restart) and gives herdr
+its own resume back (which brings agents back without their account or arguments);
+re-runs keep what is installed.
 
 Its log is `%LOCALAPPDATA%\agent-bridge\agent-bridge.log`, with a line for each start and one
 per request; `start-herdr` adds its lines there too. Once it passes 1 MB it is moved to `agent-bridge.log.1`, replacing the one
@@ -774,7 +833,7 @@ schtasks /Change /TN agent-bridge /DISABLE; schtasks /End /TN agent-bridge
 agent-bridge setup
 
 # Uninstall: leaves the gateway, then removes both tasks, the firewall rule (one UAC
-# prompt), the env file, the state file and the log. herdr's server keeps running with its
+# prompt), the env file, the state file, agents.json and the log. herdr's server keeps running with its
 # agents until you stop it (herdr server stop) or log off.
 agent-bridge uninstall
 uv tool uninstall claude-remote-mcp-agent-bridge
@@ -785,7 +844,7 @@ uv tool uninstall claude-remote-mcp-agent-bridge
 While agent-bridge is stopped, mcp-gateway answers every tool call with "The agent host
 is not reachable", and the agents in herdr keep running untouched. Uninstalling leaves
 behind any folder-trust entries agent-bridge added to the agents' Claude configs
-(`<config dir>/.claude.json`); they're ordinary trust entries and can
+(`<config dir>/.claude.json`) and herdr's Claude hook in their `settings.json`; both can
 stay. To retire the whole setup, also
 [uninstall mcp-gateway](https://github.com/placheckij/claude-remote-mcp/blob/main/mcp-gateway/README.md#stop-restart-uninstall) and remove the
 connector in claude.ai.

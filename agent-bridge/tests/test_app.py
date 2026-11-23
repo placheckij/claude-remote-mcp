@@ -958,6 +958,33 @@ def test_stop_agent_forgets_saved_entry(root: Path, tmp_path: Path) -> None:
     assert [entry.terminal_id for entry in load(path).agents] == ["t2"]
 
 
+@pytest.mark.parametrize("known_by", ["hook", "saved entry"])
+def test_stop_agent_forgets_an_entry_a_restore_kept_for_its_conversation(
+    root: Path, tmp_path: Path, known_by: str
+) -> None:
+    # A restore kept the agent under its old terminal while this pane may have run its
+    # conversation: stopping the pane stops the conversation, so that entry goes too.
+    session = "11111111-2222-3333-4444-555555555555"
+    found = {**agent(cwd=str(root / "project")), "terminal_id": "t1"}
+    if known_by == "hook":
+        found["agent_session"] = {"kind": "id", "value": session}
+    runner = FakeRunner({("agent", "get"): ok({"agent": found}), ("pane", "close"): ok({"type": "ok"})})
+    path = tmp_path / "agents.json"
+    kept = saved("t-old").model_copy(update={"session_id": session, "restore_failed": True})
+    other = saved("t3").model_copy(update={"session_id": "99999999-2222-3333-4444-555555555555",
+                                           "restore_failed": True})
+    agents = [kept, other, saved("t2")]
+    if known_by == "saved entry":
+        agents.append(saved("t1").model_copy(update={"session_id": session}))
+    save(path, SavedAgents(agents=agents))
+    service = AgentService(Settings(token=TOKEN, allowed_roots=(root.resolve(),)), Herdr(runner=runner),
+                           saved_path=path)
+
+    asyncio.run(service.stop_agent("w1:p1"))
+
+    assert [entry.terminal_id for entry in load(path).agents] == ["t3", "t2"]
+
+
 def test_stop_agent_succeeds_when_agents_json_cant_be_written(
     root: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -966,7 +993,7 @@ def test_stop_agent_succeeds_when_agents_json_cant_be_written(
         ("pane", "close"): ok({"type": "ok"}),
     })
 
-    def unwritable(path: Path, terminal_id: str) -> None:
+    def unwritable(path: Path, terminal_id: str, *args, **kwargs) -> None:
         raise StateError(f"Can't write {path} (No space left on device).")
 
     monkeypatch.setattr(agents_module, "forget", unwritable)

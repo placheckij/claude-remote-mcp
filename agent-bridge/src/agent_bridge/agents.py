@@ -60,6 +60,12 @@ class AgentService:
         self.saved_path = saved_path
         # Terminal ids of agents stopped here, which the saving of running agents leaves out.
         self.stopped: set[str] = set()
+        # Conversations those agents ran: an entry a restore kept for one under an old
+        # terminal would bring it back, so it goes too.
+        self.stopped_sessions: set[str] = set()
+        # Those of them whose stop couldn't take their entries out of agents.json: any entry
+        # for one is stale. Otherwise one written since (save-agents) was written on purpose.
+        self.unforgotten_sessions: set[str] = set()
         # Serializes count-then-start and picking a free name, so concurrent requests can
         # neither exceed the limit nor give two agents the same name.
         self._start_lock = asyncio.Lock()
@@ -338,29 +344,43 @@ class AgentService:
         return await self._detailed(self._summarize(renamed))
 
     async def stop_agent(self, agent_id: str) -> None:
-        # Looking the agent up first also refuses panes that aren't agents (a shell, a dev
-        # server): herdr answers agent_not_found, a 404.
-        found = await self.herdr.get_agent(agent_id)
-        self._check_controllable(agent_id, found)
-        terminal_id = found.get("terminal_id")
-        if terminal_id:
-            # Before the pane closes and before forget: the watcher may be midway through a
-            # snapshot that still lists this agent, and it checks this set under the file's
-            # lock, which forget takes too, so the agent can't be written back.
-            self.stopped.add(terminal_id)
-        try:
-            await self.herdr.close_pane(agent_id)
-        except BaseException:
-            # Still running, so it must stay saved.
-            self.stopped.discard(terminal_id)
-            raise
+        # After any start under way: a restore's start whose pane closed under it would keep
+        # the saved agent for the next restart.
+        async with self._start_lock:
+            # Looking the agent up first also refuses panes that aren't agents (a shell, a dev
+            # server): herdr answers agent_not_found, a 404.
+            found = await self.herdr.get_agent(agent_id)
+            self._check_controllable(agent_id, found)
+            terminal_id = found.get("terminal_id")
+            session = found.get("agent_session")
+            session_id = session.get("value") if isinstance(session, dict) else None
+            stopping_session = bool(session_id) and session_id not in self.stopped_sessions
+            if terminal_id:
+                # Before the pane closes and before forget: the watcher may be midway through a
+                # snapshot that still lists this agent, and it checks this set under the file's
+                # lock, which forget takes too, so the agent can't be written back.
+                self.stopped.add(terminal_id)
+            if stopping_session:
+                # As early: a restore may be deciding to keep an entry for it right now.
+                self.stopped_sessions.add(session_id)
+            try:
+                await self.herdr.close_pane(agent_id)
+            except BaseException:
+                # Still running, so it must stay saved.
+                self.stopped.discard(terminal_id)
+                if stopping_session:
+                    self.stopped_sessions.discard(session_id)
+                raise
         if self.saved_path is None or not terminal_id:
             return
         try:
             # In a thread: the file's lock may be waited for.
-            await asyncio.to_thread(forget, self.saved_path, terminal_id)
+            await asyncio.to_thread(forget, self.saved_path, terminal_id, session_id, stopped=True)
         except (OSError, StateError) as error:
-            # The agent is stopped all the same; only a restart would bring it back.
+            # The agent is stopped all the same; the restore and the watcher's writes drop its
+            # entries instead.
+            if session_id:
+                self.unforgotten_sessions.add(session_id)
             log.warning("Stopped %s but couldn't take it out of %s: %s", agent_id, self.saved_path, error)
 
     async def _controllable(self, agent_id: str) -> AgentSummary:

@@ -13,7 +13,7 @@ BRIDGE_VERSION = version("claude-remote-mcp-agent-bridge")
 
 
 def host_name() -> str:
-    """The hostname as a slug, e.g. "Jakubs-MacBook-Pro.local" → "jakubs-macbook-pro"."""
+    """The hostname as a slug, e.g. "Work-MacBook-Pro.local" → "work-macbook-pro"."""
     first = socket.gethostname().split(".")[0].lower()
     return re.sub(r"[^a-z0-9]+", "-", first).strip("-") or "agent-host"
 

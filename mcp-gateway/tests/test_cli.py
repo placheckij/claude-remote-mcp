@@ -243,7 +243,7 @@ def test_run_as_root_on_a_folder_of_root_it_stays_root(bridges: Bridges, as_root
     assert bridges("list")[0] == 0 and as_root == []
 
 
-@pytest.mark.parametrize("name", ["3dprinter", "jakubs-macbook-pro-14-inch-2023-m3-max-edition", None])
+@pytest.mark.parametrize("name", ["3dprinter", "work-macbook-pro-14-inch-2023-m3-max-edition", None])
 def test_add_points_to_name_when_the_bridge_names_itself_unusably(bridges: Bridges, name) -> None:
     # agent-bridge names itself after its hostname, which may start with a digit or be long.
     bridges.info = httpx.Response(200, json={**INFO, "name": name})

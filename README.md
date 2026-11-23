@@ -11,7 +11,7 @@ Voice-driven remote orchestration for Claude Code agents. Manage and supervise A
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/assets/architecture-dark.svg">
-  <img src="docs/assets/architecture-light.svg" width="100%" alt="Three layers and four trust boundaries. The Claude app reaches mcp-gateway on the gateway host over MCP over HTTPS, through a Cloudflare Tunnel, with an OAuth access token; mcp-gateway keeps clients and token hashes in oauth.json, its agent hosts in bridges.json and the enrollment window in enrollment.json. mcp-gateway reaches agent-bridge on each agent host (macOS, Linux, Windows) over HTTP on the LAN with that host's bearer token, and agent hosts enroll with the gateway over the LAN with the window's secret. Each agent-bridge keeps its id and gateway in state.json, only changes agents under its allowed roots, and drives herdr through the herdr CLI; herdr runs Claude Code sessions, one per pane, each on the Claude account set up for its folder, with ids that name the host, such as mac/w1:p1.">
+  <img src="docs/assets/architecture-light.svg" width="100%" alt="Three layers and four trust boundaries. The Claude app reaches mcp-gateway on the gateway host over MCP over HTTPS, through a Cloudflare Tunnel, with an OAuth access token; mcp-gateway keeps clients and token hashes in oauth.json, its agent hosts in bridges.json and the enrollment window in enrollment.json. mcp-gateway reaches agent-bridge on each agent host (macOS, Linux, Windows) over HTTP on the LAN with that host's bearer token, and agent hosts enroll with the gateway over the LAN with the window's secret. Each agent-bridge keeps its id and gateway in state.json and the agents to restore after herdr restarts in agents.json, only changes agents under its allowed roots on request, and drives herdr through the herdr CLI; herdr runs Claude Code sessions, one per pane, each on the Claude account set up for its folder, with ids that name the host, such as mac/w1:p1.">
 </picture>
 
 ## Components
@@ -25,12 +25,12 @@ mcp-gateway as `claude-remote-mcp-gateway`, agent-bridge as
 | Directory | Runs on | Role |
 |---|---|---|
 | [`mcp-gateway/`](mcp-gateway/) | an always-on host: a small home server, a VPS, or the agent host itself (Linux, macOS; `mcp-gateway setup` needs Debian-based Linux with systemd) | MCP server exposed to claude.ai through a Cloudflare Tunnel; signs the connector in with OAuth (a passphrase) and forwards tool calls to `agent-bridge`. `mcp-gateway setup` installs it as a service. |
-| [`agent-bridge/`](agent-bridge/) | the machine where herdr and Claude Code run (macOS, Linux or Windows) | Narrow LAN-only HTTP API translating requests into `herdr` CLI calls; keeps only its id and its gateway. Enrolls itself with the gateway. Runs as a launchd or systemd user service, or a Windows scheduled task. |
+| [`agent-bridge/`](agent-bridge/) | the machine where herdr and Claude Code run (macOS, Linux or Windows) | Narrow LAN-only HTTP API translating requests into `herdr` CLI calls; keeps its id, its gateway and the agents to restore after herdr restarts. Enrolls itself with the gateway. Runs as a launchd or systemd user service, or a Windows scheduled task. |
 
 You need:
 
-- [herdr](https://github.com/herdrdev/herdr) 0.8.0+ and Claude Code on each agent
-  host;
+- [herdr](https://github.com/herdrdev/herdr) 0.8.0+ (restoring agents after a restart is
+  tested with 0.9.5) and Claude Code on each agent host;
 - [uv](https://docs.astral.sh/uv/) on each host;
 - an agent host that stays awake while you use it, and on macOS and Windows logged in (see
   [Keeping the agent host available](agent-bridge/README.md#keeping-the-agent-host-available));
@@ -61,7 +61,9 @@ The gateway and the agent host can be one machine.
    [Linux](agent-bridge/README.md#as-a-service-on-linux-systemd-user-unit),
    [Windows](agent-bridge/README.md#as-a-service-on-windows-task-scheduler)), and paste
    that string when asked; it installs the service (a launch agent, a systemd user
-   service, or a logon task with a firewall rule for the port on Private networks) and
+   service, or a logon task with a firewall rule for the port on Private networks), a
+   second one that starts herdr's server, prepares herdr for
+   [bringing agents back after a restart](agent-bridge/README.md#after-a-restart), and
    enrolls it. Or, without setup, start [agent-bridge](agent-bridge/README.md#run), then
    [enroll](agent-bridge/README.md#enroll-with-the-gateway) it with that string.
 4. **claude.ai:** [add the custom connector](mcp-gateway/README.md#add-the-connector-in-claudeai)
@@ -88,6 +90,10 @@ restarts the service on the new version.
 - **Agent hosts:** `uv tool upgrade claude-remote-mcp-agent-bridge` (on a Mac with the
   Homebrew install, `brew upgrade agent-bridge`), then `agent-bridge setup`. On Windows, stop agent-bridge first: the upgrade fails while it
   runs (see [Windows](agent-bridge/README.md#as-a-service-on-windows-task-scheduler)).
+  From 0.3.0, agent-bridge restores agents after herdr restarts; setup turns off herdr's own
+  resume unless you set it yourself, so agents don't come back twice (see
+  [After a restart](agent-bridge/README.md#after-a-restart)). `--no-agent-restore` turns
+  the restore off and keeps herdr's.
 
 Update the gateway first: it calls agent-bridges at its own API version and one behind, but
 not newer ones. The agent hosts can then follow one at a time.
@@ -97,10 +103,10 @@ not newer ones. The agent hosts can then follow one at a time.
 uv workspace; each component is its own package.
 
 ```sh
-uv sync --all-packages
-uv run --package claude-remote-mcp-agent-bridge pytest agent-bridge
-uv run --package claude-remote-mcp-gateway pytest mcp-gateway
-uv run pytest   # both packages plus tests/ (enrollment end to end)
+uv sync --all-packages --frozen
+uv run --frozen --package claude-remote-mcp-agent-bridge pytest agent-bridge
+uv run --frozen --package claude-remote-mcp-gateway pytest mcp-gateway
+uv run --frozen --exact pytest   # both packages plus tests/ (enrollment end to end)
 ```
 
 ### Releasing
