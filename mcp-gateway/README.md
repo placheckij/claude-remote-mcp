@@ -172,8 +172,9 @@ What stands between the internet and an agent:
    limit (`AGENT_BRIDGE_MAX_AGENTS`, 10 by default), and folder trust only under its
    trust root, never in the default Claude config. These bound requests: after a herdr
    restart, agent-bridge 0.3.0+ starts the agents that were running again, idle, without
-   the roots, the limit or the trust root, each with the account and Claude arguments it
-   ran with, not the current `AGENT_BRIDGE_CLAUDE_ARGS` (a folder Claude Code doesn't trust already
+   the roots, the limit or the trust root, each with the account it ran with (its folder's
+   now if that couldn't be read) and the Claude arguments it ran with, not the current
+   `AGENT_BRIDGE_CLAUDE_ARGS` (a folder Claude Code doesn't trust already
    isn't restored; see [After a restart](https://github.com/placheckij/claude-remote-mcp/tree/main/agent-bridge#after-a-restart)).
 6. **Optional: Cloudflare Access** with a service token in front of the hostname (see
    below).

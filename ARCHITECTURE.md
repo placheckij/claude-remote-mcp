@@ -94,8 +94,8 @@ The machine where Claude Code runs. See [agent-bridge/README.md](agent-bridge/RE
 - **Agent restore.** While it runs, agent-bridge saves the Claude agents in herdr to
   `agents.json`, and when herdr's server restarts it starts them again, idle, each on its
   account with its arguments, resuming its conversation where there is one, never one
-  stopped through agent-bridge, nor a second copy of a conversation a pane may already run
-  (the agent is kept for the next restart when it can't tell). Setup turns
+  stopped through agent-bridge, nor a second copy of a conversation a pane is seen to run
+  (the agent is kept for the next restart when a pane in its folder may run it). Setup turns
   herdr's own resume off in herdr's config, unless you set it yourself, and installs herdr's Claude hook in the non-default Claude configs, so herdr
   knows each agent's conversation. `AGENT_BRIDGE_RESTORE_AGENTS=false` turns this off;
   setup `--no-agent-restore` also gives herdr its own resume back. See

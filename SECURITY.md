@@ -48,8 +48,8 @@ the gateway first, see [Updating](README.md#updating)).
   arguments or under another account read from it, whether herdr resumed it or someone did by hand,
   and an idle leftover shell with no Claude Code among its jobs); and reading each
   Claude agent's command line (its arguments are saved) and process environment every
-  30 s, of which only `CLAUDE_CONFIG_DIR` is kept, and the names of the processes under a
-  pane's shell;
+  30 s, of which only `CLAUDE_CONFIG_DIR` is kept, and the names and command lines of the
+  processes under a pane's shell;
   it skips the allowed-roots and agent-count limits and the trust root by design, and
   doesn't restore a folder Claude Code doesn't already trust
 - `mcp-gateway setup` (its `deploy/setup.sh`): the root-owned copy in `/opt/mcp-gateway`
