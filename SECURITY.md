@@ -33,9 +33,12 @@ the gateway first, see [Updating](README.md#updating)).
 - agent-bridge: its token check, the allowed-roots and agent-count limits, which Claude
   account (login and config) an agent starts under, and folder trust (it must never
   write the default Claude config, or trust a folder outside the trust root)
-- agent restore: `agents.json` (mode 0600) and the restore after a herdr restart, which
-  starts only agents that were running, on their saved folder, account and arguments;
-  it skips the allowed-roots and agent-count limits by design, but not folder trust
+- agent restore: `agents.json` (mode 0600 on macOS and Linux) and the restore after a
+  herdr restart, which starts only agents that were running in herdr, ones started by
+  hand included, on their saved folder, account (the folder's, if theirs couldn't be
+  read) and arguments;
+  it skips the allowed-roots and agent-count limits and the trust root by design, and
+  doesn't restore a folder Claude Code doesn't already trust
 - `mcp-gateway setup` (its `deploy/setup.sh`): the root-owned copy in `/opt/mcp-gateway`
   the service runs, the `/usr/local/bin/mcp-gateway` wrapper that runs commands as the
   service user, file permissions, where tokens end up, the tunnel's ingress rules

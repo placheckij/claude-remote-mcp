@@ -19,8 +19,8 @@ invitation**: only the people listed below can open them.
   passing CI (tests on Linux and macOS, plus agent-bridge's on Windows, each on Python
   3.11 and 3.13; `shellcheck` on the gateway's setup script). New commits after an
   approval need a new one.
-- Pull requests that touch `agent-bridge/src/` or the gateway's modules that talk to it
-  also run the mixed-versions check in `.github/compat/` against the last releases
+- Pull requests that touch `agent-bridge/src/`, the gateway's modules that talk to it or
+  the check itself (the paths in `.github/workflows/compat.yml`) also run the mixed-versions check in `.github/compat/` against the last releases
   (`.github/compat/check.py` says how to run it locally). GitHub doesn't require it, as
   it runs only for those paths, so check its result yourself.
 - Add or update tests with the change: a bug fix comes with a test that fails without it.

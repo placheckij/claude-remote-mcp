@@ -112,8 +112,8 @@ For a planned herdr restart, `agent-bridge save-agents` saves the list right now
 `AGENT_BRIDGE_RESTORE_AGENTS=false` turns the restore off, and with it the saving: `serve`
 then removes `agents.json`.
 
-`agent-bridge setup` prepares herdr for this, and `--no-agent-restore` undoes it and
-removes `agents.json`:
+`agent-bridge setup` prepares herdr for this, and `--no-agent-restore` undoes the first
+step below and removes `agents.json`:
 
 - herdr resumes agents on its own too, which would bring each back a second time. Setup
   turns that off with `resume_agents_on_restore = false` under `[session]`, on a line it
@@ -128,7 +128,8 @@ removes `agents.json`:
   claude` for each non-default config agent-bridge uses (`AGENT_BRIDGE_CLAUDE_CONFIG_DIR`
   and the accounts'), never the default `~/.claude`: it warns when that lacks the hook, and
   `agent-bridge check` notes it. Install it there yourself with `herdr integration
-  install claude`.
+  install claude`. `--no-agent-restore` and `uninstall` leave the hook in place; it only
+  reports to herdr and can stay.
 - `--agent-restore` and `--no-agent-restore` are kept across re-runs unless you pass one.
 
 ## API
@@ -419,7 +420,8 @@ Then it:
    runs it once, so setup starts herdr's server if none runs. It never restarts a running
    one, so running agents stay, and it doesn't start one again after `herdr server stop`
    until the next login. Its log is `~/Library/Logs/agent-bridge-herdr.log`;
-4. writes the plist and (re)starts the service;
+4. writes the plist, prepares herdr for [restoring agents](#after-a-restart) (or undoes
+   that with `--no-agent-restore`), and (re)starts the service;
 5. runs `agent-bridge check`. Before the first enrollment its last line is
    `--    not enrolled with a gateway`, which isn't a failure;
 6. enrolls with the gateway. If the gateway has another host by that name, it asks for
@@ -612,8 +614,10 @@ installed yet, and takes the same flags. Then it:
    running, and never restarts it, so running agents stay;
 4. turns on lingering (`loginctl enable-linger`). If that is refused, it prints the
    `sudo` command to run;
-5. (re)starts agent-bridge, runs `agent-bridge check` (`--    not enrolled with a gateway`
-   before the first enrollment isn't a failure), and enrolls. If the gateway has another
+5. prepares herdr for [restoring agents](#after-a-restart) (or undoes that with
+   `--no-agent-restore`), (re)starts agent-bridge, runs `agent-bridge check`
+   (`--    not enrolled with a gateway` before the first enrollment isn't a failure), and
+   enrolls. If the gateway has another
    host by that name, it asks for another one.
 
 `--no-herdr-service` installs no service for herdr's server, if you start it yourself,
@@ -706,8 +710,9 @@ which isn't on `PATH`: herdr's installer links that folder to the current releas
    runs it once, so setup starts herdr's server if none runs. It never restarts a running
    one, so running agents stay, and it doesn't start one again after `herdr server stop`
    until the next logon;
-5. stops the running agent-bridge, if any, and registers the `agent-bridge` task, which
-   starts it. The task runs `agent-bridgew.exe serve --log-file …`: `agent-bridgew` is
+5. prepares herdr for [restoring agents](#after-a-restart) (or undoes that with
+   `--no-agent-restore`), then stops the running agent-bridge, if any, and registers the
+   `agent-bridge` task, which starts it. The task runs `agent-bridgew.exe serve --log-file …`: `agent-bridgew` is
    agent-bridge without a console window, as `pythonw` is to `python`. Nothing runs in
    between, so ending the task ends agent-bridge. It is tried every minute while you're
    logged on, which does nothing while it runs. That way it starts once Wi-Fi brings up
@@ -790,7 +795,7 @@ uv tool uninstall claude-remote-mcp-agent-bridge
 While agent-bridge is stopped, mcp-gateway answers every tool call with "The agent host
 is not reachable", and the agents in herdr keep running untouched. Uninstalling leaves
 behind any folder-trust entries agent-bridge added to the agents' Claude configs
-(`<config dir>/.claude.json`); they're ordinary trust entries and can
+(`<config dir>/.claude.json`) and herdr's Claude hook in their `settings.json`; both can
 stay. To retire the whole setup, also
 [uninstall mcp-gateway](https://github.com/placheckij/claude-remote-mcp/blob/main/mcp-gateway/README.md#stop-restart-uninstall) and remove the
 connector in claude.ai.

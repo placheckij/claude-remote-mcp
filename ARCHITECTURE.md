@@ -74,8 +74,8 @@ The machine where Claude Code runs. See [agent-bridge/README.md](agent-bridge/RE
   each agent request into `herdr` CLI calls. Its settings are an env file, and a state
   file holds its id and, once enrolled, its gateway. `agent-bridge setup` installs it as a
   service, with a second one that starts herdr's server, and enrolls it; its commands are
-  `serve`, `enroll`, `rename`, `unenroll`, `save-agents`, `check`, `setup` and
-  `uninstall`.
+  `serve`, `enroll`, `rename`, `unenroll`, `save-agents`, `start-herdr`, `check`, `setup`
+  and `uninstall`.
 - **Workspace management.** herdr owns the agents. Each agent started here gets its own
   herdr workspace, named after the agent; renaming renames both. Agents are addressed by
   their herdr pane id, e.g. `w1:p1`.
@@ -93,8 +93,8 @@ The machine where Claude Code runs. See [agent-bridge/README.md](agent-bridge/RE
   trust dialog; the default config is never changed.
 - **Agent restore.** While it runs, agent-bridge saves the Claude agents in herdr to
   `agents.json`, and when herdr's server restarts it starts them again, idle, each on its
-  account with `--resume` and its arguments. Setup turns herdr's own resume off in herdr's
-  config and installs herdr's Claude hook in the non-default Claude configs, so herdr
+  account with its arguments, resuming its conversation where there is one. Setup turns
+  herdr's own resume off in herdr's config, unless you set it yourself, and installs herdr's Claude hook in the non-default Claude configs, so herdr
   knows each agent's conversation. `AGENT_BRIDGE_RESTORE_AGENTS=false` (setup
   `--no-agent-restore`) turns this off. See
   [After a restart](agent-bridge/README.md#after-a-restart).
@@ -134,8 +134,8 @@ What each file holds and where it is: [mcp-gateway](mcp-gateway/README.md#what-i
    changing a host's record that host's token. Enrollment refuses callers off the LAN
    and anything the tunnel forwards.
 4. **agent-bridge to agents:** allowed roots, the agent limit and the trust root bound
-   what a request can start or change. Restoring after a herdr restart skips the roots
-   and the limit: it starts only agents that were running, from `agents.json`, and folder
-   trust still applies.
+   what a request can start or change. Restoring after a herdr restart skips the roots,
+   the limit and the trust root: it starts only agents that were running, from
+   `agents.json`, and a folder Claude Code doesn't already trust isn't restored.
 
 [SECURITY.md](SECURITY.md) says how to report a vulnerability and what is in scope.

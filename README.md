@@ -29,8 +29,8 @@ mcp-gateway as `claude-remote-mcp-gateway`, agent-bridge as
 
 You need:
 
-- [herdr](https://github.com/herdrdev/herdr) 0.8.0+ and Claude Code on each agent
-  host;
+- [herdr](https://github.com/herdrdev/herdr) 0.8.0+ (restoring agents after a restart is
+  tested with 0.9.5) and Claude Code on each agent host;
 - [uv](https://docs.astral.sh/uv/) on each host;
 - an agent host that stays awake while you use it, and on macOS and Windows logged in (see
   [Keeping the agent host available](agent-bridge/README.md#keeping-the-agent-host-available));
