@@ -35,8 +35,9 @@ the gateway first, see [Updating](README.md#updating)).
   write the default Claude config, or trust a folder outside the trust root)
 - agent restore: `agents.json` (mode 0600 on macOS and Linux) and the restore after a
   herdr restart, which starts only agents that were running in herdr, ones started by
-  hand included, on their saved folder, account (the folder's, if theirs couldn't be
-  read) and arguments;
+  hand included, on their saved folder, account (if theirs couldn't be read, the one the
+  folder would get if started now) and arguments, and the panes it closes (herdr's own
+  resume of a saved agent, an idle leftover shell);
   it skips the allowed-roots and agent-count limits and the trust root by design, and
   doesn't restore a folder Claude Code doesn't already trust
 - `mcp-gateway setup` (its `deploy/setup.sh`): the root-owned copy in `/opt/mcp-gateway`

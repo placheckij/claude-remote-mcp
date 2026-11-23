@@ -163,13 +163,13 @@
   <path class="accent" d="M88,572 H118"/>
   <text class="sans title" x="138" y="596" text-anchor="middle">agent-bridge</text>
   <text class="mono sub" x="138" y="615" text-anchor="middle">launchd service</text>
-  <path class="store" d="M230,570 H316 V592 L308,600 H220 V578 Z"/>
-  <text class="mono storetitle" x="268" y="584" text-anchor="middle">state.json</text>
-  <text class="mono sub" x="268" y="594" text-anchor="middle">id · gateway</text>
-  <path class="store" d="M230,606 H316 V628 L308,636 H220 V614 Z"/>
+  <path class="store" d="M226,562 H320 V590 L312,598 H216 V570 Z"/>
+  <text class="mono storetitle" x="268" y="578" text-anchor="middle">state.json</text>
+  <text class="mono sub" x="268" y="591" text-anchor="middle">id · gateway</text>
+  <path class="store" d="M226,604 H320 V632 L312,640 H216 V612 Z"/>
   <text class="mono storetitle" x="268" y="620" text-anchor="middle">agents.json</text>
-  <text class="mono sub" x="268" y="630" text-anchor="middle">to restore</text>
-  <path class="dotted" d="M208,585 H220 M208,621 H220"/>
+  <text class="mono sub" x="268" y="633" text-anchor="middle">to restore</text>
+  <path class="dotted" d="M208,580 H216 M208,622 H216"/>
   <path class="wire" d="M96,628 V690"/>
   <path class="head" d="M91,682 L96,690 L101,682 Z"/>
   <text class="mono wirelabel" x="104" y="682">herdr CLI</text>
@@ -198,13 +198,13 @@
   <path class="accent" d="M376,572 H406"/>
   <text class="sans title" x="426" y="596" text-anchor="middle">agent-bridge</text>
   <text class="mono sub" x="426" y="615" text-anchor="middle">systemd user unit</text>
-  <path class="store" d="M518,570 H604 V592 L596,600 H508 V578 Z"/>
-  <text class="mono storetitle" x="556" y="584" text-anchor="middle">state.json</text>
-  <text class="mono sub" x="556" y="594" text-anchor="middle">id · gateway</text>
-  <path class="store" d="M518,606 H604 V628 L596,636 H508 V614 Z"/>
+  <path class="store" d="M514,562 H608 V590 L600,598 H504 V570 Z"/>
+  <text class="mono storetitle" x="556" y="578" text-anchor="middle">state.json</text>
+  <text class="mono sub" x="556" y="591" text-anchor="middle">id · gateway</text>
+  <path class="store" d="M514,604 H608 V632 L600,640 H504 V612 Z"/>
   <text class="mono storetitle" x="556" y="620" text-anchor="middle">agents.json</text>
-  <text class="mono sub" x="556" y="630" text-anchor="middle">to restore</text>
-  <path class="dotted" d="M496,585 H508 M496,621 H508"/>
+  <text class="mono sub" x="556" y="633" text-anchor="middle">to restore</text>
+  <path class="dotted" d="M496,580 H504 M496,622 H504"/>
   <path class="wire" d="M384,628 V690"/>
   <path class="head" d="M379,682 L384,690 L389,682 Z"/>
   <text class="mono wirelabel" x="392" y="682">herdr CLI</text>
@@ -233,13 +233,13 @@
   <path class="accent" d="M664,572 H694"/>
   <text class="sans title" x="714" y="596" text-anchor="middle">agent-bridge</text>
   <text class="mono sub" x="714" y="615" text-anchor="middle">scheduled task</text>
-  <path class="store" d="M806,570 H892 V592 L884,600 H796 V578 Z"/>
-  <text class="mono storetitle" x="844" y="584" text-anchor="middle">state.json</text>
-  <text class="mono sub" x="844" y="594" text-anchor="middle">id · gateway</text>
-  <path class="store" d="M806,606 H892 V628 L884,636 H796 V614 Z"/>
+  <path class="store" d="M802,562 H896 V590 L888,598 H792 V570 Z"/>
+  <text class="mono storetitle" x="844" y="578" text-anchor="middle">state.json</text>
+  <text class="mono sub" x="844" y="591" text-anchor="middle">id · gateway</text>
+  <path class="store" d="M802,604 H896 V632 L888,640 H792 V612 Z"/>
   <text class="mono storetitle" x="844" y="620" text-anchor="middle">agents.json</text>
-  <text class="mono sub" x="844" y="630" text-anchor="middle">to restore</text>
-  <path class="dotted" d="M784,585 H796 M784,621 H796"/>
+  <text class="mono sub" x="844" y="633" text-anchor="middle">to restore</text>
+  <path class="dotted" d="M784,580 H792 M784,622 H792"/>
   <path class="wire" d="M672,628 V690"/>
   <path class="head" d="M667,682 L672,690 L677,682 Z"/>
   <text class="mono wirelabel" x="680" y="682">herdr CLI</text>

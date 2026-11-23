@@ -1,5 +1,5 @@
-"""`agent-bridge serve | enroll | rename | unenroll | check | setup | uninstall | start-herdr`: what the platform
-setups run.
+"""`agent-bridge serve | enroll | rename | unenroll | save-agents | check | setup | uninstall | start-herdr`:
+what the platform setups run.
 
 Exit codes are part of the deploy contract the setups are built against: `enroll` and
 `rename` exit 3 when the name is taken (ask for another) and 4 when the gateway can't be

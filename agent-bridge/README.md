@@ -414,14 +414,14 @@ Then it:
    a free port;
 2. writes the env file, readable only by you. Other settings in it are kept, but not its
    comments;
-3. writes and loads a second launch agent, `dev.claude-remote.agent-bridge-herdr`, which
+3. writes the plist, then writes and loads a second launch agent, `dev.claude-remote.agent-bridge-herdr`, which
    runs `agent-bridge start-herdr` at every login: that starts `herdr server` in the
    background unless a herdr server runs, waits until it answers, and exits. Loading it
    runs it once, so setup starts herdr's server if none runs. It never restarts a running
    one, so running agents stay, and it doesn't start one again after `herdr server stop`
    until the next login. Its log is `~/Library/Logs/agent-bridge-herdr.log`;
-4. writes the plist, prepares herdr for [restoring agents](#after-a-restart) (or undoes
-   that with `--no-agent-restore`), and (re)starts the service;
+4. prepares herdr for [restoring agents](#after-a-restart) (or undoes that with
+   `--no-agent-restore`), and (re)starts the service;
 5. runs `agent-bridge check`. Before the first enrollment its last line is
    `--    not enrolled with a gateway`, which isn't a failure;
 6. enrolls with the gateway. If the gateway has another host by that name, it asks for
@@ -535,9 +535,15 @@ What setup does, step by step:
    launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/dev.claude-remote.agent-bridge.plist
    ```
 
-4. Run `agent-bridge check`, then [enroll](#enroll-with-the-gateway) it.
+4. Prepare herdr as in [After a restart](#after-a-restart): add
+   `resume_agents_on_restore = false` under `[session]` in herdr's config, and run
+   `CLAUDE_CONFIG_DIR=<config dir> herdr integration install claude` for each
+   non-default config the agents use. Or set `AGENT_BRIDGE_RESTORE_AGENTS=false`;
+   without either, herdr and agent-bridge both bring each agent back.
+5. Run `agent-bridge check`, then [enroll](#enroll-with-the-gateway) it.
 
-If the macOS firewall is on, allow incoming connections for Python when asked.
+This leaves starting herdr's server at login to you (setup's second launch agent does
+it). If the macOS firewall is on, allow incoming connections for Python when asked.
 
 #### Restart, stop, uninstall
 
@@ -580,9 +586,9 @@ cat ~/Library/Logs/agent-bridge-herdr.log
 agent-bridge uninstall
 ```
 
-By hand, uninstalling is `agent-bridge unenroll`, `launchctl bootout` as above for both
-labels, then removing both plists, `~/Library/Application Support/agent-bridge` and the
-logs.
+By hand, uninstalling is `agent-bridge unenroll`, `launchctl bootout` as above for each
+label you loaded, then removing their plists, `~/Library/Application Support/agent-bridge`
+and the logs, and the `resume_agents_on_restore` line if you added it.
 
 ### As a service on Linux (systemd user unit)
 
