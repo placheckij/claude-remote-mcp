@@ -361,7 +361,9 @@ class AgentService:
             return
         try:
             # In a thread: the file's lock may be waited for.
-            await asyncio.to_thread(forget, self.saved_path, terminal_id)
+            session = found.get("agent_session")
+            session_id = session.get("value") if isinstance(session, dict) else None
+            await asyncio.to_thread(forget, self.saved_path, terminal_id, session_id, stopped=True)
         except (OSError, StateError) as error:
             # The agent is stopped all the same; only a restart would bring it back.
             log.warning("Stopped %s but couldn't take it out of %s: %s", agent_id, self.saved_path, error)
