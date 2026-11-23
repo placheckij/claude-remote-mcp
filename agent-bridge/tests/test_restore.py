@@ -471,6 +471,73 @@ def test_herdrs_resume_whose_status_cant_be_read_again_is_closed_only_once_gone(
         assert "left as it is" in line
 
 
+def _no_agent_answers(resumed: dict) -> dict:
+    """How herdr may answer `agent get` for a pane whose Claude Code has exited."""
+    shell = {key: value for key, value in resumed.items() if key not in ("agent", "agent_status", "agent_session")}
+    return {
+        "agent_not_found": err("agent_not_found"),
+        "shell": ok({"agent": resumed | {"agent": None, "agent_status": "unknown"}}),
+        "no_agent_fields": ok({"agent": shell}),
+    }
+
+
+@pytest.mark.parametrize("answer", ["agent_not_found", "shell", "no_agent_fields"])
+def test_herdrs_resume_whose_claude_exited_leaving_an_idle_shell_is_closed_and_replaced(
+    path: Path, folder: Path, tmp_path: Path, answer: str
+) -> None:
+    # herdr's own resume runs plain `claude --resume <id>`, without the account's config:
+    # Claude Code can't find the conversation there and exits, leaving a shell. Adopted, the
+    # entry would point at a shell no save lists, and age out unrestored.
+    resumed = pane(session=UUID, cwd=str(folder))
+    runner = runner_for([resumed], ["claude", "--resume", UUID],
+                        **{"agent get w1:p1": _no_agent_answers(resumed)[answer],
+                           "pane process-info --pane w1:p1": [process_info(["claude", "--resume", UUID]), shell_info()]})
+    [line] = run(runner, path, [entry(folder, config_dir="/cfg", session_id=UUID)], tmp_path)
+
+    assert runner.called("pane", "close") == [["pane", "close", "w1:p1"]]
+    assert claude_args(runner) == ["--resume", UUID, "--permission-mode", "auto"]
+    assert line.endswith(f"resuming {UUID} (closed the shell left in w1:p1)")
+    [restored] = load(path).agents
+    assert (restored.terminal_id, restored.restore_failed) == ("t90", False)
+
+
+@pytest.mark.parametrize("answer", ["agent_not_found", "shell", "no_agent_fields"])
+@pytest.mark.parametrize("left", ["running", "unreadable"])
+def test_herdrs_resume_whose_claude_exited_leaving_a_pane_not_known_idle_is_left_and_kept_for_the_next_restart(
+    path: Path, folder: Path, tmp_path: Path, answer: str, left: str
+) -> None:
+    # Something runs in it, or what does can't be read: left. Not adopted either: no save
+    # lists a pane herdr doesn't show as an agent, so the entry would age out unrestored.
+    resumed = pane(session=UUID, cwd=str(folder))
+    now = shell_info("vim") if left == "running" else err("timeout")
+    runner = runner_for([resumed], ["claude", "--resume", UUID],
+                        **{"agent get w1:p1": _no_agent_answers(resumed)[answer],
+                           "pane process-info --pane w1:p1": [process_info(["claude", "--resume", UUID]), now]})
+    [line] = run(runner, path, [entry(folder, config_dir="/cfg", session_id=UUID)], tmp_path)
+
+    assert runner.called("pane", "close") == runner.called("agent", "start") == []
+    assert "kept for the next restart" in line and "w1:p1" in line
+    [kept] = load(path).agents
+    assert (kept.terminal_id, kept.restore_failed) == ("t-old", True)
+
+
+def test_herdrs_resume_whose_claude_exited_and_whose_pane_has_gone_is_replaced(
+    path: Path, folder: Path, tmp_path: Path
+) -> None:
+    resumed = pane(session=UUID, cwd=str(folder))
+    runner = runner_for([resumed], ["claude", "--resume", UUID],
+                        **{"agent get w1:p1": err("agent_not_found"),
+                           "pane process-info --pane w1:p1": [process_info(["claude", "--resume", UUID]),
+                                                              err("pane_not_found")],
+                           "pane list": [ok({"panes": [resumed]}), ok({"panes": []})]})
+    run(runner, path, [entry(folder, config_dir="/cfg", session_id=UUID)], tmp_path)
+
+    assert runner.called("pane", "close") == []
+    assert claude_args(runner) == ["--resume", UUID, "--permission-mode", "auto"]
+    [restored] = load(path).agents
+    assert restored.terminal_id == "t90"
+
+
 def test_herdr_resume_with_other_args_is_replaced(path: Path, folder: Path, tmp_path: Path) -> None:
     runner = runner_for([pane(session=UUID)], ["claude", "--resume", UUID])
     run(runner, path, [entry(folder, session_id=UUID)], tmp_path)

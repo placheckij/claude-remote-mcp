@@ -159,18 +159,37 @@ async def _restore_one(
         # listed one may be stale, as earlier agents' starts take seconds each, and the user
         # may have prompted it since.
         status = await _status_now(herdr, resumed)
-        if status is not None and status not in FINISHED:
-            await _adopt(path, entry, resumed, found, service.stopped)
-            return f"{label}: busy in {resumed['pane_id']}, which runs its conversation, left as it is", False
-        if status is None:
-            closed, note = False, f" (the status of herdr's own resume in {resumed['pane_id']} couldn't be read again)"
+        if status == _NO_AGENT:
+            # Claude Code in it has exited since the panes were listed (herdr's own resume
+            # doesn't find a conversation kept in another account's config), leaving a shell.
+            # Adopted, the entry would point at a pane no save lists, and age out unrestored.
+            if await _idle_shell(herdr, resumed):
+                # A leftover shell: the agent starts even if it couldn't be closed.
+                closed, note = await _close(herdr, resumed, found)
+            elif await _still_there(herdr, resumed):
+                # Something runs in it, or what does can't be read: left, and the agent kept
+                # for the next restart. As when a start is held off, the shell herdr left goes.
+                _, note = await _close(herdr, shell, found)
+                await _keep_failed(path, entry)
+                return (f"{label}: not restored, kept for the next restart: herdr no longer shows an agent in "
+                        f"{resumed['pane_id']}, which ran its conversation, and it isn't known to be an idle "
+                        f"shell, left as it is{note}"), True
+            else:
+                closed, note = False, ""
         else:
-            closed, note = await _close(herdr, resumed, found, "herdr's own resume")
-        if not closed and await _still_there(herdr, resumed):
-            # Still running its conversation: a second copy would answer as the first.
-            await _adopt(path, entry, resumed, found, service.stopped)
-            what = "couldn't be closed" if status is not None else "wasn't closed"
-            return f"{label}: {resumed['pane_id']} runs its conversation but {what}{note}, left as it is", True
+            if status is not None and status not in FINISHED:
+                await _adopt(path, entry, resumed, found, service.stopped)
+                return f"{label}: busy in {resumed['pane_id']}, which runs its conversation, left as it is", False
+            if status is None:
+                closed, note = (False, f" (the status of herdr's own resume in {resumed['pane_id']} couldn't be "
+                                       "read again)")
+            else:
+                closed, note = await _close(herdr, resumed, found, "herdr's own resume")
+            if not closed and await _still_there(herdr, resumed):
+                # Still running its conversation: a second copy would answer as the first.
+                await _adopt(path, entry, resumed, found, service.stopped)
+                what = "couldn't be closed" if status is not None else "wasn't closed"
+                return f"{label}: {resumed['pane_id']} runs its conversation but {what}{note}, left as it is", True
         if not closed and resumed.get("terminal_id") in service.stopped:
             # Gone because it was stopped through the bridge meanwhile, which made the read
             # or the close fail.
@@ -294,15 +313,21 @@ async def _close(
     return True, f" (closed {what} in {pane['pane_id']})"
 
 
+# What `_status_now` gives for a pane herdr shows no agent in now: Claude Code has exited.
+_NO_AGENT = "no agent"
+
+
 async def _status_now(herdr: Herdr, pane: dict) -> str | None:
-    """The status herdr gives `pane`'s agent now; None when herdr can't say, or the pane id is
-    another terminal's."""
+    """The status herdr gives `pane`'s agent now, or _NO_AGENT; None when herdr can't say, or
+    the pane id is another terminal's."""
     try:
         agent = await herdr.get_agent(pane["pane_id"])
-    except HerdrError:
-        return None
+    except HerdrError as error:
+        return _NO_AGENT if error.code == "agent_not_found" else None
     if agent.get("terminal_id") != pane.get("terminal_id"):
         return None
+    if not agent.get("agent"):
+        return _NO_AGENT
     return agent.get("agent_status", "unknown")
 
 
