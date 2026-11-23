@@ -45,7 +45,7 @@ or with a NUL character) come back the same way as one sentence.
 | `answer_agent` | key presses for a blocked agent's question, e.g. `["1"]`, `["Enter"]`; with `wait_seconds` also waits for the result. Marked destructive, so Claude asks first |
 | `start_agent` | new agent in a project: one folder name in agent-bridge's allowed roots, or an absolute path. The gateway passes it on as it is; agent-bridge resolves and checks it. Optional `host`; without it and with several hosts, the gateway asks each (`GET /projects/{name}`) and starts on the one that has the project, or answers which hosts do. An absolute path needs `host` when there are several. Optional `name`: any words, made into a slug (by default the folder's name). Optional `account` (e.g. `work`) picks the Claude login; by default agent-bridge uses the one set up for the folder, and the reply names it. `remote_control` (default true) starts it with Claude Code's Remote Control, named like the agent at start (a later rename doesn't reach it); the reply says when it ended up off (the organization's policy, or an agent-bridge too old for it) or on though not asked (`AGENT_BRIDGE_CLAUDE_ARGS`). If agent-bridge takes over 25 s, it says the agent may still be starting instead of failing |
 | `rename_agent` | new name for an agent and its herdr workspace, any words; agent-bridge turns it into a slug (`Webapp fix!` → `webapp-fix`, `-2` if another agent has it) and the reply says the name it got |
-| `stop_agent` | close an agent's pane; agent-bridge 0.3.0+ also won't restore it after a restart (marked destructive, so Claude asks first) |
+| `stop_agent` | close an agent's pane; agent-bridge 0.3.0+ also won't restore it after a restart (marked destructive, so Claude asks first). agent-bridge 0.3.0+ stops it only after an agent start under way, so during a slow start or a restore it can answer that the host didn't answer in time though the pane still closes: check with `list_agents` before stopping it again |
 
 The server's instructions tell Claude the user is probably driving: short, speakable
 answers, no code read aloud, and no approvals without asking.
@@ -172,7 +172,8 @@ What stands between the internet and an agent:
    limit (`AGENT_BRIDGE_MAX_AGENTS`, 10 by default), and folder trust only under its
    trust root, never in the default Claude config. These bound requests: after a herdr
    restart, agent-bridge 0.3.0+ starts the agents that were running again, idle, without
-   the roots, the limit or the trust root (a folder Claude Code doesn't trust already
+   the roots, the limit or the trust root, each with the account and Claude arguments it
+   ran with, not the current `AGENT_BRIDGE_CLAUDE_ARGS` (a folder Claude Code doesn't trust already
    isn't restored; see [After a restart](https://github.com/placheckij/claude-remote-mcp/tree/main/agent-bridge#after-a-restart)).
 6. **Optional: Cloudflare Access** with a service token in front of the hostname (see
    below).

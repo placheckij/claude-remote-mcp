@@ -83,7 +83,8 @@ agents end. While it runs, `serve` saves every herdr pane running Claude Code to
 Claude arguments (without session flags, `--print`, `--worktree`, `--from-pr`,
 `--teleport`, `--cloud`, a prompt typed on the command line, or a flag it doesn't know
 followed by a word) and session id. An agent drops out of the file after
-two saves without it, and `stop_agent` drops it at once.
+two saves without it, and `stop_agent` drops it, and any other entry for its conversation,
+at once.
 
 `serve` takes herdr's server as restarted when a saved agent's pane id is back with a new
 terminal id. It does too when herdr answers for the first time since `serve` started, or
@@ -102,19 +103,24 @@ it's left as it is and kept as the agent's: one working, waiting for an approval
 herdr can't classify, or that herdr doesn't show as an agent yet but whose command line
 resumes the conversation. An idle one whose process can't be read is left too, but the
 agent is kept for the next restart: Claude Code may have exited from it. If herdr's resume
-exited and left a shell, an idle one is closed and the agent started; one running
-something, or whose processes can't be read, is left, and the agent kept for the next
-restart. So is the agent while a Claude agent in its folder whose process can't be read,
-or a Claude Code stopped with ctrl-Z in the shell herdr left, may be running its
-conversation, unless the pane running it was just closed to be replaced. Right before starting an
-agent, the restore looks for its conversation again in panes opened or resumed meanwhile.
-Without such a pane, an idle shell herdr left where the agent was, in its folder, is closed
-too; a shell running something is left alone. A conversation can still start twice when the
-restore can't tell that a pane runs it: herdr's hook doesn't give the pane's conversation,
-and either its process can't be read (in another folder, or before herdr shows it as an
-agent) or its command line doesn't name the conversation (`--continue`, `/resume`). An agent stopped through agent-bridge is never restored,
-even if it's stopped while a restore runs; the one exception is when `agents.json` can't
-be written then, and agent-bridge restarts before it can be.
+exited and left a shell, an idle one (only the shell in the foreground, no Claude Code
+among its jobs) is closed and the agent started; any other is left, and the agent kept for
+the next restart, as it is when herdr, asked again, can't say what runs there or still
+calls it busy. So is the agent while a Claude agent in its folder with no conversation from
+herdr's hook and a process that can't be read, or a Claude Code stopped with ctrl-Z in the
+shell herdr left (or that shell's processes can't be read), may be running its
+conversation, unless the pane running it was just closed to be replaced. An idle shell
+herdr left where the agent was, in its folder, is closed unless a pane listed at the start
+runs its conversation, also when the start is then held off; a shell running something is
+left alone. Right before starting an agent, the restore looks for its conversation again
+in Claude agent panes opened or resumed meanwhile. A conversation can still start twice
+when the restore can't tell that a pane runs it: herdr's hook doesn't give the pane's
+conversation, and either the pane opened during the restore and herdr doesn't show it as
+an agent yet, its process can't be read (in another folder, or before herdr shows it as an
+agent), or its command line doesn't name the conversation (`--continue`, `/resume`). An
+agent stopped through agent-bridge is never restored, nor is its conversation from another
+entry until it runs again, even if it's stopped while a restore runs; the one exception is
+when `agents.json` can't be written then, and agent-bridge restarts before it can be.
 
 - A restored agent is idle: no prompt is sent.
 - An agent that a save had already missed comes back only if herdr brought its pane back,
@@ -122,7 +128,8 @@ be written then, and agent-bridge restarts before it can be.
 - The restore ignores `AGENT_BRIDGE_MAX_AGENTS` and the allowed roots, so every agent
   that was running comes back. It marks no folder trusted, even under the
   [trust root](#folder-trust): an entry whose folder Claude Code doesn't trust is dropped. An agent that fails to start for another reason stays in
-  `agents.json` until it starts: it is tried again at the next restart, and whenever herdr
+  `agents.json` until it starts, or its conversation runs elsewhere or is stopped through
+  the bridge: it is tried again at the next restart, and whenever herdr
   answers for the first time since `serve` started, or again after its server wasn't
   running, while every saved agent is one that failed to start. `start_agent` adds `--session-id <uuid>`, unless
   `AGENT_BRIDGE_CLAUDE_ARGS` picks the conversation itself, so a new agent's conversation

@@ -93,7 +93,9 @@ The machine where Claude Code runs. See [agent-bridge/README.md](agent-bridge/RE
   trust dialog; the default config is never changed.
 - **Agent restore.** While it runs, agent-bridge saves the Claude agents in herdr to
   `agents.json`, and when herdr's server restarts it starts them again, idle, each on its
-  account with its arguments, resuming its conversation where there is one. Setup turns
+  account with its arguments, resuming its conversation where there is one, never one
+  stopped through agent-bridge, nor a second copy of a conversation a pane may already run
+  (the agent is kept for the next restart when it can't tell). Setup turns
   herdr's own resume off in herdr's config, unless you set it yourself, and installs herdr's Claude hook in the non-default Claude configs, so herdr
   knows each agent's conversation. `AGENT_BRIDGE_RESTORE_AGENTS=false` turns this off;
   setup `--no-agent-restore` also gives herdr its own resume back. See
@@ -112,7 +114,7 @@ The machine where Claude Code runs. See [agent-bridge/README.md](agent-bridge/RE
 | mcp-gateway's settings: the passphrase, the public hostname | its env file on the gateway host (`/etc/mcp-gateway/env` from `mcp-gateway setup`) |
 | agent-bridge's settings | its env file on the agent host |
 | agent-bridge's id and the gateway it enrolled with | its `state.json` on the agent host |
-| Claude agents to restore after herdr restarts: name, folder, Claude config, arguments, session id, pane and terminal ids | `agents.json` beside `state.json` |
+| Claude agents to restore after herdr restarts: name, folder, Claude config, arguments, session id, pane and terminal ids, whether a restore couldn't start it | `agents.json` beside `state.json` |
 | Agents, their workspaces and output | herdr on the agent host |
 | Claude logins and trusted folders | each account's Claude config on the agent host |
 
