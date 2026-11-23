@@ -66,6 +66,8 @@ def pane(pane_id: str = "w1:p1", terminal_id: str = "t-new", agent: str | None =
     found = {
         "pane_id": pane_id, "terminal_id": terminal_id, "agent": agent, "cwd": cwd,
         "workspace_id": pane_id.split(":")[0], "name": "webapp" if agent else None,
+        # As herdr's pane list gives it: every pane has one, a shell's is "unknown".
+        "agent_status": "idle" if agent else "unknown",
     }
     if session is not None:
         found["agent_session"] = {"agent": "claude", "kind": "id", "source": "herdr:claude", "value": session}
@@ -217,6 +219,34 @@ def test_a_pane_running_its_conversation_without_the_hook_is_found_by_its_comman
     assert runner.called("pane", "close") == [["pane", "close", "w1:p1"]]
     assert len(runner.called("agent", "start")) == 1
     assert "closed" in line
+
+
+@pytest.mark.parametrize("status", ["unknown", None])
+def test_a_pane_herdr_cant_classify_running_its_conversation_is_left(
+    path: Path, folder: Path, tmp_path: Path, status: str | None
+) -> None:
+    # herdr can't tell whether it's idle: it may be in the middle of a turn.
+    unsure = pane(session=UUID, cwd=str(folder)) | {"agent_status": status}
+    runner = runner_for([unsure], ["claude", "--resume", UUID])
+    run(runner, path, [entry(folder, session_id=UUID)], tmp_path)
+
+    assert runner.called("pane", "close") == []
+    assert runner.called("agent", "start") == []
+
+
+def test_a_pane_whose_process_cant_be_read_running_its_conversation_is_left(
+    path: Path, folder: Path, tmp_path: Path
+) -> None:
+    # Whether it runs as it was can't be told, as with a shell that can't be read.
+    idle = pane(session=UUID, cwd=str(folder)) | {"agent_status": "idle"}
+    runner = runner_for([idle], **{"pane process-info": err("pane_not_found")})
+    [line] = run(runner, path, [entry(folder, session_id=UUID)], tmp_path)
+
+    assert runner.called("pane", "close") == []
+    assert runner.called("agent", "start") == []
+    assert "couldn't be read" in line
+    [kept] = load(path).agents
+    assert (kept.pane_id, kept.terminal_id) == ("w1:p1", "t-new")
 
 
 @pytest.mark.parametrize("status", ["working", "blocked"])

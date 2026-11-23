@@ -40,8 +40,8 @@ the gateway first, see [Updating](README.md#updating)).
   herdr restart (and, for agents a restore couldn't start, whenever agent-bridge starts),
   which starts only agents that were running in herdr, ones started by
   hand included, on their saved folder, account (if theirs couldn't be read, the one the
-  folder would get if started now) and arguments; the panes it closes (a pane not in a
-  turn running a saved agent's conversation under other arguments or another account, whether
+  folder would get if started now) and arguments; the panes it closes (a pane herdr
+  reports idle, whose process it could read, running a saved agent's conversation under other arguments or another account, whether
   herdr resumed it or someone did by hand, and an idle leftover shell); and reading each
   Claude agent's process environment every 30 s, of which only `CLAUDE_CONFIG_DIR` is kept;
   it skips the allowed-roots and agent-count limits and the trust root by design, and

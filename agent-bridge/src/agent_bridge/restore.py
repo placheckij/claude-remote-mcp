@@ -9,7 +9,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from agent_bridge.agents import AgentService
+from agent_bridge.agents import FINISHED, AgentService
 from agent_bridge.errors import BridgeError
 from agent_bridge.herdr import Herdr, HerdrError
 from agent_bridge.saved_agents import SavedAgent, forget, load, locked, merge, save, snapshot
@@ -110,9 +110,13 @@ async def _restore_one(
         )
         # Busy: someone resumed it and is in the middle of a turn (working, or blocked on an
         # approval), likely by hand, since setup turns herdr's own resume off. Closing it
-        # would end that turn.
-        busy = resumed.get("agent_status") in ("working", "blocked")
-        if as_it_was or busy:
+        # would end that turn. Whatever herdr doesn't know to be idle counts: "unknown" may
+        # be mid-turn too.
+        busy = resumed.get("agent_status") not in FINISHED
+        # Its process couldn't be read, so whether it runs as it was can't be told: left, as
+        # a shell that can't be read is.
+        unreadable = running is None
+        if as_it_was or busy or unreadable:
             kept = entry.model_copy(
                 update={"pane_id": resumed["pane_id"], "terminal_id": resumed["terminal_id"], "misses": 0,
                         "restore_failed": False}
@@ -122,7 +126,10 @@ async def _restore_one(
             found.sessions.add(entry.session_id)
             if as_it_was:
                 return f"{label}: herdr resumed it in {resumed['pane_id']} as it was, left as it is", False
-            return f"{label}: busy in {resumed['pane_id']}, which runs its conversation, left as it is", False
+            if busy:
+                return f"{label}: busy in {resumed['pane_id']}, which runs its conversation, left as it is", False
+            return (f"{label}: {resumed['pane_id']} runs its conversation but its process couldn't be read, "
+                    "left as it is"), False
         # herdr's own resume runs plain `claude --resume <id>`: without the account's
         # CLAUDE_CONFIG_DIR or the agent's arguments.
         note = await _close(herdr, resumed, found, "herdr's own resume")

@@ -95,8 +95,8 @@ conversation to resume, so it starts fresh under the same `--session-id`. Withou
 `--continue`, but only if no other saved agent shares its folder and account, else a fresh
 conversation. Agents started by hand come back too. A pane running a saved agent's
 conversation with the wrong account or arguments, whether herdr resumed it or you did, is
-closed and replaced, unless busy in a turn (working, or waiting for an approval): then
-it's left as it is. Without such a pane, an idle shell herdr left where the agent was, in
+closed and replaced, but only when herdr reports it idle and its process could be read:
+one working, waiting for an approval, or that herdr can't classify is left as it is. Without such a pane, an idle shell herdr left where the agent was, in
 its folder, is closed too; a shell running something is left alone.
 
 - A restored agent is idle: no prompt is sent.
