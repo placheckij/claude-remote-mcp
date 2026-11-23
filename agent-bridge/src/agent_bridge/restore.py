@@ -108,9 +108,10 @@ async def _restore_one(
         as_it_was = running is not None and running.args == entry.args and (
             service.config_dir_of(running) == service.config_dir_of(entry)
         )
-        # Busy: someone resumed it and is in the middle of a turn, likely by hand, since
-        # setup turns herdr's own resume off. Closing it would end that turn.
-        busy = resumed.get("agent_status") == "working"
+        # Busy: someone resumed it and is in the middle of a turn (working, or blocked on an
+        # approval), likely by hand, since setup turns herdr's own resume off. Closing it
+        # would end that turn.
+        busy = resumed.get("agent_status") in ("working", "blocked")
         if as_it_was or busy:
             kept = entry.model_copy(
                 update={"pane_id": resumed["pane_id"], "terminal_id": resumed["terminal_id"], "misses": 0,

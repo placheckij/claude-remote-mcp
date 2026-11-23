@@ -206,11 +206,13 @@ def test_herdr_resume_with_other_account_is_replaced(path: Path, folder: Path, t
     assert claude_args(runner) == ["--resume", UUID, "--permission-mode", "auto"]
 
 
+@pytest.mark.parametrize("status", ["working", "blocked"])
 def test_a_busy_pane_running_its_conversation_is_never_closed(
-    path: Path, folder: Path, tmp_path: Path
+    path: Path, folder: Path, tmp_path: Path, status: str
 ) -> None:
-    # The user resumed it by hand, with other arguments, and is in the middle of a turn.
-    busy = pane(session=UUID, cwd=str(folder)) | {"agent_status": "working"}
+    # The user resumed it by hand, with other arguments, and is in the middle of a turn:
+    # working, or waiting for an approval.
+    busy = pane(session=UUID, cwd=str(folder)) | {"agent_status": status}
     runner = runner_for([busy], ["claude", "--resume", UUID])
     [line] = run(runner, path, [entry(folder, session_id=UUID)], tmp_path)
 
