@@ -13,7 +13,7 @@ from agent_bridge.agents import FINISHED, AgentService
 from agent_bridge.claude_args import session_id_in
 from agent_bridge.claude_process import claude_process
 from agent_bridge.errors import BridgeError
-from agent_bridge.herdr import Herdr, HerdrError
+from agent_bridge.herdr import SERVER_NOT_RUNNING, Herdr, HerdrError
 from agent_bridge.saved_agents import SavedAgent, forget, load, locked, merge, save, snapshot
 from agent_bridge.state import StateError
 
@@ -331,9 +331,15 @@ async def watch(
                 restarted = False
             await asyncio.to_thread(_write, path, seen, restarted, service.stopped)
         except HerdrError as error:
-            if answering:
-                log.warning("herdr doesn't answer (%s); agents will be restored when it does.", error)
-            answering = False
+            if error.code != SERVER_NOT_RUNNING:
+                # Its server still runs (a timeout, output it couldn't parse): only this round
+                # failed. Counted as not answering, it would make the next round look like a
+                # new server, and bring back an agent closed by hand meanwhile.
+                log.warning("Saving the running agents failed (%s); trying again in %g s.", error, interval_s)
+            else:
+                if answering:
+                    log.warning("herdr doesn't answer (%s); agents will be restored when it does.", error)
+                answering = False
         except Exception:  # noqa: BLE001 - one bad round mustn't end the watching
             log.exception("Saving the running agents failed; trying again in %g s.", interval_s)
         await sleep(interval_s)

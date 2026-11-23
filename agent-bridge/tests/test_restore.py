@@ -798,7 +798,7 @@ def test_first_round_restores_then_saves(monkeypatch: pytest.MonkeyPatch, path: 
 
 def test_unreachable_then_reachable_restores_once(monkeypatch: pytest.MonkeyPatch, path: Path, folder: Path) -> None:
     seen = entry(folder, terminal_id="t1")
-    down = HerdrError("server_down", "herdr is down")
+    down = HerdrError("server_not_running", "herdr is down")
     # Rounds 1 and 2 fail; round 3 restores (two snapshots); round 4 finds t1 among the panes.
     rounds = Rounds(monkeypatch, path, [down, down, [], [seen], [seen]], [["t1"]])
     rounds.watch(4)
@@ -915,7 +915,7 @@ def test_answering_again_with_the_saved_terminals_live_is_not_a_restart(
     monkeypatch: pytest.MonkeyPatch, path: Path, folder: Path
 ) -> None:
     seen = entry(folder, terminal_id="t1")
-    down = HerdrError("server_down", "herdr is down")
+    down = HerdrError("server_not_running", "herdr is down")
     # Round 3 answers after an outage; t1 is still there, in a pane elsewhere.
     rounds = Rounds(monkeypatch, path, [[seen], [seen], down, [seen]], [[("w2:p1", "t1")]])
     rounds.watch(3)
@@ -926,10 +926,22 @@ def test_answering_again_with_no_saved_terminal_live_is_a_restart(
     monkeypatch: pytest.MonkeyPatch, path: Path, folder: Path
 ) -> None:
     old, new = entry(folder, terminal_id="t-old"), entry(folder, terminal_id="t-new")
-    down = HerdrError("server_down", "herdr is down")
+    down = HerdrError("server_not_running", "herdr is down")
     rounds = Rounds(monkeypatch, path, [[old], [old], down, [new], [new]], [[("w2:p1", "t-new")]])
     rounds.watch(3)
     assert rounds.restores == [1, 3]
+
+
+@pytest.mark.parametrize("code", ["timeout", "bad_output", "cli_failed"])
+def test_a_passing_herdr_error_doesnt_make_the_next_round_look_like_a_new_server(
+    monkeypatch: pytest.MonkeyPatch, path: Path, folder: Path, code: str
+) -> None:
+    # herdr's server ran on: round 2 failed for another reason, and before round 3 the user
+    # closed the only agent by hand, which no restore may bring back.
+    seen = entry(folder, terminal_id="t1")
+    rounds = Rounds(monkeypatch, path, [[seen], [seen], HerdrError(code, "passing"), []], [[]])
+    rounds.watch(3)
+    assert rounds.restores == [1]
 
 
 def test_an_agent_stopped_during_the_snapshot_is_not_saved_again(
