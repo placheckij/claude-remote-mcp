@@ -47,6 +47,15 @@ def conversations(monkeypatch: pytest.MonkeyPatch) -> set[str]:
 
 
 @pytest.fixture(autouse=True)
+def jobs(monkeypatch: pytest.MonkeyPatch) -> set[int]:
+    """Shell pids with a Claude Code among their jobs (one suspended, say); by default none.
+    Keeps the tests off the real process table."""
+    found: set[int] = set()
+    monkeypatch.setattr(restore_module, "_claude_among_jobs", lambda shell_pid: shell_pid in found)
+    return found
+
+
+@pytest.fixture(autouse=True)
 def environ(monkeypatch: pytest.MonkeyPatch) -> dict[str, str]:
     """The environment every live Claude in these tests reports; a test may fill it."""
     found: dict[str, str] = {}
@@ -178,6 +187,23 @@ def test_has_conversation_looks_in_the_accounts_projects(tmp_path: Path) -> None
     assert restore_module._has_conversation_on_disk(config, UUID) is True
     assert restore_module._has_conversation_on_disk(config, OTHER_UUID) is False
     assert restore_module._has_conversation_on_disk(tmp_path / "missing", UUID) is False
+
+
+def test_claude_among_jobs_looks_under_the_shell(monkeypatch: pytest.MonkeyPatch) -> None:
+    class Child:
+        def __init__(self, name: str) -> None:
+            self._name = name
+
+        def name(self) -> str:
+            return self._name
+
+    children: list[Child] = []
+    monkeypatch.setattr(psutil.Process, "children", lambda self, recursive=False: children)
+    assert restore_module._claude_among_jobs_in_os(os.getpid()) is False
+    children[:] = [Child("node"), Child("claude.exe")]
+    assert restore_module._claude_among_jobs_in_os(os.getpid()) is True
+    monkeypatch.setattr(psutil.Process, "children", lambda self, recursive=False: (_ for _ in ()).throw(psutil.AccessDenied()))
+    assert restore_module._claude_among_jobs_in_os(os.getpid()) is None
 
 
 def test_herdr_resume_on_the_default_config_is_replaced_for_an_unknown_accounts_agent(
@@ -786,6 +812,53 @@ def test_herdrs_resume_whose_claude_exited_before_its_process_was_read_is_closed
     assert runner.called("pane", "close") == [["pane", "close", "w2:p1"]]
     assert len(runner.called("agent", "start")) == 1
     assert "restored in" in line
+
+
+def test_a_busy_pane_running_its_conversation_with_claude_suspended_isnt_closed(
+    path: Path, folder: Path, tmp_path: Path
+) -> None:
+    # Claude Code stopped with ctrl-Z: only the shell is in the foreground, but herdr calls it
+    # busy, which may be mid-turn.
+    resumed = pane("w2:p1", "t-r", session=UUID, cwd=str(folder)) | {"agent_status": "working"}
+    runner = runner_for([resumed], **{"pane process-info --pane w2:p1": shell_info()})
+    [line] = run(runner, path, [entry(folder, terminal_id="t-b", pane_id="w2:p1", session_id=UUID)], tmp_path)
+
+    assert runner.called("pane", "close") == runner.called("agent", "start") == []
+    assert "busy in w2:p1" in line
+
+
+def test_an_idle_pane_running_its_conversation_with_claude_among_its_jobs_isnt_closed(
+    path: Path, folder: Path, tmp_path: Path, jobs: set[int]
+) -> None:
+    # Suspended, so not in the foreground, but still under the shell: not exited.
+    jobs.add(9000)
+    resumed = pane("w2:p1", "t-r", session=UUID, cwd=str(folder))
+    runner = runner_for([resumed], **{"pane process-info --pane w2:p1": shell_info(),
+                                      "agent get w2:p1": ok({"agent": resumed})})
+    run(runner, path, [entry(folder, terminal_id="t-b", pane_id="w2:p1", session_id=UUID)], tmp_path)
+
+    assert runner.called("pane", "close") == runner.called("agent", "start") == []
+
+
+@pytest.mark.parametrize("read_before", [False, True])
+def test_herdrs_resume_that_exited_doesnt_lift_the_hold_off_for_a_pane_in_its_folder_that_cant_be_read(
+    path: Path, folder: Path, tmp_path: Path, read_before: bool
+) -> None:
+    # It never ran the conversation: a pane opened meanwhile in the folder, which can't be
+    # read, may, so the start is held off.
+    resumed = pane("w2:p1", "t-r", session=UUID, cwd=str(folder))
+    hand = pane("w3:p1", "t-u", cwd=str(folder)) | {"agent_status": "working"}
+    reads = [process_info(["claude", "--resume", UUID]), shell_info()] if read_before else shell_info()
+    runner = runner_for([resumed], **{
+        "pane list": [ok({"panes": [resumed]}), ok({"panes": [resumed, hand]})],
+        "pane process-info --pane w2:p1": reads,
+        "agent get w2:p1": ok({"agent": resumed | {"agent": None}}),
+        "pane process-info --pane w3:p1": err("timeout"),
+    })
+    [line] = run(runner, path, [entry(folder, terminal_id="t-b", pane_id="w7:p1", session_id=UUID)], tmp_path)
+
+    assert runner.called("agent", "start") == []
+    assert "kept for the next restart: w3:p1" in line
 
 
 def test_a_claude_agent_opened_in_its_folder_while_the_restore_ran_that_cant_be_read_holds_off_the_start(

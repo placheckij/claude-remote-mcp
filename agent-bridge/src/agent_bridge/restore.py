@@ -5,9 +5,12 @@ can, its conversation. A restored agent is never sent a prompt.
 
 import asyncio
 import logging
+from pathlib import PureWindowsPath
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
+
+import psutil
 
 from agent_bridge.agents import FINISHED, AgentService
 from agent_bridge.claude_args import session_id_in
@@ -39,6 +42,9 @@ class _Found:
     # Claude panes whose process couldn't be read again before a start: what `live` holds of
     # them was read earlier, still what they're taken to run, but they're never closed.
     unread: set[str] = field(default_factory=set)
+    # Saved agents (by terminal) whose conversation's pane was closed in this restore while
+    # it still ran it: each is started whatever else may run it.
+    replaced: set[str] = field(default_factory=set)
 
 
 async def restore(service: AgentService, herdr: Herdr, path: Path) -> list[str]:
@@ -153,10 +159,10 @@ async def _restore_one(
         resume, how = [], f"fresh conversation: another saved agent shares {entry.cwd} and its account"
 
     late, unsure = await _resumed_since(herdr, entry, found) if entry.session_id else (None, None)
-    if late is None and unsure is not None and resumed is None:
+    if late is None and unsure is not None and entry.terminal_id not in found.replaced:
         # As for such a pane listed at the start; the shell herdr left is closed already.
-        # Not when its conversation was found and its pane closed to be replaced: it ran
-        # there, so the start goes ahead.
+        # Not when its conversation's pane was closed to be replaced: it ran there, so the
+        # start goes ahead.
         await _keep_failed(path, entry)
         return (f"{label}: not restored, kept for the next restart: {unsure['pane_id']}, a Claude agent "
                 f"in its folder whose process couldn't be read, may run its conversation{note}"), True
@@ -232,7 +238,7 @@ async def _take_resumed(
     unreadable = running is None or reread_failed or (running.config_dir_unknown and running.args == entry.args)
     # Not read before, but read now without Claude Code among its processes: it has exited
     # (herdr's listing lags), which isn't one that can't be read.
-    exited = running is None and not reread_failed and await _claude_exited(herdr, resumed)
+    exited = running is None and not reread_failed and not busy and await _claude_exited(herdr, resumed)
     if not exited and (as_it_was or busy or unreadable):
         await _adopt(path, entry, resumed, found, service.stopped)
         if as_it_was:
@@ -249,7 +255,15 @@ async def _take_resumed(
     # CLAUDE_CONFIG_DIR or the agent's arguments. Its status is read again first: the
     # listed one may be stale, as earlier agents' starts take seconds each, and the user
     # may have prompted it since.
-    status = _NO_AGENT if exited else await _status_now(herdr, resumed)
+    status = await _status_now(herdr, resumed)
+    if exited and status in FINISHED:
+        # herdr still shows the agent it no longer runs: its listing lags.
+        status = _NO_AGENT
+    elif exited and status is None:
+        # Can't tell what herdr makes of it now: left, as one that can't be read is.
+        await _adopt(path, entry, resumed, found, service.stopped)
+        return (f"{label}: {resumed['pane_id']} ran its conversation, and its status couldn't be read "
+                "again, left as it is"), True
     if status == _NO_AGENT:
         # Claude Code in it has exited since the panes were listed (herdr's own resume
         # doesn't find a conversation kept in another account's config), leaving a shell.
@@ -276,6 +290,8 @@ async def _take_resumed(
                                    "read again)")
         else:
             closed, note = await _close(herdr, resumed, found, "herdr's own resume")
+            if closed:
+                found.replaced.add(entry.terminal_id)
         if not closed and await _still_there(herdr, resumed):
             # Still running its conversation: a second copy would answer as the first.
             await _adopt(path, entry, resumed, found, service.stopped)
@@ -297,7 +313,35 @@ async def _claude_exited(herdr: Herdr, pane: dict) -> bool:
         info = await herdr.process_info(pane["pane_id"])
     except HerdrError:
         return False
-    return not _unread(info) and claude_process(info) is None
+    if _unread(info) or claude_process(info) is not None:
+        return False
+    shell = info.get("shell_pid")
+    # Stopped with ctrl-Z, it's no longer in the foreground, but still runs.
+    return type(shell) is int and shell > 0 and await asyncio.to_thread(_claude_among_jobs, shell) is False
+
+
+def _claude_among_jobs_in_os(shell_pid: int) -> bool | None:
+    """Whether a Claude Code process runs under the shell; None when it can't be told."""
+    try:
+        children = psutil.Process(shell_pid).children(recursive=True)
+    except psutil.NoSuchProcess:
+        return False
+    except (psutil.Error, OSError):
+        return None
+    for child in children:
+        try:
+            name = child.name()
+        except psutil.NoSuchProcess:
+            continue
+        except (psutil.Error, OSError):
+            return None
+        if PureWindowsPath(name).name.lower().removesuffix(".exe") == "claude":
+            return True
+    return False
+
+
+# Looked up through the module so tests can stand in for the process table.
+_claude_among_jobs = _claude_among_jobs_in_os
 
 
 async def _idle_shell(herdr: Herdr, pane: dict) -> bool:
