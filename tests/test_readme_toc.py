@@ -16,24 +16,20 @@ MARKDOWN = MarkdownIt("commonmark").enable(["table", "strikethrough"])
 
 
 def _label_and_text(inline) -> tuple[str, str]:
-    """A heading as the TOC shows it (as written, but a link as its text: the entry is a
-    link already) and as rendered text, which GitHub makes the anchor from."""
-    label, text = [], []
-    for child in inline.children or []:
-        if child.type == "text":
-            label.append(re.sub(r"([\\`*_~\[\]<>])", r"\\\1", child.content))
-            text.append(child.content)
-        elif child.type == "code_inline":
-            # Its own run of backticks, spaced off if the code starts or ends with one.
-            pad = " " if child.content.startswith("`") or child.content.endswith("`") else ""
-            label.append(f"{child.markup}{pad}{child.content}{pad}{child.markup}")
-            text.append(child.content)
-        elif child.type in ("em_open", "em_close", "strong_open", "strong_close", "s_open", "s_close"):
-            label.append(child.markup)
-        elif child.type == "softbreak":
-            label.append(" ")
-            text.append(" ")
-    return "".join(label).strip(), "".join(text).strip()
+    """A heading as the TOC shows it (its source, so it renders the same) and as rendered
+    text, which GitHub makes the anchor from."""
+    children = inline.children or []
+    if any(child.type == "link_open" for child in children):
+        # It would be a link inside the entry's own link, which doesn't render as either.
+        raise ValueError(f"heading {inline.content!r} has a link; move the link out of the heading")
+    text = "".join(
+        " " if child.type == "softbreak" else child.content
+        for child in children
+        if child.type in ("text", "code_inline", "softbreak")
+    )
+    # An underlined heading's lines become one.
+    label = " ".join(line.strip() for line in inline.content.splitlines())
+    return label, text.strip()
 
 
 def headings(markdown: str) -> list[tuple[int, str, str]]:
@@ -80,7 +76,7 @@ def test_anchors_are_githubs() -> None:
         "## Step",
         "## Step 1",
         "## Step",
-        "## [Linked](https://example.com) and `code`",
+        "## *Emphasis* and `code`",
         "## __init__ files",
     ])
 
@@ -95,7 +91,7 @@ def test_anchors_are_githubs() -> None:
         "step",
         "step-1",
         "step-2",
-        "linked-and-code",
+        "emphasis-and-code",
         "init-files",
     ]
 
@@ -137,24 +133,37 @@ def test_the_toc_shows_headings_as_written() -> None:
         "## One `code`",
         "### One a",
         "#### One a i",
-        "## [Linked](https://example.com)",
-        "## Use `` a`b `` and ``` ``c ``` *quickly* __now__ ~~old~~",
+        "## Use `` a`b `` *quickly* ##",
+        "Two",
+        "lines",
+        "---",
     ])
 
     assert toc(markdown) == "\n".join([
         START, "**Contents**", "",
-        "- [One `code`](#one-code)", "  - [One a](#one-a)", "- [Linked](#linked)",
-        "- [Use ``a`b`` and ``` ``c ``` *quickly* __now__ ~~old~~](#use-ab-and-c-quickly-now-old)",
+        "- [One `code`](#one-code)", "  - [One a](#one-a)",
+        "- [Use `` a`b `` *quickly*](#use-ab-quickly)", "- [Two lines](#two-lines)",
         END,
     ])
 
 
-def test_a_toc_label_reads_back_as_its_heading() -> None:
+@pytest.mark.parametrize("heading", [
+    "Use `` a`b `` and ``` ``c ``` *quickly* __now__ ~~old~~ \\*literal\\*",
+    "Use `  x  ` here",
+    "AT\\&amp;T",
+    "a_b_ and *x*y",
+])
+def test_a_toc_label_reads_back_as_its_heading(heading: str) -> None:
     # Pasted into the README, the entry must render the heading's own text.
-    heading = "Use `` a`b `` and ``` ``c ``` *quickly* __now__ ~~old~~ \\*literal\\*"
     (_, label, _), = headings(f"## {heading}\n")
 
     assert MARKDOWN.render(label) == MARKDOWN.render(heading)
+
+
+@pytest.mark.parametrize("heading", ["[Linked](https://example.com)", "See <https://example.com>"])
+def test_a_link_in_a_heading_is_refused(heading: str) -> None:
+    with pytest.raises(ValueError, match="move the link out of the heading"):
+        headings(f"## {heading}\n")
 
 
 @pytest.mark.parametrize("readme", READMES)
