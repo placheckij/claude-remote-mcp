@@ -14,6 +14,17 @@ Voice-driven remote orchestration for Claude Code agents. Manage and supervise A
   <img src="docs/assets/architecture-light.svg" width="100%" alt="Three layers and four trust boundaries. The Claude app reaches mcp-gateway on the gateway host over MCP over HTTPS, through a Cloudflare Tunnel, with an OAuth access token; mcp-gateway keeps clients and token hashes in oauth.json, its agent hosts in bridges.json and the enrollment window in enrollment.json. mcp-gateway reaches agent-bridge on each agent host (macOS, Linux, Windows) over HTTP on the LAN with that host's bearer token, and agent hosts enroll with the gateway over the LAN with the window's secret. Each agent-bridge keeps its id and gateway in state.json and the agents to restore after herdr restarts in agents.json, only changes agents under its allowed roots on request, and drives herdr through the herdr CLI; herdr runs Claude Code sessions, one per pane, each on the Claude account set up for its folder, with ids that name the host, such as mac/w1:p1.">
 </picture>
 
+<!-- toc -->
+**Contents**
+
+- [Components](#components)
+- [Setup order](#setup-order)
+- [Updating](#updating)
+- [Development](#development)
+  - [Releasing](#releasing)
+- [License](#license)
+<!-- /toc -->
+
 ## Components
 
 How the layers fit together, where state lives and the trust boundaries:

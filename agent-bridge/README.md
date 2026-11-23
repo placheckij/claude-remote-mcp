@@ -15,6 +15,27 @@ gateway it [enrolled](#enroll-with-the-gateway) with, and the agents to
 It sees every herdr agent of its user, including ones started by hand, and controls those
 whose folder is under the allowed roots.
 
+<!-- toc -->
+**Contents**
+
+- [System requirements](#system-requirements)
+- [Keeping the agent host available](#keeping-the-agent-host-available)
+- [After a restart](#after-a-restart)
+- [API](#api)
+- [Starting agents](#starting-agents)
+  - [Claude accounts](#claude-accounts)
+  - [Folder trust](#folder-trust)
+- [Configuration](#configuration)
+- [Run](#run)
+  - [Commands](#commands)
+  - [Enroll with the gateway](#enroll-with-the-gateway)
+  - [As a service on macOS (launchd)](#as-a-service-on-macos-launchd)
+  - [As a service on Linux (systemd user unit)](#as-a-service-on-linux-systemd-user-unit)
+  - [As a service on Windows (Task Scheduler)](#as-a-service-on-windows-task-scheduler)
+  - [When it's stopped or removed](#when-its-stopped-or-removed)
+- [Tests](#tests)
+<!-- /toc -->
+
 ## System requirements
 
 | | |

@@ -23,6 +23,32 @@ with agent-bridge's message unchanged, after the SDK's `Error executing tool <na
 prefix; invalid arguments (e.g. a malformed agent id, or a prompt over 20 000 characters
 or with a NUL character) come back the same way as one sentence.
 
+<!-- toc -->
+**Contents**
+
+- [System requirements](#system-requirements)
+- [Tools](#tools)
+- [Configuration](#configuration)
+- [Agent hosts](#agent-hosts)
+  - [Enrollment](#enrollment)
+- [Security](#security)
+- [OAuth sign-in](#oauth-sign-in)
+  - [One process](#one-process)
+- [Install with mcp-gateway setup](#install-with-mcp-gateway-setup)
+  - [Before you start](#before-you-start)
+  - [Run it](#run-it)
+  - [What it creates](#what-it-creates)
+  - [Update and rotate](#update-and-rotate)
+  - [Stop, restart, uninstall](#stop-restart-uninstall)
+- [Install by hand](#install-by-hand)
+- [Cloudflare Tunnel](#cloudflare-tunnel)
+  - [Optional: Cloudflare Access with a service token](#optional-cloudflare-access-with-a-service-token)
+- [Add the connector in claude.ai](#add-the-connector-in-claudeai)
+  - [Move a connector to OAuth](#move-a-connector-to-oauth)
+- [Development](#development)
+  - [Releasing mcp-gateway](#releasing-mcp-gateway)
+<!-- /toc -->
+
 ## System requirements
 
 | | |
