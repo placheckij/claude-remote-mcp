@@ -118,6 +118,9 @@ if [[ -n ${MCP_GATEWAY_OAUTH_PASSPHRASE:-} ]]; then
   # No quotes, backslashes or $: systemd would interpret them in the env file.
   [[ $MCP_GATEWAY_OAUTH_PASSPHRASE =~ ^[A-Za-z0-9\ ._~+/=:,!?@#%^\&*()-]+$ ]] \
     || die "MCP_GATEWAY_OAUTH_PASSPHRASE may only contain letters, digits, spaces and . _ ~ + / = : , ! ? @ # % ^ & * ( ) -"
+  # systemd strips them from the env file, so the passphrase typed with them would be wrong.
+  [[ $MCP_GATEWAY_OAUTH_PASSPHRASE != " "* && $MCP_GATEWAY_OAUTH_PASSPHRASE != *" " ]] \
+    || die "MCP_GATEWAY_OAUTH_PASSPHRASE can't start or end with a space"
 fi
 if [[ -n ${MCP_GATEWAY_TOKEN:-} ]]; then
   [[ -z ${REMOVE_TOKEN:-} ]] || die "set MCP_GATEWAY_TOKEN or REMOVE_TOKEN, not both"
