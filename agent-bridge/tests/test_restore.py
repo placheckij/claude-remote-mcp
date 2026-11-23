@@ -273,6 +273,37 @@ def test_a_pane_whose_process_cant_be_read_running_its_conversation_is_left(
     assert (kept.pane_id, kept.terminal_id) == ("w1:p1", "t-new")
 
 
+def test_a_pane_whose_account_cant_be_read_running_its_conversation_with_its_args_is_left(
+    path: Path, folder: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Its command line was read, its environment wasn't: it may well run on the agent's account.
+    def denied(self: psutil.Process) -> dict[str, str]:
+        raise psutil.AccessDenied(self.pid)
+
+    monkeypatch.setattr(psutil.Process, "environ", denied)
+    runner = runner_for([pane(session=UUID, cwd=str(folder))], ["claude", "--permission-mode", "auto", "--resume", UUID])
+    [line] = run(runner, path, [entry(folder, session_id=UUID, config_dir="/cfg")], tmp_path)
+
+    assert runner.called("pane", "close") == runner.called("agent", "start") == []
+    assert "couldn't be read" in line
+    [kept] = load(path).agents
+    assert (kept.pane_id, kept.terminal_id) == ("w1:p1", "t-new")
+
+
+def test_a_pane_whose_account_cant_be_read_running_its_conversation_with_other_args_is_replaced(
+    path: Path, folder: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def denied(self: psutil.Process) -> dict[str, str]:
+        raise psutil.AccessDenied(self.pid)
+
+    monkeypatch.setattr(psutil.Process, "environ", denied)
+    runner = runner_for([pane(session=UUID, cwd=str(folder))], ["claude", "--resume", UUID])
+    run(runner, path, [entry(folder, session_id=UUID, config_dir="/cfg")], tmp_path)
+
+    assert runner.called("pane", "close") == [["pane", "close", "w1:p1"]]
+    assert len(runner.called("agent", "start")) == 1
+
+
 @pytest.mark.parametrize("status", ["working", "blocked"])
 def test_a_busy_pane_running_its_conversation_is_never_closed(
     path: Path, folder: Path, tmp_path: Path, status: str

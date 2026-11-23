@@ -113,8 +113,9 @@ async def _restore_one(
                 "was stopped through the bridge"), False
     if resumed is not None:
         running = found.live.get(resumed["pane_id"])
-        # By the config each starts on: for an account that couldn't be read, its folder's.
-        as_it_was = running is not None and running.args == entry.args and (
+        # By the config each starts on (for a saved agent whose account couldn't be read, its
+        # folder's). The running one's own account is never guessed.
+        as_it_was = running is not None and not running.config_dir_unknown and running.args == entry.args and (
             service.config_dir_of(running) == service.config_dir_of(entry)
         )
         # Busy: someone resumed it and is in the middle of a turn (working, or blocked on an
@@ -123,15 +124,17 @@ async def _restore_one(
         # be mid-turn too.
         busy = resumed.get("agent_status") not in FINISHED
         # Its process couldn't be read, so whether it runs as it was can't be told: left, as
-        # a shell that can't be read is.
-        unreadable = running is None
+        # a shell that can't be read is. So is one with the agent's arguments whose
+        # environment, so its account, couldn't be read.
+        unreadable = running is None or (running.config_dir_unknown and running.args == entry.args)
         if as_it_was or busy or unreadable:
             await _adopt(path, entry, resumed, found)
             if as_it_was:
                 return f"{label}: herdr resumed it in {resumed['pane_id']} as it was, left as it is", False
             if busy:
                 return f"{label}: busy in {resumed['pane_id']}, which runs its conversation, left as it is", False
-            return (f"{label}: {resumed['pane_id']} runs its conversation but its process couldn't be read, "
+            what = "process" if running is None else "account"
+            return (f"{label}: {resumed['pane_id']} runs its conversation but its {what} couldn't be read, "
                     "left as it is"), False
         # herdr's own resume runs plain `claude --resume <id>`: without the account's
         # CLAUDE_CONFIG_DIR or the agent's arguments.
