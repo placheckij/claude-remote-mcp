@@ -361,8 +361,10 @@ async def _resumed_since(herdr: Herdr, entry: SavedAgent, found: _Found) -> tupl
             # Seen from now on: a later entry's own checks find it.
             found.panes.append(pane)
         elif (pane.get("agent"), pane.get("agent_session")) != (before.get("agent"), before.get("agent_session")):
-            # Later entries' checks see it as it is now, and read what runs in it again.
+            # Later entries' checks see it as it is now, and read what runs in it again. What
+            # was read of it before the change no longer says what it runs.
             found.processes.pop(before["pane_id"], None)
+            found.live.pop(before["pane_id"], None)
             before.clear()
             before.update(pane)
         elif _hook_session(pane) is not None:

@@ -694,6 +694,48 @@ def test_an_agent_pane_in_its_folder_with_no_foreground_processes_listed_holds_o
     assert "kept for the next restart: w7:p1" in line
 
 
+THIRD_UUID = "33333333-2222-3333-4444-555555555555"
+
+
+def test_a_conversation_the_hook_shows_in_a_pane_that_cant_be_read_again_isnt_started_again(
+    path: Path, folder: Path, tmp_path: Path
+) -> None:
+    # Read as running a third conversation; while the first agent starts, the second's is
+    # resumed in it (the hook says so), and reading it again fails once. What was read before
+    # the change doesn't hide what the hook shows.
+    first = entry(tmp_path / "other", terminal_id="t-a", pane_id="w1:p1", session_id=OTHER_UUID)
+    second = entry(folder, terminal_id="t-b", pane_id="w2:p1", session_id=UUID)
+    before = pane("w5:p1", "t-x", session=THIRD_UUID, cwd=str(folder))
+    after = pane("w5:p1", "t-x", session=UUID, cwd=str(folder)) | {"agent_status": "working"}
+    runner = runner_for([before], **{
+        "pane list": [ok({"panes": [before]}), ok({"panes": [after]})],
+        "pane process-info --pane w5:p1": [process_info(["claude", "--resume", THIRD_UUID]), err("timeout"),
+                                           process_info(["claude", "--resume", UUID])],
+    })
+    run(runner, path, [first, second], tmp_path)
+
+    assert len(runner.called("agent", "start")) == 1
+
+
+def test_a_pane_that_left_the_conversation_isnt_taken_for_it_when_it_cant_be_read_again(
+    path: Path, folder: Path, tmp_path: Path
+) -> None:
+    # herdr's resume of the second agent's conversation switches to another while the first
+    # agent starts (the hook says so), and reading it again fails once: the agent is started.
+    first = entry(tmp_path / "other", terminal_id="t-a", pane_id="w1:p1", session_id=OTHER_UUID)
+    second = entry(folder, terminal_id="t-b", pane_id="w2:p1", session_id=UUID)
+    before = pane("w2:p1", "t-x", session=UUID, cwd=str(folder))
+    after = pane("w2:p1", "t-x", session=THIRD_UUID, cwd=str(folder))
+    runner = runner_for([before], **{
+        "pane list": [ok({"panes": [before]}), ok({"panes": [after]})],
+        "pane process-info --pane w2:p1": [process_info(["claude", "--resume", UUID]), err("timeout"),
+                                           process_info(["claude", "--resume", THIRD_UUID])],
+    })
+    run(runner, path, [first, second], tmp_path)
+
+    assert len(runner.called("agent", "start")) == 2
+
+
 def test_a_claude_agent_opened_in_its_folder_while_the_restore_ran_that_cant_be_read_holds_off_the_start(
     path: Path, folder: Path, tmp_path: Path
 ) -> None:
