@@ -16,16 +16,20 @@ MARKDOWN = MarkdownIt("commonmark").enable(["table", "strikethrough"])
 
 
 def _label_and_text(inline) -> tuple[str, str]:
-    """A heading as the TOC shows it (code kept as code, Markdown escaped) and as rendered
-    text, which GitHub makes the anchor from."""
+    """A heading as the TOC shows it (as written, but a link as its text: the entry is a
+    link already) and as rendered text, which GitHub makes the anchor from."""
     label, text = [], []
     for child in inline.children or []:
         if child.type == "text":
-            label.append(re.sub(r"([\\`*_\[\]<>])", r"\\\1", child.content))
+            label.append(re.sub(r"([\\`*_~\[\]<>])", r"\\\1", child.content))
             text.append(child.content)
         elif child.type == "code_inline":
-            label.append(f"`{child.content}`")
+            # Its own run of backticks, spaced off if the code starts or ends with one.
+            pad = " " if child.content.startswith("`") or child.content.endswith("`") else ""
+            label.append(f"{child.markup}{pad}{child.content}{pad}{child.markup}")
             text.append(child.content)
+        elif child.type in ("em_open", "em_close", "strong_open", "strong_close", "s_open", "s_close"):
+            label.append(child.markup)
         elif child.type == "softbreak":
             label.append(" ")
             text.append(" ")
@@ -128,13 +132,29 @@ def test_headings_are_read_as_commonmark_reads_them() -> None:
 
 
 def test_the_toc_shows_headings_as_written() -> None:
-    markdown = "# Title\n## One `code`\n### One a\n#### One a i\n## [Linked](https://example.com)\n"
+    markdown = "\n".join([
+        "# Title",
+        "## One `code`",
+        "### One a",
+        "#### One a i",
+        "## [Linked](https://example.com)",
+        "## Use `` a`b `` and ``` ``c ``` *quickly* __now__ ~~old~~",
+    ])
 
     assert toc(markdown) == "\n".join([
         START, "**Contents**", "",
         "- [One `code`](#one-code)", "  - [One a](#one-a)", "- [Linked](#linked)",
+        "- [Use ``a`b`` and ``` ``c ``` *quickly* __now__ ~~old~~](#use-ab-and-c-quickly-now-old)",
         END,
     ])
+
+
+def test_a_toc_label_reads_back_as_its_heading() -> None:
+    # Pasted into the README, the entry must render the heading's own text.
+    heading = "Use `` a`b `` and ``` ``c ``` *quickly* __now__ ~~old~~ \\*literal\\*"
+    (_, label, _), = headings(f"## {heading}\n")
+
+    assert MARKDOWN.render(label) == MARKDOWN.render(heading)
 
 
 @pytest.mark.parametrize("readme", READMES)
