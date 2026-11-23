@@ -66,7 +66,7 @@ def toc(markdown: str) -> str:
             continue
         shown = MARKDOWN.renderInline(label, env)
         # A link, autolink or <a> (any case) would be a link inside the entry's own.
-        if re.search(r"<a[\s>]", shown, re.IGNORECASE):
+        if re.search(r"<a[\s/>]", shown, re.IGNORECASE):
             raise ValueError(f"heading {label!r} has a link; move the link out of the heading")
         link = f"[{label}](#{anchor})"
         # The entry must render as one link to the heading, showing its text (an unbalanced
@@ -194,6 +194,7 @@ def test_a_heading_that_would_break_its_toc_link_is_refused() -> None:
         'Foo <a href="https://x">y</a>',
         'Foo <A HREF="https://x">y</A>',
         "Foo <a>y</a>",
+        "Foo <a/>",
         "See [docs]",
     ],
 )
