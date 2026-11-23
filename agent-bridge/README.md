@@ -122,11 +122,14 @@ before herdr shows it as an agent, its process can't be read (in another folder,
 herdr shows it as an agent), herdr can't read the processes of the shell it left (a Claude
 Code stopped with ctrl-Z there), a Claude Code stopped with ctrl-Z runs it in another pane
 (or in that shell when a failed start is retried), or its command line doesn't name the
-conversation (`--continue`, `/resume`). An agent stopped through agent-bridge is never
-restored, nor is its conversation from another entry until it runs again, even if it's
-stopped while a restore runs; the exception is when `agents.json` can't be written then,
-and agent-bridge restarts before it can be, or herdr's hook didn't give the agent's
-conversation.
+conversation (`--continue`, `/resume`), or the saved agent has no session id and its
+`--continue` picks a conversation a pane runs. It can also start twice when herdr can't list
+its panes right before the start, or a pane the restore already took for an agent is
+switched to it by hand. An agent stopped through agent-bridge is never restored, nor is its
+conversation from another entry until it runs again, even if it's stopped while a restore
+runs; the exception is when `agents.json` can't be written then and agent-bridge restarts
+before it can be, and, for its conversation from another entry, when herdr's hook didn't
+give it.
 
 - A restored agent is idle: no prompt is sent.
 - An agent that a save had already missed comes back only if herdr brought its pane back,

@@ -90,10 +90,10 @@ restarts the service on the new version.
 - **Agent hosts:** `uv tool upgrade claude-remote-mcp-agent-bridge` (on a Mac with the
   Homebrew install, `brew upgrade agent-bridge`), then `agent-bridge setup`. On Windows, stop agent-bridge first: the upgrade fails while it
   runs (see [Windows](agent-bridge/README.md#as-a-service-on-windows-task-scheduler)).
-  From 0.3.0, setup also turns on restoring agents after herdr restarts, and turns off
-  herdr's own resume unless you set it yourself (see
-  [After a restart](agent-bridge/README.md#after-a-restart)); `--no-agent-restore` keeps
-  herdr's.
+  From 0.3.0, agent-bridge restores agents after herdr restarts; setup turns off herdr's own
+  resume unless you set it yourself, so agents don't come back twice (see
+  [After a restart](agent-bridge/README.md#after-a-restart)). `--no-agent-restore` turns
+  the restore off and keeps herdr's.
 
 Update the gateway first: it calls agent-bridges at its own API version and one behind, but
 not newer ones. The agent hosts can then follow one at a time.
