@@ -149,7 +149,7 @@ async def _restore_one(
         # herdr's own resume runs plain `claude --resume <id>`: without the account's
         # CLAUDE_CONFIG_DIR or the agent's arguments.
         closed, note = await _close(herdr, resumed, found, "herdr's own resume")
-        if not closed:
+        if not closed and await _still_there(herdr, resumed):
             # Still running its conversation: a second copy would answer as the first.
             await _adopt(path, entry, resumed, found, service.stopped)
             return (f"{label}: {resumed['pane_id']} runs its conversation but couldn't be closed{note}, "
@@ -254,6 +254,16 @@ async def _close(
     except HerdrError as error:
         return False, f" (couldn't close {what} in {pane['pane_id']}: {error})"
     return True, f" (closed {what} in {pane['pane_id']})"
+
+
+async def _still_there(herdr: Herdr, pane: dict) -> bool:
+    """Whether `pane`'s terminal is still open, after a close that failed: it may have timed
+    out after going through, or what ran in it exited. True when herdr can't say."""
+    try:
+        panes = await herdr.list_panes()
+    except HerdrError:
+        return True
+    return any(other.get("terminal_id") == pane.get("terminal_id") for other in panes)
 
 
 async def _adopt(path: Path, entry: SavedAgent, resumed: dict, found: _Found, stopped: set[str]) -> None:

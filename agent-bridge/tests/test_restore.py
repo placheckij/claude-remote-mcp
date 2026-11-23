@@ -223,6 +223,36 @@ def test_herdrs_resume_that_cant_be_closed_is_left_rather_than_run_twice(
     assert (kept.pane_id, kept.terminal_id) == ("w1:p1", "t-new")
 
 
+def test_herdrs_resume_gone_though_its_close_failed_is_replaced(
+    path: Path, folder: Path, tmp_path: Path
+) -> None:
+    # The close timed out after it went through, or `claude --resume` exited meanwhile.
+    # Adopted, the entry would point at a terminal that's gone and age out unrestored.
+    resumed = pane(session=UUID)
+    runner = runner_for([resumed], ["claude", "--resume", UUID],
+                        **{"pane close": err("timeout"), "pane list": [ok({"panes": [resumed]}), ok({"panes": []})]})
+    [line] = run(runner, path, [entry(folder, session_id=UUID)], tmp_path)
+
+    assert claude_args(runner) == ["--resume", UUID, "--permission-mode", "auto"]
+    assert "restored in w90:p1" in line and "couldn't close herdr's own resume in w1:p1" in line
+    [restored] = load(path).agents
+    assert restored.terminal_id == "t90"
+
+
+def test_herdrs_resume_that_cant_be_closed_is_left_when_herdr_cant_say_whether_its_gone(
+    path: Path, folder: Path, tmp_path: Path
+) -> None:
+    resumed = pane(session=UUID)
+    runner = runner_for([resumed], ["claude", "--resume", UUID],
+                        **{"pane close": err("timeout"), "pane list": [ok({"panes": [resumed]}), err("timeout")]})
+    [line] = run(runner, path, [entry(folder, session_id=UUID)], tmp_path)
+
+    assert runner.called("agent", "start") == []
+    assert "couldn't be closed" in line
+    [kept] = load(path).agents
+    assert (kept.pane_id, kept.terminal_id) == ("w1:p1", "t-new")
+
+
 def test_a_leftover_shell_that_cant_be_closed_doesnt_stop_the_start(
     path: Path, folder: Path, tmp_path: Path
 ) -> None:
