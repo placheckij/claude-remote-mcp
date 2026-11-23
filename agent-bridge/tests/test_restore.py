@@ -646,7 +646,8 @@ def test_a_conversation_resumed_in_a_pane_already_open_while_the_restore_ran_isn
     lines = run(runner, path, [first, second], tmp_path)
 
     assert len(runner.called("agent", "start")) == 1
-    assert "busy in w2:p1" in lines[1]
+    # Found as busy, or before herdr shows it as an agent: kept either way.
+    assert "w2:p1" in lines[1] and "left as it is" in lines[1]
     kept = load(path).agents[1]
     assert (kept.pane_id, kept.terminal_id) == ("w2:p1", "t-new2")
 
@@ -1093,6 +1094,29 @@ def test_herdrs_resume_that_exited_doesnt_lift_the_hold_off_for_a_pane_in_its_fo
 
     assert runner.called("agent", "start") == []
     assert "kept for the next restart: w3:p1" in line
+
+
+@pytest.mark.parametrize("where", ["opened meanwhile", "shell in its folder"])
+def test_a_pane_herdr_doesnt_show_as_an_agent_yet_running_its_conversation_since_the_restore_began_isnt_started_again(
+    path: Path, folder: Path, tmp_path: Path, where: str
+) -> None:
+    # Resumed by hand while the first agent started: in a new pane, or in a shell already open
+    # in its folder; herdr hasn't seen Claude Code in it yet, but its command line names the
+    # conversation. Kept, as one listed at the start is.
+    first = entry(tmp_path / "other", terminal_id="t-a", pane_id="w1:p1", session_id=OTHER_UUID)
+    second = entry(folder, terminal_id="t-b", pane_id="w2:p1", session_id=UUID)
+    hand = pane("w5:p1", "t-h", agent=None, cwd=str(folder))
+    if where == "opened meanwhile":
+        # Only by the second agent's last look before its start.
+        overrides = {"pane list": [ok({"panes": []}), ok({"panes": []}), ok({"panes": [hand]})],
+                     "pane process-info --pane w5:p1": process_info(["claude", "--resume", UUID])}
+    else:
+        overrides = {"pane process-info --pane w5:p1": [shell_info(), process_info(["claude", "--resume", UUID])]}
+    runner = runner_for([hand] if where != "opened meanwhile" else [], **overrides)
+    lines = run(runner, path, [first, second], tmp_path)
+
+    assert len(runner.called("agent", "start")) == 1
+    assert "w5:p1 runs its conversation, though herdr doesn't know it as an agent yet" in lines[1]
 
 
 def test_a_claude_agent_opened_in_its_folder_while_the_restore_ran_that_cant_be_read_holds_off_the_start(

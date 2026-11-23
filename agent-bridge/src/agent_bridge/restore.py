@@ -469,7 +469,8 @@ async def _resumed_since(herdr: Herdr, entry: SavedAgent, found: _Found) -> tupl
     """A Claude agent pane that appeared since the panes were listed, or whose agent or
     session changed since (resumed by hand in a pane that was open), running `entry`'s
     conversation: herdr's hook says, else its command line. What's read of its process goes
-    into `found.live`. Second, when none is found, as in `_unclassified`: such a pane in
+    into `found.live`. Or such a pane herdr doesn't show as an agent yet, whose command line
+    names it: one that appeared or changed since, or one in `entry`'s folder. Second, when none is found, as in `_unclassified`: such a pane in
     `entry`'s folder with no session from the hook whose process can't be read. Neither
     when herdr can't list its panes: the start goes ahead, as it did before this check."""
     try:
@@ -478,11 +479,14 @@ async def _resumed_since(herdr: Herdr, entry: SavedAgent, found: _Found) -> tupl
         return None, None
     known = {pane.get("terminal_id"): pane for pane in found.panes}
     late = []
+    # Terminals that appeared or changed since the panes were listed.
+    fresh = set()
     for pane in panes:
         before = known.get(pane.get("terminal_id"))
         if before is None:
             # Seen from now on: a later entry's own checks find it.
             found.panes.append(pane)
+            fresh.add(pane.get("terminal_id"))
         elif (pane.get("agent"), pane.get("agent_session")) != (before.get("agent"), before.get("agent_session")):
             # Later entries' checks see it as it is now, and read what runs in it again. What
             # was read of it before the change no longer says what it runs. Closed in this
@@ -492,6 +496,7 @@ async def _resumed_since(herdr: Herdr, entry: SavedAgent, found: _Found) -> tupl
             found.closed.discard(before["pane_id"])
             before.clear()
             before.update(pane)
+            fresh.add(pane.get("terminal_id"))
         elif _hook_session(pane) is not None:
             # herdr's hook says which conversation it runs, and that hasn't changed.
             continue
@@ -500,10 +505,19 @@ async def _resumed_since(herdr: Herdr, entry: SavedAgent, found: _Found) -> tupl
         late.append(pane)
     unsure = None
     for pane in late:
-        if (pane.get("agent") != "claude" or pane.get("terminal_id") in found.claimed
-                or pane["pane_id"] in found.closed or not pane.get("cwd") or not pane.get("terminal_id")):
+        if (pane.get("terminal_id") in found.claimed or pane["pane_id"] in found.closed
+                or not pane.get("cwd") or not pane.get("terminal_id")):
             # A pane closed in this restore that's still listed was kept if it was still
             # there (claimed), or is going.
+            continue
+        if not pane.get("agent"):
+            # Claude Code started in it may not show yet. Read where it would likely run the
+            # conversation: Claude Code finds one in the folder it ran in.
+            if pane.get("terminal_id") in fresh or Path(pane["cwd"]) == Path(entry.cwd):
+                if await _runs_by_command_line(herdr, pane, entry, found):
+                    return pane, None
+            continue
+        if pane.get("agent") != "claude":
             continue
         # Read even when it runs another conversation: a later entry whose conversation it is
         # keeps or replaces it by what's read.
@@ -532,6 +546,19 @@ async def _resumed_since(herdr: Herdr, entry: SavedAgent, found: _Found) -> tupl
             # doesn't rule that out: without the hook, starting another one in it doesn't show.
             unsure = pane
     return None, unsure
+
+
+async def _runs_by_command_line(herdr: Herdr, pane: dict, entry: SavedAgent, found: _Found) -> bool:
+    """Whether the Claude Code in a pane herdr doesn't show as an agent names `entry`'s
+    conversation on its command line; what's read goes into `found.processes`."""
+    try:
+        info = await herdr.process_info(pane["pane_id"])
+    except HerdrError:
+        return False
+    found.processes[pane["pane_id"]] = info
+    process = claude_process(info)
+    argv = process.get("argv") if process is not None else None
+    return isinstance(argv, list) and session_id_in([arg for arg in argv if isinstance(arg, str)]) == entry.session_id
 
 
 async def _close(
