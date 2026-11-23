@@ -39,7 +39,8 @@ the gateway first, see [Updating](README.md#updating)).
 - agent restore: `agents.json` (mode 0600 on macOS and Linux) and the restore after a
   herdr restart (and, when only agents a restore couldn't start are saved, when
   agent-bridge or herdr's server starts), which starts only agents that were running in
-  herdr, ones started by hand included, never one stopped through agent-bridge, on their
+  herdr, ones started by hand included, never one stopped through agent-bridge (unless
+  `agents.json` couldn't be written then and agent-bridge restarted before it could), on their
   saved folder, account (if theirs couldn't be read, the one the folder would get if
   started now) and arguments; the panes it closes (a pane herdr reports idle or done,
   whose process it could read, running a saved agent's conversation under other

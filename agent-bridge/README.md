@@ -102,7 +102,8 @@ one working, waiting for an approval, that herdr can't classify, or that herdr d
 show as an agent yet but whose command line resumes the conversation. Without such a
 pane, an idle shell herdr left where the agent was, in its folder, is closed too; a shell
 running something is left alone. An agent stopped through agent-bridge is never restored,
-even if it's stopped while a restore runs.
+even if it's stopped while a restore runs; the one exception is when `agents.json` can't
+be written then, and agent-bridge restarts before it can be.
 
 - A restored agent is idle: no prompt is sent.
 - An agent that a save had already missed comes back only if herdr brought its pane back,
