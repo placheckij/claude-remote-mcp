@@ -20,10 +20,10 @@ MARKDOWN = MarkdownIt("commonmark").enable(["table", "strikethrough"])
 def _label_and_text(inline) -> tuple[str, str]:
     """A heading as the TOC shows it (its source, so it renders the same) and as rendered
     text, which GitHub makes the anchor from."""
+    # A line break in an underlined heading renders as "\n", which GitHub's slugger drops
+    # with the other control characters.
     text = "".join(
-        " " if child.type == "softbreak" else child.content
-        for child in inline.children or []
-        if child.type in ("text", "code_inline", "softbreak")
+        child.content for child in inline.children or [] if child.type in ("text", "code_inline")
     )
     # An underlined heading's lines become one.
     label = " ".join(line.strip() for line in inline.content.splitlines())
@@ -159,7 +159,7 @@ def test_the_toc_shows_headings_as_written() -> None:
     assert toc(markdown) == "\n".join([
         START, "**Contents**", "",
         "- [One `code`](#one-code)", "  - [One a](#one-a)",
-        "- [Use `` a`b `` *quickly*](#use-ab-quickly)", "- [Two lines](#two-lines)",
+        "- [Use `` a`b `` *quickly*](#use-ab-quickly)", "- [Two lines](#twolines)",
         END,
     ])
 
