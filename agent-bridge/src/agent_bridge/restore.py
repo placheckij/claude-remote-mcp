@@ -169,6 +169,12 @@ async def _restore_one(
             await _adopt(path, entry, resumed, found, service.stopped)
             what = "couldn't be closed" if status is not None else "wasn't closed"
             return f"{label}: {resumed['pane_id']} runs its conversation but {what}{note}, left as it is", True
+        if not closed and resumed.get("terminal_id") in service.stopped:
+            # Gone because it was stopped through the bridge meanwhile, which made the read
+            # or the close fail.
+            await _forget(path, entry, service.stopped)
+            return (f"{label}: not restored, and forgotten: {resumed['pane_id']}, which ran its conversation, "
+                    "was stopped through the bridge"), False
     else:
         _, note = await _close(herdr, shell, found)
 

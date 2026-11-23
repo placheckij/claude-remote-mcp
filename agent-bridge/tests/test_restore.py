@@ -784,6 +784,34 @@ def test_an_agent_stopped_through_the_bridge_is_never_restored(
     assert load(path).agents == []
 
 
+@pytest.mark.parametrize("during", ["agent get", "pane close"])
+def test_herdrs_resume_stopped_through_the_bridge_as_the_restore_closes_it_doesnt_come_back(
+    path: Path, folder: Path, tmp_path: Path, during: str
+) -> None:
+    # stop_agent closed it just before the restore read its status again or closed it, so
+    # that failed and the pane is gone: its conversation isn't started again.
+    resumed = pane(session=UUID, cwd=str(folder))
+    fake = runner_for([resumed], ["claude", "--resume", UUID],
+                      **{"pane list": [ok({"panes": [resumed]}), ok({"panes": []})]})
+    herdr = Herdr(runner=None)
+    service = AgentService(Settings(token=TOKEN, allowed_roots=(tmp_path.resolve(),)), herdr)
+
+    async def runner(argv) -> tuple[int, str, str]:
+        if " ".join(argv[1:]).startswith(during):
+            fake.calls.append(list(argv[1:]))
+            service.stopped.add("t-new")
+            return err("pane_not_found" if during == "pane close" else "agent_not_found")
+        return await fake(argv)
+
+    herdr.runner = runner
+    save(path, SavedAgents(agents=[entry(folder, session_id=UUID)]))
+    [line] = asyncio.run(restore(service, herdr, path))
+
+    assert fake.called("agent", "start") == []
+    assert "stopped" in line
+    assert load(path).agents == []
+
+
 def test_a_started_agent_is_no_longer_marked_failed(path: Path, folder: Path, tmp_path: Path) -> None:
     runner = runner_for([])
     run(runner, path, [entry(folder, session_id=UUID, restore_failed=True)], tmp_path)
