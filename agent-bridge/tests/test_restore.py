@@ -484,6 +484,51 @@ def test_the_watcher_leaves_out_an_agent_stopped_while_it_waited_for_the_file(
     assert rounds.files == [[]]
 
 
+def test_an_agent_stopped_while_its_restore_starts_it_doesnt_come_back(
+    path: Path, folder: Path, tmp_path: Path
+) -> None:
+    # The new pane shows up while herdr still waits for Claude Code in it, and the user stops it.
+    new = started(0) | {"cwd": str(folder)}
+    fake = runner_for([], **{"agent get": ok({"agent": new})})
+    start_reached, release = asyncio.Event(), asyncio.Event()
+    closed: list[str] = []
+
+    async def runner(argv) -> tuple[int, str, str]:
+        args = list(argv[1:])
+        if args[:2] == ["agent", "start"]:
+            start_reached.set()
+            await release.wait()
+            if args[args.index("--pane") + 1] in closed:
+                return err("pane_not_found")
+        if args[:2] == ["pane", "close"]:
+            closed.append(args[2])
+        return await fake(argv)
+
+    save(path, SavedAgents(agents=[entry(folder, session_id=UUID)]))
+    herdr = Herdr(runner=runner)
+    service = AgentService(Settings(token=TOKEN, allowed_roots=(tmp_path.resolve(),)), herdr, saved_path=path)
+
+    async def stop_meanwhile() -> None:
+        await start_reached.wait()
+        stopping = asyncio.create_task(service.stop_agent("w90:p1"))
+        # Long enough for a stop that doesn't wait for the start to close the pane.
+        await asyncio.sleep(0.1)
+        release.set()
+        await stopping
+
+    async def both() -> list[str]:
+        lines, _ = await asyncio.gather(restore(service, herdr, path), stop_meanwhile())
+        return lines
+
+    [line] = asyncio.run(both())
+
+    assert "restored in w90:p1" in line
+    assert closed == ["w90:p1"]
+    # The watcher's next write leaves nothing that a restart would bring back.
+    restore_module._write(path, [], True, service.stopped)
+    assert load(path).agents == []
+
+
 def test_a_started_agent_is_no_longer_marked_failed(path: Path, folder: Path, tmp_path: Path) -> None:
     runner = runner_for([])
     run(runner, path, [entry(folder, session_id=UUID, restore_failed=True)], tmp_path)

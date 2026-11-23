@@ -338,22 +338,25 @@ class AgentService:
         return await self._detailed(self._summarize(renamed))
 
     async def stop_agent(self, agent_id: str) -> None:
-        # Looking the agent up first also refuses panes that aren't agents (a shell, a dev
-        # server): herdr answers agent_not_found, a 404.
-        found = await self.herdr.get_agent(agent_id)
-        self._check_controllable(agent_id, found)
-        terminal_id = found.get("terminal_id")
-        if terminal_id:
-            # Before the pane closes and before forget: the watcher may be midway through a
-            # snapshot that still lists this agent, and it checks this set under the file's
-            # lock, which forget takes too, so the agent can't be written back.
-            self.stopped.add(terminal_id)
-        try:
-            await self.herdr.close_pane(agent_id)
-        except BaseException:
-            # Still running, so it must stay saved.
-            self.stopped.discard(terminal_id)
-            raise
+        # After any start under way: a restore's start whose pane closed under it would keep
+        # the saved agent for the next restart.
+        async with self._start_lock:
+            # Looking the agent up first also refuses panes that aren't agents (a shell, a dev
+            # server): herdr answers agent_not_found, a 404.
+            found = await self.herdr.get_agent(agent_id)
+            self._check_controllable(agent_id, found)
+            terminal_id = found.get("terminal_id")
+            if terminal_id:
+                # Before the pane closes and before forget: the watcher may be midway through a
+                # snapshot that still lists this agent, and it checks this set under the file's
+                # lock, which forget takes too, so the agent can't be written back.
+                self.stopped.add(terminal_id)
+            try:
+                await self.herdr.close_pane(agent_id)
+            except BaseException:
+                # Still running, so it must stay saved.
+                self.stopped.discard(terminal_id)
+                raise
         if self.saved_path is None or not terminal_id:
             return
         try:
