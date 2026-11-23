@@ -191,17 +191,28 @@ def test_has_conversation_looks_in_the_accounts_projects(tmp_path: Path) -> None
 
 def test_claude_among_jobs_looks_under_the_shell(monkeypatch: pytest.MonkeyPatch) -> None:
     class Child:
-        def __init__(self, name: str) -> None:
-            self._name = name
+        def __init__(self, name: str, argv0: str | None = None) -> None:
+            self._name, self._argv0 = name, argv0 or name
 
         def name(self) -> str:
             return self._name
+
+        def cmdline(self) -> list[str]:
+            if self._argv0 == "denied":
+                raise psutil.AccessDenied()
+            return [self._argv0]
 
     children: list[Child] = []
     monkeypatch.setattr(psutil.Process, "children", lambda self, recursive=False: children)
     assert restore_module._claude_among_jobs_in_os(os.getpid()) is False
     children[:] = [Child("node"), Child("claude.exe")]
     assert restore_module._claude_among_jobs_in_os(os.getpid()) is True
+    # On macOS a process started through a symlink is named after its target: the native
+    # install's is its version.
+    children[:] = [Child("2.1.330", "/Users/me/.local/bin/claude")]
+    assert restore_module._claude_among_jobs_in_os(os.getpid()) is True
+    children[:] = [Child("2.1.330", "denied")]
+    assert restore_module._claude_among_jobs_in_os(os.getpid()) is None
     monkeypatch.setattr(psutil.Process, "children", lambda self, recursive=False: (_ for _ in ()).throw(psutil.AccessDenied()))
     assert restore_module._claude_among_jobs_in_os(os.getpid()) is None
 
@@ -838,6 +849,40 @@ def test_an_idle_pane_running_its_conversation_with_claude_among_its_jobs_isnt_c
     run(runner, path, [entry(folder, terminal_id="t-b", pane_id="w2:p1", session_id=UUID)], tmp_path)
 
     assert runner.called("pane", "close") == runner.called("agent", "start") == []
+
+
+def test_a_claude_stopped_in_the_shell_at_its_old_pane_id_holds_off_the_start(
+    path: Path, folder: Path, tmp_path: Path, jobs: set[int]
+) -> None:
+    # herdr brought the pane back and resumed the conversation in it, then it was stopped
+    # with ctrl-Z: not an idle shell, and it may run the conversation.
+    jobs.add(9000)
+    runner = runner_for([pane(agent=None, cwd=str(folder))], **{"pane process-info --pane w1:p1": shell_info()})
+    [line] = run(runner, path, [entry(folder, session_id=UUID)], tmp_path)
+
+    assert runner.called("pane", "close") == runner.called("agent", "start") == []
+    assert "kept for the next restart" in line and "ctrl-Z" in line
+    [kept] = load(path).agents
+    assert kept.restore_failed
+
+
+def test_after_replacing_herdrs_resume_a_late_pane_that_cant_be_told_doesnt_stop_the_start(
+    path: Path, folder: Path, tmp_path: Path
+) -> None:
+    # The conversation ran in the pane just closed to be replaced: a pane listed since, which
+    # herdr shows with it though only a shell runs there and its status can't be read again,
+    # is left, and the agent started.
+    resumed = pane("w2:p1", "t-r", session=UUID, cwd=str(folder))
+    late = pane("w3:p1", "t-l", session=UUID, cwd=str(folder))
+    runner = runner_for([resumed], ["claude", "--resume", UUID], **{
+        "pane list": [ok({"panes": [resumed]}), ok({"panes": [late]})],
+        "pane process-info --pane w3:p1": shell_info(),
+        "agent get w3:p1": err("timeout"),
+    })
+    run(runner, path, [entry(folder, terminal_id="t-b", pane_id="w7:p1", session_id=UUID)], tmp_path)
+
+    assert runner.called("pane", "close") == [["pane", "close", "w2:p1"]]
+    assert len(runner.called("agent", "start")) == 1
 
 
 @pytest.mark.parametrize("status", [err("timeout"), "working"])

@@ -96,9 +96,16 @@ async def _restore_one(
         if pane["pane_id"] == entry.pane_id and pane.get("cwd") and Path(pane["cwd"]) == Path(entry.cwd)
     ]
     shell = next((pane for pane in back if pane["pane_id"] not in found.closed and not pane.get("agent")), None)
-    if shell is not None and not await _idle_shell(herdr, shell):
-        # Something runs in it (an editor, a dev server): the user's, not a leftover.
-        shell = None
+    # A Claude Code stopped with ctrl-Z in the shell herdr brought back: it may run the
+    # agent's conversation.
+    stopped_claude = None
+    if shell is not None:
+        idle = await _idle_shell(herdr, shell)
+        if idle is None:
+            stopped_claude = shell
+        if not idle:
+            # Something runs in it (an editor, a dev server): the user's, not a leftover.
+            shell = None
     if entry.session_id in found.sessions:
         # Two panes ran one conversation; a second copy of it would answer as the first.
         _, note = await _close(herdr, shell, found)
@@ -134,6 +141,11 @@ async def _restore_one(
         note = await _take_resumed(service, herdr, path, entry, resumed, shell, found)
         if isinstance(note, tuple):
             return note
+    elif stopped_claude is not None:
+        # A second copy would answer as the first, once it's brought back with fg.
+        await _keep_failed(path, entry)
+        return (f"{label}: not restored, kept for the next restart: {stopped_claude['pane_id']}, where it "
+                "was, has a Claude Code stopped with ctrl-Z, which may run its conversation, left as it is"), True
     else:
         _, note = await _close(herdr, shell, found)
 
@@ -263,8 +275,11 @@ async def _take_resumed(
         # and the agent kept for the next restart. Tied to the pane, which no save lists, the
         # entry would age out. As when a start is held off, the shell herdr left goes.
         _, note = await _close(herdr, shell, found)
-        await _keep_failed(path, entry)
         why = "herdr can't say what it runs now" if status is None else "herdr still calls it busy"
+        if entry.terminal_id in found.replaced:
+            # Its conversation ran in the pane just closed to be replaced: started all the same.
+            return f"{note} ({resumed['pane_id']}, where Claude Code no longer runs but {why}, left as it is)"
+        await _keep_failed(path, entry)
         return (f"{label}: not restored, kept for the next restart: Claude Code no longer runs in "
                 f"{resumed['pane_id']}, which ran its conversation, but {why}, left as it is{note}"), True
     if status == _NO_AGENT:
@@ -278,6 +293,9 @@ async def _take_resumed(
             # Something runs in it, or what does can't be read: left, and the agent kept
             # for the next restart. As when a start is held off, the shell herdr left goes.
             _, note = await _close(herdr, shell, found)
+            if entry.terminal_id in found.replaced:
+                # Its conversation ran in the pane just closed to be replaced.
+                return f"{note} ({resumed['pane_id']}, no longer an agent nor known to be an idle shell, left as it is)"
             await _keep_failed(path, entry)
             return (f"{label}: not restored, kept for the next restart: herdr no longer shows an agent in "
                     f"{resumed['pane_id']}, which ran its conversation, and it isn't known to be an idle "
@@ -333,12 +351,14 @@ def _claude_among_jobs_in_os(shell_pid: int) -> bool | None:
         return None
     for child in children:
         try:
-            name = child.name()
+            # By its command line too: on macOS one started through a symlink is named after
+            # the link's target, which for Claude Code's native install is its version.
+            names = [child.name(), *child.cmdline()[:1]]
         except psutil.NoSuchProcess:
             continue
         except (psutil.Error, OSError):
             return None
-        if PureWindowsPath(name).name.lower().removesuffix(".exe") == "claude":
+        if any(PureWindowsPath(name).name.lower().removesuffix(".exe") == "claude" for name in names):
             return True
     return False
 
@@ -347,9 +367,12 @@ def _claude_among_jobs_in_os(shell_pid: int) -> bool | None:
 _claude_among_jobs = _claude_among_jobs_in_os
 
 
-async def _idle_shell(herdr: Herdr, pane: dict) -> bool:
-    """Whether the pane's shell runs nothing: its only foreground process is the shell itself.
-    False when herdr can't say, or lists none, so an unknown pane is left alone."""
+async def _idle_shell(herdr: Herdr, pane: dict) -> bool | None:
+    """Whether the pane's shell runs nothing: its only foreground process is the shell itself,
+    and no Claude Code runs among its jobs. False when something else runs in it, or herdr
+    can't say or lists none, so an unknown pane is left alone. None, also falsy, when only
+    the shell is in the foreground but a Claude Code may run among its jobs (stopped with
+    ctrl-Z), so it may run a conversation."""
     try:
         info = await herdr.process_info(pane["pane_id"])
     except HerdrError:
@@ -359,8 +382,7 @@ async def _idle_shell(herdr: Herdr, pane: dict) -> bool:
     if not (type(shell) is int and shell > 0 and processes
             and all(isinstance(p, dict) and p.get("pid") == shell for p in processes)):
         return False
-    # A Claude Code stopped with ctrl-Z isn't in the foreground, but still runs.
-    return await asyncio.to_thread(_claude_among_jobs, shell) is False
+    return True if await asyncio.to_thread(_claude_among_jobs, shell) is False else None
 
 
 async def _unclassified(
