@@ -460,6 +460,29 @@ def test_answer_agent_says_the_keys_went_through_when_the_wait_fails(
     assert ". Check with agent_details" in text and ".. " not in text
 
 
+def test_answer_agent_doesnt_call_late_keys_a_failure(client: TestClient, fake: FakeAgentBridge) -> None:
+    # The keys were most likely typed; answering again would answer the agent's next question.
+    fake.routes[("POST", "/agents/w1:p1/keys")] = httpx.ReadTimeout("read timed out")
+    is_error, text = call_tool(client, "answer_agent", agent_id="w1:p1", keys=["1"], wait_seconds=20)
+    assert not is_error
+    assert text == (
+        "The agent host didn't answer in time; 1 may have been sent to w1:p1. Check with "
+        "agent_details before answering again."
+    )
+    assert [request.url.path for request in fake.requests] == ["/agents/w1:p1/keys"]
+
+
+def test_stop_agent_doesnt_call_a_late_stop_a_failure(client: TestClient, fake: FakeAgentBridge) -> None:
+    # agent-bridge stops only after a start under way, which can outlast the request.
+    fake.routes[("DELETE", "/agents/w1:p1")] = httpx.ReadTimeout("read timed out")
+    is_error, text = call_tool(client, "stop_agent", agent_id="w1:p1")
+    assert not is_error
+    assert text == (
+        "The agent host didn't answer in time; w1:p1 may still stop. Check with list_agents "
+        "before stopping it again."
+    )
+
+
 # claude.ai's voice mode gives up on a tool call after about 30 s and nothing is sent before
 # the tool returns, so a longer wait would fail after the prompt was already typed.
 @pytest.mark.parametrize("wait_seconds", [0, 4, 21, 45, 100, 600])

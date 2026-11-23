@@ -254,9 +254,6 @@ def enrollment_routes(
 
     def handled(endpoint):
         async def handle(request: Request) -> Response:
-            if (reason := _outside(request)) is not None:
-                log.warning("404 %s %s: %s.", request.method, request.url.path, reason)
-                return JSONResponse({"error": "not found"}, status_code=404)
             try:
                 return await endpoint(request)
             except Refused as error:
@@ -286,7 +283,13 @@ def enrollment_routes(
         nonlocal told
         # Only these paths: a Router would also take the lifespan events, which `app` needs.
         if scope["type"] == "http" and (scope["path"] == "/enroll" or scope["path"].startswith("/bridges/")):
-            await router(scope, receive, send)
+            # Before routing: the Router's 405 for a wrong method, or plain-text 404 for a
+            # wrong path, would tell outsiders which routes exist.
+            if (reason := _outside(Request(scope))) is not None:
+                log.warning("404 %s %s: %s.", scope["method"], scope["path"], reason)
+                await JSONResponse({"error": "not found"}, status_code=404)(scope, receive, send)
+            else:
+                await router(scope, receive, send)
         elif scope["type"] != "lifespan" and not _is_loopback(scope):
             # The rest is for the tunnel, whose cloudflared calls from this host: from the
             # LAN it would get past the tunnel's path rules.
