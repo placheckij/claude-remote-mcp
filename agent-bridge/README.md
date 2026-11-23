@@ -109,17 +109,19 @@ among its jobs) is closed and the agent started; any other is left, and the agen
 the next restart, as it is when herdr, asked again, can't say what runs there or still
 calls it busy. So is the agent while a Claude agent in its folder with no conversation from
 herdr's hook and a process that can't be read, or a Claude Code stopped with ctrl-Z in the
-shell herdr left (or that shell's processes can't be read), may be running its
-conversation, unless the pane running it was just closed to be replaced. An idle shell
-herdr left where the agent was, in its folder, is closed unless a pane listed at the start
-runs its conversation, also when the start is then held off; a shell running something is
-left alone. Right before starting an agent, the restore looks for its conversation again
-in panes opened or resumed meanwhile, and in its folder's panes herdr doesn't show as
-agents yet. A conversation can still start twice when the restore can't tell that a pane
-runs it: herdr's hook doesn't give the pane's conversation, and either it was started in a
-pane open in another folder before herdr shows it as an agent, its process can't be read
-(in another folder, or before herdr shows it as an agent), or its command line doesn't name
-the conversation (`--continue`, `/resume`). An
+shell herdr left (or that shell's jobs can't be read), may be running its conversation.
+None of these holds off an agent whose conversation's pane was just closed to be replaced.
+An idle shell herdr left where the agent was, in its folder, is closed, also when the
+start is then held off, unless a pane listed at the start that runs its conversation is
+kept as the agent's or replaced; a shell running something is left alone. Right before
+starting an agent, the restore looks for its conversation again in panes opened or resumed
+meanwhile, and in its folder's panes herdr doesn't show as agents yet. A conversation can
+still start twice when the restore can't tell that a pane runs it: herdr's hook doesn't
+give the pane's conversation, and either it was started in a pane open in another folder
+before herdr shows it as an agent, its process can't be read (in another folder, or before
+herdr shows it as an agent), herdr can't read the processes of the shell it left (a Claude
+Code stopped with ctrl-Z there), or its command line doesn't name the conversation
+(`--continue`, `/resume`). An
 agent stopped through agent-bridge is never restored, nor is its conversation from another
 entry until it runs again, even if it's stopped while a restore runs; the one exception is
 when `agents.json` can't be written then, and agent-bridge restarts before it can be.
