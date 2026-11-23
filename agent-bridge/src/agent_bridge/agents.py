@@ -63,6 +63,9 @@ class AgentService:
         # Conversations those agents ran: an entry a restore kept for one under an old
         # terminal would bring it back, so it goes too.
         self.stopped_sessions: set[str] = set()
+        # Those of them whose stop couldn't take their entries out of agents.json: any entry
+        # for one is stale. Otherwise one written since (save-agents) was written on purpose.
+        self.unforgotten_sessions: set[str] = set()
         # Serializes count-then-start and picking a free name, so concurrent requests can
         # neither exceed the limit nor give two agents the same name.
         self._start_lock = asyncio.Lock()
@@ -374,7 +377,10 @@ class AgentService:
             # In a thread: the file's lock may be waited for.
             await asyncio.to_thread(forget, self.saved_path, terminal_id, session_id, stopped=True)
         except (OSError, StateError) as error:
-            # The agent is stopped all the same; only a restart would bring it back.
+            # The agent is stopped all the same; the restore and the watcher's writes drop its
+            # entries instead.
+            if session_id:
+                self.unforgotten_sessions.add(session_id)
             log.warning("Stopped %s but couldn't take it out of %s: %s", agent_id, self.saved_path, error)
 
     async def _controllable(self, agent_id: str) -> AgentSummary:

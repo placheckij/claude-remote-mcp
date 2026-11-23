@@ -48,6 +48,11 @@ class _Found:
     # Conversations stopped through the bridge (the service's set): an entry kept for one
     # would bring it back.
     stopped_sessions: set[str] = field(default_factory=set)
+    # Those stopped before this restore began; their stops took their entries out, so an
+    # entry for one still in the file was written since, on purpose (save-agents).
+    stopped_before: frozenset[str] = frozenset()
+    # Those whose stop couldn't take their entries out (the service's set).
+    unforgotten: set[str] = field(default_factory=set)
 
 
 async def restore(service: AgentService, herdr: Herdr, path: Path) -> list[str]:
@@ -63,6 +68,8 @@ async def restore(service: AgentService, herdr: Herdr, path: Path) -> list[str]:
         claimed={entry.terminal_id for entry in entries},
         sessions={entry.session_id for entry in entries if entry.session_id and entry.terminal_id in terminals},
         stopped_sessions=service.stopped_sessions,
+        stopped_before=frozenset(service.stopped_sessions),
+        unforgotten=service.unforgotten_sessions,
     )
     lines = []
     for entry in entries:
@@ -82,9 +89,9 @@ async def _restore_one(
 ) -> tuple[str, bool]:
     """The log line for `entry`, and whether it says something failed."""
     label = entry.name or entry.cwd
-    if entry.terminal_id in service.stopped or (entry.session_id and entry.session_id in service.stopped_sessions):
+    if entry.terminal_id in service.stopped or _conversation_stopped(entry, found):
         # Stopped through the bridge, whose forget couldn't take it out of agents.json; or its
-        # conversation was, in another pane (herdr's resume), since this entry was saved.
+        # conversation was, in another pane (herdr's resume).
         await _forget(path, entry, service.stopped)
         return f"{label}: not restored, and forgotten: it was stopped through the bridge", False
     for pane in found.panes:
@@ -191,7 +198,7 @@ async def _restore_one(
             return line + note, failed
         note += late_note
 
-    if entry.session_id and entry.session_id in service.stopped_sessions:
+    if _conversation_stopped(entry, found):
         # Its conversation was stopped through the bridge while this restore ran.
         await _forget(path, entry, service.stopped)
         return f"{label}: not restored, and forgotten: its conversation was stopped through the bridge{note}", False
@@ -614,6 +621,16 @@ async def _keep_failed(path: Path, entry: SavedAgent, found: _Found) -> None:
     await asyncio.to_thread(_replace, path, entry.terminal_id, failed, found.stopped_sessions)
 
 
+def _conversation_stopped(entry: SavedAgent, found: _Found) -> bool:
+    """Whether `entry`'s conversation was stopped through the bridge, so the entry would bring
+    it back: kept by a restore, left behind by a stop that couldn't take it out, or read
+    before a stop during this restore took it out of the file."""
+    session = entry.session_id
+    return bool(session) and session in found.stopped_sessions and (
+        entry.restore_failed or session in found.unforgotten or session not in found.stopped_before
+    )
+
+
 def _session_in(pane: dict, found: _Found) -> str | None:
     """The conversation a Claude pane runs, as a save would record it: herdr's hook says,
     else its command line (a conversation resumed in a config without the hook)."""
@@ -688,7 +705,8 @@ async def watch(
                 restarted = True
             else:
                 restarted = False
-            await asyncio.to_thread(_write, path, seen, restarted, service.stopped, service.stopped_sessions)
+            await asyncio.to_thread(_write, path, seen, restarted, service.stopped, service.stopped_sessions,
+                                    service.unforgotten_sessions)
         except HerdrError as error:
             if error.code != SERVER_NOT_RUNNING:
                 # Its server still runs (a timeout, output it couldn't parse): only this round
@@ -750,7 +768,7 @@ def _saved(path: Path) -> list[SavedAgent]:
 
 def _write(
     path: Path, seen: list[SavedAgent], restarted: bool, stopped: set[str] = frozenset(),
-    stopped_sessions: set[str] | None = None,
+    stopped_sessions: set[str] | None = None, unforgotten: set[str] | None = None,
 ) -> None:
     with locked(path):
         # Agents stopped through the bridge since the snapshot began are gone for good. Read
@@ -761,11 +779,17 @@ def _write(
         saved = load(path, for_writing=True)
         # Also saved ones: a restore may have written an agent that a stop then closed before
         # its forget could find it.
-        # And entries for a conversation stopped through the bridge, which would bring it
-        # back. One that runs again (resumed by hand) is wanted again: no longer stopped.
+        # And entries for a conversation stopped through the bridge that would bring it
+        # back: kept by a restore, or left by a stop that couldn't take them out. One that
+        # runs again (resumed by hand) is wanted again: no longer stopped.
         running = {agent.session_id for agent in seen if agent.session_id}
         if stopped_sessions:
             stopped_sessions.difference_update(running)
         ended = frozenset(stopped_sessions or ())
-        kept = [agent for agent in saved.agents if agent.terminal_id not in gone and agent.session_id not in ended]
+        unforgotten_now = frozenset(unforgotten or ()) & ended
+        kept = [agent for agent in saved.agents if agent.terminal_id not in gone and not (
+            agent.session_id in ended and (agent.restore_failed or agent.session_id in unforgotten_now))]
+        if unforgotten is not None:
+            # Taken out now, as the stop would have; any written later is on purpose.
+            unforgotten.difference_update(unforgotten_now | running)
         save(path, saved.model_copy(update={"agents": merge(kept, seen, restarted)}))

@@ -934,7 +934,7 @@ def test_a_restore_kept_entry_for_a_stopped_conversation_goes_even_if_the_stops_
                            Herdr(runner=runner_for([resumed])), saved_path=path)
     asyncio.run(service.stop_agent("w2:p1"))
     # The watcher's next write goes through.
-    restore_module._write(path, [], False, service.stopped, service.stopped_sessions)
+    restore_module._write(path, [], False, service.stopped, service.stopped_sessions, service.unforgotten_sessions)
 
     assert load(path).agents == []
 
@@ -959,6 +959,25 @@ def test_a_conversation_run_again_by_hand_after_its_stop_is_kept_when_its_restor
 
     [kept] = load(path).agents
     assert (kept.session_id, kept.restore_failed) == (UUID, True)
+
+
+def test_a_conversation_saved_again_by_hand_after_its_stop_is_restored(
+    path: Path, folder: Path, tmp_path: Path
+) -> None:
+    # Stopped through the bridge, then resumed by hand and saved with save-agents before the
+    # watcher saw it run; herdr's server restarts: written on purpose, so restored.
+    settings = Settings(token=TOKEN, allowed_roots=(tmp_path.resolve(),))
+    save(path, SavedAgents(agents=[entry(folder, terminal_id="t-a", pane_id="w1:p1", session_id=UUID)]))
+    service = AgentService(settings, Herdr(runner=runner_for([pane(session=UUID, cwd=str(folder))])),
+                           saved_path=path)
+    asyncio.run(service.stop_agent("w1:p1"))
+    save(path, SavedAgents(agents=[entry(folder, terminal_id="t-h", pane_id="w2:p1", session_id=UUID)]))
+    runner = runner_for([])
+    herdr = Herdr(runner=runner)
+    service.herdr = herdr
+    asyncio.run(restore(service, herdr, path))
+
+    assert len(runner.called("agent", "start")) == 1
 
 
 def test_herdrs_resume_stopped_before_the_restore_ran_isnt_started_again(
@@ -1627,7 +1646,7 @@ class Rounds:
         self.rounds = 1
         self.restore_errors: list[Exception] = []
         # What AgentService.stopped is to watch.
-        self.service = SimpleNamespace(stopped=set(), stopped_sessions=set())
+        self.service = SimpleNamespace(stopped=set(), stopped_sessions=set(), unforgotten_sessions=set())
         monkeypatch.setattr(restore_module, "snapshot", self.snapshot)
         monkeypatch.setattr(restore_module, "restore", self.restore)
 
