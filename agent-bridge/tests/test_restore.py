@@ -1201,6 +1201,69 @@ def test_a_restore_that_couldnt_read_agents_json_runs_again_next_round(
     assert (restored.pane_id, restored.session_id) == ("w91:p1", UUID)
 
 
+def lock_held_for_forget(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The restore's first forget times out on agents.json's lock."""
+    real_forget = restore_module.forget
+    calls = [0]
+
+    def flaky(forget_path: Path, terminal_id: str) -> None:
+        calls[0] += 1
+        if calls[0] == 1:
+            raise TimeoutError("agents.json.lock is held by another process.")
+        real_forget(forget_path, terminal_id)
+
+    monkeypatch.setattr(restore_module, "forget", flaky)
+
+
+def test_an_entry_whose_forget_failed_doesnt_set_off_another_restore(
+    monkeypatch: pytest.MonkeyPatch, path: Path, folder: Path, tmp_path: Path
+) -> None:
+    # The new server numbered panes afresh: w1:p1 is now the user's shell elsewhere. The
+    # entry that had already gone keeps that pane id when its forget fails; in the next
+    # round it would look like a restart again, and bring back the agent the user closed.
+    lock_held_for_forget(monkeypatch)
+    restored = entry(folder, name="restored", terminal_id="t-a", pane_id="w2:p1")
+    gone = entry(tmp_path / "api", name="gone", terminal_id="t-g", pane_id="w1:p1", misses=1)
+    host = Host([pane("w1:p1", terminal_id="t-x", agent=None, cwd=str(tmp_path / "other"))])
+    restores = watch_host(monkeypatch, host, path, [restored, gone], tmp_path, 2,
+                          {1: lambda: host.close("restored")})
+
+    assert restores == [1]
+    assert host.started == ["restored"]
+
+
+@pytest.mark.parametrize("case", ["gone before", "conversation runs", "untrusted", "resume stopped"])
+def test_an_entry_whose_forget_failed_is_dropped_by_the_next_write(
+    monkeypatch: pytest.MonkeyPatch, path: Path, folder: Path, tmp_path: Path, case: str
+) -> None:
+    lock_held_for_forget(monkeypatch)
+    runner = runner_for([])
+    saved = [entry(folder, session_id=UUID)]
+    stopped: set[str] = set()
+    if case == "gone before":
+        saved = [entry(folder, misses=1)]
+    elif case == "conversation runs":
+        survivor = entry(folder, terminal_id="t-live", pane_id="w2:p1", session_id=UUID)
+        runner = runner_for([pane("w2:p1", terminal_id="t-live", session=UUID)], ["claude", "--resume", UUID])
+        saved = [saved[0], survivor]
+    elif case == "untrusted":
+        runner = runner_for([], **{"pane wait-output": ok({"matched_line": "Yes, I trust this folder"})})
+    else:
+        runner = runner_for([pane(session=UUID, cwd=str(folder))], ["claude", "--resume", UUID])
+        stopped.add("t-new")
+    save(path, SavedAgents(agents=saved))
+    herdr = Herdr(runner=runner)
+    service = AgentService(Settings(token=TOKEN, allowed_roots=(tmp_path.resolve(),)), herdr)
+    service.stopped |= stopped
+
+    lines = asyncio.run(restore(service, herdr, path))
+
+    assert "is held by another process" in lines[0]
+    assert "t-old" in service.stopped
+    restore_module._write(path, [], True, service.stopped)
+    assert "t-old" not in [agent.terminal_id for agent in load(path).agents]
+
+
 def test_a_restart_check_that_couldnt_read_agents_json_fails(
     monkeypatch: pytest.MonkeyPatch, path: Path, folder: Path
 ) -> None:

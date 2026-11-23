@@ -71,7 +71,7 @@ async def _restore_one(
     label = entry.name or entry.cwd
     if entry.terminal_id in service.stopped:
         # Stopped through the bridge, whose forget couldn't take it out of agents.json.
-        await asyncio.to_thread(forget, path, entry.terminal_id)
+        await _forget(path, entry, service.stopped)
         return f"{label}: not restored, and forgotten: it was stopped through the bridge", False
     for pane in found.panes:
         if pane.get("terminal_id") == entry.terminal_id:
@@ -93,13 +93,13 @@ async def _restore_one(
     if entry.session_id in found.sessions:
         # Two panes ran one conversation; a second copy of it would answer as the first.
         _, note = await _close(herdr, shell, found)
-        await asyncio.to_thread(forget, path, entry.terminal_id)
+        await _forget(path, entry, service.stopped)
         return f"{label}: not restored, and forgotten: its conversation {entry.session_id} already runs{note}", False
     if entry.misses > 0 and not back:
         # It had already disappeared while this herdr server ran, and herdr didn't bring its
         # pane back: stopped or closed, not lost. Forgotten now rather than left to age out,
         # so its stale pane id can't match a pane a later server hands out.
-        await asyncio.to_thread(forget, path, entry.terminal_id)
+        await _forget(path, entry, service.stopped)
         return f"{label}: not restored, and forgotten: it had already gone before the restart", False
     resumed = next(
         (
@@ -115,7 +115,7 @@ async def _restore_one(
         resumed = await _unclassified(herdr, entry.session_id, open_panes, found)
     if resumed is not None and resumed.get("terminal_id") in service.stopped:
         # Stopped through the bridge since the panes were listed.
-        await asyncio.to_thread(forget, path, entry.terminal_id)
+        await _forget(path, entry, service.stopped)
         return (f"{label}: not restored, and forgotten: {resumed['pane_id']}, which ran its conversation, "
                 "was stopped through the bridge"), False
     if resumed is not None:
@@ -182,7 +182,7 @@ async def _restore_one(
         agent = await service.restart_agent(entry, resume)
     except BridgeError as error:
         if error.code == "folder_not_trusted":
-            await asyncio.to_thread(forget, path, entry.terminal_id)
+            await _forget(path, entry, service.stopped)
             return f"{label}: not restored, and forgotten: {error.message}{note}", True
         await _keep_failed(path, entry)
         return f"{label}: not restored ({error.code}: {error.message}), kept for the next restart{note}", True
@@ -271,6 +271,18 @@ async def _adopt(path: Path, entry: SavedAgent, resumed: dict, found: _Found, st
         # As for a restored agent: the old terminal is gone for good, so the watcher's next
         # write drops the stale entry, whose old pane id now another terminal's would make the
         # next round look like a herdr restart, and saves the pane from its snapshot.
+        stopped.add(entry.terminal_id)
+        raise
+
+
+async def _forget(path: Path, entry: SavedAgent, stopped: set[str]) -> None:
+    """Take `entry` out of agents.json for good."""
+    try:
+        await asyncio.to_thread(forget, path, entry.terminal_id)
+    except (OSError, StateError):
+        # As for a restored agent whose entry couldn't be written: the watcher's next write
+        # drops it, whose old pane id, should a new server hand it to another terminal, would
+        # make the next round look like a herdr restart and start the agent again.
         stopped.add(entry.terminal_id)
         raise
 
