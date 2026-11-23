@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 from markdown_it import MarkdownIt
+from markdown_it.common.utils import escapeHtml
 
 ROOT = Path(__file__).parent.parent
 READMES = ["README.md", "agent-bridge/README.md", "mcp-gateway/README.md"]
@@ -60,7 +61,9 @@ def toc(markdown: str) -> str:
         link = f"[{label}](#{anchor})"
         # The entry must render as one link to the heading, showing its text: e.g. an
         # unbalanced "[" would end the link early.
-        if MARKDOWN.renderInline(link) != f'<a href="#{anchor}">{MARKDOWN.renderInline(label)}</a>':
+        # The href as the renderer writes it: non-ASCII percent-encoded, HTML-escaped.
+        href = escapeHtml(MARKDOWN.normalizeLink(f"#{anchor}"))
+        if MARKDOWN.renderInline(link) != f'<a href="{href}">{MARKDOWN.renderInline(label)}</a>':
             raise ValueError(f"heading {label!r} breaks its TOC link; escape its [ and ] as \\[ and \\]")
         entries.append(f"{'  ' * (level - 2)}- {link}")
     return "\n".join([START, "**Contents**", "", *entries, END])
@@ -171,6 +174,8 @@ def test_a_heading_that_would_break_its_toc_link_is_refused() -> None:
     # Escaped, or balanced, it fits.
     assert "- [Ranges \\[0, 1)](#ranges-0-1)" in toc("## Ranges \\[0, 1)\n")
     assert "- [[x] done](#x-done)" in toc("## [x] done\n")
+    # Not ASCII: the renderer percent-encodes the href, which is still the same link.
+    assert "- [Café setup](#café-setup)" in toc("## Café setup\n")
 
 
 @pytest.mark.parametrize("heading", ["[Linked](https://example.com)", "See <https://example.com>"])
@@ -181,7 +186,7 @@ def test_a_link_in_a_heading_is_refused(heading: str) -> None:
 
 @pytest.mark.parametrize("readme", READMES)
 def test_readme_toc_matches_its_headings(readme: str) -> None:
-    markdown = (ROOT / readme).read_text()
+    markdown = (ROOT / readme).read_text(encoding="utf-8")
     assert markdown.count(START) == 1 and markdown.count(END) == 1, f"{readme} needs one {START} … {END} block"
     current = markdown[markdown.index(START):markdown.index(END) + len(END)]
     expected = toc(markdown)
