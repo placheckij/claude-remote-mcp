@@ -18,8 +18,8 @@ mobile and CarPlay. Claude decides which tool to call; nothing in this repo runs
 What this layer imposes on the others:
 
 - **Time.** Voice mode gives up on a tool call after about 30 s, other clients after
-  about 60 s (measured; Claude's docs say 240 s). Tools therefore wait at most 20 s,
-  and longer work is followed with `wait_for_agent`.
+  about 60 s (measured; Claude's docs say 240 s). Tools therefore wait for an agent at
+  most 20 s (a start at most 25 s), and longer work is followed with `wait_for_agent`.
 - **Speech.** Replies are read aloud, so tool results are a few short lines of plain
   text, never code or logs.
 - **Approval.** Voice mode asks before each tool call unless the tools are set to
