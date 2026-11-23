@@ -112,7 +112,13 @@ async def _restore_one(
         None,
     )
     if resumed is None and entry.session_id:
-        resumed = await _unclassified(herdr, entry.session_id, open_panes, found)
+        resumed, unsure = await _unclassified(herdr, entry, open_panes, found)
+        if resumed is None and unsure is not None:
+            # A second copy would answer as the first. Kept for the next restart: should the
+            # pane run its conversation, the snapshots save it from there.
+            await _keep_failed(path, entry)
+            return (f"{label}: not restored, kept for the next restart: {unsure['pane_id']}, a Claude agent "
+                    "in its folder whose process couldn't be read, may run its conversation"), True
     if resumed is not None and resumed.get("terminal_id") in service.stopped:
         # Stopped through the bridge since the panes were listed.
         await _forget(path, entry, service.stopped)
@@ -221,14 +227,26 @@ async def _idle_shell(herdr: Herdr, pane: dict) -> bool:
     return shell is not None and all(isinstance(p, dict) and p.get("pid") == shell for p in processes)
 
 
-async def _unclassified(herdr: Herdr, session_id: str, panes: list[dict], found: _Found) -> dict | None:
-    """A pane herdr doesn't know as an agent yet (Claude Code in it has only just started)
-    whose Claude Code's command line runs `session_id`. Not one herdr calls idle or done, nor
-    one whose processes can't be read. It has no status of its own, so it's taken as busy."""
+async def _unclassified(
+    herdr: Herdr, entry: SavedAgent, panes: list[dict], found: _Found
+) -> tuple[dict | None, dict | None]:
+    """A pane whose Claude Code's command line runs `entry`'s conversation, though nothing
+    else said so: one herdr doesn't know as an agent yet (Claude Code in it has only just
+    started), or a Claude agent with no session from herdr's hook whose process the snapshot
+    couldn't read. Not one herdr calls idle or done. It has no status of its own, or none
+    known to be idle, so it's taken as busy.
+
+    Second, when none is found: such a Claude agent in `entry`'s folder whose process can't
+    be read now either, so it may run the conversation (Claude Code finds a conversation in
+    the folder it ran in)."""
+    unsure = None
     for pane in panes:
-        if pane.get("agent") or pane.get("agent_status") in FINISHED or pane.get("terminal_id") in found.claimed:
+        if pane.get("agent_status") in FINISHED or pane.get("terminal_id") in found.claimed:
             continue
         pane_id = pane["pane_id"]
+        unread_agent = pane.get("agent") == "claude" and pane_id not in found.live and _session_in(pane, found) is None
+        if pane.get("agent") and not unread_agent:
+            continue
         if pane_id not in found.processes:
             try:
                 found.processes[pane_id] = await herdr.process_info(pane_id)
@@ -236,9 +254,12 @@ async def _unclassified(herdr: Herdr, session_id: str, panes: list[dict], found:
                 found.processes[pane_id] = {}
         process = claude_process(found.processes[pane_id])
         argv = process.get("argv") if process is not None else None
-        if isinstance(argv, list) and session_id_in([arg for arg in argv if isinstance(arg, str)]) == session_id:
-            return pane
-    return None
+        if isinstance(argv, list) and session_id_in([arg for arg in argv if isinstance(arg, str)]) == entry.session_id:
+            return pane, None
+        if (unread_agent and not found.processes[pane_id] and unsure is None
+                and pane.get("cwd") and Path(pane["cwd"]) == Path(entry.cwd)):
+            unsure = pane
+    return None, unsure
 
 
 async def _close(

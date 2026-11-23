@@ -293,6 +293,52 @@ def test_a_pane_herdr_doesnt_know_as_an_agent_yet_running_its_conversation_is_le
     assert (kept.pane_id, kept.terminal_id) == (pane_id, "t-new")
 
 
+def test_an_agent_pane_without_a_session_whose_process_the_snapshot_missed_is_read_again(
+    path: Path, folder: Path, tmp_path: Path
+) -> None:
+    # No session from herdr's hook, and the snapshot couldn't read its process, so nothing
+    # said which conversation it runs; its command line, read again, names the agent's.
+    working = pane(cwd=str(folder)) | {"agent_status": "working"}
+    runner = runner_for([working], **{"pane process-info": [err("timeout"), process_info(["claude", "--resume", UUID])]})
+    [line] = run(runner, path, [entry(folder, session_id=UUID)], tmp_path)
+
+    assert runner.called("pane", "close") == runner.called("agent", "start") == []
+    assert "left as it is" in line
+    [kept] = load(path).agents
+    assert (kept.pane_id, kept.terminal_id) == ("w1:p1", "t-new")
+
+
+def test_an_agent_pane_in_its_folder_whose_process_cant_be_read_holds_off_the_start(
+    path: Path, folder: Path, tmp_path: Path
+) -> None:
+    # It may run the agent's conversation, which a second copy would answer as. Left, and
+    # the agent kept for the next restart: if it runs the conversation, the snapshots save it.
+    working = pane(cwd=str(folder)) | {"agent_status": "working"}
+    runner = runner_for([working], **{"pane process-info": err("timeout")})
+    [line] = run(runner, path, [entry(folder, session_id=UUID)], tmp_path)
+
+    assert runner.called("pane", "close") == runner.called("agent", "start") == []
+    assert "w1:p1" in line and "couldn't be read" in line
+    [kept] = load(path).agents
+    assert (kept.terminal_id, kept.restore_failed) == ("t-old", True)
+
+
+@pytest.mark.parametrize("unlike", ["folder", "idle", "session"])
+def test_an_agent_pane_whose_process_cant_be_read_but_cant_run_its_conversation_doesnt_stop_the_start(
+    path: Path, folder: Path, tmp_path: Path, unlike: str
+) -> None:
+    # Elsewhere, where Claude Code doesn't find the conversation; idle, as herdr's resumes
+    # whose process can't be read are taken to be; or running another conversation.
+    other = pane(cwd=str(tmp_path / "other") if unlike == "folder" else str(folder),
+                 session=OTHER_UUID if unlike == "session" else None)
+    other["agent_status"] = "idle" if unlike == "idle" else "working"
+    runner = runner_for([other], **{"pane process-info": err("timeout")})
+    [line] = run(runner, path, [entry(folder, session_id=UUID)], tmp_path)
+
+    assert len(runner.called("agent", "start")) == 1
+    assert "restored" in line
+
+
 @pytest.mark.parametrize("status", ["unknown", None])
 def test_a_pane_herdr_cant_classify_running_its_conversation_is_left(
     path: Path, folder: Path, tmp_path: Path, status: str | None
