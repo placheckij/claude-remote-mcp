@@ -119,17 +119,11 @@ kept as the agent's, replaced, gone or stopped through agent-bridge; a shell run
 something is left alone. Right before
 starting an agent, the restore looks for its conversation again in panes opened or resumed
 meanwhile, and in its folder's panes herdr doesn't show as agents yet. A conversation can
-still start twice when the restore can't tell that a pane runs it: herdr's hook doesn't
-give the pane's conversation, and either it was started in a pane open in another folder
-before herdr shows it as an agent, its process can't be read (in another folder, or before
-herdr shows it as an agent), herdr can't read the processes of the shell it left (a Claude
-Code stopped with ctrl-Z there), or its command line doesn't name the conversation
-(`--continue`, `/resume`), or the saved agent has no session id and its `--continue` picks
-a conversation a pane runs. It can also start twice, hook or not, when it runs outside
-herdr, a Claude Code stopped with ctrl-Z runs it in another pane or behind another program
-in the shell herdr left (or in that shell when a failed start is retried), herdr can't list
-its panes right before the start, a pane the restore already took for an agent is switched
-to it by hand, or it's resumed by hand after the restore's last look. An agent stopped through agent-bridge is never restored, nor is its
+still start twice whenever the restore doesn't see it running: for example outside herdr,
+in a pane whose process can't be read and that herdr's hook gives no conversation for, in
+a Claude Code stopped with ctrl-Z outside the shell herdr left, under `--continue` or
+`/resume` without the hook, or when it's resumed by hand after the restore's last look. An
+agent stopped through agent-bridge is never restored, nor is its
 conversation from another entry until it runs again, even if it's stopped while a restore
 runs; the exception is when `agents.json` can't be written then and agent-bridge restarts
 before it can be, and, for its conversation from another entry, when herdr's hook didn't
