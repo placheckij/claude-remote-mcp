@@ -588,6 +588,58 @@ def test_a_conversation_resumed_in_another_pane_while_the_restore_ran_isnt_start
     assert (kept.pane_id, kept.terminal_id) == ("w5:p1", "t-late")
 
 
+@pytest.mark.parametrize("by", ["hook", "command line"])
+def test_a_conversation_resumed_in_a_pane_already_open_while_the_restore_ran_isnt_started_again(
+    path: Path, folder: Path, tmp_path: Path, by: str
+) -> None:
+    # Both panes were shells when listed. While the first agent starts, the user resumes the
+    # second's conversation in the shell herdr left at its old pane id.
+    first = entry(folder, terminal_id="t-a", pane_id="w1:p1", session_id=OTHER_UUID)
+    second = entry(folder, terminal_id="t-b", pane_id="w2:p1", session_id=UUID)
+    shell_a = pane("w1:p1", "t-new1", agent=None, cwd=str(folder))
+    shell_b = pane("w2:p1", "t-new2", agent=None, cwd=str(folder))
+    now_b = pane("w2:p1", "t-new2", session=UUID if by == "hook" else None, cwd=str(folder)) | {
+        "agent_status": "working"}
+    runner = runner_for([shell_a, shell_b], **{
+        "pane list": [ok({"panes": [shell_a, shell_b]}), ok({"panes": [shell_a, shell_b]}),
+                      ok({"panes": [shell_a, now_b]})],
+        "pane process-info --pane w2:p1": [shell_info(), process_info(["claude", "--resume", UUID])],
+    })
+    lines = run(runner, path, [first, second], tmp_path)
+
+    assert len(runner.called("agent", "start")) == 1
+    assert "busy in w2:p1" in lines[1]
+    kept = load(path).agents[1]
+    assert (kept.pane_id, kept.terminal_id) == ("w2:p1", "t-new2")
+
+
+def test_a_claude_agent_opened_in_its_folder_while_the_restore_ran_that_cant_be_read_holds_off_the_start(
+    path: Path, folder: Path, tmp_path: Path
+) -> None:
+    # As for one listed at the start: it may run the conversation, so the start waits.
+    late = pane("w5:p1", "t-late", cwd=str(folder))
+    runner = runner_for([], **{"pane list": [ok({"panes": []}), ok({"panes": [late]})],
+                               "pane process-info --pane w5:p1": err("timeout")})
+    [line] = run(runner, path, [entry(folder, session_id=UUID)], tmp_path)
+
+    assert runner.called("agent", "start") == []
+    assert runner.called("pane", "close") == []
+    assert "kept for the next restart: w5:p1" in line
+    [kept] = load(path).agents
+    assert kept.restore_failed
+
+
+def test_a_claude_agent_opened_elsewhere_while_the_restore_ran_that_cant_be_read_doesnt_stop_the_start(
+    path: Path, folder: Path, tmp_path: Path
+) -> None:
+    late = pane("w5:p1", "t-late", cwd=str(tmp_path))
+    runner = runner_for([], **{"pane list": [ok({"panes": []}), ok({"panes": [late]})],
+                               "pane process-info --pane w5:p1": err("timeout")})
+    run(runner, path, [entry(folder, session_id=UUID)], tmp_path)
+
+    assert len(runner.called("agent", "start")) == 1
+
+
 def test_a_conversation_resumed_idle_in_another_pane_while_the_restore_ran_with_other_args_is_replaced(
     path: Path, folder: Path, tmp_path: Path
 ) -> None:

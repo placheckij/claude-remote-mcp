@@ -149,7 +149,12 @@ async def _restore_one(
         # --continue would pick the same conversation for both of them.
         resume, how = [], f"fresh conversation: another saved agent shares {entry.cwd} and its account"
 
-    late = await _resumed_since(herdr, entry, found) if entry.session_id else None
+    late, unsure = await _resumed_since(herdr, entry, found) if entry.session_id else (None, None)
+    if late is None and unsure is not None:
+        # As for such a pane listed at the start; the shell herdr left is closed already.
+        await _keep_failed(path, entry)
+        return (f"{label}: not restored, kept for the next restart: {unsure['pane_id']}, a Claude agent "
+                f"in its folder whose process couldn't be read, may run its conversation{note}"), True
     if late is not None:
         # Resumed in a pane that appeared after the panes were listed, by hand or by herdr,
         # while earlier agents started: taken as herdr's own resume is.
@@ -331,19 +336,34 @@ async def _unclassified(
     return None, unsure
 
 
-async def _resumed_since(herdr: Herdr, entry: SavedAgent, found: _Found) -> dict | None:
-    """A Claude agent pane that appeared since the panes were listed, running `entry`'s
+async def _resumed_since(herdr: Herdr, entry: SavedAgent, found: _Found) -> tuple[dict | None, dict | None]:
+    """A Claude agent pane that appeared since the panes were listed, or whose agent or
+    session changed since (resumed by hand in a pane that was open), running `entry`'s
     conversation: herdr's hook says, else its command line. What's read of its process goes
-    into `found.live`. None also when herdr can't list its panes: the start goes ahead, as
-    it did before this check."""
+    into `found.live`. Second, when none is found, as in `_unclassified`: such a pane in
+    `entry`'s folder with no session from the hook whose process can't be read. Neither
+    when herdr can't list its panes: the start goes ahead, as it did before this check."""
     try:
         panes = await herdr.list_panes()
     except HerdrError:
-        return None
-    known = {pane.get("terminal_id") for pane in found.panes}
-    late = [pane for pane in panes if pane.get("terminal_id") not in known]
-    # Seen from now on: a later entry's own checks find them, and don't read them again.
-    found.panes.extend(late)
+        return None, None
+    known = {pane.get("terminal_id"): pane for pane in found.panes}
+    late = []
+    for pane in panes:
+        before = known.get(pane.get("terminal_id"))
+        if before is None:
+            # Seen from now on: a later entry's own checks find it, and don't read it again.
+            found.panes.append(pane)
+        elif (pane.get("agent"), pane.get("agent_session")) != (before.get("agent"), before.get("agent_session")):
+            # What was read of it is stale; later entries' checks see it as it is now.
+            found.processes.pop(before["pane_id"], None)
+            found.live.pop(before["pane_id"], None)
+            before.clear()
+            before.update(pane)
+        else:
+            continue
+        late.append(pane)
+    unsure = None
     for pane in late:
         if (pane.get("agent") != "claude" or pane.get("terminal_id") in found.claimed
                 or not pane.get("cwd") or not pane.get("terminal_id")):
@@ -351,14 +371,19 @@ async def _resumed_since(herdr: Herdr, entry: SavedAgent, found: _Found) -> dict
         if _session_in(pane, found) not in (None, entry.session_id):
             continue
         try:
-            running = await read_agent(pane, await herdr.process_info(pane["pane_id"]))
+            info = await herdr.process_info(pane["pane_id"])
         except HerdrError:
-            running = None
+            info = {}
+        running = await read_agent(pane, info) if info else None
         if running is not None:
             found.live[pane["pane_id"]] = running
-        if _session_in(pane, found) == entry.session_id:
-            return pane
-    return None
+        session = _session_in(pane, found)
+        if session == entry.session_id:
+            return pane, None
+        if not info and session is None and unsure is None and Path(pane["cwd"]) == Path(entry.cwd):
+            # As in `_unclassified`: it may run the conversation.
+            unsure = pane
+    return None, unsure
 
 
 async def _close(
