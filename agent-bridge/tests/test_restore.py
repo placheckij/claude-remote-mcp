@@ -532,6 +532,26 @@ def test_a_restored_agent_whose_entry_couldnt_be_written_drops_its_stale_entry(
     assert load(path).agents == []
 
 
+def test_an_adopted_agent_whose_entry_couldnt_be_written_drops_its_stale_entry(
+    path: Path, folder: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # As for a restored one: the stale entry's old pane id, now another terminal's, would
+    # make the next round look like a herdr restart.
+    def unwritable(*args: object) -> None:
+        raise StateError(f"Can't write {path} (No space left on device).")
+
+    monkeypatch.setattr(restore_module, "_replace", unwritable)
+    busy = pane(session=UUID, cwd=str(folder)) | {"agent_status": "working"}
+    save(path, SavedAgents(agents=[entry(folder, session_id=UUID)]))
+    herdr = Herdr(runner=runner_for([busy], ["claude", "--resume", UUID]))
+    service = AgentService(Settings(token=TOKEN, allowed_roots=(tmp_path.resolve(),)), herdr)
+
+    [line] = asyncio.run(restore(service, herdr, path))
+
+    assert "No space left on device" in line
+    assert service.stopped == {"t-old"}
+
+
 def test_agents_json_is_read_under_its_lock_off_the_event_loop(
     monkeypatch: pytest.MonkeyPatch, path: Path, folder: Path, tmp_path: Path
 ) -> None:

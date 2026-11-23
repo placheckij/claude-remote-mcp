@@ -135,7 +135,7 @@ async def _restore_one(
         # environment, so its account, couldn't be read.
         unreadable = running is None or (running.config_dir_unknown and running.args == entry.args)
         if as_it_was or busy or unreadable:
-            await _adopt(path, entry, resumed, found)
+            await _adopt(path, entry, resumed, found, service.stopped)
             if as_it_was:
                 return f"{label}: herdr resumed it in {resumed['pane_id']} as it was, left as it is", False
             if not resumed.get("agent"):
@@ -151,7 +151,7 @@ async def _restore_one(
         closed, note = await _close(herdr, resumed, found, "herdr's own resume")
         if not closed:
             # Still running its conversation: a second copy would answer as the first.
-            await _adopt(path, entry, resumed, found)
+            await _adopt(path, entry, resumed, found, service.stopped)
             return (f"{label}: {resumed['pane_id']} runs its conversation but couldn't be closed{note}, "
                     "left as it is"), True
     else:
@@ -256,7 +256,7 @@ async def _close(
     return True, f" (closed {what} in {pane['pane_id']})"
 
 
-async def _adopt(path: Path, entry: SavedAgent, resumed: dict, found: _Found) -> None:
+async def _adopt(path: Path, entry: SavedAgent, resumed: dict, found: _Found, stopped: set[str]) -> None:
     """Take `resumed`, which runs `entry`'s conversation, as the agent's own pane from now on."""
     # First: a write that fails mustn't let a later entry close the pane.
     found.claimed.add(resumed["terminal_id"])
@@ -265,7 +265,14 @@ async def _adopt(path: Path, entry: SavedAgent, resumed: dict, found: _Found) ->
         update={"pane_id": resumed["pane_id"], "terminal_id": resumed["terminal_id"], "misses": 0,
                 "restore_failed": False}
     )
-    await asyncio.to_thread(_replace, path, entry.terminal_id, kept)
+    try:
+        await asyncio.to_thread(_replace, path, entry.terminal_id, kept)
+    except (OSError, StateError):
+        # As for a restored agent: the old terminal is gone for good, so the watcher's next
+        # write drops the stale entry, whose old pane id now another terminal's would make the
+        # next round look like a herdr restart, and saves the pane from its snapshot.
+        stopped.add(entry.terminal_id)
+        raise
 
 
 async def _keep_failed(path: Path, entry: SavedAgent) -> None:
