@@ -42,8 +42,8 @@ the gateway first, see [Updating](README.md#updating)).
   herdr, ones started by hand included, never one stopped through agent-bridge, on their
   saved folder, account (if theirs couldn't be read, the one the folder would get if
   started now) and arguments; the panes it closes (a pane herdr reports idle or done,
-  whose process and account it could read, running a saved agent's conversation under
-  other arguments or another account, whether herdr resumed it or someone did by hand,
+  whose process it could read, running a saved agent's conversation under other
+  arguments or under another account read from it, whether herdr resumed it or someone did by hand,
   and an idle leftover shell); and reading each
   Claude agent's process environment every 30 s, of which only `CLAUDE_CONFIG_DIR` is kept;
   it skips the allowed-roots and agent-count limits and the trust root by design, and
