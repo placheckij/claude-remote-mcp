@@ -137,31 +137,37 @@ async def snapshot(herdr: Herdr) -> list[SavedAgent]:
             info = await herdr.process_info(agent["pane_id"])
         except HerdrError:
             continue
-        process = claude_process(info)
-        if process is None:
-            continue
-        argv = process.get("argv")
-        argv = [arg for arg in argv if isinstance(arg, str)] if isinstance(argv, list) else []
-        # Off the event loop: reading another process's memory may block, on Windows above all.
-        environ = await asyncio.to_thread(claude_environ, info)
-        session = agent.get("agent_session")
-        if isinstance(session, dict) and session.get("kind") == "id" and session.get("value"):
-            session_id = session["value"]
-        else:
-            session_id = session_id_in(argv)
-        found.append(
-            SavedAgent(
-                name=agent.get("name"),
-                cwd=agent["cwd"],
-                config_dir=(environ.get("CLAUDE_CONFIG_DIR") or None) if environ is not None else None,
-                config_dir_unknown=environ is None,
-                args=clean_args(argv[1:]),
-                session_id=session_id,
-                pane_id=agent["pane_id"],
-                terminal_id=agent["terminal_id"],
-            )
-        )
+        saved = await read_agent(agent, info)
+        if saved is not None:
+            found.append(saved)
     return found
+
+
+async def read_agent(agent: dict, info: dict) -> SavedAgent | None:
+    """The entry for herdr's Claude `agent`, whose pane's processes are `info`; None when
+    Claude Code isn't among them."""
+    process = claude_process(info)
+    if process is None:
+        return None
+    argv = process.get("argv")
+    argv = [arg for arg in argv if isinstance(arg, str)] if isinstance(argv, list) else []
+    # Off the event loop: reading another process's memory may block, on Windows above all.
+    environ = await asyncio.to_thread(claude_environ, info)
+    session = agent.get("agent_session")
+    if isinstance(session, dict) and session.get("kind") == "id" and session.get("value"):
+        session_id = session["value"]
+    else:
+        session_id = session_id_in(argv)
+    return SavedAgent(
+        name=agent.get("name"),
+        cwd=agent["cwd"],
+        config_dir=(environ.get("CLAUDE_CONFIG_DIR") or None) if environ is not None else None,
+        config_dir_unknown=environ is None,
+        args=clean_args(argv[1:]),
+        session_id=session_id,
+        pane_id=agent["pane_id"],
+        terminal_id=agent["terminal_id"],
+    )
 
 
 def merge(saved: list[SavedAgent], seen: list[SavedAgent], restarted: bool) -> list[SavedAgent]:

@@ -14,7 +14,7 @@ from agent_bridge.claude_args import session_id_in
 from agent_bridge.claude_process import claude_process
 from agent_bridge.errors import BridgeError
 from agent_bridge.herdr import SERVER_NOT_RUNNING, Herdr, HerdrError
-from agent_bridge.saved_agents import SavedAgent, forget, load, locked, merge, save, snapshot
+from agent_bridge.saved_agents import SavedAgent, forget, load, locked, merge, read_agent, save, snapshot
 from agent_bridge.state import StateError
 
 log = logging.getLogger(__name__)
@@ -269,19 +269,23 @@ async def _unclassified(
     """A pane whose Claude Code's command line runs `entry`'s conversation, though nothing
     else said so: one herdr doesn't know as an agent yet (Claude Code in it has only just
     started), or a Claude agent with no session from herdr's hook whose process the snapshot
-    couldn't read. Not one herdr calls idle or done. It has no status of its own, or none
-    known to be idle, so it's taken as busy.
+    couldn't read, whatever its status: what the read finds goes into `found.live`, so it's
+    kept or replaced as herdr's own resume is. A pane herdr doesn't know as an agent isn't
+    one herdr calls idle or done; it has no status of its own, or none known to be idle, so
+    it's taken as busy.
 
     Second, when none is found: such a Claude agent in `entry`'s folder whose process can't
     be read now either, so it may run the conversation (Claude Code finds a conversation in
     the folder it ran in)."""
     unsure = None
     for pane in panes:
-        if pane.get("agent_status") in FINISHED or pane.get("terminal_id") in found.claimed:
+        if pane.get("terminal_id") in found.claimed:
             continue
         pane_id = pane["pane_id"]
         unread_agent = pane.get("agent") == "claude" and pane_id not in found.live and _session_in(pane, found) is None
         if pane.get("agent") and not unread_agent:
+            continue
+        if not unread_agent and pane.get("agent_status") in FINISHED:
             continue
         if pane_id not in found.processes:
             try:
@@ -291,6 +295,10 @@ async def _unclassified(
         process = claude_process(found.processes[pane_id])
         argv = process.get("argv") if process is not None else None
         if isinstance(argv, list) and session_id_in([arg for arg in argv if isinstance(arg, str)]) == entry.session_id:
+            if unread_agent and pane.get("cwd") and pane.get("terminal_id"):
+                running = await read_agent(pane, found.processes[pane_id])
+                if running is not None:
+                    found.live[pane_id] = running
             return pane, None
         if (unread_agent and not found.processes[pane_id] and unsure is None
                 and pane.get("cwd") and Path(pane["cwd"]) == Path(entry.cwd)):
