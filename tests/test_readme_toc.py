@@ -53,11 +53,16 @@ def headings(markdown: str) -> list[tuple[int, str, str]]:
 
 
 def toc(markdown: str) -> str:
-    entries = [
-        f"{'  ' * (level - 2)}- [{label}](#{anchor})"
-        for level, label, anchor in headings(markdown)
-        if level in (2, 3)
-    ]
+    entries = []
+    for level, label, anchor in headings(markdown):
+        if level not in (2, 3):
+            continue
+        link = f"[{label}](#{anchor})"
+        # The entry must render as one link to the heading, showing its text: e.g. an
+        # unbalanced "[" would end the link early.
+        if MARKDOWN.renderInline(link) != f'<a href="#{anchor}">{MARKDOWN.renderInline(label)}</a>':
+            raise ValueError(f"heading {label!r} breaks its TOC link; escape its [ and ] as \\[ and \\]")
+        entries.append(f"{'  ' * (level - 2)}- {link}")
     return "\n".join([START, "**Contents**", "", *entries, END])
 
 
@@ -158,6 +163,14 @@ def test_a_toc_label_reads_back_as_its_heading(heading: str) -> None:
     (_, label, _), = headings(f"## {heading}\n")
 
     assert MARKDOWN.render(label) == MARKDOWN.render(heading)
+
+
+def test_a_heading_that_would_break_its_toc_link_is_refused() -> None:
+    with pytest.raises(ValueError, match=r"escape its \[ and \]"):
+        toc("## Ranges [0, 1)\n")
+    # Escaped, or balanced, it fits.
+    assert "- [Ranges \\[0, 1)](#ranges-0-1)" in toc("## Ranges \\[0, 1)\n")
+    assert "- [[x] done](#x-done)" in toc("## [x] done\n")
 
 
 @pytest.mark.parametrize("heading", ["[Linked](https://example.com)", "See <https://example.com>"])
