@@ -89,6 +89,12 @@ def test_every_limit_is_settable(env: pytest.MonkeyPatch) -> None:
     )
 
 
+def test_restore_agents_is_on_unless_turned_off(env: pytest.MonkeyPatch) -> None:
+    assert Settings.from_env().restore_agents is True
+    env.setenv("AGENT_BRIDGE_RESTORE_AGENTS", "false")
+    assert Settings.from_env().restore_agents is False
+
+
 def test_reads_a_dotenv_file_under_the_environment(env: pytest.MonkeyPatch, tmp_path: Path) -> None:
     Path(".env").write_text("AGENT_BRIDGE_MAX_AGENTS=4\nAGENT_BRIDGE_HERDR_BIN=/opt/herdr\nOTHER=x\n")
     env.setenv("AGENT_BRIDGE_HERDR_BIN", "/usr/bin/herdr")

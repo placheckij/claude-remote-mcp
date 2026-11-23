@@ -8,6 +8,7 @@ what enrolling gives in the state file (state.py).
 
 import asyncio
 import contextlib
+import logging
 from collections.abc import AsyncIterator
 from pathlib import Path
 
@@ -19,8 +20,12 @@ from agent_bridge.config import Settings
 from agent_bridge.errors import install_error_handlers
 from agent_bridge.gateway import keep_address
 from agent_bridge.herdr import Herdr
+from agent_bridge.restore import watch
 from agent_bridge.routes import router
+from agent_bridge.saved_agents import agents_file
 from agent_bridge.state import State, load_or_create, state_file
+
+log = logging.getLogger(__name__)
 
 
 def create_app(
@@ -32,9 +37,16 @@ def create_app(
         report = None
         if state is not None and state.gateway is not None and settings.url is not None:
             report = asyncio.create_task(keep_address(state, settings, state_path))
+        keep_saved = None
+        if settings.restore_agents:
+            keep_saved = asyncio.create_task(watch(app.state.agents, herdr, agents_file()))
+        else:
+            # Also when restore was turned off in the env file rather than by setup.
+            await asyncio.to_thread(_drop_saved_agents)
         yield
-        if report is not None:
-            report.cancel()
+        for task in (report, keep_saved):
+            if task is not None:
+                task.cancel()
 
     # No doc routes: FastAPI serves them outside app-level dependencies, i.e. without the token.
     app = FastAPI(
@@ -46,10 +58,24 @@ def create_app(
         lifespan=lifespan,
     )
     bridge_id = state.bridge_id if state is not None else None
-    app.state.agents = AgentService(settings, herdr or Herdr(binary=settings.herdr_bin), bridge_id)
+    herdr = herdr or Herdr(binary=settings.herdr_bin)
+    # With restore off, agents.json is neither made nor kept: a stale one would bring back
+    # agents long gone once restore is on again.
+    saved_path = agents_file() if settings.restore_agents else None
+    app.state.agents = AgentService(settings, herdr, bridge_id, saved_path=saved_path)
     install_error_handlers(app)
     app.include_router(router)
     return app
+
+
+def _drop_saved_agents() -> None:
+    """Remove agents.json and what a write or a lock left beside it."""
+    path = agents_file()
+    for file in (path, path.with_name(f"{path.name}.tmp"), path.with_name(f"{path.name}.lock")):
+        try:
+            file.unlink(missing_ok=True)
+        except OSError as error:
+            log.warning("Restore is off, but %s couldn't be removed: %s", file, error)
 
 
 def main() -> FastAPI:

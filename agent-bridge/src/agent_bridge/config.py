@@ -108,6 +108,8 @@ class Settings(BaseSettings):
     max_output_chars: int = Field(default=8000, ge=1)
     # Counts every herdr agent, including ones started by hand.
     max_agents: int = Field(default=10, ge=1)
+    # Bring the Claude agents back after herdr's server restarts (restore.py).
+    restore_agents: bool = True
     prompt_timeout_ms: int = Field(default=10 * 60 * 1000, ge=1000)
 
     @classmethod

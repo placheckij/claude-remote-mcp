@@ -90,7 +90,7 @@ def rename(path: Path, gateway: Gateway, name: str) -> None:
         save(path, state.model_copy(update={"gateway": gateway.model_copy(update={"name": name})}))
 
 
-def save(path: Path, state: State) -> None:
+def save(path: Path, state: BaseModel) -> None:
     """Written beside the file and renamed over it, so a crash never leaves half of it."""
     temporary = path.with_name(f"{path.name}.tmp")
     try:

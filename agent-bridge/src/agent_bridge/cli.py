@@ -41,6 +41,9 @@ from agent_bridge.gateway import (
 )
 from agent_bridge.herdr import Herdr, HerdrError, spawn_server
 from agent_bridge.host import API_VERSION, BRIDGE_VERSION
+from agent_bridge.install.herdr_config import default_claude_config, has_claude_hook
+from agent_bridge.saved_agents import agents_file, load as load_agents, locked, merge
+from agent_bridge.saved_agents import save as save_agents, snapshot
 from agent_bridge.state import Gateway, State, StateError, env_file, load, load_or_create, rename, save, state_file
 
 OK, FAILED, INVALID, NAME_TAKEN, UNREACHABLE, SAVE_FAILED, OUTDATED = 0, 1, 2, 3, 4, 5, 6
@@ -74,6 +77,8 @@ def main(argv: list[str] | None = None, *, run: Callable[..., None] = uvicorn.ru
             return _setup(args)
         if args.command == "uninstall":
             return _uninstall()
+        if args.command == "save-agents":
+            return _save_agents()
         if args.command == "start-herdr":
             return _start_herdr(args.herdr_bin, args.log_file)
         if args.token_format is not None:
@@ -119,7 +124,11 @@ def _parser() -> argparse.ArgumentParser:
                        help="a new token; needs --enrollment, so the gateway learns it")
     setup.add_argument("--herdr-service", action=argparse.BooleanOptionalAction, default=None,
                        help="start herdr's server at boot or login too (default: as installed, else yes)")
+    setup.add_argument("--agent-restore", dest="restore_agents", action=argparse.BooleanOptionalAction, default=None,
+                       help="bring the Claude agents back after a restart, instead of herdr, which setup turns off "
+                            "(default: as installed, else yes)")
     commands.add_parser("uninstall", help="leave the gateway, then remove the service, its settings, state and log")
+    commands.add_parser("save-agents", help="save the Claude agents running in herdr now, to restore after a restart")
     start_herdr = commands.add_parser(
         "start-herdr", help="start herdr's server in the background unless one runs (what the macOS launch "
                             "agent and the Windows task agent-bridge-herdr run at login)")
@@ -254,6 +263,36 @@ def _start_herdr(herdr_bin: str | None, log_file: Path | None) -> int:
         if handler:
             logging.getLogger().removeHandler(handler)
             handler.close()
+
+
+def _save_agents() -> int:
+    """Writes the running Claude agents to agents.json at once, e.g. before a shutdown, rather
+    than waiting for the service's next snapshot."""
+    settings = _settings(for_service=False)
+    if not settings.restore_agents:
+        # A file saved now would bring back agents long gone once restore is on again.
+        print("Agent restore is off (AGENT_BRIDGE_RESTORE_AGENTS=false), so no agents were saved.")
+        return OK
+    herdr = Herdr(binary=settings.herdr_bin)
+    path = agents_file()
+    try:
+        seen = asyncio.run(snapshot(herdr))
+        with locked(path):
+            # An agent the service stopped during the snapshot was forgotten already, and the
+            # service's own record of stops isn't here. stop_agent closes the pane before it
+            # forgets, so keeping only terminals herdr still has, checked under the lock that
+            # forget takes too, never writes a stopped agent back.
+            live = {pane.get("terminal_id") for pane in asyncio.run(herdr.list_panes())}
+            seen = [agent for agent in seen if agent.terminal_id in live]
+            saved = load_agents(path, for_writing=True)
+            # Counts no misses: herdr may have just restarted, and a miss would get an agent
+            # forgotten at the restore. Ageing entries is left to the service's saves.
+            kept = merge(saved.agents, seen, restarted=True)
+            save_agents(path, saved.model_copy(update={"agents": kept}))
+    except (HerdrError, OSError, StateError) as error:
+        raise _Refused(f"Couldn't save the agents: {error}") from None
+    print(f"Saved {len(kept)} agents to {path}.")
+    return OK
 
 
 def _enroll(string: str) -> int:
@@ -461,6 +500,10 @@ def _check() -> int:
             report(*_herdr_server(asyncio.run(herdr.server_status()), version))
         except HerdrError as error:
             report(False, "herdr's server runs", str(error))
+    if settings.restore_agents and not has_claude_hook(default_claude_config()):
+        # Only a note: agents started there by hand still come back, as their folder's latest
+        # conversation, and setup leaves your own config to you.
+        print("--    herdr's Claude hook isn't in the default Claude config")
     state = load(state_file())
     try:
         info = httpx.get(f"{settings.url}/info", headers={"Authorization": f"Bearer {settings.token}"}, timeout=5)

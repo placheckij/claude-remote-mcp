@@ -5,17 +5,21 @@ Agents are addressed by their herdr pane id (e.g. `w1:p1`).
 """
 
 import asyncio
+import logging
 import re
 import unicodedata
+import uuid
 from collections.abc import Awaitable, Sequence
-from pathlib import Path, PurePath, PureWindowsPath
+from pathlib import Path, PurePath
 
-import psutil
-
+from agent_bridge.claude_args import picks_session
+from agent_bridge.claude_process import claude_environ, claude_process  # noqa: F401 - still importable from here
 from agent_bridge.config import Settings, claude_env
 from agent_bridge.errors import BridgeError
 from agent_bridge.herdr import REMOTE_CONTROL_BLOCKED_TEXT, Herdr, HerdrError
 from agent_bridge.host import API_VERSION, BRIDGE_VERSION, host_name, platform_name
+from agent_bridge.saved_agents import SavedAgent, forget
+from agent_bridge.state import StateError
 from agent_bridge.schemas import (
     AgentSummary,
     HostInfo,
@@ -27,6 +31,8 @@ from agent_bridge.schemas import (
 )
 from agent_bridge.screen import SNAPSHOT_LINES, last_lines, last_question
 from agent_bridge.trust import CONFIG_FILE, TrustError, trust_folder
+
+log = logging.getLogger(__name__)
 
 BUSY_MESSAGE = (
     "The agent is still working on an earlier request, so the prompt was not sent. Wait for "
@@ -44,10 +50,16 @@ QUESTION_LINES = 60
 
 
 class AgentService:
-    def __init__(self, settings: Settings, herdr: Herdr, bridge_id: str | None = None):
+    def __init__(
+        self, settings: Settings, herdr: Herdr, bridge_id: str | None = None, saved_path: Path | None = None
+    ):
         self.settings = settings
         self.herdr = herdr
         self.bridge_id = bridge_id
+        # agents.json, which a stopped agent is taken out of so a restore doesn't bring it back.
+        self.saved_path = saved_path
+        # Terminal ids of agents stopped here, which the saving of running agents leaves out.
+        self.stopped: set[str] = set()
         # Serializes count-then-start and picking a free name, so concurrent requests can
         # neither exceed the limit nor give two agents the same name.
         self._start_lock = asyncio.Lock()
@@ -214,11 +226,39 @@ class AgentService:
                 # Named like the agent, so the Claude app lists the session by that name.
                 args += ["--remote-control", name]
                 on = True
+            # Its own conversation id, so a restore resumes exactly this conversation even
+            # when other agents work in the same folder. Not when AGENT_BRIDGE_CLAUDE_ARGS
+            # picks the conversation already: Claude Code refuses both together.
+            if not picks_session(args):
+                args += ["--session-id", str(uuid.uuid4())]
             notice = REMOTE_CONTROL_BLOCKED_TEXT if on else None
             agent, blocked = await self._start_with_one_retry(name, folder, config_dir, args, notice)
         state = "blocked" if blocked else "on" if on else "off"
         summary = self._summarize(agent).model_dump()
         return StartedAgent(**{**summary, "account": account, "remote_control": state})
+
+    async def restart_agent(self, saved: SavedAgent, resume: list[str]) -> dict:
+        """Start a saved agent again as it was, with `resume` before its arguments (after
+        them, a trailing flag with an optional value would take it): in its folder, on its
+        account. None of start_agent's checks (agent limit, allowed roots, trust): it puts
+        back an agent that was running, started remotely or by hand."""
+        folder = Path(saved.cwd)
+        notice = REMOTE_CONTROL_BLOCKED_TEXT if has_remote_control(saved.args) else None
+        async with self._start_lock:
+            running = await self.herdr.list_agents()
+            name = herdr_name(saved.name or folder.name, {agent.get("name") for agent in running})
+            agent, _ = await self._start_with_one_retry(
+                name, folder, self.config_dir_of(saved), resume + saved.args, notice
+            )
+        return agent
+
+    def config_dir_of(self, saved: SavedAgent) -> Path | None:
+        """The CLAUDE_CONFIG_DIR `saved` is restarted with; None for Claude Code's default."""
+        if saved.config_dir_unknown:
+            # Its environment couldn't be read: the account it would get if started now.
+            account = self.settings.account_for(Path(saved.cwd))
+            return self.settings.accounts[account].config_dir if account is not None else self.settings.claude_config_dir
+        return Path(saved.config_dir) if saved.config_dir is not None else None
 
     def _project_folder(self, project: str) -> Path:
         """The folder `project` names: an absolute path as given, or a folder name under
@@ -300,14 +340,37 @@ class AgentService:
     async def stop_agent(self, agent_id: str) -> None:
         # Looking the agent up first also refuses panes that aren't agents (a shell, a dev
         # server): herdr answers agent_not_found, a 404.
-        await self._controllable(agent_id)
-        await self.herdr.close_pane(agent_id)
+        found = await self.herdr.get_agent(agent_id)
+        self._check_controllable(agent_id, found)
+        terminal_id = found.get("terminal_id")
+        if terminal_id:
+            # Before the pane closes and before forget: the watcher may be midway through a
+            # snapshot that still lists this agent, and it checks this set under the file's
+            # lock, which forget takes too, so the agent can't be written back.
+            self.stopped.add(terminal_id)
+        try:
+            await self.herdr.close_pane(agent_id)
+        except BaseException:
+            # Still running, so it must stay saved.
+            self.stopped.discard(terminal_id)
+            raise
+        if self.saved_path is None or not terminal_id:
+            return
+        try:
+            # In a thread: the file's lock may be waited for.
+            await asyncio.to_thread(forget, self.saved_path, terminal_id)
+        except (OSError, StateError) as error:
+            # The agent is stopped all the same; only a restart would bring it back.
+            log.warning("Stopped %s but couldn't take it out of %s: %s", agent_id, self.saved_path, error)
 
     async def _controllable(self, agent_id: str) -> AgentSummary:
-        """The agent, if it works under the allowed roots. Every herdr agent can be read,
-        but only those may be prompted, answered, renamed or stopped."""
         # Not get_agent: the question isn't needed here, and reading it costs a herdr call.
-        agent = summarize(await self.herdr.get_agent(agent_id))
+        return self._check_controllable(agent_id, await self.herdr.get_agent(agent_id))
+
+    def _check_controllable(self, agent_id: str, found: dict) -> AgentSummary:
+        """The agent herdr gave as `found`, if it works under the allowed roots. Every herdr
+        agent can be read, but only those may be prompted, answered, renamed or stopped."""
+        agent = summarize(found)
         if not agent.cwd or not self.settings.is_allowed(Path(agent.cwd)):
             raise BridgeError(
                 403,
@@ -420,32 +483,6 @@ class AgentService:
             "the trust dialog: check the folder's entry there, or trust it once by opening "
             "Claude Code there."
         )
-
-
-def claude_environ(process_info: dict) -> dict[str, str] | None:
-    """The environment of the pane's Claude Code, from herdr's process info, if it has one
-    and the OS lets it be read. Found by name: its MCP servers run in the pane too."""
-    processes = process_info.get("foreground_processes") if isinstance(process_info, dict) else None
-    claudes = [
-        process
-        for process in (processes if isinstance(processes, list) else [])
-        # A positive int pid only: psutil.Process(None) would be this bridge itself.
-        if isinstance(process, dict) and type(process.get("pid")) is int and process["pid"] > 0
-        and any(
-            isinstance(name, str) and PureWindowsPath(name).name.lower().removesuffix(".exe") == "claude"
-            for name in (process.get("name"), process.get("argv0"))
-        )
-    ]
-    if not claudes:
-        return None
-    # herdr lists newer processes first, so a claude the agent's tools run comes before the
-    # agent's own: that one is the group leader, else the oldest.
-    leader = process_info.get("foreground_process_group_id")
-    agent = next((process for process in claudes if process["pid"] == leader), claudes[-1])
-    try:
-        return psutil.Process(agent["pid"]).environ()
-    except (psutil.Error, OSError):
-        return None
 
 
 def is_project_name(name: str) -> bool:

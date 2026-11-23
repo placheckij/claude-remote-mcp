@@ -1009,6 +1009,16 @@ class WindowsSystem:
             raise Refused(f"can't run {self.command()} ({error.strerror})") from None
         return result.returncode, result.stdout or ""
 
+    def herdr_integration(self, binary: str, config_dir: Path) -> tuple[int, str]:
+        environment = {**os.environ, "CLAUDE_CONFIG_DIR": str(config_dir)}
+        try:
+            result = subprocess.run([binary, "integration", "install", "claude"], env=environment,
+                                    stdin=subprocess.DEVNULL, capture_output=True, encoding="utf-8", errors="replace",
+                                    timeout=60, creationflags=subprocess.CREATE_NO_WINDOW)
+        except (OSError, subprocess.TimeoutExpired) as error:
+            return flow.FAILED, str(error)
+        return result.returncode, result.stdout + result.stderr
+
     def sleep(self, seconds: float) -> None:
         time.sleep(seconds)
 

@@ -6,6 +6,7 @@ Never touches systemd, real ports or a gateway, so it runs on any POSIX platform
 import json
 import stat
 import sys
+import tomllib
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -14,7 +15,7 @@ import pytest
 from dotenv import dotenv_values
 
 from agent_bridge import cli
-from agent_bridge.install import common, flow, linux
+from agent_bridge.install import common, flow, herdr_config, linux
 
 pytestmark = pytest.mark.skipif(sys.platform == "win32", reason="the Linux setup uses POSIX paths")
 
@@ -115,6 +116,10 @@ class FakeLinux:
 
     def herdr_running(self, herdr: str) -> bool:
         return self.herdr_by_hand
+
+    def herdr_integration(self, binary: str, config_dir: Path) -> tuple[int, str]:
+        self.calls.append(("herdr integration", binary, str(config_dir)))
+        return 0, ""
 
     def user(self) -> str:
         return "me"
@@ -450,6 +455,37 @@ def test_herdr_service_brings_the_herdr_unit_back(host: FakeLinux, capsys) -> No
 
     assert run.code == 0, run.out
     assert (host.units / HERDR_UNIT).exists()
+
+
+def herdr_resume() -> bool | None:
+    path = herdr_config.herdr_config_paths()[0]
+    if not path.exists():
+        return None
+    return tomllib.loads(path.read_text(encoding="utf-8")).get("session", {}).get("resume_agents_on_restore")
+
+
+def test_agent_restore_turns_off_herdrs_resume_and_installs_its_hook_in_an_accounts_config(
+        host: FakeLinux, capsys) -> None:
+    work = host.home / ".claude-work"
+    accounts = json.dumps({"personal": {"config_dir": None}, "work": {"config_dir": str(work)}})
+
+    run = setup(host, capsys, *every_flag(host, accounts=accounts))
+
+    assert run.code == 0, run.out
+    assert host.ran("herdr integration") == [(str(host.herdr), str(work))]
+    assert dotenv_values(host.env_file)["AGENT_BRIDGE_RESTORE_AGENTS"] == "true"
+    assert herdr_resume() is False
+
+    run = setup(host, capsys, "--enrollment", "", "--no-agent-restore")
+    assert run.code == 0, run.out
+    assert dotenv_values(host.env_file)["AGENT_BRIDGE_RESTORE_AGENTS"] == "false"
+    assert herdr_resume() is None
+    setup(host, capsys, "--enrollment", "")
+    assert dotenv_values(host.env_file)["AGENT_BRIDGE_RESTORE_AGENTS"] == "false"
+
+    setup(host, capsys, "--enrollment", "", "--agent-restore")
+    assert dotenv_values(host.env_file)["AGENT_BRIDGE_RESTORE_AGENTS"] == "true"
+    assert herdr_resume() is False
 
 
 @pytest.mark.parametrize("failing", [("enable", UNIT), ("restart", UNIT)])

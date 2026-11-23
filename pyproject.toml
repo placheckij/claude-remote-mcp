@@ -21,6 +21,8 @@ dev = [
 [tool.pytest.ini_options]
 testpaths = ["agent-bridge/tests", "mcp-gateway/tests", "tests"]
 addopts = ["--import-mode=importlib"]
+# Importlib mode puts no tests folder on sys.path, but the agent-bridge tests import its fakes.py.
+pythonpath = ["agent-bridge/tests"]
 
 [tool.uv]
 package = false

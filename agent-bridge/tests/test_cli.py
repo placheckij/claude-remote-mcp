@@ -16,7 +16,10 @@ import pytest
 
 from agent_bridge import cli, gateway
 from agent_bridge.config import Settings
-from agent_bridge.herdr import Herdr
+from agent_bridge.herdr import Herdr, HerdrError
+from agent_bridge.saved_agents import SavedAgent, SavedAgents, agents_file
+from agent_bridge.saved_agents import load as load_agents
+from agent_bridge.saved_agents import save as save_agents
 from agent_bridge.state import Gateway, State, load, save
 
 TOKEN = "t" * 32
@@ -44,6 +47,20 @@ class FakeGateway:
 
     def body(self) -> dict:
         return json.loads(self.requests[-1].content)
+
+
+HOOK = {"hooks": {"SessionStart": [{"hooks": [{"type": "command", "command": "bash herdr-agent-state.sh session"}]}]}}
+
+
+@pytest.fixture(autouse=True)
+def home(tmp_path_factory: pytest.TempPathFactory, set_home) -> Path:
+    """A home folder whose default Claude config has herdr's hook, as check looks for it. Not
+    above tmp_path, which tests allow agents in."""
+    home = tmp_path_factory.mktemp("home")
+    (home / ".claude").mkdir()
+    (home / ".claude" / "settings.json").write_text(json.dumps(HOOK))
+    set_home(home)
+    return home
 
 
 @pytest.fixture
@@ -673,6 +690,25 @@ def test_check_passes_with_the_service_up_and_enrolled(
 
     assert code == 0, out
     assert [line.split()[0] for line in out.splitlines()] == ["ok"] * 5
+
+
+@pytest.mark.parametrize(("restore", "said"), [("true", True), ("false", False)])
+def test_check_notes_herdrs_hook_missing_from_the_default_config(
+    capsys, settings: Path, fake: FakeGateway, monkeypatch: pytest.MonkeyPatch, home: Path, restore: str, said: bool
+) -> None:
+    (home / ".claude" / "settings.json").unlink()
+    with settings.open("a") as file:
+        file.write(f"AGENT_BRIDGE_RESTORE_AGENTS={restore}\n")
+    state = enrolled()
+    monkeypatch.setattr(cli, "Herdr", FakeHerdr)
+    monkeypatch.setattr(cli.httpx, "get", lambda url, **kwargs: httpx.Response(
+        200, json={"bridge_id": state.bridge_id}, request=httpx.Request("GET", url)))
+    fake.answers[("PUT", "bridges")] = httpx.Response(200, json={"name": "mac", "gateway_id": "g", "api_version": 2})
+
+    code, out, _ = run(capsys, "check")
+
+    assert code == 0, out
+    assert ("--    herdr's Claude hook isn't in the default Claude config" in out.splitlines()) == said
     assert fake.body() == {"url": "http://192.168.1.20:8765"}
 
 
@@ -993,3 +1029,82 @@ def test_the_address_report_stops_when_retrying_cant_help(
 
     assert len(fake.requests) == 1
     assert "agent-bridge enroll <string>" in caplog.text
+
+
+class FakeSnapshot:
+    """What `save-agents` sees of herdr: a snapshot, or an error."""
+
+    def __init__(self, monkeypatch: pytest.MonkeyPatch, agents: list | Exception,
+                 live: list[str] | None = None) -> None:
+        self.agents = agents
+        # The terminals herdr still has when the file is locked: by default every agent seen.
+        self.live = live
+        monkeypatch.setattr(cli, "Herdr", lambda binary: self)
+
+        async def snapshot(herdr: object) -> list:
+            if isinstance(self.agents, Exception):
+                raise self.agents
+            return self.agents
+
+        monkeypatch.setattr(cli, "snapshot", snapshot)
+
+    async def list_panes(self) -> list[dict]:
+        live = self.live if self.live is not None else [agent.terminal_id for agent in self.agents]
+        return [{"pane_id": f"w{n}:p1", "terminal_id": terminal} for n, terminal in enumerate(live)]
+
+
+def saved_agent(terminal_id: str, **fields) -> SavedAgent:
+    values = {"name": "webapp", "cwd": "/work/webapp", "config_dir": None, "args": [], "session_id": None,
+              "pane_id": "w1:p1", "terminal_id": terminal_id, **fields}
+    return SavedAgent(**values)
+
+
+def test_save_agents_command_writes_file(capsys, settings: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    path = agents_file()
+    save_agents(path, SavedAgents(agents=[saved_agent("t-gone")]))
+    FakeSnapshot(monkeypatch, [saved_agent("t1", session_id="s1")])
+
+    code, out, err = run(capsys, "save-agents")
+
+    assert code == 0, err
+    # The agent the snapshot didn't see counts no miss: herdr may have just restarted, and
+    # a miss would get it forgotten at the restore. The service's own saves age entries.
+    saved = load_agents(path).agents
+    assert [(agent.terminal_id, agent.misses) for agent in saved] == [("t1", 0), ("t-gone", 0)]
+    assert out == f"Saved 2 agents to {path}.\n"
+
+
+def test_save_agents_leaves_out_an_agent_stopped_during_its_snapshot(
+    capsys, settings: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = agents_file()
+    # The service's stop_agent closed t2's pane and forgot it while the snapshot still read it.
+    save_agents(path, SavedAgents(agents=[saved_agent("t1")]))
+    FakeSnapshot(monkeypatch, [saved_agent("t1"), saved_agent("t2", pane_id="w2:p1")], live=["t1"])
+
+    code, out, err = run(capsys, "save-agents")
+
+    assert code == 0, err
+    assert [agent.terminal_id for agent in load_agents(path).agents] == ["t1"]
+
+
+def test_save_agents_herdr_down_fails(capsys, settings: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    FakeSnapshot(monkeypatch, HerdrError("server_down", "herdr isn't running"))
+
+    code, out, err = run(capsys, "save-agents")
+
+    assert code == 1
+    assert out == ""
+    assert "herdr isn't running" in err
+    assert not agents_file().exists()
+
+
+def test_save_agents_with_restore_off_saves_nothing(capsys, settings: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    settings.write_text(settings.read_text() + "AGENT_BRIDGE_RESTORE_AGENTS=false\n")
+    FakeSnapshot(monkeypatch, [saved_agent("t1")])
+
+    code, out, err = run(capsys, "save-agents")
+
+    assert code == 0, err
+    assert "AGENT_BRIDGE_RESTORE_AGENTS" in out
+    assert not agents_file().exists()

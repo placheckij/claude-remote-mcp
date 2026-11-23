@@ -16,6 +16,8 @@ def no_settings_from_the_shell(monkeypatch: pytest.MonkeyPatch, tmp_path_factory
     files = tmp_path_factory.mktemp("agent-bridge-files")
     monkeypatch.setenv("AGENT_BRIDGE_ENV_FILE", str(files / "env"))
     monkeypatch.setenv("AGENT_BRIDGE_STATE_FILE", str(files / "state.json"))
+    # Setup and uninstall edit herdr's config; never the caller's own.
+    monkeypatch.setenv("HERDR_CONFIG_PATH", str(files / "herdr-config.toml"))
 
 
 @pytest.fixture
