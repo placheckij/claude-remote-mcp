@@ -122,6 +122,18 @@ def test_merge_new_entry_and_seen_resets_misses() -> None:
     }
 
 
+def test_a_seen_agent_whose_account_couldnt_be_read_keeps_the_saved_account() -> None:
+    # Its environment couldn't be read this time; a restore would otherwise guess the
+    # folder's account, and may not find its conversation there.
+    saved = entry("t1", config_dir="/cfg")
+    seen = entry("t1", name="renamed", config_dir=None, config_dir_unknown=True)
+    [merged] = saved_agents.merge([saved], [seen], False)
+    assert (merged.name, merged.config_dir, merged.config_dir_unknown) == ("renamed", "/cfg", False)
+    # Unknown before too, it stays unknown.
+    [merged] = saved_agents.merge([entry("t1", config_dir_unknown=True)], [seen], False)
+    assert merged.config_dir_unknown is True
+
+
 def test_one_miss_keeps_entry() -> None:
     [kept] = saved_agents.merge([entry("t1")], [], False)
     assert kept.misses == 1

@@ -167,9 +167,17 @@ async def snapshot(herdr: Herdr) -> list[SavedAgent]:
 def merge(saved: list[SavedAgent], seen: list[SavedAgent], restarted: bool) -> list[SavedAgent]:
     """`seen` replaces what it matches; an agent not seen counts a miss (not after a restart,
     when none of them could be seen) and goes at MAX_MISSES. One a restore failed to start
-    is kept as it is: it isn't running by design, and the next restart retries it."""
+    is kept as it is: it isn't running by design, and the next restart retries it. A seen
+    agent whose account couldn't be read keeps the one saved for it, rather than leave a
+    restore to guess."""
     seen_ids = {agent.terminal_id for agent in seen}
-    merged = [agent.model_copy(update={"misses": 0}) for agent in seen]
+    known = {agent.terminal_id: agent.config_dir for agent in saved if not agent.config_dir_unknown}
+    merged = []
+    for agent in seen:
+        update: dict = {"misses": 0}
+        if agent.config_dir_unknown and agent.terminal_id in known:
+            update |= {"config_dir": known[agent.terminal_id], "config_dir_unknown": False}
+        merged.append(agent.model_copy(update=update))
     for agent in saved:
         if agent.terminal_id in seen_ids:
             continue
