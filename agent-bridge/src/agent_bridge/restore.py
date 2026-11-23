@@ -448,11 +448,18 @@ async def _unclassified(
             continue
         # Read once for all entries; again when that read, made in an earlier entry's turn,
         # names this one's conversation: the Claude Code it saw may have exited since.
-        if pane_id not in found.processes or _names_conversation(found.processes[pane_id], entry):
+        earlier = found.processes.get(pane_id)
+        if earlier is None or _names_conversation(earlier, entry):
             try:
-                found.processes[pane_id] = await herdr.process_info(pane_id)
+                info = await herdr.process_info(pane_id)
             except HerdrError:
-                found.processes[pane_id] = {}
+                info = {}
+            if earlier is not None and _unread(info):
+                # Can't tell now: what was read still says it runs the conversation. Kept,
+                # and never closed.
+                found.unread.add(pane_id)
+            else:
+                found.processes[pane_id] = info
         if _names_conversation(found.processes[pane_id], entry):
             if unread_agent and pane.get("cwd") and pane.get("terminal_id"):
                 running = await read_agent(pane, found.processes[pane_id])

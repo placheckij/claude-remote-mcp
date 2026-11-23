@@ -1173,6 +1173,38 @@ def test_a_pane_an_earlier_agent_read_running_a_later_agents_conversation_that_e
     assert len(runner.called("agent", "start")) == 2
 
 
+@pytest.mark.parametrize("kind", ["not an agent yet", "claude agent without the hook"])
+@pytest.mark.parametrize("where", ["its folder", "elsewhere"])
+def test_a_pane_read_running_a_later_agents_conversation_that_cant_be_read_again_isnt_run_beside(
+    path: Path, folder: Path, tmp_path: Path, where: str, kind: str
+) -> None:
+    # It runs the second agent's conversation throughout; read again in that agent's turn,
+    # the read fails once. What was read before still says so: not started beside it.
+    first = entry(tmp_path / "other", terminal_id="t-a", pane_id="w1:p1", session_id=OTHER_UUID)
+    second = entry(folder, terminal_id="t-c", pane_id="w2:p1", session_id=UUID)
+    cwd = folder if where == "its folder" else tmp_path / "elsewhere"
+    hand = pane("w5:p1", "t-h", agent=None if kind == "not an agent yet" else "claude", cwd=str(cwd))
+    runner = runner_for([hand])
+    answer = runner.__call__
+    reads = 0
+
+    async def failing_the_second_read(argv):
+        nonlocal reads
+        if list(argv[1:]) == ["pane", "process-info", "--pane", "w5:p1"]:
+            runner.calls.append(list(argv[1:]))
+            reads += 1
+            return err("timeout") if reads == 2 else process_info(["claude", "--resume", UUID])
+        return await answer(argv)
+
+    save(path, SavedAgents(agents=[first, second]))
+    herdr = Herdr(runner=failing_the_second_read)
+    service = AgentService(Settings(token=TOKEN, allowed_roots=(tmp_path.resolve(),)), herdr)
+    asyncio.run(restore(service, herdr, path))
+
+    assert len(runner.called("agent", "start")) == 1
+    assert runner.called("pane", "close") == []
+
+
 @pytest.mark.parametrize("where", ["another restored shell in its folder", "its own old pane"])
 def test_a_restored_shell_still_carrying_a_session_is_checked_by_command_line_before_the_start(
     path: Path, folder: Path, tmp_path: Path, where: str
