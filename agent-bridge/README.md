@@ -89,12 +89,15 @@ two saves without it, and `stop_agent` drops it at once.
 terminal id. It does too when herdr answers for the first time since `serve` started, or
 again after not answering, and none of the saved agents' terminals is there. Then it
 restores each saved agent that isn't running, one after another: a new workspace, its
-account, `--resume <session id>` and its arguments; an agent never prompted has no
+account (if its environment couldn't be read, the one its folder would get now),
+`--resume <session id>` and its arguments; an agent never prompted has no
 conversation to resume, so it starts fresh under the same `--session-id`. Without a session id it uses
 `--continue`, but only if no other saved agent shares its folder and account, else a fresh
 conversation. Agents started by hand come back too. A pane running a saved agent's
 conversation with the wrong account or arguments, whether herdr resumed it or you did, is
-closed and replaced, unless busy in a turn: then it's left as it is.
+closed and replaced, unless busy in a turn (working, or waiting for an approval): then
+it's left as it is. So is an idle shell herdr left where a saved agent was, in its folder;
+a shell running something is left alone.
 
 - A restored agent is idle: no prompt is sent.
 - An agent that a save had already missed comes back only if herdr brought its pane back,
@@ -102,7 +105,8 @@ closed and replaced, unless busy in a turn: then it's left as it is.
 - The restore ignores `AGENT_BRIDGE_MAX_AGENTS` and the allowed roots, so every agent
   that was running comes back. It marks no folder trusted, even under the
   [trust root](#folder-trust): an entry whose folder Claude Code doesn't trust is dropped. An agent that fails to start for another reason stays in
-  `agents.json` and is tried again at the next restart. `start_agent` adds `--session-id <uuid>`, unless
+  `agents.json` until it starts: it is tried again at the next restart, and whenever
+  `serve` starts while no other saved agent is listed. `start_agent` adds `--session-id <uuid>`, unless
   `AGENT_BRIDGE_CLAUDE_ARGS` picks the conversation itself, so a new agent's conversation
   is known from its first save.
 - Not brought back: the turn a busy agent was in the middle of, panes that weren't Claude
@@ -120,11 +124,13 @@ step below and removes `agents.json`:
   marks with a comment, and only if you haven't set the key yourself. It edits
   `HERDR_CONFIG_PATH`, else both `$XDG_CONFIG_HOME/herdr/config.toml` and
   `~/.config/herdr/config.toml` when they differ (on Windows, `%APPDATA%\herdr\config.toml`
-  in place of the second). `--no-agent-restore` and `uninstall` remove only that marked line.
+  in place of the second). `--no-agent-restore` and `uninstall` remove only that marked line
+  (and the `[session]` header right above it, if nothing else is left under it).
 - herdr's Claude hook tells herdr which conversation each agent is in, also after `/clear`
   or `/resume`, so a restored agent resumes the one it was in. Without the hook, an agent
   `start_agent` started comes back as the conversation it was started with (its
-  `--session-id`), and one started by hand as its folder's latest. Setup runs `herdr integration install
+  `--session-id`), and one started by hand as its folder's latest (or fresh, if another
+  saved agent shares its folder and account). Setup runs `herdr integration install
   claude` for each non-default config agent-bridge uses (`AGENT_BRIDGE_CLAUDE_CONFIG_DIR`
   and the accounts'), never the default `~/.claude`: it warns when that lacks the hook, and
   `agent-bridge check` notes it. Install it there yourself with `herdr integration

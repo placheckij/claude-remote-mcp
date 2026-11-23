@@ -31,13 +31,14 @@ the gateway first, see [Updating](README.md#updating)).
   loopback or link-local IP addresses may call the enrollment routes (nothing the tunnel
   forwarded) or be called by the gateway (only ones that answer as the bridge enrolling)
 - agent-bridge: its token check, the allowed-roots and agent-count limits, which Claude
-  account (login and config) an agent starts under, and folder trust (it must never
+  account (login and config) an agent starts under, reading each agent's process
+  environment to name its account (only `CLAUDE_CONFIG_DIR` is used), and folder trust (it must never
   write the default Claude config, or trust a folder outside the trust root)
 - agent restore: `agents.json` (mode 0600 on macOS and Linux) and the restore after a
   herdr restart, which starts only agents that were running in herdr, ones started by
   hand included, on their saved folder, account (if theirs couldn't be read, the one the
-  folder would get if started now) and arguments; the panes it closes (an idle pane
-  running a saved agent's conversation under other arguments or another account, whether
+  folder would get if started now) and arguments; the panes it closes (a pane not in a
+  turn running a saved agent's conversation under other arguments or another account, whether
   herdr resumed it or someone did by hand, and an idle leftover shell); and reading each
   Claude agent's process environment every 30 s, of which only `CLAUDE_CONFIG_DIR` is kept;
   it skips the allowed-roots and agent-count limits and the trust root by design, and
@@ -56,7 +57,8 @@ the gateway first, see [Updating](README.md#updating)).
 ## Out of scope
 
 - What an agent does once it runs: agents start with the Claude Code permission mode
-  you configure (`--permission-mode auto` by default), and that is a deliberate choice
+  you configure (`--permission-mode auto` by default; a restored agent with the arguments
+  it was started with), and that is a deliberate choice
 - Problems in claude.ai, Claude Code, herdr, Cloudflare or uv themselves; report those
   to their maintainers
 - Attacks that need the sign-in passphrase, a valid OAuth or static token, an agent
