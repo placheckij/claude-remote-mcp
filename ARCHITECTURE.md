@@ -6,7 +6,7 @@ the map; the component READMEs have the details.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/assets/architecture-dark.svg">
-  <img src="docs/assets/architecture-light.svg" width="100%" alt="Three layers and four trust boundaries. The Claude app reaches mcp-gateway on the gateway host over MCP over HTTPS, through a Cloudflare Tunnel, with an OAuth access token; mcp-gateway keeps clients and token hashes in oauth.json, its agent hosts in bridges.json and the enrollment window in enrollment.json. mcp-gateway reaches agent-bridge on each agent host (macOS, Linux, Windows) over HTTP on the LAN with that host's bearer token, and agent hosts enroll with the gateway over the LAN with the window's secret. Each agent-bridge keeps its id and gateway in state.json and the agents to restore after herdr restarts in agents.json, only changes agents under its allowed roots, and drives herdr through the herdr CLI; herdr runs Claude Code sessions, one per pane, each on the Claude account set up for its folder, with ids that name the host, such as mac/w1:p1.">
+  <img src="docs/assets/architecture-light.svg" width="100%" alt="Three layers and four trust boundaries. The Claude app reaches mcp-gateway on the gateway host over MCP over HTTPS, through a Cloudflare Tunnel, with an OAuth access token; mcp-gateway keeps clients and token hashes in oauth.json, its agent hosts in bridges.json and the enrollment window in enrollment.json. mcp-gateway reaches agent-bridge on each agent host (macOS, Linux, Windows) over HTTP on the LAN with that host's bearer token, and agent hosts enroll with the gateway over the LAN with the window's secret. Each agent-bridge keeps its id and gateway in state.json and the agents to restore after herdr restarts in agents.json, only changes agents under its allowed roots on request, and drives herdr through the herdr CLI; herdr runs Claude Code sessions, one per pane, each on the Claude account set up for its folder, with ids that name the host, such as mac/w1:p1.">
 </picture>
 
 ## Interaction layer: the Claude app
@@ -135,7 +135,9 @@ What each file holds and where it is: [mcp-gateway](mcp-gateway/README.md#what-i
    and anything the tunnel forwards.
 4. **agent-bridge to agents:** allowed roots, the agent limit and the trust root bound
    what a request can start or change. Restoring after a herdr restart (or retrying an
-   agent a restore couldn't start) skips the roots, the limit and the trust root: it starts only agents that were running, from
-   `agents.json`, and a folder Claude Code doesn't already trust isn't restored.
+   agent a restore couldn't start) skips the roots, the limit and the trust root: it starts
+   only agents that were running, from `agents.json`, closes only a stale copy of one of
+   their conversations or the idle shell herdr left where one was, and a folder Claude Code
+   doesn't already trust isn't restored.
 
 [SECURITY.md](SECURITY.md) says how to report a vulnerability and what is in scope.
