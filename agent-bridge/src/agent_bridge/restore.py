@@ -10,6 +10,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from agent_bridge.agents import FINISHED, AgentService
+from agent_bridge.claude_args import session_id_in
+from agent_bridge.claude_process import claude_process
 from agent_bridge.errors import BridgeError
 from agent_bridge.herdr import Herdr, HerdrError
 from agent_bridge.saved_agents import SavedAgent, forget, load, locked, merge, save, snapshot
@@ -31,6 +33,9 @@ class _Found:
     # Conversations a saved agent still runs, or one restored so far does: each runs once.
     sessions: set[str]
     closed: set[str] = field(default_factory=set)
+    # The foreground processes of panes herdr doesn't know as agents, by pane id, as read
+    # once; {} when they couldn't be.
+    processes: dict[str, dict] = field(default_factory=dict)
 
 
 async def restore(service: AgentService, herdr: Herdr, path: Path) -> list[str]:
@@ -106,6 +111,8 @@ async def _restore_one(
         ),
         None,
     )
+    if resumed is None and entry.session_id:
+        resumed = await _unclassified(herdr, entry.session_id, open_panes, found)
     if resumed is not None and resumed.get("terminal_id") in service.stopped:
         # Stopped through the bridge since the panes were listed.
         await asyncio.to_thread(forget, path, entry.terminal_id)
@@ -131,6 +138,9 @@ async def _restore_one(
             await _adopt(path, entry, resumed, found)
             if as_it_was:
                 return f"{label}: herdr resumed it in {resumed['pane_id']} as it was, left as it is", False
+            if not resumed.get("agent"):
+                return (f"{label}: {resumed['pane_id']} runs its conversation, though herdr doesn't know it "
+                        "as an agent yet, left as it is"), False
             if busy:
                 return f"{label}: busy in {resumed['pane_id']}, which runs its conversation, left as it is", False
             what = "process" if running is None else "account"
@@ -209,6 +219,26 @@ async def _idle_shell(herdr: Herdr, pane: dict) -> bool:
     shell = info.get("shell_pid")
     processes = info.get("foreground_processes") or []
     return shell is not None and all(isinstance(p, dict) and p.get("pid") == shell for p in processes)
+
+
+async def _unclassified(herdr: Herdr, session_id: str, panes: list[dict], found: _Found) -> dict | None:
+    """A pane herdr doesn't know as an agent yet (Claude Code in it has only just started)
+    whose Claude Code's command line runs `session_id`. Not one herdr calls idle or done, nor
+    one whose processes can't be read. It has no status of its own, so it's taken as busy."""
+    for pane in panes:
+        if pane.get("agent") or pane.get("agent_status") in FINISHED or pane.get("terminal_id") in found.claimed:
+            continue
+        pane_id = pane["pane_id"]
+        if pane_id not in found.processes:
+            try:
+                found.processes[pane_id] = await herdr.process_info(pane_id)
+            except HerdrError:
+                found.processes[pane_id] = {}
+        process = claude_process(found.processes[pane_id])
+        argv = process.get("argv") if process is not None else None
+        if isinstance(argv, list) and session_id_in([arg for arg in argv if isinstance(arg, str)]) == session_id:
+            return pane
+    return None
 
 
 async def _close(

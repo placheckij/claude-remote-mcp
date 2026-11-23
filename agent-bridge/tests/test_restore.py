@@ -245,6 +245,23 @@ def test_a_pane_running_its_conversation_without_the_hook_is_found_by_its_comman
     assert "closed" in line
 
 
+@pytest.mark.parametrize("pane_id", ["w1:p1", "w5:p1"])
+@pytest.mark.parametrize("flag", ["--resume", "--session-id"])
+def test_a_pane_herdr_doesnt_know_as_an_agent_yet_running_its_conversation_is_left(
+    path: Path, folder: Path, tmp_path: Path, pane_id: str, flag: str
+) -> None:
+    # Just started, likely on herdr's first answering round: herdr hasn't seen Claude Code in
+    # it yet, but its command line names the conversation.
+    unclassified = pane(pane_id, agent=None, cwd=str(folder))
+    runner = runner_for([unclassified], **{f"pane process-info --pane {pane_id}": process_info(["claude", flag, UUID])})
+    [line] = run(runner, path, [entry(folder, session_id=UUID)], tmp_path)
+
+    assert runner.called("pane", "close") == runner.called("agent", "start") == []
+    assert "left as it is" in line
+    [kept] = load(path).agents
+    assert (kept.pane_id, kept.terminal_id) == (pane_id, "t-new")
+
+
 @pytest.mark.parametrize("status", ["unknown", None])
 def test_a_pane_herdr_cant_classify_running_its_conversation_is_left(
     path: Path, folder: Path, tmp_path: Path, status: str | None
