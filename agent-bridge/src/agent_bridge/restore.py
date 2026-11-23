@@ -42,7 +42,7 @@ async def restore(service: AgentService, herdr: Herdr, path: Path) -> list[str]:
     """Start each saved agent that isn't running, one after another in the file's order.
     Each outcome is logged; the lines are returned too. A HerdrError from listing herdr's
     panes or agents propagates: herdr isn't up."""
-    entries = load(path).agents
+    entries = await asyncio.to_thread(_saved, path)
     panes = await herdr.list_panes()
     terminals = {pane.get("terminal_id") for pane in panes}
     found = _Found(
@@ -381,7 +381,10 @@ _has_conversation = _has_conversation_on_disk
 
 
 def _saved(path: Path) -> list[SavedAgent]:
-    return load(path).agents
+    """The saved agents, read under the file's lock: on Windows a read while another process
+    replaces the file fails. In a thread: the lock may be waited for."""
+    with locked(path):
+        return load(path).agents
 
 
 def _write(path: Path, seen: list[SavedAgent], restarted: bool, stopped: set[str] = frozenset()) -> None:

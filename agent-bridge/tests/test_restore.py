@@ -1,6 +1,7 @@
 import asyncio
 import contextlib
 import os
+import threading
 from collections.abc import Callable
 from pathlib import Path
 from types import SimpleNamespace
@@ -529,6 +530,37 @@ def test_a_restored_agent_whose_entry_couldnt_be_written_drops_its_stale_entry(
     assert service.stopped == {"t-old"}
     restore_module._write(path, [], True, service.stopped)
     assert load(path).agents == []
+
+
+def test_agents_json_is_read_under_its_lock_off_the_event_loop(
+    monkeypatch: pytest.MonkeyPatch, path: Path, folder: Path, tmp_path: Path
+) -> None:
+    # On Windows a read while a forget or save-agents replaces the file fails; and the lock
+    # may be waited for, which mustn't hold up the event loop.
+    held: list[bool] = []
+    reads: list[tuple[bool, bool]] = []
+    real_locked, real_load = restore_module.locked, restore_module.load
+
+    @contextlib.contextmanager
+    def recording(locked_path: Path):
+        with real_locked(locked_path):
+            held.append(True)
+            try:
+                yield
+            finally:
+                held.pop()
+
+    def checked(read_path: Path, for_writing: bool = False):
+        reads.append((bool(held), threading.current_thread() is threading.main_thread()))
+        return real_load(read_path, for_writing)
+
+    monkeypatch.setattr(restore_module, "locked", recording)
+    monkeypatch.setattr(restore_module, "load", checked)
+    run(runner_for([]), path, [entry(folder, session_id=UUID)], tmp_path)
+    asyncio.run(restore_module._restarted(Herdr(runner=runner_for([])), path, True))
+
+    # (under the lock, on the event loop's thread), for each read.
+    assert reads and reads == [(True, False)] * len(reads)
 
 
 def test_the_watcher_leaves_out_an_agent_stopped_while_it_waited_for_the_file(
