@@ -208,6 +208,30 @@ def test_herdr_resume_with_other_account_is_replaced(path: Path, folder: Path, t
     assert claude_args(runner) == ["--resume", UUID, "--permission-mode", "auto"]
 
 
+def test_herdrs_resume_that_cant_be_closed_is_left_rather_than_run_twice(
+    path: Path, folder: Path, tmp_path: Path
+) -> None:
+    # Still running its conversation: a second copy would answer as the first.
+    runner = runner_for([pane(session=UUID)], ["claude", "--resume", UUID], **{"pane close": err("close_failed")})
+    [line] = run(runner, path, [entry(folder, session_id=UUID)], tmp_path)
+
+    assert runner.called("agent", "start") == []
+    assert "couldn't be closed" in line and "left" in line
+    # Taken as the agent's own pane from now on, as a busy one is.
+    [kept] = load(path).agents
+    assert (kept.pane_id, kept.terminal_id) == ("w1:p1", "t-new")
+
+
+def test_a_leftover_shell_that_cant_be_closed_doesnt_stop_the_start(
+    path: Path, folder: Path, tmp_path: Path
+) -> None:
+    runner = runner_for([pane(agent=None, cwd=str(folder))], **{"pane close": err("close_failed")})
+    [line] = run(runner, path, [entry(folder, session_id=UUID)], tmp_path)
+
+    assert len(runner.called("agent", "start")) == 1
+    assert "couldn't close the shell left in w1:p1" in line
+
+
 def test_a_pane_running_its_conversation_without_the_hook_is_found_by_its_command_line(
     path: Path, folder: Path, tmp_path: Path
 ) -> None:

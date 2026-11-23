@@ -83,7 +83,7 @@ async def _restore_one(
         shell = None
     if entry.session_id in found.sessions:
         # Two panes ran one conversation; a second copy of it would answer as the first.
-        note = await _close(herdr, shell, found)
+        _, note = await _close(herdr, shell, found)
         await asyncio.to_thread(forget, path, entry.terminal_id)
         return f"{label}: not restored, and forgotten: its conversation {entry.session_id} already runs{note}", False
     if entry.misses > 0 and not back:
@@ -117,13 +117,7 @@ async def _restore_one(
         # a shell that can't be read is.
         unreadable = running is None
         if as_it_was or busy or unreadable:
-            kept = entry.model_copy(
-                update={"pane_id": resumed["pane_id"], "terminal_id": resumed["terminal_id"], "misses": 0,
-                        "restore_failed": False}
-            )
-            await asyncio.to_thread(_replace, path, entry.terminal_id, kept)
-            found.claimed.add(resumed["terminal_id"])
-            found.sessions.add(entry.session_id)
+            await _adopt(path, entry, resumed, found)
             if as_it_was:
                 return f"{label}: herdr resumed it in {resumed['pane_id']} as it was, left as it is", False
             if busy:
@@ -132,9 +126,14 @@ async def _restore_one(
                     "left as it is"), False
         # herdr's own resume runs plain `claude --resume <id>`: without the account's
         # CLAUDE_CONFIG_DIR or the agent's arguments.
-        note = await _close(herdr, resumed, found, "herdr's own resume")
+        closed, note = await _close(herdr, resumed, found, "herdr's own resume")
+        if not closed:
+            # Still running its conversation: a second copy would answer as the first.
+            await _adopt(path, entry, resumed, found)
+            return (f"{label}: {resumed['pane_id']} runs its conversation but couldn't be closed{note}, "
+                    "left as it is"), True
     else:
-        note = await _close(herdr, shell, found)
+        _, note = await _close(herdr, shell, found)
 
     if entry.session_id and not await asyncio.to_thread(
         _has_conversation, service.config_dir_of(entry), entry.session_id
@@ -200,17 +199,30 @@ async def _idle_shell(herdr: Herdr, pane: dict) -> bool:
     return shell is not None and all(isinstance(p, dict) and p.get("pid") == shell for p in processes)
 
 
-async def _close(herdr: Herdr, pane: dict | None, found: _Found, what: str = "the shell left") -> str:
-    """Close what herdr left of an agent, if anything; a note for the log line either way, so
-    the log says which pane went and why."""
+async def _close(
+    herdr: Herdr, pane: dict | None, found: _Found, what: str = "the shell left"
+) -> tuple[bool, str]:
+    """Close what herdr left of an agent, if anything: whether it's gone (True when there was
+    none), and a note for the log line either way, so the log says which pane went and why."""
     if pane is None:
-        return ""
+        return True, ""
     found.closed.add(pane["pane_id"])
     try:
         await herdr.close_pane(pane["pane_id"])
     except HerdrError as error:
-        return f" (couldn't close {what} in {pane['pane_id']}: {error})"
-    return f" (closed {what} in {pane['pane_id']})"
+        return False, f" (couldn't close {what} in {pane['pane_id']}: {error})"
+    return True, f" (closed {what} in {pane['pane_id']})"
+
+
+async def _adopt(path: Path, entry: SavedAgent, resumed: dict, found: _Found) -> None:
+    """Take `resumed`, which runs `entry`'s conversation, as the agent's own pane from now on."""
+    kept = entry.model_copy(
+        update={"pane_id": resumed["pane_id"], "terminal_id": resumed["terminal_id"], "misses": 0,
+                "restore_failed": False}
+    )
+    await asyncio.to_thread(_replace, path, entry.terminal_id, kept)
+    found.claimed.add(resumed["terminal_id"])
+    found.sessions.add(entry.session_id)
 
 
 async def _keep_failed(path: Path, entry: SavedAgent) -> None:
