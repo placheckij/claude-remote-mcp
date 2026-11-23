@@ -186,6 +186,23 @@ def test_refuses_callers_off_the_lan(gateway: Gateway) -> None:
     assert gateway.hosts() == []
 
 
+@pytest.mark.parametrize(
+    ("method", "path"),
+    [("GET", "/enroll"), ("POST", "/bridges/x/address"), ("GET", "/bridges/x"), ("PUT", "/bridges/a/b/c")],
+)
+@pytest.mark.parametrize("outside", [{"peer": ("8.8.8.8", 50000)}, {"headers": {"CF-Ray": "1"}}])
+def test_outsiders_get_the_same_404_for_any_method_or_path(
+    gateway: Gateway, caplog: pytest.LogCaptureFixture, method: str, path: str, outside: dict
+) -> None:
+    # Checked before routing: a 405 or a plain-text 404 would tell outsiders which routes exist.
+    client = gateway.client(outside.get("peer", ("127.0.0.1", 50000)))
+    with caplog.at_level(logging.WARNING, logger="mcp_gateway.enrollment"):
+        response = client.request(method, path, headers=outside.get("headers", {}))
+
+    assert (response.status_code, response.json()) == (404, {"error": "not found"})
+    assert f"404 {method} {path}" in caplog.text
+
+
 def test_re_enrolling_replaces_the_record_in_place(gateway: Gateway) -> None:
     secret = gateway.open()
     gateway.bridges["http://192.168.1.21:8765"] = httpx.Response(200, json={**INFO, "bridge_id": "2" * 32})

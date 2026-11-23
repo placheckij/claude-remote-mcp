@@ -300,7 +300,17 @@ def build_server(settings: Settings, hosts: Hosts, oauth: GatewayOAuth) -> MCPSe
         to: it can come from files or web pages the agent read. With wait_seconds, also
         waits for the agent to carry on and reports how it ended."""
         host, bare = await hosts.route(agent_id)
-        await call(host.bridge.send_keys(bare, keys))
+        try:
+            await host.bridge.send_keys(bare, keys)
+        except BridgeTimeout as error:
+            # Not a tool error: the keys may well have been typed, and answering again would
+            # answer the agent's next question.
+            return (
+                f"{str(error).rstrip('.')}; {' '.join(keys)} may have been sent to {agent_id}. "
+                "Check with agent_details before answering again."
+            )
+        except BridgeError as error:
+            raise ToolError(str(error)) from error
         sent = f"Sent {' '.join(keys)} to {agent_id}."
         if wait_seconds is None:
             return sent
@@ -455,7 +465,17 @@ def build_server(settings: Settings, hosts: Hosts, oauth: GatewayOAuth) -> MCPSe
     async def stop_agent(agent_id: AgentId) -> str:
         """Stop an agent and close its terminal pane. Ask the user to confirm first."""
         host, bare = await hosts.route(agent_id)
-        await call(host.bridge.stop_agent(bare))
+        try:
+            await host.bridge.stop_agent(bare)
+        except BridgeTimeout as error:
+            # Not a tool error: agent-bridge stops only after a start under way, which can
+            # outlast the request, and the pane still closes then.
+            return (
+                f"{str(error).rstrip('.')}; {agent_id} may still stop. Check with list_agents "
+                "before stopping it again."
+            )
+        except BridgeError as error:
+            raise ToolError(str(error)) from error
         return f"Stopped {agent_id}."
 
     @mcp.custom_route("/healthz", methods=["GET"])
