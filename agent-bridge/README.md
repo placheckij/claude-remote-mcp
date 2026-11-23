@@ -95,11 +95,14 @@ conversation to resume, so it starts fresh under the same `--session-id`. Withou
 `--continue`, but only if no other saved agent shares its folder and account, else a fresh
 conversation. Agents started by hand come back too. A pane running a saved agent's
 conversation with the wrong account or arguments, whether herdr resumed it or you did, is
-closed and replaced, but only when herdr reports it idle or done, its process could be read
-and shows other arguments, or an account read from it that isn't the saved one, and
-closing it works. Otherwise it's left as it is and kept as the agent's:
-one working, waiting for an approval, that herdr can't classify, or that herdr doesn't
-show as an agent yet but whose command line resumes the conversation. Without such a
+closed and replaced, but only when herdr reports it idle or done, also when asked again
+right before closing it, its process could be read and shows other arguments, or an
+account read from it that isn't the saved one, and it is gone after closing. Otherwise
+it's left as it is and kept as the agent's: one working, waiting for an approval, that
+herdr can't classify, or that herdr doesn't show as an agent yet but whose command line
+resumes the conversation. While a Claude agent in its folder whose process can't be read
+may be running its conversation, the agent isn't started but kept for the next restart.
+Without such a
 pane, an idle shell herdr left where the agent was, in its folder, is closed too; a shell
 running something is left alone. An agent stopped through agent-bridge is never restored,
 even if it's stopped while a restore runs; the one exception is when `agents.json` can't
