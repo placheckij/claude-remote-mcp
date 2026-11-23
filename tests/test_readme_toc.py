@@ -1,6 +1,6 @@
 """Each README's table of contents lists its ## and ### headings, linked to the anchors
 GitHub gives them, between <!-- toc --> and <!-- /toc -->. On a failure, paste the block
-the message shows."""
+the message shows. Headings are written with #; an underlined one (=== or ---) is refused."""
 
 import re
 from pathlib import Path
@@ -10,8 +10,12 @@ import pytest
 ROOT = Path(__file__).parent.parent
 READMES = ["README.md", "agent-bridge/README.md", "mcp-gateway/README.md"]
 START, END = "<!-- toc -->", "<!-- /toc -->"
-HEADING = re.compile(r"(#{1,6})\s+(.+?)\s*$")
+# Up to 3 spaces before, and closing #s after, as CommonMark allows.
+HEADING = re.compile(r" {0,3}(#{1,6})\s+(.+?)(?:\s+#+)?\s*")
 FENCE = re.compile(r"(`{3,}|~{3,})")
+UNDERLINE = re.compile(r" {0,3}(=+|-+)\s*")
+# Lines a --- under them doesn't make a heading of: a list item, a table row, a heading.
+NOT_A_PARAGRAPH = re.compile(r"\s*([-*+]\s|\d+[.)]\s|\||#)")
 
 
 def headings(text: str) -> list[tuple[int, str, str]]:
@@ -19,15 +23,22 @@ def headings(text: str) -> list[tuple[int, str, str]]:
     found = []
     used: dict[str, int] = {}
     fence = None
+    previous = ""
     for line in text.splitlines():
         stripped = line.lstrip()
         if fence is not None:
-            if stripped.startswith(fence):
+            # Closed only by the same character, at least as many, and nothing after them.
+            if re.fullmatch(re.escape(fence[0]) + "{" + str(len(fence)) + r",}\s*", stripped):
                 fence = None
+            previous = ""
             continue
         if opened := FENCE.match(stripped):
             fence = opened.group(1)
+            previous = ""
             continue
+        if UNDERLINE.fullmatch(line) and previous.strip() and not NOT_A_PARAGRAPH.match(previous):
+            raise ValueError(f"{previous.strip()!r} is underlined into a heading; write it with # instead")
+        previous = line
         if not (match := HEADING.fullmatch(line)):
             continue
         level, title = len(match.group(1)), match.group(2)
@@ -71,6 +82,33 @@ def test_anchors_are_githubs() -> None:
         "restart-stop-uninstall-1",
         "install-with-mcp-gateway-setup",
     ]
+
+
+def test_headings_as_commonmark_reads_them() -> None:
+    text = "\n".join([
+        "   ## Indented",
+        "## Closed ##",
+        "````md",
+        "```sh",
+        "## inside the outer block",
+        "```",
+        "````",
+        "## After the block",
+        "- an item",
+        "---",
+        "| a | b |",
+        "|---|---|",
+    ])
+
+    assert [(level, title) for level, title, _ in headings(text)] == [
+        (2, "Indented"), (2, "Closed"), (2, "After the block"),
+    ]
+
+
+@pytest.mark.parametrize("underline", ["===", "---"])
+def test_an_underlined_heading_is_refused(underline: str) -> None:
+    with pytest.raises(ValueError, match="write it with #"):
+        headings(f"Intro\n\nA heading\n{underline}\n")
 
 
 def test_the_toc_lists_sections_and_subsections_only() -> None:
