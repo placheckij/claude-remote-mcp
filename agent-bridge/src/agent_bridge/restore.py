@@ -352,24 +352,28 @@ async def _resumed_since(herdr: Herdr, entry: SavedAgent, found: _Found) -> tupl
     for pane in panes:
         before = known.get(pane.get("terminal_id"))
         if before is None:
-            # Seen from now on: a later entry's own checks find it, and don't read it again.
+            # Seen from now on: a later entry's own checks find it.
             found.panes.append(pane)
         elif (pane.get("agent"), pane.get("agent_session")) != (before.get("agent"), before.get("agent_session")):
-            # What was read of it is stale; later entries' checks see it as it is now.
+            # Later entries' checks see it as it is now, and read what runs in it again.
             found.processes.pop(before["pane_id"], None)
-            found.live.pop(before["pane_id"], None)
             before.clear()
             before.update(pane)
-        else:
+        elif _hook_session(pane) is not None:
+            # herdr's hook says which conversation it runs, and that hasn't changed.
             continue
+        # Else Claude Code without herdr's hook: it may have been started again by hand with
+        # another conversation, which herdr's listing doesn't show.
         late.append(pane)
     unsure = None
     for pane in late:
         if (pane.get("agent") != "claude" or pane.get("terminal_id") in found.claimed
-                or not pane.get("cwd") or not pane.get("terminal_id")):
+                or pane["pane_id"] in found.closed or not pane.get("cwd") or not pane.get("terminal_id")):
+            # A pane closed in this restore that's still listed was kept if it was still
+            # there (claimed), or is going.
             continue
-        if _session_in(pane, found) not in (None, entry.session_id):
-            continue
+        # Read even when it runs another conversation: a later entry whose conversation it is
+        # keeps or replaces it by what's read.
         try:
             info = await herdr.process_info(pane["pane_id"])
         except HerdrError:
@@ -377,6 +381,9 @@ async def _resumed_since(herdr: Herdr, entry: SavedAgent, found: _Found) -> tupl
         running = await read_agent(pane, info) if info else None
         if running is not None:
             found.live[pane["pane_id"]] = running
+        else:
+            # What was read before may no longer be what runs: it can't be told.
+            found.live.pop(pane["pane_id"], None)
         session = _session_in(pane, found)
         if session == entry.session_id:
             return pane, None
@@ -473,6 +480,11 @@ def _session_in(pane: dict, found: _Found) -> str | None:
     running = found.live.get(pane.get("pane_id"))
     if running is not None:
         return running.session_id
+    return _hook_session(pane)
+
+
+def _hook_session(pane: dict) -> str | None:
+    """The conversation herdr's hook gives for the pane, if any."""
     session = pane.get("agent_session")
     return session.get("value") if isinstance(session, dict) else None
 

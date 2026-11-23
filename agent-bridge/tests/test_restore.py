@@ -613,6 +613,40 @@ def test_a_conversation_resumed_in_a_pane_already_open_while_the_restore_ran_isn
     assert (kept.pane_id, kept.terminal_id) == ("w2:p1", "t-new2")
 
 
+def test_herdrs_resume_with_other_args_whose_hook_session_shows_up_during_the_restore_is_replaced(
+    path: Path, folder: Path, tmp_path: Path
+) -> None:
+    # Listed before herdr's hook gave its session, which shows up while the first agent
+    # starts: what was read of its process still tells it runs without the saved arguments.
+    first = entry(tmp_path / "other", terminal_id="t-a", pane_id="w1:p1", session_id=OTHER_UUID)
+    second = entry(folder, terminal_id="t-b", pane_id="w2:p1", session_id=UUID)
+    before = pane("w2:p1", "t-r", cwd=str(folder))
+    after = pane("w2:p1", "t-r", session=UUID, cwd=str(folder))
+    runner = runner_for([before], argv=["claude", "--resume", UUID],
+                        **{"pane list": [ok({"panes": [before]}), ok({"panes": [after]})]})
+    run(runner, path, [first, second], tmp_path)
+
+    assert runner.called("pane", "close") == [["pane", "close", "w2:p1"]]
+    assert len(runner.called("agent", "start")) == 2
+
+
+def test_a_claude_pane_without_the_hook_resumed_by_hand_while_the_restore_ran_isnt_started_again(
+    path: Path, folder: Path, tmp_path: Path
+) -> None:
+    # herdr lists it the same before and after: Claude Code without herdr's hook, quit and
+    # started again with the second agent's conversation while the first agent started.
+    first = entry(tmp_path / "other", terminal_id="t-a", pane_id="w1:p1", session_id=OTHER_UUID)
+    second = entry(folder, terminal_id="t-b", pane_id="w2:p1", session_id=UUID)
+    hand = pane("w7:p1", "t-hand", cwd=str(folder)) | {"agent_status": "working"}
+    runner = runner_for([hand], **{
+        "pane process-info --pane w7:p1": [process_info(["claude"]), process_info(["claude", "--resume", UUID])],
+    })
+    lines = run(runner, path, [first, second], tmp_path)
+
+    assert len(runner.called("agent", "start")) == 1
+    assert "busy in w7:p1" in lines[1]
+
+
 def test_a_claude_agent_opened_in_its_folder_while_the_restore_ran_that_cant_be_read_holds_off_the_start(
     path: Path, folder: Path, tmp_path: Path
 ) -> None:
