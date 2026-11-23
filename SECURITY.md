@@ -53,8 +53,10 @@ the gateway first, see [Updating](README.md#updating)).
   the service runs, the `/usr/local/bin/mcp-gateway` wrapper that runs commands as the
   service user, file permissions, where tokens end up, the tunnel's ingress rules
 - `agent-bridge setup` (its installers for macOS, Linux and Windows): the service files,
-  where the bridge's token ends up, the Windows firewall rule, the line it adds to herdr's
-  config, and herdr's Claude hook it installs in the agents' non-default Claude configs
+  where the bridge's token ends up, the Windows firewall rule, the
+  `resume_agents_on_restore = false` line it adds to herdr's config (only when you haven't
+  set it; `--no-agent-restore` and uninstall take it out and delete `agents.json`), and
+  herdr's Claude hook it installs in the agents' non-default Claude configs
 - the releases: the tag-triggered workflows (`.github/workflows/release.yml`,
   `release-mcp-gateway.yml`) and the packages they publish to PyPI through Trusted
   Publishing and attach to the GitHub Release, and the agent-bridge formula they push to

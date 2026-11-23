@@ -102,10 +102,10 @@ not newer ones. The agent hosts can then follow one at a time.
 uv workspace; each component is its own package.
 
 ```sh
-uv sync --all-packages
-uv run --package claude-remote-mcp-agent-bridge pytest agent-bridge
-uv run --package claude-remote-mcp-gateway pytest mcp-gateway
-uv run pytest   # both packages plus tests/ (enrollment end to end)
+uv sync --all-packages --frozen
+uv run --frozen --package claude-remote-mcp-agent-bridge pytest agent-bridge
+uv run --frozen --package claude-remote-mcp-gateway pytest mcp-gateway
+uv run --frozen --exact pytest   # both packages plus tests/ (enrollment end to end)
 ```
 
 ### Releasing

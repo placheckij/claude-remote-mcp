@@ -112,7 +112,7 @@ The machine where Claude Code runs. See [agent-bridge/README.md](agent-bridge/RE
 | mcp-gateway's settings: the passphrase, the public hostname | its env file on the gateway host (`/etc/mcp-gateway/env` from `mcp-gateway setup`) |
 | agent-bridge's settings | its env file on the agent host |
 | agent-bridge's id and the gateway it enrolled with | its `state.json` on the agent host |
-| Claude agents to restore after herdr restarts: name, folder, Claude config, arguments, session id | `agents.json` beside `state.json` |
+| Claude agents to restore after herdr restarts: name, folder, Claude config, arguments, session id, pane and terminal ids | `agents.json` beside `state.json` |
 | Agents, their workspaces and output | herdr on the agent host |
 | Claude logins and trusted folders | each account's Claude config on the agent host |
 
