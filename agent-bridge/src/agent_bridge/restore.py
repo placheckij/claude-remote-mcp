@@ -497,8 +497,9 @@ async def _resumed_since(herdr: Herdr, entry: SavedAgent, found: _Found) -> tupl
             before.clear()
             before.update(pane)
             fresh.add(pane.get("terminal_id"))
-        elif _hook_session(pane) is not None:
-            # herdr's hook says which conversation it runs, and that hasn't changed.
+        elif pane.get("agent") and _hook_session(pane) is not None:
+            # herdr's hook says which conversation it runs, and that hasn't changed. Not a
+            # restored shell's: it keeps the session it last ran.
             continue
         # Else Claude Code without herdr's hook: it may have been started again by hand with
         # another conversation, which herdr's listing doesn't show.
@@ -514,7 +515,7 @@ async def _resumed_since(herdr: Herdr, entry: SavedAgent, found: _Found) -> tupl
             # Claude Code started in it may not show yet. Read where it would likely run the
             # conversation: Claude Code finds one in the folder it ran in.
             if pane.get("terminal_id") in fresh or Path(pane["cwd"]) == Path(entry.cwd):
-                if await _runs_by_command_line(herdr, pane, entry, found):
+                if await _runs_by_command_line(herdr, pane, entry):
                     return pane, None
             continue
         if pane.get("agent") != "claude":
@@ -548,14 +549,14 @@ async def _resumed_since(herdr: Herdr, entry: SavedAgent, found: _Found) -> tupl
     return None, unsure
 
 
-async def _runs_by_command_line(herdr: Herdr, pane: dict, entry: SavedAgent, found: _Found) -> bool:
+async def _runs_by_command_line(herdr: Herdr, pane: dict, entry: SavedAgent) -> bool:
     """Whether the Claude Code in a pane herdr doesn't show as an agent names `entry`'s
-    conversation on its command line; what's read goes into `found.processes`."""
+    conversation on its command line. What's read isn't kept: it may have exited by a later
+    entry's turn, which reads it again."""
     try:
         info = await herdr.process_info(pane["pane_id"])
     except HerdrError:
         return False
-    found.processes[pane["pane_id"]] = info
     process = claude_process(info)
     argv = process.get("argv") if process is not None else None
     return isinstance(argv, list) and session_id_in([arg for arg in argv if isinstance(arg, str)]) == entry.session_id

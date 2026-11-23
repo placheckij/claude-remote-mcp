@@ -1119,6 +1119,53 @@ def test_a_pane_herdr_doesnt_show_as_an_agent_yet_running_its_conversation_since
     assert "w5:p1 runs its conversation, though herdr doesn't know it as an agent yet" in lines[1]
 
 
+def test_a_pane_read_running_a_later_agents_conversation_that_exited_since_doesnt_stop_its_start(
+    path: Path, folder: Path, tmp_path: Path
+) -> None:
+    # Opened while the restore ran, its Claude Code named the second agent's conversation when
+    # the first agent's last look read it, then exited ("No conversation found") while the
+    # first agent started. Read again, it's a shell: the second agent is started.
+    first = entry(tmp_path / "other", terminal_id="t-a", pane_id="w1:p1", session_id=OTHER_UUID)
+    second = entry(folder, terminal_id="t-c", pane_id="w2:p1", session_id=UUID)
+    hand = pane("w5:p1", "t-h", agent=None, cwd=str(folder))
+    runner = runner_for([], **{"pane list": [ok({"panes": []}), ok({"panes": [hand]})]})
+    answer = runner.__call__
+
+    async def exiting_after_the_first_start(argv):
+        if list(argv[1:]) == ["pane", "process-info", "--pane", "w5:p1"]:
+            runner.calls.append(list(argv[1:]))
+            return shell_info() if runner.called("agent", "start") else process_info(["claude", "--resume", UUID])
+        return await answer(argv)
+
+    save(path, SavedAgents(agents=[first, second]))
+    herdr = Herdr(runner=exiting_after_the_first_start)
+    service = AgentService(Settings(token=TOKEN, allowed_roots=(tmp_path.resolve(),)), herdr)
+    asyncio.run(restore(service, herdr, path))
+
+    assert len(runner.called("agent", "start")) == 2
+
+
+@pytest.mark.parametrize("where", ["another restored shell in its folder", "its own old pane"])
+def test_a_restored_shell_still_carrying_a_session_is_checked_by_command_line_before_the_start(
+    path: Path, folder: Path, tmp_path: Path, where: str
+) -> None:
+    # herdr's resume off, restored panes are shells that keep the session they last ran. The
+    # second agent's conversation is resumed in one while the first agent starts, and herdr
+    # doesn't show it as an agent yet.
+    first = entry(tmp_path / "other", terminal_id="t-a", pane_id="w1:p1", session_id=OTHER_UUID)
+    second = entry(folder, terminal_id="t-c", pane_id="w2:p1", session_id=UUID)
+    if where == "its own old pane":
+        hand = pane("w2:p1", "t-h", agent=None, session=UUID, cwd=str(folder))
+    else:
+        hand = pane("w5:p1", "t-h", agent=None, session=THIRD_UUID, cwd=str(folder))
+    runner = runner_for([hand], **{
+        f"pane process-info --pane {hand['pane_id']}": [shell_info(), process_info(["claude", "--resume", UUID])],
+    })
+    run(runner, path, [first, second], tmp_path)
+
+    assert len(runner.called("agent", "start")) == 1
+
+
 def test_a_claude_agent_opened_in_its_folder_while_the_restore_ran_that_cant_be_read_holds_off_the_start(
     path: Path, folder: Path, tmp_path: Path
 ) -> None:
