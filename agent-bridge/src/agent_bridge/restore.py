@@ -160,9 +160,8 @@ async def _restore_one(
 
     late, unsure = await _resumed_since(herdr, entry, found) if entry.session_id else (None, None)
     if late is None and unsure is not None and entry.terminal_id not in found.replaced:
-        # As for such a pane listed at the start; the shell herdr left is closed already.
-        # Not when its conversation's pane was closed to be replaced: it ran there, so the
-        # start goes ahead.
+        # As for such a pane listed at the start. Not when its conversation's pane was closed
+        # to be replaced: it ran there, so the start goes ahead.
         await _keep_failed(path, entry)
         return (f"{label}: not restored, kept for the next restart: {unsure['pane_id']}, a Claude agent "
                 f"in its folder whose process couldn't be read, may run its conversation{note}"), True
@@ -259,11 +258,15 @@ async def _take_resumed(
     if exited and status in FINISHED:
         # herdr still shows the agent it no longer runs: its listing lags.
         status = _NO_AGENT
-    elif exited and status is None:
-        # Can't tell what herdr makes of it now: left, as one that can't be read is.
-        await _adopt(path, entry, resumed, found, service.stopped)
-        return (f"{label}: {resumed['pane_id']} ran its conversation, and its status couldn't be read "
-                "again, left as it is"), True
+    elif exited and status != _NO_AGENT:
+        # Only the shell runs in it, but herdr can't say now, or still calls it busy: left,
+        # and the agent kept for the next restart. Tied to the pane, which no save lists, the
+        # entry would age out. As when a start is held off, the shell herdr left goes.
+        _, note = await _close(herdr, shell, found)
+        await _keep_failed(path, entry)
+        why = "herdr can't say what it runs now" if status is None else "herdr still calls it busy"
+        return (f"{label}: not restored, kept for the next restart: Claude Code no longer runs in "
+                f"{resumed['pane_id']}, which ran its conversation, but {why}, left as it is{note}"), True
     if status == _NO_AGENT:
         # Claude Code in it has exited since the panes were listed (herdr's own resume
         # doesn't find a conversation kept in another account's config), leaving a shell.
@@ -353,7 +356,11 @@ async def _idle_shell(herdr: Herdr, pane: dict) -> bool:
         return False
     shell = info.get("shell_pid")
     processes = info.get("foreground_processes") or []
-    return shell is not None and bool(processes) and all(isinstance(p, dict) and p.get("pid") == shell for p in processes)
+    if not (type(shell) is int and shell > 0 and processes
+            and all(isinstance(p, dict) and p.get("pid") == shell for p in processes)):
+        return False
+    # A Claude Code stopped with ctrl-Z isn't in the foreground, but still runs.
+    return await asyncio.to_thread(_claude_among_jobs, shell) is False
 
 
 async def _unclassified(

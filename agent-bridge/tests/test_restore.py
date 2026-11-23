@@ -840,6 +840,41 @@ def test_an_idle_pane_running_its_conversation_with_claude_among_its_jobs_isnt_c
     assert runner.called("pane", "close") == runner.called("agent", "start") == []
 
 
+@pytest.mark.parametrize("status", [err("timeout"), "working"])
+def test_herdrs_resume_that_exited_whose_status_isnt_idle_now_keeps_the_agent_for_the_next_restart(
+    path: Path, folder: Path, tmp_path: Path, status
+) -> None:
+    # Only the shell runs in it, but herdr can't say, or still calls it busy: left, and the
+    # agent kept rather than tied to a pane no save lists, where it would age out.
+    resumed = pane("w2:p1", "t-r", session=UUID, cwd=str(folder))
+    answer = status if isinstance(status, tuple) else ok({"agent": resumed | {"agent_status": status}})
+    runner = runner_for([resumed], **{"pane process-info --pane w2:p1": shell_info(), "agent get w2:p1": answer})
+    [line] = run(runner, path, [entry(folder, terminal_id="t-b", pane_id="w7:p1", session_id=UUID)], tmp_path)
+
+    assert runner.called("pane", "close") == runner.called("agent", "start") == []
+    assert "kept for the next restart" in line
+    restore_module._write(path, [], False)
+    restore_module._write(path, [], False)
+    [kept] = load(path).agents
+    assert kept.session_id == UUID and kept.restore_failed
+
+
+def test_a_pane_whose_claude_was_suspended_since_it_was_read_isnt_closed_as_a_shell(
+    path: Path, folder: Path, tmp_path: Path, jobs: set[int]
+) -> None:
+    # Read running the conversation with other arguments; then stopped with ctrl-Z, so herdr
+    # shows no agent and only the shell is in the foreground. Not idle: it still runs.
+    jobs.add(9000)
+    resumed = pane("w2:p1", "t-r", session=UUID, cwd=str(folder))
+    runner = runner_for([resumed], **{
+        "pane process-info --pane w2:p1": [process_info(["claude", "--resume", UUID]), shell_info()],
+        "agent get w2:p1": ok({"agent": resumed | {"agent": None}}),
+    })
+    run(runner, path, [entry(folder, terminal_id="t-b", pane_id="w7:p1", session_id=UUID)], tmp_path)
+
+    assert runner.called("pane", "close") == runner.called("agent", "start") == []
+
+
 @pytest.mark.parametrize("read_before", [False, True])
 def test_herdrs_resume_that_exited_doesnt_lift_the_hold_off_for_a_pane_in_its_folder_that_cant_be_read(
     path: Path, folder: Path, tmp_path: Path, read_before: bool
