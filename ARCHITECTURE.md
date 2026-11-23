@@ -134,8 +134,8 @@ What each file holds and where it is: [mcp-gateway](mcp-gateway/README.md#what-i
    changing a host's record that host's token. Enrollment refuses callers off the LAN
    and anything the tunnel forwards.
 4. **agent-bridge to agents:** allowed roots, the agent limit and the trust root bound
-   what a request can start or change. Restoring after a herdr restart skips the roots,
-   the limit and the trust root: it starts only agents that were running, from
+   what a request can start or change. Restoring after a herdr restart (or retrying an
+   agent a restore couldn't start) skips the roots, the limit and the trust root: it starts only agents that were running, from
    `agents.json`, and a folder Claude Code doesn't already trust isn't restored.
 
 [SECURITY.md](SECURITY.md) says how to report a vulnerability and what is in scope.
