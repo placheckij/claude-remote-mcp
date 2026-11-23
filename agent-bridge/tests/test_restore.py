@@ -841,12 +841,14 @@ def test_unreachable_then_reachable_restores_once(monkeypatch: pytest.MonkeyPatc
 
 
 def test_all_terminal_ids_new_counts_as_restart(monkeypatch: pytest.MonkeyPatch, path: Path, folder: Path) -> None:
-    old = entry(folder, terminal_id="t-old")
-    new = entry(folder, terminal_id="t-new")
-    # Round 1 saves the old agent; in round 2 herdr's panes are all new ones.
-    rounds = Rounds(monkeypatch, path, [[old], [old], [new], [new]], [["t-new"]])
-    rounds.watch(2)
-    assert rounds.restores == [1, 2]
+    first, second = entry(folder, terminal_id="t-a", pane_id="w1:p1"), entry(folder, terminal_id="t-b", pane_id="w2:p1")
+    save(path, SavedAgents(agents=[first, second]))
+    # herdr's first answer: its panes have new terminals, and ids no saved agent had, so the
+    # pane-id rule can't tell; that no saved terminal is live does.
+    new = [entry(folder, terminal_id="t-a2", pane_id="w5:p1"), entry(folder, terminal_id="t-b2", pane_id="w6:p1")]
+    rounds = Rounds(monkeypatch, path, [[], new], [[("w5:p1", "t-a2"), ("w6:p1", "t-b2")]])
+    rounds.watch(1)
+    assert rounds.restores == [1]
 
 
 def test_same_server_does_not_restore_again(monkeypatch: pytest.MonkeyPatch, path: Path, folder: Path) -> None:
@@ -1011,7 +1013,8 @@ def test_a_restore_cut_short_by_an_error_runs_again_next_round(
 ) -> None:
     seen = entry(folder, terminal_id="t1")
     rounds = Rounds(monkeypatch, path, [[], [], [seen], [seen]], [[("w1:p1", "t1")]])
-    rounds.restore_errors = [TimeoutError("lock held")]
+    # Listing herdr's panes failed: unlike an entry's own failure, that ends the whole run.
+    rounds.restore_errors = [HerdrError("timeout", "herdr pane list timed out")]
     rounds.watch(2)
     # Round 2 has nothing that signals a restart; the unfinished restore alone brings it.
     assert rounds.restores == [1, 2]
