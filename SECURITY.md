@@ -30,12 +30,15 @@ the gateway first, see [Updating](README.md#updating)).
 - enrollment: the window's secret and its limits, and the checks that only private,
   loopback or link-local IP addresses may call the enrollment routes (nothing the tunnel
   forwarded) or be called by the gateway (only ones that answer as the bridge enrolling)
-- agent-bridge: its token check, the allowed-roots and agent-count limits, which Claude
+- agent-bridge: its token check, the allowed-roots and agent-count limits (the roots
+  bound starting and changing agents; listing and reading them covers every agent in
+  herdr, by design), which Claude
   account (login and config) an agent starts under, reading each agent's process
   environment to name its account (only `CLAUDE_CONFIG_DIR` is used), and folder trust (it must never
   write the default Claude config, or trust a folder outside the trust root)
 - agent restore: `agents.json` (mode 0600 on macOS and Linux) and the restore after a
-  herdr restart, which starts only agents that were running in herdr, ones started by
+  herdr restart (and, for agents a restore couldn't start, whenever agent-bridge starts),
+  which starts only agents that were running in herdr, ones started by
   hand included, on their saved folder, account (if theirs couldn't be read, the one the
   folder would get if started now) and arguments; the panes it closes (a pane not in a
   turn running a saved agent's conversation under other arguments or another account, whether

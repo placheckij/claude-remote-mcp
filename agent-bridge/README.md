@@ -96,8 +96,8 @@ conversation to resume, so it starts fresh under the same `--session-id`. Withou
 conversation. Agents started by hand come back too. A pane running a saved agent's
 conversation with the wrong account or arguments, whether herdr resumed it or you did, is
 closed and replaced, unless busy in a turn (working, or waiting for an approval): then
-it's left as it is. So is an idle shell herdr left where a saved agent was, in its folder;
-a shell running something is left alone.
+it's left as it is. Without such a pane, an idle shell herdr left where the agent was, in
+its folder, is closed too; a shell running something is left alone.
 
 - A restored agent is idle: no prompt is sent.
 - An agent that a save had already missed comes back only if herdr brought its pane back,
@@ -129,8 +129,8 @@ step below and removes `agents.json`:
 - herdr's Claude hook tells herdr which conversation each agent is in, also after `/clear`
   or `/resume`, so a restored agent resumes the one it was in. Without the hook, an agent
   `start_agent` started comes back as the conversation it was started with (its
-  `--session-id`), and one started by hand as its folder's latest (or fresh, if another
-  saved agent shares its folder and account). Setup runs `herdr integration install
+  `--session-id`), and one started by hand as the conversation its command line named, else
+  its folder's latest (or fresh, if another saved agent shares its folder and account). Setup runs `herdr integration install
   claude` for each non-default config agent-bridge uses (`AGENT_BRIDGE_CLAUDE_CONFIG_DIR`
   and the accounts'), never the default `~/.claude`: it warns when that lacks the hook, and
   `agent-bridge check` notes it. Install it there yourself with `herdr integration
