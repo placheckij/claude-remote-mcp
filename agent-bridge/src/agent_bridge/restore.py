@@ -115,10 +115,12 @@ async def _restore_one(
         resumed, unsure = await _unclassified(herdr, entry, open_panes, found)
         if resumed is None and unsure is not None:
             # A second copy would answer as the first. Kept for the next restart: should the
-            # pane run its conversation, the snapshots save it from there.
+            # pane run its conversation, the snapshots save it from there. The shell herdr left
+            # goes now: later restores skip the old pane id of an entry marked failed.
+            _, note = await _close(herdr, shell, found)
             await _keep_failed(path, entry)
             return (f"{label}: not restored, kept for the next restart: {unsure['pane_id']}, a Claude agent "
-                    "in its folder whose process couldn't be read, may run its conversation"), True
+                    f"in its folder whose process couldn't be read, may run its conversation{note}"), True
     if resumed is not None and resumed.get("terminal_id") in service.stopped:
         # Stopped through the bridge since the panes were listed.
         await _forget(path, entry, service.stopped)

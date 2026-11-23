@@ -325,6 +325,20 @@ def test_an_agent_pane_in_its_folder_whose_process_cant_be_read_holds_off_the_st
     assert (kept.terminal_id, kept.restore_failed) == ("t-old", True)
 
 
+def test_a_held_off_start_still_closes_the_shell_herdr_left(path: Path, folder: Path, tmp_path: Path) -> None:
+    # Later restores skip the old pane id of an entry marked failed, so the shell would stay.
+    shell = pane("w1:p1", "t-new1", agent=None, cwd=str(folder))
+    working = pane("w2:p1", "t-new2", cwd=str(folder)) | {"agent_status": "working"}
+    runner = runner_for([shell, working], **{"pane process-info --pane w2:p1": err("timeout")})
+    [line] = run(runner, path, [entry(folder, session_id=UUID)], tmp_path)
+
+    assert runner.called("pane", "close") == [["pane", "close", "w1:p1"]]
+    assert runner.called("agent", "start") == []
+    assert "w2:p1" in line and "couldn't be read" in line and "closed the shell left in w1:p1" in line
+    [kept] = load(path).agents
+    assert (kept.terminal_id, kept.restore_failed) == ("t-old", True)
+
+
 @pytest.mark.parametrize("unlike", ["folder", "idle", "session"])
 def test_an_agent_pane_whose_process_cant_be_read_but_cant_run_its_conversation_doesnt_stop_the_start(
     path: Path, folder: Path, tmp_path: Path, unlike: str
