@@ -98,7 +98,7 @@ async def _restore_one(
             # agent in it is herdr's own resume.
             pane for pane in open_panes
             if entry.session_id and pane.get("agent") and pane.get("terminal_id") not in found.claimed
-            and _session_of(pane) == entry.session_id
+            and _session_in(pane, found) == entry.session_id
         ),
         None,
     )
@@ -213,7 +213,12 @@ async def _keep_failed(path: Path, entry: SavedAgent) -> None:
     await asyncio.to_thread(_replace, path, entry.terminal_id, failed)
 
 
-def _session_of(pane: dict) -> str | None:
+def _session_in(pane: dict, found: _Found) -> str | None:
+    """The conversation a Claude pane runs, as a save would record it: herdr's hook says,
+    else its command line (a conversation resumed in a config without the hook)."""
+    running = found.live.get(pane.get("pane_id"))
+    if running is not None:
+        return running.session_id
     session = pane.get("agent_session")
     return session.get("value") if isinstance(session, dict) else None
 

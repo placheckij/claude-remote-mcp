@@ -206,6 +206,19 @@ def test_herdr_resume_with_other_account_is_replaced(path: Path, folder: Path, t
     assert claude_args(runner) == ["--resume", UUID, "--permission-mode", "auto"]
 
 
+def test_a_pane_running_its_conversation_without_the_hook_is_found_by_its_command_line(
+    path: Path, folder: Path, tmp_path: Path
+) -> None:
+    # Resumed by hand in a config without herdr's hook: herdr reports no session, but the
+    # command line names it. Not started a second time beside it.
+    runner = runner_for([pane()], ["claude", "--resume", UUID])
+    [line] = run(runner, path, [entry(folder, session_id=UUID)], tmp_path)
+
+    assert runner.called("pane", "close") == [["pane", "close", "w1:p1"]]
+    assert len(runner.called("agent", "start")) == 1
+    assert "closed" in line
+
+
 @pytest.mark.parametrize("status", ["working", "blocked"])
 def test_a_busy_pane_running_its_conversation_is_never_closed(
     path: Path, folder: Path, tmp_path: Path, status: str
