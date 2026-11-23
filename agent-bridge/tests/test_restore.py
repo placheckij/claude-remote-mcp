@@ -1145,6 +1145,34 @@ def test_a_pane_read_running_a_later_agents_conversation_that_exited_since_doesn
     assert len(runner.called("agent", "start")) == 2
 
 
+@pytest.mark.parametrize("where", ["its folder", "elsewhere"])
+def test_a_pane_an_earlier_agent_read_running_a_later_agents_conversation_that_exited_since_doesnt_stop_its_start(
+    path: Path, folder: Path, tmp_path: Path, where: str
+) -> None:
+    # Open from the start, herdr showing no agent in it: Claude Code there named the second
+    # agent's conversation when the first agent's checks read it, then exited while the first
+    # agent started. Read again, it's a shell: the second agent is started.
+    first = entry(tmp_path / "other", terminal_id="t-a", pane_id="w1:p1", session_id=OTHER_UUID)
+    second = entry(folder, terminal_id="t-c", pane_id="w2:p1", session_id=UUID)
+    cwd = folder if where == "its folder" else tmp_path / "elsewhere"
+    hand = pane("w5:p1", "t-h", agent=None, cwd=str(cwd))
+    runner = runner_for([hand])
+    answer = runner.__call__
+
+    async def exiting_after_the_first_start(argv):
+        if list(argv[1:]) == ["pane", "process-info", "--pane", "w5:p1"]:
+            runner.calls.append(list(argv[1:]))
+            return shell_info() if runner.called("agent", "start") else process_info(["claude", "--resume", UUID])
+        return await answer(argv)
+
+    save(path, SavedAgents(agents=[first, second]))
+    herdr = Herdr(runner=exiting_after_the_first_start)
+    service = AgentService(Settings(token=TOKEN, allowed_roots=(tmp_path.resolve(),)), herdr)
+    asyncio.run(restore(service, herdr, path))
+
+    assert len(runner.called("agent", "start")) == 2
+
+
 @pytest.mark.parametrize("where", ["another restored shell in its folder", "its own old pane"])
 def test_a_restored_shell_still_carrying_a_session_is_checked_by_command_line_before_the_start(
     path: Path, folder: Path, tmp_path: Path, where: str

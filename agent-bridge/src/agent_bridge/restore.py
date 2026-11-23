@@ -446,14 +446,14 @@ async def _unclassified(
             continue
         if not unread_agent and pane.get("agent_status") in FINISHED:
             continue
-        if pane_id not in found.processes:
+        # Read once for all entries; again when that read, made in an earlier entry's turn,
+        # names this one's conversation: the Claude Code it saw may have exited since.
+        if pane_id not in found.processes or _names_conversation(found.processes[pane_id], entry):
             try:
                 found.processes[pane_id] = await herdr.process_info(pane_id)
             except HerdrError:
                 found.processes[pane_id] = {}
-        process = claude_process(found.processes[pane_id])
-        argv = process.get("argv") if process is not None else None
-        if isinstance(argv, list) and session_id_in([arg for arg in argv if isinstance(arg, str)]) == entry.session_id:
+        if _names_conversation(found.processes[pane_id], entry):
             if unread_agent and pane.get("cwd") and pane.get("terminal_id"):
                 running = await read_agent(pane, found.processes[pane_id])
                 if running is not None:
@@ -557,6 +557,12 @@ async def _runs_by_command_line(herdr: Herdr, pane: dict, entry: SavedAgent) -> 
         info = await herdr.process_info(pane["pane_id"])
     except HerdrError:
         return False
+    return _names_conversation(info, entry)
+
+
+def _names_conversation(info: dict, entry: SavedAgent) -> bool:
+    """Whether the Claude Code in a pane's process-info names `entry`'s conversation on its
+    command line."""
     process = claude_process(info)
     argv = process.get("argv") if process is not None else None
     return isinstance(argv, list) and session_id_in([arg for arg in argv if isinstance(arg, str)]) == entry.session_id
