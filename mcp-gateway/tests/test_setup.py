@@ -263,3 +263,23 @@ def test_setup_prints_a_new_passphrase_before_anything_that_can_stop_it() -> Non
     text = SCRIPT.read_text()
 
     assert text.index('echo "Sign-in passphrase (new): $PASSPHRASE"') < text.index("cloudflared tunnel login")
+
+
+# setup.sh's check of a passphrase passed in, run on its own.
+PASSPHRASE_START = "if [[ -n ${MCP_GATEWAY_OAUTH_PASSPHRASE:-} ]]; then"
+PASSPHRASE_CHECK = PASSPHRASE_START + SCRIPT.read_text().split(PASSPHRASE_START, 1)[1].split("\nfi\n", 1)[0] + "\nfi"
+
+
+@needs_bash
+@pytest.mark.parametrize(
+    ("passphrase", "refused"),
+    [("correct horse battery", False), (" correct horse battery", True), ("correct horse battery ", True)],
+)
+def test_setup_refuses_a_passphrase_starting_or_ending_with_a_space(passphrase: str, refused: bool) -> None:
+    # systemd's EnvironmentFile= strips them, so typing the passphrase with them would fail.
+    script = "\n".join(['die() { echo "$*"; exit 1; }', PASSPHRASE_CHECK])
+    env = {**os.environ, "MCP_GATEWAY_OAUTH_PASSPHRASE": passphrase}
+    env.pop("ROTATE_PASSPHRASE", None)
+    result = subprocess.run(["bash", "-c", script], env=env, capture_output=True, text=True)
+
+    assert (result.returncode, "start or end with a space" in result.stdout) == (int(refused), refused)
