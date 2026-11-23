@@ -12,6 +12,7 @@ dependencies = ["claude-remote-mcp-agent-bridge", "claude-remote-mcp-gateway"]
 [dependency-groups]
 dev = [
     "httpx>=0.28.1",
+    "markdown-it-py>=4.3.0",
     "pytest>=9.1.1",
     "pytest-asyncio>=1.4.0",
 ]
