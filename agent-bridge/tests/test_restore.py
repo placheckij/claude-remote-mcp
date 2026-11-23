@@ -647,6 +647,53 @@ def test_a_claude_pane_without_the_hook_resumed_by_hand_while_the_restore_ran_is
     assert "busy in w7:p1" in lines[1]
 
 
+def test_herdrs_resume_replaced_isnt_held_off_by_another_pane_in_its_folder_that_cant_be_read_again(
+    path: Path, folder: Path, tmp_path: Path
+) -> None:
+    # The conversation was found and its pane closed to be replaced: another Claude pane in
+    # the folder, read before as running none, failing a read now doesn't stop the start.
+    resumed = pane("w2:p1", "t-r", session=UUID, cwd=str(folder))
+    other = pane("w7:p1", "t-u", cwd=str(folder))
+    runner = runner_for([resumed, other], **{
+        "pane process-info --pane w2:p1": process_info(["claude", "--resume", UUID]),
+        "pane process-info --pane w7:p1": [process_info(["claude"]), err("timeout"), process_info(["claude"])],
+    })
+    run(runner, path, [entry(folder, terminal_id="t-b", pane_id="w2:p1", session_id=UUID)], tmp_path)
+
+    assert runner.called("pane", "close") == [["pane", "close", "w2:p1"]]
+    assert len(runner.called("agent", "start")) == 1
+
+
+def test_a_hand_resume_read_before_stays_its_conversations_when_it_cant_be_read_again(
+    path: Path, folder: Path, tmp_path: Path
+) -> None:
+    # Read at the snapshot as running the second agent's conversation; every read after
+    # fails. Still taken as running it: kept, not started a second time beside it.
+    first = entry(tmp_path / "other", terminal_id="t-a", pane_id="w1:p1", session_id=OTHER_UUID)
+    second = entry(folder, terminal_id="t-b", pane_id="w2:p1", session_id=UUID)
+    hand = pane("w7:p1", "t-hand", cwd=str(tmp_path / "elsewhere"))
+    runner = runner_for([hand], **{
+        "pane process-info --pane w7:p1": [process_info(["claude", "--resume", UUID]), err("timeout")],
+    })
+    lines = run(runner, path, [first, second], tmp_path)
+
+    assert len(runner.called("agent", "start")) == 1
+    assert runner.called("pane", "close") == []
+    assert "w7:p1 runs its conversation but its process couldn't be read" in lines[1]
+
+
+def test_an_agent_pane_in_its_folder_with_no_foreground_processes_listed_holds_off_the_start(
+    path: Path, folder: Path, tmp_path: Path
+) -> None:
+    # herdr listing none is as good as not answering: what runs in it can't be told.
+    empty = ok({"process_info": {"foreground_process_group_id": 9000, "foreground_processes": [], "shell_pid": 9000}})
+    runner = runner_for([pane("w7:p1", "t-u", cwd=str(folder))], **{"pane process-info --pane w7:p1": empty})
+    [line] = run(runner, path, [entry(folder, session_id=UUID)], tmp_path)
+
+    assert runner.called("agent", "start") == []
+    assert "kept for the next restart: w7:p1" in line
+
+
 def test_a_claude_agent_opened_in_its_folder_while_the_restore_ran_that_cant_be_read_holds_off_the_start(
     path: Path, folder: Path, tmp_path: Path
 ) -> None:

@@ -36,6 +36,9 @@ class _Found:
     # The foreground processes of panes herdr doesn't know as agents, by pane id, as read
     # once; {} when they couldn't be.
     processes: dict[str, dict] = field(default_factory=dict)
+    # Claude panes whose process couldn't be read again before a start: what `live` holds of
+    # them was read earlier, still what they're taken to run, but they're never closed.
+    unread: set[str] = field(default_factory=set)
 
 
 async def restore(service: AgentService, herdr: Herdr, path: Path) -> list[str]:
@@ -150,8 +153,10 @@ async def _restore_one(
         resume, how = [], f"fresh conversation: another saved agent shares {entry.cwd} and its account"
 
     late, unsure = await _resumed_since(herdr, entry, found) if entry.session_id else (None, None)
-    if late is None and unsure is not None:
+    if late is None and unsure is not None and resumed is None:
         # As for such a pane listed at the start; the shell herdr left is closed already.
+        # Not when its conversation was found and its pane closed to be replaced: it ran
+        # there, so the start goes ahead.
         await _keep_failed(path, entry)
         return (f"{label}: not restored, kept for the next restart: {unsure['pane_id']}, a Claude agent "
                 f"in its folder whose process couldn't be read, may run its conversation{note}"), True
@@ -210,9 +215,10 @@ async def _take_resumed(
         return (f"{label}: not restored, and forgotten: {resumed['pane_id']}, which ran its conversation, "
                 "was stopped through the bridge"), False
     running = found.live.get(resumed["pane_id"])
+    reread_failed = resumed["pane_id"] in found.unread
     # By the config each starts on (for a saved agent whose account couldn't be read, its
     # folder's). The running one's own account is never guessed.
-    as_it_was = running is not None and not running.config_dir_unknown and running.args == entry.args and (
+    as_it_was = running is not None and not reread_failed and not running.config_dir_unknown and running.args == entry.args and (
         service.config_dir_of(running) == service.config_dir_of(entry)
     )
     # Busy: someone resumed it and is in the middle of a turn (working, or blocked on an
@@ -223,7 +229,7 @@ async def _take_resumed(
     # Its process couldn't be read, so whether it runs as it was can't be told: left, as
     # a shell that can't be read is. So is one with the agent's arguments whose
     # environment, so its account, couldn't be read.
-    unreadable = running is None or (running.config_dir_unknown and running.args == entry.args)
+    unreadable = running is None or reread_failed or (running.config_dir_unknown and running.args == entry.args)
     if as_it_was or busy or unreadable:
         await _adopt(path, entry, resumed, found, service.stopped)
         if as_it_was:
@@ -233,7 +239,7 @@ async def _take_resumed(
                     "as an agent yet, left as it is"), False
         if busy:
             return f"{label}: busy in {resumed['pane_id']}, which runs its conversation, left as it is", False
-        what = "process" if running is None else "account"
+        what = "process" if running is None or reread_failed else "account"
         return (f"{label}: {resumed['pane_id']} runs its conversation but its {what} couldn't be read, "
                 "left as it is"), False
     # herdr's own resume runs plain `claude --resume <id>`: without the account's
@@ -330,7 +336,7 @@ async def _unclassified(
                 if running is not None:
                     found.live[pane_id] = running
             return pane, None
-        if (unread_agent and not found.processes[pane_id] and unsure is None
+        if (unread_agent and _unread(found.processes[pane_id]) and unsure is None
                 and pane.get("cwd") and Path(pane["cwd"]) == Path(entry.cwd)):
             unsure = pane
     return None, unsure
@@ -378,16 +384,22 @@ async def _resumed_since(herdr: Herdr, entry: SavedAgent, found: _Found) -> tupl
             info = await herdr.process_info(pane["pane_id"])
         except HerdrError:
             info = {}
-        running = await read_agent(pane, info) if info else None
-        if running is not None:
-            found.live[pane["pane_id"]] = running
+        if _unread(info):
+            # What was read of it before still says what it runs, but not that it runs it
+            # as read: it's never closed.
+            found.unread.add(pane["pane_id"])
         else:
-            # What was read before may no longer be what runs: it can't be told.
-            found.live.pop(pane["pane_id"], None)
+            found.unread.discard(pane["pane_id"])
+            running = await read_agent(pane, info)
+            if running is not None:
+                found.live[pane["pane_id"]] = running
+            else:
+                # Claude Code isn't among its processes now.
+                found.live.pop(pane["pane_id"], None)
         session = _session_in(pane, found)
         if session == entry.session_id:
             return pane, None
-        if not info and session is None and unsure is None and Path(pane["cwd"]) == Path(entry.cwd):
+        if _unread(info) and session is None and unsure is None and Path(pane["cwd"]) == Path(entry.cwd):
             # As in `_unclassified`: it may run the conversation.
             unsure = pane
     return None, unsure
@@ -481,6 +493,12 @@ def _session_in(pane: dict, found: _Found) -> str | None:
     if running is not None:
         return running.session_id
     return _hook_session(pane)
+
+
+def _unread(info: dict) -> bool:
+    """Whether a pane's process-info tells nothing of what runs in it: herdr couldn't be
+    asked ({}), or listed no foreground processes."""
+    return not info or not info.get("foreground_processes")
 
 
 def _hook_session(pane: dict) -> str | None:
