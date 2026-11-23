@@ -752,6 +752,42 @@ def test_a_claude_pane_without_the_hook_in_its_folder_that_cant_be_read_again_ho
     assert "kept for the next restart: w5:p1" in line
 
 
+def test_a_conversation_resumed_in_a_shell_that_couldnt_be_closed_isnt_started_again(
+    path: Path, folder: Path, tmp_path: Path
+) -> None:
+    # The first agent's leftover shell couldn't be closed; the second's conversation is then
+    # resumed in it by hand, without the hook.
+    other = tmp_path / "other"
+    first = entry(other, terminal_id="t-a", pane_id="w1:p1", session_id=OTHER_UUID)
+    second = entry(folder, terminal_id="t-b", pane_id="w2:p1", session_id=UUID)
+    shell = pane("w1:p1", "t-s", agent=None, cwd=str(other))
+    hand = pane("w1:p1", "t-s", cwd=str(other)) | {"agent_status": "working"}
+    runner = runner_for([shell], **{
+        "pane list": [ok({"panes": [shell]}), ok({"panes": [shell]}), ok({"panes": [hand]})],
+        "pane close": err("timeout"),
+        "pane process-info --pane w1:p1": [shell_info(), process_info(["claude", "--resume", UUID])],
+    })
+    lines = run(runner, path, [first, second], tmp_path)
+
+    assert len(runner.called("agent", "start")) == 1
+    assert "busy in w1:p1" in lines[1]
+
+
+def test_herdrs_resume_whose_claude_exited_before_its_process_was_read_is_closed_and_replaced(
+    path: Path, folder: Path, tmp_path: Path
+) -> None:
+    # herdr still listed it as a Claude agent, but its processes, read, show only the shell:
+    # not one that couldn't be read, so not kept, which would age the agent out unrestored.
+    resumed = pane("w2:p1", "t-r", session=UUID, cwd=str(folder))
+    runner = runner_for([resumed], **{"pane process-info --pane w2:p1": shell_info(),
+                                      "agent get w2:p1": ok({"agent": resumed | {"agent": None}})})
+    [line] = run(runner, path, [entry(folder, terminal_id="t-b", pane_id="w2:p1", session_id=UUID)], tmp_path)
+
+    assert runner.called("pane", "close") == [["pane", "close", "w2:p1"]]
+    assert len(runner.called("agent", "start")) == 1
+    assert "restored in" in line
+
+
 def test_a_claude_agent_opened_in_its_folder_while_the_restore_ran_that_cant_be_read_holds_off_the_start(
     path: Path, folder: Path, tmp_path: Path
 ) -> None:

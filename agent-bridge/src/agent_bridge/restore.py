@@ -230,7 +230,10 @@ async def _take_resumed(
     # a shell that can't be read is. So is one with the agent's arguments whose
     # environment, so its account, couldn't be read.
     unreadable = running is None or reread_failed or (running.config_dir_unknown and running.args == entry.args)
-    if as_it_was or busy or unreadable:
+    # Not read before, but read now without Claude Code among its processes: it has exited
+    # (herdr's listing lags), which isn't one that can't be read.
+    exited = running is None and not reread_failed and await _claude_exited(herdr, resumed)
+    if not exited and (as_it_was or busy or unreadable):
         await _adopt(path, entry, resumed, found, service.stopped)
         if as_it_was:
             return f"{label}: herdr resumed it in {resumed['pane_id']} as it was, left as it is", False
@@ -246,7 +249,7 @@ async def _take_resumed(
     # CLAUDE_CONFIG_DIR or the agent's arguments. Its status is read again first: the
     # listed one may be stale, as earlier agents' starts take seconds each, and the user
     # may have prompted it since.
-    status = await _status_now(herdr, resumed)
+    status = _NO_AGENT if exited else await _status_now(herdr, resumed)
     if status == _NO_AGENT:
         # Claude Code in it has exited since the panes were listed (herdr's own resume
         # doesn't find a conversation kept in another account's config), leaving a shell.
@@ -285,6 +288,16 @@ async def _take_resumed(
         return (f"{label}: not restored, and forgotten: {resumed['pane_id']}, which ran its conversation, "
                 "was stopped through the bridge"), False
     return note
+
+
+async def _claude_exited(herdr: Herdr, pane: dict) -> bool:
+    """Whether the pane's processes, read, don't include Claude Code. False when herdr can't
+    say."""
+    try:
+        info = await herdr.process_info(pane["pane_id"])
+    except HerdrError:
+        return False
+    return not _unread(info) and claude_process(info) is None
 
 
 async def _idle_shell(herdr: Herdr, pane: dict) -> bool:
@@ -362,9 +375,11 @@ async def _resumed_since(herdr: Herdr, entry: SavedAgent, found: _Found) -> tupl
             found.panes.append(pane)
         elif (pane.get("agent"), pane.get("agent_session")) != (before.get("agent"), before.get("agent_session")):
             # Later entries' checks see it as it is now, and read what runs in it again. What
-            # was read of it before the change no longer says what it runs.
+            # was read of it before the change no longer says what it runs. Closed in this
+            # restore, it would be gone: that close failed, and something new runs in it.
             found.processes.pop(before["pane_id"], None)
             found.live.pop(before["pane_id"], None)
+            found.closed.discard(before["pane_id"])
             before.clear()
             before.update(pane)
         elif _hook_session(pane) is not None:
