@@ -736,6 +736,22 @@ def test_a_pane_that_left_the_conversation_isnt_taken_for_it_when_it_cant_be_rea
     assert len(runner.called("agent", "start")) == 2
 
 
+def test_a_claude_pane_without_the_hook_in_its_folder_that_cant_be_read_again_holds_off_the_start(
+    path: Path, folder: Path, tmp_path: Path
+) -> None:
+    # Read as running a conversation no saved agent has; it may have been started again by
+    # hand with the agent's since, which herdr's listing doesn't show without the hook.
+    hand = pane("w5:p1", "t-p", cwd=str(folder))
+    runner = runner_for([hand], **{
+        "pane process-info --pane w5:p1": [process_info(["claude", "--resume", THIRD_UUID]), err("timeout"),
+                                           process_info(["claude", "--resume", UUID])],
+    })
+    [line] = run(runner, path, [entry(folder, terminal_id="t-b", pane_id="w2:p1", session_id=UUID)], tmp_path)
+
+    assert runner.called("agent", "start") == []
+    assert "kept for the next restart: w5:p1" in line
+
+
 def test_a_claude_agent_opened_in_its_folder_while_the_restore_ran_that_cant_be_read_holds_off_the_start(
     path: Path, folder: Path, tmp_path: Path
 ) -> None:

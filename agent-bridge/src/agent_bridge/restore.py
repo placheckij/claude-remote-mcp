@@ -401,8 +401,10 @@ async def _resumed_since(herdr: Herdr, entry: SavedAgent, found: _Found) -> tupl
         session = _session_in(pane, found)
         if session == entry.session_id:
             return pane, None
-        if _unread(info) and session is None and unsure is None and Path(pane["cwd"]) == Path(entry.cwd):
-            # As in `_unclassified`: it may run the conversation.
+        if (_unread(info) and _hook_session(pane) is None and unsure is None
+                and Path(pane["cwd"]) == Path(entry.cwd)):
+            # As in `_unclassified`: it may run the conversation. What was read of it before
+            # doesn't rule that out: without the hook, starting another one in it doesn't show.
             unsure = pane
     return None, unsure
 
