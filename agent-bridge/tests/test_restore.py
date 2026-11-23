@@ -113,6 +113,8 @@ def runner_for(panes: list[dict], argv: list[str] | None = None, starts: int = 3
         ("workspace", "close"): ok({"type": "ok"}),
         # A pane with no agent is an idle shell, unless a test says otherwise.
         **{("pane", "process-info", "--pane", found["pane_id"]): shell_info() for found in panes if not found["agent"]},
+        # An agent's status, read again, is the listed one unless a test says otherwise.
+        **{("agent", "get", found["pane_id"]): ok({"agent": found}) for found in panes if found["agent"]},
     }
     responses.update({tuple(key.split()): value for key, value in overrides.items()})
     return FakeRunner(responses)
@@ -414,6 +416,45 @@ def test_a_busy_pane_running_its_conversation_is_never_closed(
     # Taken as the agent's own pane from now on.
     [kept] = load(path).agents
     assert (kept.pane_id, kept.terminal_id, kept.misses) == ("w1:p1", "t-new", 0)
+
+
+def test_a_pane_prompted_while_earlier_agents_restarted_is_never_closed(
+    path: Path, folder: Path, tmp_path: Path
+) -> None:
+    # Idle when the panes were listed; the first agent's start takes seconds, and the user
+    # prompts the second's resumed pane meanwhile. Closing it would end that turn.
+    first = entry(folder, terminal_id="t-a", pane_id="w1:p1", session_id=OTHER_UUID)
+    second = entry(folder, terminal_id="t-b", pane_id="w2:p1", session_id=UUID)
+    shell = pane("w1:p1", "t-new1", agent=None, cwd=str(folder))
+    idle = pane("w2:p1", "t-new2", session=UUID, cwd=str(folder))
+    working = idle | {"agent_status": "working"}
+    runner = runner_for([shell, idle], ["claude", "--resume", UUID], **{"agent get w2:p1": ok({"agent": working})})
+    [_, line] = run(runner, path, [first, second], tmp_path)
+
+    assert len(runner.called("agent", "start")) == 1
+    assert ["pane", "close", "w2:p1"] not in runner.calls
+    assert "busy in w2:p1" in line
+    kept = load(path).agents[1]
+    assert (kept.pane_id, kept.terminal_id) == ("w2:p1", "t-new2")
+
+
+@pytest.mark.parametrize("gone", [False, True])
+def test_herdrs_resume_whose_status_cant_be_read_again_is_closed_only_once_gone(
+    path: Path, folder: Path, tmp_path: Path, gone: bool
+) -> None:
+    # herdr can't say whether it's still idle: left, unless its terminal has gone meanwhile.
+    resumed = pane(session=UUID)
+    runner = runner_for([resumed], ["claude", "--resume", UUID],
+                        **{"agent get w1:p1": err("timeout"), "pane list": [ok({"panes": [resumed]}),
+                                                                      ok({"panes": [] if gone else [resumed]})]})
+    [line] = run(runner, path, [entry(folder, session_id=UUID)], tmp_path)
+
+    assert runner.called("pane", "close") == []
+    assert len(runner.called("agent", "start")) == int(gone)
+    [kept] = load(path).agents
+    assert kept.terminal_id == ("t90" if gone else "t-new")
+    if not gone:
+        assert "left as it is" in line
 
 
 def test_herdr_resume_with_other_args_is_replaced(path: Path, folder: Path, tmp_path: Path) -> None:

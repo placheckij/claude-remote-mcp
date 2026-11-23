@@ -153,13 +153,22 @@ async def _restore_one(
             return (f"{label}: {resumed['pane_id']} runs its conversation but its {what} couldn't be read, "
                     "left as it is"), False
         # herdr's own resume runs plain `claude --resume <id>`: without the account's
-        # CLAUDE_CONFIG_DIR or the agent's arguments.
-        closed, note = await _close(herdr, resumed, found, "herdr's own resume")
+        # CLAUDE_CONFIG_DIR or the agent's arguments. Its status is read again first: the
+        # listed one may be stale, as earlier agents' starts take seconds each, and the user
+        # may have prompted it since.
+        status = await _status_now(herdr, resumed)
+        if status is not None and status not in FINISHED:
+            await _adopt(path, entry, resumed, found, service.stopped)
+            return f"{label}: busy in {resumed['pane_id']}, which runs its conversation, left as it is", False
+        if status is None:
+            closed, note = False, f" (the status of herdr's own resume in {resumed['pane_id']} couldn't be read again)"
+        else:
+            closed, note = await _close(herdr, resumed, found, "herdr's own resume")
         if not closed and await _still_there(herdr, resumed):
             # Still running its conversation: a second copy would answer as the first.
             await _adopt(path, entry, resumed, found, service.stopped)
-            return (f"{label}: {resumed['pane_id']} runs its conversation but couldn't be closed{note}, "
-                    "left as it is"), True
+            what = "couldn't be closed" if status is not None else "wasn't closed"
+            return f"{label}: {resumed['pane_id']} runs its conversation but {what}{note}, left as it is", True
     else:
         _, note = await _close(herdr, shell, found)
 
@@ -275,6 +284,18 @@ async def _close(
     except HerdrError as error:
         return False, f" (couldn't close {what} in {pane['pane_id']}: {error})"
     return True, f" (closed {what} in {pane['pane_id']})"
+
+
+async def _status_now(herdr: Herdr, pane: dict) -> str | None:
+    """The status herdr gives `pane`'s agent now; None when herdr can't say, or the pane id is
+    another terminal's."""
+    try:
+        agent = await herdr.get_agent(pane["pane_id"])
+    except HerdrError:
+        return None
+    if agent.get("terminal_id") != pane.get("terminal_id"):
+        return None
+    return agent.get("agent_status", "unknown")
 
 
 async def _still_there(herdr: Herdr, pane: dict) -> bool:
