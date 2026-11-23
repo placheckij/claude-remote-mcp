@@ -283,14 +283,14 @@ async def _take_resumed(
 
 async def _idle_shell(herdr: Herdr, pane: dict) -> bool:
     """Whether the pane's shell runs nothing: its only foreground process is the shell itself.
-    False when herdr can't say, so an unknown pane is left alone."""
+    False when herdr can't say, or lists none, so an unknown pane is left alone."""
     try:
         info = await herdr.process_info(pane["pane_id"])
     except HerdrError:
         return False
     shell = info.get("shell_pid")
     processes = info.get("foreground_processes") or []
-    return shell is not None and all(isinstance(p, dict) and p.get("pid") == shell for p in processes)
+    return shell is not None and bool(processes) and all(isinstance(p, dict) and p.get("pid") == shell for p in processes)
 
 
 async def _unclassified(

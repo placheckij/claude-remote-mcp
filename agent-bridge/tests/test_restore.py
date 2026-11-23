@@ -1053,6 +1053,17 @@ def test_a_shell_pane_running_a_program_is_never_closed(path: Path, folder: Path
     assert "closed" not in line
 
 
+def test_a_shell_pane_with_no_foreground_processes_listed_isnt_closed(path: Path, folder: Path, tmp_path: Path) -> None:
+    # herdr gave none: what runs in it isn't known, so it isn't known to be idle.
+    empty = ok({"process_info": {"foreground_process_group_id": 9000, "foreground_processes": [], "shell_pid": 9000}})
+    runner = runner_for([pane(agent=None, cwd=str(folder))], **{"pane process-info --pane w1:p1": empty})
+    [line] = run(runner, path, [entry(folder, session_id=UUID)], tmp_path)
+
+    assert runner.called("pane", "close") == []
+    assert len(runner.called("agent", "start")) == 1
+    assert "closed" not in line
+
+
 def test_a_pane_with_its_id_in_another_folder_isnt_taken_for_its_shell(
     path: Path, folder: Path, tmp_path: Path
 ) -> None:
