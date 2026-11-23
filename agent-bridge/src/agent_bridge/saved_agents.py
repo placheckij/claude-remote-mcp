@@ -198,8 +198,8 @@ def merge(saved: list[SavedAgent], seen: list[SavedAgent], restarted: bool) -> l
 
 def forget(path: Path, terminal_id: str, stopped_session: str | None = None, *, stopped: bool = False) -> None:
     """Take the agent of `terminal_id` out. `stopped`: its pane was stopped, which stops its
-    conversation (`stopped_session`, or the one saved for it), so an entry a restore kept
-    for that conversation under an old terminal goes too: it would bring it back."""
+    conversation (`stopped_session`, or the one saved for it), so any entry for that
+    conversation under another terminal goes too: it would bring it back."""
     with locked(path):
         saved = load(path, for_writing=True)
         sessions = {stopped_session} if stopped_session else set()
@@ -208,5 +208,5 @@ def forget(path: Path, terminal_id: str, stopped_session: str | None = None, *, 
                          if agent.terminal_id == terminal_id and agent.session_id}
         save(path, saved.model_copy(update={
             "agents": [agent for agent in saved.agents if agent.terminal_id != terminal_id
-                       and not (stopped and agent.restore_failed and agent.session_id in sessions)]
+                       and not (stopped and agent.session_id in sessions)]
         }))

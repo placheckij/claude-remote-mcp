@@ -939,6 +939,46 @@ def test_a_restore_kept_entry_for_a_stopped_conversation_goes_even_if_the_stops_
     assert load(path).agents == []
 
 
+def test_a_conversation_run_again_by_hand_after_its_stop_is_kept_when_its_restore_fails(
+    path: Path, folder: Path, tmp_path: Path
+) -> None:
+    # Stopped through the bridge, then resumed by hand and saved from its pane: wanted again.
+    # herdr's server restarts and the start fails once: kept for the next restart.
+    settings = Settings(token=TOKEN, allowed_roots=(tmp_path.resolve(),))
+    save(path, SavedAgents(agents=[entry(folder, terminal_id="t-a", pane_id="w1:p1", session_id=UUID)]))
+    service = AgentService(settings, Herdr(runner=runner_for([pane(session=UUID, cwd=str(folder))])),
+                           saved_path=path)
+    asyncio.run(service.stop_agent("w1:p1"))
+    by_hand = entry(folder, terminal_id="t-h", pane_id="w2:p1", session_id=UUID)
+    restore_module._write(path, [by_hand], False, service.stopped, service.stopped_sessions)
+    runner = runner_for([pane("w2:p1", "t-h2", agent=None, cwd=str(folder))], **{"agent start": err("server_error")})
+    herdr = Herdr(runner=runner)
+    service.herdr = herdr
+    asyncio.run(restore(service, herdr, path))
+    restore_module._write(path, [], True, service.stopped, service.stopped_sessions)
+
+    [kept] = load(path).agents
+    assert (kept.session_id, kept.restore_failed) == (UUID, True)
+
+
+def test_herdrs_resume_stopped_before_the_restore_ran_isnt_started_again(
+    path: Path, folder: Path, tmp_path: Path
+) -> None:
+    # Its entry, saved before herdr restarted, isn't one a restore kept: it goes all the same.
+    settings = Settings(token=TOKEN, allowed_roots=(tmp_path.resolve(),))
+    save(path, SavedAgents(agents=[entry(folder, terminal_id="t-old", pane_id="w1:p1", session_id=UUID)]))
+    resumed = pane("w1:p1", "t-new", session=UUID, cwd=str(folder))
+    service = AgentService(settings, Herdr(runner=runner_for([resumed])), saved_path=path)
+    asyncio.run(service.stop_agent("w1:p1"))
+    runner = runner_for([])
+    herdr = Herdr(runner=runner)
+    service.herdr = herdr
+    asyncio.run(restore(service, herdr, path))
+
+    assert runner.called("agent", "start") == []
+    assert load(path).agents == []
+
+
 def test_an_idle_pane_showing_its_conversation_listed_late_that_cant_be_read_keeps_the_agent_for_the_next_restart(
     path: Path, folder: Path, tmp_path: Path
 ) -> None:

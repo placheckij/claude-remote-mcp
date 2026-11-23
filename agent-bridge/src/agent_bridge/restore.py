@@ -82,11 +82,9 @@ async def _restore_one(
 ) -> tuple[str, bool]:
     """The log line for `entry`, and whether it says something failed."""
     label = entry.name or entry.cwd
-    if entry.terminal_id in service.stopped or (
-        entry.restore_failed and entry.session_id and entry.session_id in service.stopped_sessions
-    ):
-        # Stopped through the bridge, whose forget couldn't take it out of agents.json; or
-        # kept by a restore for a conversation stopped through the bridge since.
+    if entry.terminal_id in service.stopped or (entry.session_id and entry.session_id in service.stopped_sessions):
+        # Stopped through the bridge, whose forget couldn't take it out of agents.json; or its
+        # conversation was, in another pane (herdr's resume), since this entry was saved.
         await _forget(path, entry, service.stopped)
         return f"{label}: not restored, and forgotten: it was stopped through the bridge", False
     for pane in found.panes:
@@ -193,6 +191,10 @@ async def _restore_one(
             return line + note, failed
         note += late_note
 
+    if entry.session_id and entry.session_id in service.stopped_sessions:
+        # Its conversation was stopped through the bridge while this restore ran.
+        await _forget(path, entry, service.stopped)
+        return f"{label}: not restored, and forgotten: its conversation was stopped through the bridge{note}", False
     try:
         agent = await service.restart_agent(entry, resume)
     except BridgeError as error:
@@ -748,7 +750,7 @@ def _saved(path: Path) -> list[SavedAgent]:
 
 def _write(
     path: Path, seen: list[SavedAgent], restarted: bool, stopped: set[str] = frozenset(),
-    stopped_sessions: set[str] = frozenset(),
+    stopped_sessions: set[str] | None = None,
 ) -> None:
     with locked(path):
         # Agents stopped through the bridge since the snapshot began are gone for good. Read
@@ -759,10 +761,11 @@ def _write(
         saved = load(path, for_writing=True)
         # Also saved ones: a restore may have written an agent that a stop then closed before
         # its forget could find it.
-        # And entries a restore kept for a conversation stopped through the bridge, which
-        # would bring it back; unless something runs it again, saved from its pane.
+        # And entries for a conversation stopped through the bridge, which would bring it
+        # back. One that runs again (resumed by hand) is wanted again: no longer stopped.
         running = {agent.session_id for agent in seen if agent.session_id}
-        ended = frozenset(stopped_sessions) - running
-        kept = [agent for agent in saved.agents if agent.terminal_id not in gone
-                and not (agent.restore_failed and agent.session_id in ended)]
+        if stopped_sessions:
+            stopped_sessions.difference_update(running)
+        ended = frozenset(stopped_sessions or ())
+        kept = [agent for agent in saved.agents if agent.terminal_id not in gone and agent.session_id not in ended]
         save(path, saved.model_copy(update={"agents": merge(kept, seen, restarted)}))
