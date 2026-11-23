@@ -249,7 +249,19 @@ async def _take_resumed(
     unreadable = running is None or reread_failed or (running.config_dir_unknown and running.args == entry.args)
     # Not read before, but read now without Claude Code among its processes: it has exited
     # (herdr's listing lags), which isn't one that can't be read.
-    exited = running is None and not reread_failed and not busy and await _claude_exited(herdr, resumed)
+    exited = await _claude_exited(herdr, resumed) if running is None and not reread_failed and not busy else False
+    if exited is None:
+        # Nothing read of it, and whether Claude Code still runs in it can't be told now. Left;
+        # tied to it, the entry would age out if it had exited, so the agent is kept for the
+        # next restart instead. If it runs the conversation, the saves keep it from there,
+        # and the next restart drops this entry as a second copy.
+        _, note = await _close(herdr, shell, found)
+        if entry.terminal_id in found.replaced:
+            # Its conversation ran in the pane just closed to be replaced: started all the same.
+            return f"{note} ({resumed['pane_id']}, whose process couldn't be read, left as it is)"
+        await _keep_failed(path, entry)
+        return (f"{label}: not restored, kept for the next restart: {resumed['pane_id']} shows its "
+                f"conversation but its process couldn't be read, left as it is{note}"), True
     if not exited and (as_it_was or busy or unreadable):
         await _adopt(path, entry, resumed, found, service.stopped)
         if as_it_was:
@@ -327,18 +339,23 @@ async def _take_resumed(
     return note
 
 
-async def _claude_exited(herdr: Herdr, pane: dict) -> bool:
-    """Whether the pane's processes, read, don't include Claude Code. False when herdr can't
-    say."""
+async def _claude_exited(herdr: Herdr, pane: dict) -> bool | None:
+    """Whether the pane's processes, read, don't include Claude Code; None when that can't be
+    told."""
     try:
         info = await herdr.process_info(pane["pane_id"])
     except HerdrError:
-        return False
-    if _unread(info) or claude_process(info) is not None:
+        return None
+    if _unread(info):
+        return None
+    if claude_process(info) is not None:
         return False
     shell = info.get("shell_pid")
+    if not (type(shell) is int and shell > 0):
+        return None
     # Stopped with ctrl-Z, it's no longer in the foreground, but still runs.
-    return type(shell) is int and shell > 0 and await asyncio.to_thread(_claude_among_jobs, shell) is False
+    jobs = await asyncio.to_thread(_claude_among_jobs, shell)
+    return None if jobs is None else not jobs
 
 
 def _claude_among_jobs_in_os(shell_pid: int) -> bool | None:

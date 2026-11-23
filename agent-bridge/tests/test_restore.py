@@ -439,7 +439,8 @@ def test_a_pane_herdr_cant_classify_running_its_conversation_is_left(
 def test_a_pane_whose_process_cant_be_read_running_its_conversation_is_left(
     path: Path, folder: Path, tmp_path: Path
 ) -> None:
-    # Whether it runs as it was can't be told, as with a shell that can't be read.
+    # Whether it runs as it was, or at all, can't be told, as with a shell that can't be read:
+    # left, and the agent kept for the next restart rather than tied to it.
     idle = pane(session=UUID, cwd=str(folder)) | {"agent_status": "idle"}
     runner = runner_for([idle], **{"pane process-info": err("pane_not_found")})
     [line] = run(runner, path, [entry(folder, session_id=UUID)], tmp_path)
@@ -448,7 +449,7 @@ def test_a_pane_whose_process_cant_be_read_running_its_conversation_is_left(
     assert runner.called("agent", "start") == []
     assert "couldn't be read" in line
     [kept] = load(path).agents
-    assert (kept.pane_id, kept.terminal_id) == ("w1:p1", "t-new")
+    assert kept.terminal_id == "t-old" and kept.restore_failed
 
 
 def test_a_pane_whose_account_cant_be_read_running_its_conversation_with_its_args_is_left(
@@ -883,6 +884,30 @@ def test_after_replacing_herdrs_resume_a_late_pane_that_cant_be_told_doesnt_stop
 
     assert runner.called("pane", "close") == [["pane", "close", "w2:p1"]]
     assert len(runner.called("agent", "start")) == 1
+
+
+@pytest.mark.parametrize("why", ["timeout", "no processes", "jobs unknown"])
+def test_an_idle_pane_running_its_conversation_whose_process_cant_be_read_keeps_the_agent_for_the_next_restart(
+    path: Path, folder: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, why: str
+) -> None:
+    # Nothing read of it, and it can't be read now: Claude Code may have exited from it.
+    # Tied to the pane, the entry would age out; kept, and the pane left. If it does run the
+    # conversation, the saves keep it, and the next restart drops the second entry.
+    resumed = pane("w2:p1", "t-r", session=UUID, cwd=str(folder))
+    answer = {"timeout": err("timeout"),
+              "no processes": ok({"process_info": {"foreground_processes": [], "shell_pid": 9000}}),
+              "jobs unknown": shell_info()}[why]
+    if why == "jobs unknown":
+        monkeypatch.setattr(restore_module, "_claude_among_jobs", lambda shell_pid: None)
+    runner = runner_for([resumed], **{"pane process-info --pane w2:p1": answer})
+    [line] = run(runner, path, [entry(folder, terminal_id="t-b", pane_id="w7:p1", session_id=UUID)], tmp_path)
+
+    assert runner.called("pane", "close") == runner.called("agent", "start") == []
+    assert "kept for the next restart" in line
+    restore_module._write(path, [], False)
+    restore_module._write(path, [], False)
+    [kept] = load(path).agents
+    assert kept.session_id == UUID and kept.restore_failed
 
 
 @pytest.mark.parametrize("status", [err("timeout"), "working"])

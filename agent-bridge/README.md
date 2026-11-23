@@ -100,11 +100,13 @@ right before closing it, its process could be read and shows other arguments, or
 account read from it that isn't the saved one, and it is gone after closing. Otherwise
 it's left as it is and kept as the agent's: one working, waiting for an approval, that
 herdr can't classify, or that herdr doesn't show as an agent yet but whose command line
-resumes the conversation. If herdr's resume exited and left a shell, an idle one is closed
-and the agent started; one running something, or whose processes can't be read, is left,
-and the agent kept for the next restart. So is the agent while a Claude agent in its folder
-whose process can't be read, or a Claude Code stopped with ctrl-Z in the shell herdr left,
-may be running its conversation. Right before starting an
+resumes the conversation. An idle one whose process can't be read is left too, but the
+agent is kept for the next restart: Claude Code may have exited from it. If herdr's resume
+exited and left a shell, an idle one is closed and the agent started; one running
+something, or whose processes can't be read, is left, and the agent kept for the next
+restart. So is the agent while a Claude agent in its folder whose process can't be read,
+or a Claude Code stopped with ctrl-Z in the shell herdr left, may be running its
+conversation, unless the pane running it was just closed to be replaced. Right before starting an
 agent, the restore looks for its conversation again in panes opened or resumed meanwhile.
 Without such a pane, an idle shell herdr left where the agent was, in its folder, is closed
 too; a shell running something is left alone. A conversation can still start twice when the
