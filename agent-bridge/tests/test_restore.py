@@ -570,9 +570,9 @@ def test_agents_json_is_read_under_its_lock_off_the_event_loop(
             finally:
                 held.pop()
 
-    def checked(read_path: Path, for_writing: bool = False):
+    def checked(read_path: Path, **kwargs: bool):
         reads.append((bool(held), threading.current_thread() is threading.main_thread()))
-        return real_load(read_path, for_writing)
+        return real_load(read_path, **kwargs)
 
     monkeypatch.setattr(restore_module, "locked", recording)
     monkeypatch.setattr(restore_module, "load", checked)
@@ -1170,6 +1170,48 @@ def test_no_restore_outcome_keeps_setting_off_restores(
     assert host.started == ["shell"]
     # The closed ones age out; the failed one waits for the next restart.
     assert [(agent.name, agent.restore_failed) for agent in load(path).agents] == [("failing", True)]
+
+
+def unreadable_once(monkeypatch: pytest.MonkeyPatch, path: Path, read: int) -> None:
+    """The `read`th read of `path` fails as a Windows sharing violation would."""
+    real_read = Path.read_bytes
+    reads = [0]
+
+    def flaky(self: Path) -> bytes:
+        if self == path:
+            reads[0] += 1
+            if reads[0] == read:
+                raise PermissionError(13, "Access is denied")
+        return real_read(self)
+
+    monkeypatch.setattr(Path, "read_bytes", flaky)
+
+
+def test_a_restore_that_couldnt_read_agents_json_runs_again_next_round(
+    monkeypatch: pytest.MonkeyPatch, path: Path, folder: Path, tmp_path: Path
+) -> None:
+    # herdr came back without its layout. The restart check reads the file; the restore's own
+    # read then fails once. Read as no saved agents, the restore would end normally and the
+    # agent age out unrestored.
+    unreadable_once(monkeypatch, path, 2)
+    restores = watch_host(monkeypatch, Host([]), path, [entry(folder, session_id=UUID)], tmp_path, 2)
+
+    assert restores == [1, 2]
+    [restored] = load(path).agents
+    assert (restored.pane_id, restored.session_id) == ("w91:p1", UUID)
+
+
+def test_a_restart_check_that_couldnt_read_agents_json_fails(
+    monkeypatch: pytest.MonkeyPatch, path: Path, folder: Path
+) -> None:
+    # Read as no saved agents, it would say "no restart" for a server that brought the
+    # agent's pane back with a new terminal; failing, it's made again next round.
+    save(path, SavedAgents(agents=[entry(folder)]))
+    herdr = Herdr(runner=runner_for([pane(terminal_id="t-other")]))
+    unreadable_once(monkeypatch, path, 1)
+
+    with pytest.raises(StateError):
+        asyncio.run(restore_module._restarted(herdr, path, True))
 
 
 def test_an_agent_that_had_gone_comes_back_when_its_pane_does(path: Path, folder: Path, tmp_path: Path) -> None:

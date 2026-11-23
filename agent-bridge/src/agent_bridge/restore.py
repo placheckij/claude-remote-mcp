@@ -391,9 +391,11 @@ _has_conversation = _has_conversation_on_disk
 
 def _saved(path: Path) -> list[SavedAgent]:
     """The saved agents, read under the file's lock: on Windows a read while another process
-    replaces the file fails. In a thread: the lock may be waited for."""
+    replaces the file fails. In a thread: the lock may be waited for. A read that fails
+    anyway raises: taken for no saved agents, it would end a restore that restored nothing,
+    or answer the restart check wrongly."""
     with locked(path):
-        return load(path).agents
+        return load(path, must_read=True).agents
 
 
 def _write(path: Path, seen: list[SavedAgent], restarted: bool, stopped: set[str] = frozenset()) -> None:

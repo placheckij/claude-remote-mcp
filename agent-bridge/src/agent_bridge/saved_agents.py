@@ -59,13 +59,16 @@ def agents_file() -> Path:
     return state_file().with_name("agents.json")
 
 
-def load(path: Path, for_writing: bool = False) -> SavedAgents:
+def load(path: Path, for_writing: bool = False, must_read: bool = False) -> SavedAgents:
     """The saved agents; empty when there are none, or the file can't be used (warned).
 
     `for_writing`, for a caller that saves over the file next: a file that couldn't be read,
     or that a newer agent-bridge wrote, raises StateError instead, so writing never wipes
     agents that are saved but not running now. A corrupt one still reads as empty: nothing
-    in it can be restored, and writing over it is how it recovers."""
+    in it can be restored, and writing over it is how it recovers.
+
+    `must_read`: a file that couldn't be read (a passing error, such as a sharing violation
+    on Windows) raises StateError too, rather than read as no saved agents."""
     try:
         data = path.read_bytes()
     except FileNotFoundError:
@@ -73,6 +76,8 @@ def load(path: Path, for_writing: bool = False) -> SavedAgents:
     except OSError as error:
         if for_writing:
             raise StateError(f"Can't read {path} ({error.strerror}), so it isn't written either.") from None
+        if must_read:
+            raise StateError(f"Can't read {path} ({error.strerror}).") from None
         log.warning("Can't read %s (%s); no agents will be restored from it.", path, error.strerror)
         return SavedAgents()
     try:
