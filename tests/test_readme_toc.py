@@ -2,7 +2,7 @@
 GitHub gives them, between <!-- toc --> and <!-- /toc -->. On a failure, paste the block
 the message shows."""
 
-import re
+import unicodedata
 from pathlib import Path
 
 import pytest
@@ -19,18 +19,21 @@ MARKDOWN = MarkdownIt("commonmark").enable(["table", "strikethrough"])
 def _label_and_text(inline) -> tuple[str, str]:
     """A heading as the TOC shows it (its source, so it renders the same) and as rendered
     text, which GitHub makes the anchor from."""
-    children = inline.children or []
-    if any(child.type == "link_open" for child in children):
-        # It would be a link inside the entry's own link, which doesn't render as either.
-        raise ValueError(f"heading {inline.content!r} has a link; move the link out of the heading")
     text = "".join(
         " " if child.type == "softbreak" else child.content
-        for child in children
+        for child in inline.children or []
         if child.type in ("text", "code_inline", "softbreak")
     )
     # An underlined heading's lines become one.
     label = " ".join(line.strip() for line in inline.content.splitlines())
     return label, text.strip()
+
+
+def _slug(text: str) -> str:
+    """GitHub's: lowercase, letters (with their accents), numbers, "-" and "_" kept, other
+    punctuation and symbols dropped, spaces to "-"."""
+    kept = (c for c in text.lower() if c in "-_ " or unicodedata.category(c)[0] in "LMN")
+    return "".join(kept).replace(" ", "-")
 
 
 def headings(markdown: str) -> list[tuple[int, str, str]]:
@@ -43,8 +46,7 @@ def headings(markdown: str) -> list[tuple[int, str, str]]:
         if opening.type != "heading_open":
             continue
         label, text = _label_and_text(inline)
-        # Lowercase, punctuation and symbols dropped but "-" and "_", spaces to "-".
-        original = slug = re.sub(r"[^\w\- ]", "", text.lower()).replace(" ", "-")
+        original = slug = _slug(text)
         while slug in taken:
             taken[original] += 1
             slug = f"{original}-{taken[original]}"
@@ -58,12 +60,15 @@ def toc(markdown: str) -> str:
     for level, label, anchor in headings(markdown):
         if level not in (2, 3):
             continue
+        shown = MARKDOWN.renderInline(label)
+        # A link, autolink or <a> would be a link inside the entry's own.
+        if "<a " in shown:
+            raise ValueError(f"heading {label!r} has a link; move the link out of the heading")
         link = f"[{label}](#{anchor})"
-        # The entry must render as one link to the heading, showing its text: e.g. an
-        # unbalanced "[" would end the link early.
-        # The href as the renderer writes it: non-ASCII percent-encoded, HTML-escaped.
+        # The entry must render as one link to the heading, showing its text (an unbalanced
+        # "[" would end it early), with the href as the renderer writes it.
         href = escapeHtml(MARKDOWN.normalizeLink(f"#{anchor}"))
-        if MARKDOWN.renderInline(link) != f'<a href="{href}">{MARKDOWN.renderInline(label)}</a>':
+        if MARKDOWN.renderInline(link) != f'<a href="{href}">{shown}</a>':
             raise ValueError(f"heading {label!r} breaks its TOC link; escape its [ and ] as \\[ and \\]")
         entries.append(f"{'  ' * (level - 2)}- {link}")
     return "\n".join([START, "**Contents**", "", *entries, END])
@@ -178,10 +183,23 @@ def test_a_heading_that_would_break_its_toc_link_is_refused() -> None:
     assert "- [Café setup](#café-setup)" in toc("## Café setup\n")
 
 
-@pytest.mark.parametrize("heading", ["[Linked](https://example.com)", "See <https://example.com>"])
-def test_a_link_in_a_heading_is_refused(heading: str) -> None:
+@pytest.mark.parametrize(
+    "heading", ["[Linked](https://example.com)", "See <https://example.com>", 'Foo <a href="https://x">y</a>'],
+)
+def test_a_link_in_a_toc_heading_is_refused(heading: str) -> None:
     with pytest.raises(ValueError, match="move the link out of the heading"):
-        headings(f"## {heading}\n")
+        toc(f"## {heading}\n")
+
+
+def test_a_link_in_a_heading_without_an_entry_is_fine() -> None:
+    assert toc("# [proj](https://x)\n## One\n#### See <https://x>\n").count("](#") == 1
+
+
+def test_an_anchor_keeps_accents() -> None:
+    # A decomposed "é": e and a combining acute accent, which GitHub keeps.
+    (_, _, anchor), = headings("## éte\n")
+
+    assert anchor == "éte"
 
 
 @pytest.mark.parametrize("readme", READMES)
