@@ -2,6 +2,7 @@
 GitHub gives them, between <!-- toc --> and <!-- /toc -->. On a failure, paste the block
 the message shows."""
 
+import re
 import unicodedata
 from pathlib import Path
 
@@ -56,19 +57,22 @@ def headings(markdown: str) -> list[tuple[int, str, str]]:
 
 
 def toc(markdown: str) -> str:
+    # The README's link reference definitions: "[docs]" in a heading is a link if one names it.
+    env: dict = {}
+    MARKDOWN.parse(markdown, env)
     entries = []
     for level, label, anchor in headings(markdown):
         if level not in (2, 3):
             continue
-        shown = MARKDOWN.renderInline(label)
-        # A link, autolink or <a> would be a link inside the entry's own.
-        if "<a " in shown:
+        shown = MARKDOWN.renderInline(label, env)
+        # A link, autolink or <a> (any case) would be a link inside the entry's own.
+        if re.search(r"<a[\s>]", shown, re.IGNORECASE):
             raise ValueError(f"heading {label!r} has a link; move the link out of the heading")
         link = f"[{label}](#{anchor})"
         # The entry must render as one link to the heading, showing its text (an unbalanced
         # "[" would end it early), with the href as the renderer writes it.
         href = escapeHtml(MARKDOWN.normalizeLink(f"#{anchor}"))
-        if MARKDOWN.renderInline(link) != f'<a href="{href}">{shown}</a>':
+        if MARKDOWN.renderInline(link, env) != f'<a href="{href}">{shown}</a>':
             raise ValueError(f"heading {label!r} breaks its TOC link; escape its [ and ] as \\[ and \\]")
         entries.append(f"{'  ' * (level - 2)}- {link}")
     return "\n".join([START, "**Contents**", "", *entries, END])
@@ -184,11 +188,19 @@ def test_a_heading_that_would_break_its_toc_link_is_refused() -> None:
 
 
 @pytest.mark.parametrize(
-    "heading", ["[Linked](https://example.com)", "See <https://example.com>", 'Foo <a href="https://x">y</a>'],
+    "heading", [
+        "[Linked](https://example.com)",
+        "See <https://example.com>",
+        'Foo <a href="https://x">y</a>',
+        'Foo <A HREF="https://x">y</A>',
+        "Foo <a>y</a>",
+        "See [docs]",
+    ],
 )
 def test_a_link_in_a_toc_heading_is_refused(heading: str) -> None:
+    # "[docs]" is a link because the README defines it.
     with pytest.raises(ValueError, match="move the link out of the heading"):
-        toc(f"## {heading}\n")
+        toc(f"## {heading}\n\n[docs]: https://example.com\n")
 
 
 def test_a_link_in_a_heading_without_an_entry_is_fine() -> None:
