@@ -367,3 +367,47 @@ def test_on_windows_a_removed_package_stays_stopped_with_how_to_recover(host: Fa
     err = capsys.readouterr().err
     assert f"uv tool install --reinstall {PACKAGE}" in err
     assert "agent-bridge setup" in err
+
+
+# --- The command and the real system --------------------------------------------------
+
+
+def test_the_command_runs_the_upgrade(monkeypatch: pytest.MonkeyPatch) -> None:
+    from agent_bridge import cli
+
+    ran = []
+    monkeypatch.setattr(upgrade, "system", lambda: "the host")
+    monkeypatch.setattr(upgrade, "run", lambda system: ran.append(system) or 7)
+
+    assert cli.main(["upgrade"]) == 7
+    assert ran == ["the host"]
+
+
+def test_the_real_system_reads_the_version_agent_bridge_prints(monkeypatch: pytest.MonkeyPatch) -> None:
+    seen = {}
+
+    def fake_run(argv, **options):
+        seen.update(argv=argv, env=options["env"])
+        return type("Result", (), {"returncode": 0, "stdout": "agent-bridge 0.3.1\n"})()
+
+    monkeypatch.setattr(upgrade.subprocess, "run", fake_run)
+    monkeypatch.setenv("AGENT_BRIDGE_TOKEN", "secret")
+
+    assert upgrade.RealSystem().version("/b/agent-bridge") == "0.3.1"
+    assert seen["argv"] == ["/b/agent-bridge", "--version"]
+    assert "AGENT_BRIDGE_TOKEN" not in seen["env"]
+
+
+def test_the_real_system_finds_uv_where_uv_says(monkeypatch: pytest.MonkeyPatch) -> None:
+    # uv tells the programs it runs where it is.
+    monkeypatch.setenv("UV", "/opt/uv/bin/uv")
+
+    assert upgrade.RealSystem().uv() == "/opt/uv/bin/uv"
+
+
+def test_uvx_environments_are_in_uvs_cache(monkeypatch: pytest.MonkeyPatch) -> None:
+    real = upgrade.RealSystem()
+    real.prefix = Path("/home/me/.cache/uv/archive-v0/abc")
+    assert real.in_uv_cache()
+    real.prefix = Path("/home/me/.local/share/uv/tools") / PACKAGE
+    assert not real.in_uv_cache()

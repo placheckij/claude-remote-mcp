@@ -12,17 +12,20 @@ upgrade itself. It runs from uvx's copy instead, which stops the scheduled task 
 
 import os
 import re
+import shutil
+import subprocess
 import sys
+import tempfile
 import tomllib
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
 
 from agent_bridge.host import BRIDGE_VERSION
-from agent_bridge.install.common import Refused
+from agent_bridge.install.common import PREFIX, Refused
 from agent_bridge.install.flow import FAILED, OK
 
-__all__ = ["PACKAGE", "UVX", "Install", "System", "find_install", "parse_receipt", "run"]
+__all__ = ["PACKAGE", "UVX", "Install", "RealSystem", "System", "find_install", "parse_receipt", "run", "system"]
 
 PACKAGE = "claude-remote-mcp-agent-bridge"
 UVX = f"uvx --from {PACKAGE}@latest agent-bridge upgrade"
@@ -203,3 +206,85 @@ def _release(version: str) -> tuple[int, ...]:
 
 def _quoted(text: str) -> str:
     return f'"{text}"' if " " in text else text
+
+
+class RealSystem:
+    """What upgrade asks of the real host."""
+
+    def __init__(self) -> None:
+        self.platform = sys.platform
+        self.prefix = Path(sys.prefix)
+
+    def in_uv_cache(self) -> bool:
+        # uvx's environments are <uv cache>/archive-v0/<id>.
+        return self.prefix.parent.name.startswith("archive-v")
+
+    def uv(self) -> str | None:
+        # uv tells the programs it runs where it is.
+        return os.environ.get("UV") or shutil.which("uv")
+
+    def tool_dir(self) -> Path | None:
+        uv = self.uv()
+        if uv is None:
+            return None
+        try:
+            result = subprocess.run([uv, "tool", "dir"], capture_output=True, text=True, timeout=60,
+                                    stdin=subprocess.DEVNULL)
+        except (OSError, subprocess.TimeoutExpired):
+            return None
+        found = result.stdout.strip()
+        return Path(found) if result.returncode == 0 and found else None
+
+    def mac_installs(self) -> list[str]:
+        from agent_bridge.install import macos
+
+        return macos.MacSystem().installs()
+
+    def homebrew_command(self) -> str | None:
+        from agent_bridge.install import macos
+
+        return next((command for command in macos.MacSystem.homebrew_commands if os.path.exists(command)), None)
+
+    def version(self, command: str) -> str | None:
+        try:
+            result = subprocess.run([command, "--version"], capture_output=True, text=True, timeout=60,
+                                    stdin=subprocess.DEVNULL, env=_environment())
+        except (OSError, subprocess.TimeoutExpired):
+            return None
+        found = re.search(r"agent-bridge (\S+)", result.stdout or "")
+        return found.group(1) if result.returncode == 0 and found else None
+
+    def run(self, *argv: str) -> int:
+        # What was printed so far goes first: piped, Python holds it while the child writes.
+        sys.stdout.flush()
+        sys.stderr.flush()
+        try:
+            return subprocess.run(argv).returncode
+        except OSError as error:
+            print(f"error: can't run {argv[0]} ({error.strerror})", file=sys.stderr)
+            return FAILED
+
+    def run_installed(self, command: str, *args: str) -> int:
+        sys.stdout.flush()
+        sys.stderr.flush()
+        try:
+            return subprocess.run([command, *args], env=_environment(), cwd=tempfile.gettempdir()).returncode
+        except OSError as error:
+            raise Refused(f"can't run {command} ({error.strerror})") from None
+
+    def stop_bridge(self, install: Install) -> None:
+        from agent_bridge.install import windows
+
+        windows.stop_for_upgrade(windows.system(), install.environment, install.programs)
+
+
+def system() -> RealSystem:
+    return RealSystem()
+
+
+def _environment() -> dict[str, str]:
+    """This environment without AGENT_BRIDGE_*, which would win over the env file, as setup runs
+    agent-bridge; in UTF-8 mode, as Windows' code page may not hold what it prints."""
+    environment = {name: value for name, value in os.environ.items() if not name.upper().startswith(PREFIX)}
+    environment["PYTHONUTF8"] = "1"
+    return environment
