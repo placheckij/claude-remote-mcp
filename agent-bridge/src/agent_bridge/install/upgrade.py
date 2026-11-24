@@ -83,8 +83,11 @@ def parse_receipt(text: str, environment: Path, uv: str) -> Install:
         tool = tomllib.loads(text).get("tool", {})
     except tomllib.TOMLDecodeError as error:
         raise Refused(f"can't read {environment / 'uv-receipt.toml'} ({error})") from None
-    requirement = next((item for item in tool.get("requirements", []) if item.get("name") == PACKAGE), None)
-    programs = {item.get("name"): item.get("install-path", "") for item in tool.get("entrypoints", [])}
+    # Items that aren't tables (requirements = ["x"]) are not agent-bridge's.
+    requirement = next((item for item in tool.get("requirements", [])
+                        if isinstance(item, dict) and item.get("name") == PACKAGE), None)
+    programs = {item.get("name"): item.get("install-path", "") for item in tool.get("entrypoints", [])
+                if isinstance(item, dict)}
     command = programs.get("agent-bridge")
     if requirement is None or not command:
         raise Refused(f"{environment / 'uv-receipt.toml'} doesn't list agent-bridge: reinstall it "
@@ -148,19 +151,33 @@ def _upgrade(system: System) -> int:
         raise Refused("Windows can't replace the files of a running program, so this agent-bridge can't upgrade "
                       f"itself. Run the upgrade from uvx's copy, outside the install:\n  {UVX}")
     before = system.version(install.command)
-    # uvx@latest runs the latest release: nothing to do, and nothing to stop.
+    # uvx@latest runs the latest release: nothing to do, and nothing to stop. (That assumes the
+    # documented @latest command: with `uvx --from ...@<version>` it would compare against that version.)
     if system.in_uv_cache() and install.kind == "uv" and before == BRIDGE_VERSION:
         print(f"agent-bridge is up to date ({before}).")
         return OK
     if install.kind == "source":
         print(f"agent-bridge {before or '(version unknown)'} is installed from {install.source}; replacing it with "
               "the published package. What it was installed from is left as it is.")
-    if windows:
-        print("agent-bridge stops until setup starts it again. Agents keep running in herdr, but the gateway can't "
-              "reach them meanwhile, also an agent that runs this upgrade.")
-        system.stop_bridge(install)
+    if not windows:
+        return _replace(system, install, windows, before)
+    print("agent-bridge stops until setup starts it again. Agents keep running in herdr, but the gateway can't "
+          "reach them meanwhile, also an agent that runs this upgrade.")
+    system.stop_bridge(install)
+    try:
+        return _replace(system, install, windows, before)
+    except (Refused, KeyboardInterrupt):
+        # A setup that can't run, or Ctrl+C during a slow uv: stopped, and nothing else says how to start it.
+        _how_to_start(install, gone=False)
+        raise
+
+
+def _replace(system: System, install: Install, windows: bool, before: str | None) -> int:
+    """Upgrades the package, then runs the new setup."""
     upgraded = system.run(*install.upgrade) == 0
     if not upgraded and install.kind == "uv":
+        # The plain package: a pin or other options in the receipt (--with, --python, an index) aren't
+        # carried over.
         print("warning: uv tool upgrade failed; reinstalling the package instead", file=sys.stderr)
         upgraded = system.run(*install.upgrade[:2], "install", "--reinstall", PACKAGE) == 0
     after = system.version(install.command)
@@ -183,15 +200,24 @@ def _upgrade(system: System) -> int:
 def _failed(system: System, install: Install, windows: bool, after: str | None) -> int:
     print("error: the upgrade failed (see above).", file=sys.stderr)
     if after is None:
-        reinstall = "brew reinstall agent-bridge" if install.kind == "Homebrew" else f"uv tool install --reinstall {PACKAGE}"
-        stopped = "agent-bridge is gone, and stays stopped" if windows else "agent-bridge is gone"
-        print(f"{stopped}. Install it again, then set it up:\n  {reinstall}\n  agent-bridge setup", file=sys.stderr)
+        _how_to_start(install, gone=True, stopped=windows)
         return FAILED
     if windows:
         # Stopped above: the version still there is set up again rather than left off.
         print(f"Setting up agent-bridge {after} again, the version still installed.")
         system.run_installed(install.command, "setup")
     return FAILED
+
+
+def _how_to_start(install: Install, gone: bool, stopped: bool = True) -> None:
+    """What to do when agent-bridge is gone or stopped, and the upgrade didn't start it again."""
+    reinstall = "brew reinstall agent-bridge" if install.kind == "Homebrew" else f"uv tool install --reinstall {PACKAGE}"
+    if gone:
+        state = "agent-bridge is gone, and stays stopped" if stopped else "agent-bridge is gone"
+        print(f"{state}. Install it again, then set it up:\n  {reinstall}\n  agent-bridge setup", file=sys.stderr)
+    else:
+        print("agent-bridge is stopped. Start it again with:\n  agent-bridge setup\nIf agent-bridge is gone, "
+              f"install it first:\n  {reinstall}", file=sys.stderr)
 
 
 def _same(one: Path, other: Path) -> bool:
@@ -268,9 +294,15 @@ class RealSystem:
         sys.stdout.flush()
         sys.stderr.flush()
         try:
-            return subprocess.run([command, *args], env=_environment(), cwd=tempfile.gettempdir()).returncode
+            return subprocess.run([command, *args], env=_environment(), cwd=self._cwd()).returncode
         except OSError as error:
             raise Refused(f"can't run {command} ({error.strerror})") from None
+
+    def _cwd(self) -> str:
+        # Not the shared /tmp, where another user could plant the legacy .env agent-bridge still reads
+        # from its working directory: / on macOS and Linux, as their setup runs it, and the per-user
+        # temp folder on Windows.
+        return tempfile.gettempdir() if self.platform == "win32" else "/"
 
     def stop_bridge(self, install: Install) -> None:
         from agent_bridge.install import windows

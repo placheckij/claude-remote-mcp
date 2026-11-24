@@ -35,6 +35,9 @@ class FakeHost:
     homebrew: str | None = None
     stop_refusal: str | None = None
     setup_code: int = 0
+    # Raised by run_installed / run, as a setup that can't start or Ctrl+C does.
+    setup_error: BaseException | None = None
+    run_error: BaseException | None = None
     calls: list[tuple[str, ...]] = field(default_factory=list)
 
     def in_uv_cache(self) -> bool:
@@ -57,6 +60,8 @@ class FakeHost:
 
     def run(self, *argv: str) -> int:
         self.calls.append(("run", *argv))
+        if self.run_error:
+            raise self.run_error
         if argv[1:] in (("tool", "upgrade", PACKAGE), ("upgrade", "agent-bridge")):
             code = self.upgrade_code
         else:
@@ -69,6 +74,8 @@ class FakeHost:
 
     def run_installed(self, command: str, *args: str) -> int:
         self.calls.append(("installed", command, *args, str(self.installed)))
+        if self.setup_error:
+            raise self.setup_error
         return self.setup_code
 
     def stop_bridge(self, install: upgrade.Install) -> None:
@@ -167,12 +174,12 @@ def test_no_uv_tool_install_is_refused(tmp_path: Path) -> None:
         upgrade.find_install(FakeHost(tools=tmp_path / "empty"))
 
 
-def test_without_uv_it_is_refused(tmp_path: Path) -> None:
+def test_without_uv_it_is_refused() -> None:
     with pytest.raises(Refused, match="can't find uv"):
         upgrade.find_install(FakeHost(tools=None, uv_path=None))
 
 
-def test_homebrew_on_macos_is_upgraded_with_brew(tmp_path: Path) -> None:
+def test_homebrew_on_macos_is_upgraded_with_brew() -> None:
     host = FakeHost(tools=None, platform="darwin", installs=["Homebrew"],
                     homebrew="/opt/homebrew/opt/agent-bridge/bin/agent-bridge")
 
@@ -411,3 +418,67 @@ def test_uvx_environments_are_in_uvs_cache(monkeypatch: pytest.MonkeyPatch) -> N
     assert real.in_uv_cache()
     real.prefix = Path("/home/me/.local/share/uv/tools") / PACKAGE
     assert not real.in_uv_cache()
+
+
+@pytest.mark.parametrize(("platform", "cwd"), [("darwin", "/"), ("linux", "/")])
+def test_the_new_setup_runs_from_the_root_on_posix(monkeypatch: pytest.MonkeyPatch, platform: str, cwd: str) -> None:
+    # Not the shared /tmp, where another user could plant the legacy .env agent-bridge reads.
+    seen = {}
+
+    def fake_run(argv, **options):
+        seen.update(options)
+        return type("Result", (), {"returncode": 0})()
+
+    monkeypatch.setattr(upgrade.subprocess, "run", fake_run)
+    real = upgrade.RealSystem()
+    real.platform = platform
+
+    assert real.run_installed("/b/agent-bridge", "setup") == 0
+    assert seen["cwd"] == cwd
+
+
+def test_the_new_setup_runs_from_the_temp_folder_on_windows(monkeypatch: pytest.MonkeyPatch) -> None:
+    seen = {}
+    monkeypatch.setattr(upgrade.subprocess, "run", lambda argv, **options: seen.update(options) or
+                        type("Result", (), {"returncode": 0})())
+    real = upgrade.RealSystem()
+    real.platform = "win32"
+
+    real.run_installed("C:/b/agent-bridge.exe", "setup")
+
+    assert seen["cwd"] == upgrade.tempfile.gettempdir()
+
+
+def test_a_receipt_with_entries_that_arent_tables_is_refused() -> None:
+    with pytest.raises(Refused, match="doesn't list agent-bridge"):
+        upgrade.parse_receipt('[tool]\nrequirements = ["x"]\nentrypoints = ["y"]\n', Path("/t"), UV)
+
+
+def test_on_windows_a_setup_that_cant_run_says_how_to_start_agent_bridge(host: FakeHost, capsys) -> None:
+    host.platform, host.setup_error = "win32", Refused("can't run agent-bridge (No such file)")
+
+    assert upgrade.run(host) == 1
+
+    err = capsys.readouterr().err
+    assert "can't run agent-bridge" in err
+    assert "agent-bridge setup" in err
+
+
+def test_on_windows_ctrl_c_during_the_upgrade_says_how_to_start_agent_bridge(host: FakeHost, capsys) -> None:
+    host.platform, host.run_error = "win32", KeyboardInterrupt()
+
+    with pytest.raises(KeyboardInterrupt):
+        upgrade.run(host)
+
+    err = capsys.readouterr().err
+    assert "agent-bridge setup" in err
+    assert f"uv tool install --reinstall {PACKAGE}" in err
+
+
+def test_on_posix_ctrl_c_during_the_upgrade_adds_nothing(host: FakeHost, capsys) -> None:
+    host.run_error = KeyboardInterrupt()
+
+    with pytest.raises(KeyboardInterrupt):
+        upgrade.run(host)
+
+    assert "agent-bridge setup" not in capsys.readouterr().err
