@@ -35,7 +35,7 @@ from agent_bridge.install.common import PREFIX, Read, Refused, ask
 from agent_bridge.install.flow import Installed, Options, Plan
 
 __all__ = ["HERDR_TASK", "RULE", "TASK", "Options", "WindowsService", "WindowsSystem", "herdr_task_xml", "setup",
-           "system", "task_xml", "uninstall"]
+           "stop_for_upgrade", "system", "task_xml", "uninstall"]
 
 TASK = "agent-bridge"
 # Starts herdr's server at logon; never stops it.
@@ -334,6 +334,37 @@ def uninstall(system: System) -> int:
         print(f"error: {refusal}", file=sys.stderr)
         return flow.FAILED
     return flow.uninstall(system, WindowsService(system, lambda: None))
+
+
+def stop_for_upgrade(system: System, environment: Path | None, programs: Iterable[str]) -> None:
+    """For `agent-bridge upgrade`: stops the task and the bridge it runs, as setup does, leaving
+    the task disabled for the setup that follows to bring back. Refused, with the task put back,
+    while anything else still runs from the install (e.g. an agent-bridge check in another
+    terminal): uv couldn't replace its files, and would leave the package half removed."""
+    if (refusal := _other_account(system)) is not None:
+        raise Refused(refusal)
+    service = WindowsService(system, lambda: None)
+    service.prepare()
+    if service.previous is not None:
+        print(f"\n==> Stopping the scheduled task {TASK}")
+    service._stop((service.installed_port,))
+    held = [process for process in system.processes() if _runs_from(process, environment, programs)]
+    if held:
+        service.abandon()
+        running = ", ".join(f"{process.name} (PID {process.pid})" for process in held)
+        raise Refused(f"{running} still {'run' if len(held) > 1 else 'runs'} from the installed agent-bridge, so uv "
+                      "couldn't replace its files. Close them, then run the upgrade again; agent-bridge was started "
+                      "again meanwhile")
+
+
+def _runs_from(process: Listener, environment: Path | None, programs: Iterable[str]) -> bool:
+    """Whether `process` is one of `programs` or runs from `environment`."""
+    path = os.path.normcase(process.path)
+    if not path:
+        return False
+    if environment is not None and path.startswith(os.path.normcase(str(environment)) + os.sep):
+        return True
+    return any(path == os.path.normcase(program) for program in programs)
 
 
 def _setup_ps1_answers(options: Options, paths: Paths) -> Options:
