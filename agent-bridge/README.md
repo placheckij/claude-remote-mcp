@@ -483,9 +483,10 @@ The last lines name the host as the gateway knows it. Nothing needs copying to t
 gateway host. The plist runs agent-bridge at a path upgrades keep:
 `/opt/homebrew/opt/agent-bridge/bin/agent-bridge` for Homebrew (`/usr/local/opt/...` on
 Intel; `brew upgrade agent-bridge`), `~/.local/bin/agent-bridge` for uv (`uv tool upgrade
-claude-remote-mcp-agent-bridge`). Re-run `agent-bridge setup` after upgrading, which
-restarts the service. Re-running asks nothing on an installed Mac, and keeps the token and
-the enrollment. If setup stops partway, run it again: it picks up from there.
+claude-remote-mcp-agent-bridge`). `agent-bridge upgrade` does both and runs setup again,
+which restarts the service (or run it as `uvx --from claude-remote-mcp-agent-bridge@latest
+agent-bridge upgrade`). By hand, re-run `agent-bridge setup` after upgrading. Re-running
+asks nothing on an installed Mac, and keeps the token and the enrollment. If setup stops partway, run it again: it picks up from there.
 
 To skip the questions or change an installed value, pass it: `--roots`, `--name`,
 `--host`, `--port`, `--herdr-bin`, `--claude-config-dir` and `--trust-root` (`''` for no
@@ -510,7 +511,8 @@ installed agent-bridge. From a checkout, install it with
 `uv tool install --editable ./agent-bridge` and run that one's `agent-bridge setup`.
 
 An agent-bridge installed from a checkout or a wheel stays that version under a plain
-`uv tool install claude-remote-mcp-agent-bridge`. To move it to the published package, run
+`uv tool install claude-remote-mcp-agent-bridge`. `agent-bridge upgrade` moves it to the
+published package (the checkout is left as it is), or by hand:
 `uv tool install --reinstall claude-remote-mcp-agent-bridge`, then `agent-bridge setup`.
 
 #### Homebrew or uv on macOS
@@ -676,9 +678,10 @@ its own resume back (which brings agents back without their account or arguments
 re-runs keep what is installed.
 
 The unit runs `~/.local/bin/agent-bridge`, which `uv tool upgrade
-claude-remote-mcp-agent-bridge` keeps; re-run `agent-bridge setup` after upgrading, which
-restarts agent-bridge but not herdr's server. Re-running asks nothing on an installed
-host, and keeps the token and the enrollment. If setup stops partway, run it again.
+claude-remote-mcp-agent-bridge` keeps; `agent-bridge upgrade` upgrades it and runs setup
+again, which restarts agent-bridge but not herdr's server (by hand: `uv tool upgrade`,
+then `agent-bridge setup`). Re-running asks nothing on an installed host, and keeps the
+token and the enrollment. If setup stops partway, run it again.
 
 A host set up from a checkout with `agent-bridge/deploy/linux/setup.sh` (earlier
 versions) is taken over with no questions: setup keeps its env file, token and
@@ -691,7 +694,8 @@ installed agent-bridge. From a checkout, install it with
 `uv tool install --editable ./agent-bridge` and run that one's `agent-bridge setup`.
 
 An agent-bridge installed from a checkout or a wheel stays that version under a plain
-`uv tool install claude-remote-mcp-agent-bridge`. To move it to the published package, run
+`uv tool install claude-remote-mcp-agent-bridge`. `agent-bridge upgrade` moves it to the
+published package (the checkout is left as it is), or by hand:
 `uv tool install --reinstall claude-remote-mcp-agent-bridge`, then `agent-bridge setup`.
 
 #### Restart, stop, uninstall
@@ -789,9 +793,23 @@ setup asks nothing on an installed host, and keeps the token and the enrollment.
 stops partway, run it again; a setup that stops after stopping agent-bridge puts the task
 back as it was.
 
-Windows can't replace files a running program has open, so stop agent-bridge before
-upgrading: `uv tool upgrade` fails while it runs, and leaves the package half removed.
-Setup starts it again:
+To upgrade, run agent-bridge's upgrade from uvx's copy of the latest release. Windows can't
+replace the files of a running program, so the installed agent-bridge can't upgrade itself:
+
+```powershell
+uvx --from claude-remote-mcp-agent-bridge@latest agent-bridge upgrade
+```
+
+It stops the task, upgrades the package (`uv tool upgrade`, else a reinstall) and runs the
+new `agent-bridge setup`, which starts it again; the agents keep running in herdr, but the
+gateway can't reach them until then. It refuses, with agent-bridge started again, while
+another program still runs from the install (an `agent-bridge check` in another terminal).
+If the upgrade fails and the old version is still there, it sets that one up again. Keep
+`@latest`: without it uvx runs the installed copy, which can't replace itself. To let an
+agent upgrade the host, allow it exactly that command.
+
+By hand, stop agent-bridge first, or `uv tool upgrade` fails while it runs and leaves the
+package half removed:
 
 ```powershell
 schtasks /Change /TN agent-bridge /DISABLE; schtasks /End /TN agent-bridge
@@ -813,9 +831,10 @@ installed agent-bridge. From a checkout, install it with
 `uv tool install --editable ./agent-bridge` and run that one's `agent-bridge setup`.
 
 An agent-bridge installed from a checkout or a wheel stays that version under a plain
-`uv tool install claude-remote-mcp-agent-bridge`. To move it to the published package, stop
-agent-bridge (as above), run `uv tool install --reinstall claude-remote-mcp-agent-bridge`,
-then `agent-bridge setup`.
+`uv tool install claude-remote-mcp-agent-bridge`.
+`agent-bridge upgrade` (run with uvx, as above) moves it to the published package: it says
+what it replaces and, when the release is older than what ran, how to go back. The checkout
+itself is left as it is.
 
 #### Restart, stop, uninstall
 
