@@ -191,3 +191,179 @@ def test_two_installs_on_macos_are_refused() -> None:
 def test_pipx_is_left_to_pipx() -> None:
     with pytest.raises(Refused, match=f"pipx upgrade {PACKAGE}"):
         upgrade.find_install(FakeHost(tools=None, platform="darwin", installs=["pipx"]))
+
+
+# --- Upgrading ------------------------------------------------------------------------
+
+
+def test_upgrades_then_runs_the_new_setup(host: FakeHost, tmp_path: Path, capsys) -> None:
+    assert upgrade.run(host) == 0
+
+    assert host.ran("run") == [(UV, "tool", "upgrade", PACKAGE)]
+    assert host.ran("installed") == [((tmp_path / "bin" / "agent-bridge").as_posix(), "setup", "0.3.1")]
+    assert host.ran("stop") == []
+    assert "agent-bridge 0.3.0 -> 0.3.1" in capsys.readouterr().out
+
+
+def test_setups_exit_code_is_upgrades(host: FakeHost) -> None:
+    host.setup_code = 3
+
+    assert upgrade.run(host) == 3
+
+
+def test_under_uvx_the_latest_release_installed_already_changes_nothing(host: FakeHost, capsys) -> None:
+    host.installed = "0.3.1"
+
+    assert upgrade.run(host) == 0
+
+    assert host.calls == []
+    assert "up to date (0.3.1)" in capsys.readouterr().out
+
+
+def test_run_from_the_install_on_posix_the_version_after_decides(host: FakeHost, capsys) -> None:
+    # A plain `agent-bridge upgrade`: its own version is the installed one, not the latest.
+    host.uv_cache, host.installed, host.published = False, "0.3.1", "0.3.1"
+
+    assert upgrade.run(host) == 0
+
+    assert host.ran("run") == [(UV, "tool", "upgrade", PACKAGE)]
+    assert host.ran("installed") == []
+    assert "up to date (0.3.1)" in capsys.readouterr().out
+
+
+def test_a_failed_upgrade_falls_back_to_a_reinstall(host: FakeHost, capsys) -> None:
+    host.upgrade_code = 2
+
+    assert upgrade.run(host) == 0
+
+    assert host.ran("run") == [(UV, "tool", "upgrade", PACKAGE), (UV, "tool", "install", "--reinstall", PACKAGE)]
+    assert host.ran("installed")[0][1:] == ("setup", "0.3.1")
+    assert "reinstalling" in capsys.readouterr().err
+
+
+def test_on_posix_a_failed_upgrade_leaves_the_service_as_it_was(host: FakeHost, capsys) -> None:
+    host.upgrade_code = host.reinstall_code = 2
+
+    assert upgrade.run(host) == 1
+
+    assert host.ran("installed") == []
+    assert "the upgrade failed" in capsys.readouterr().err
+
+
+def test_a_package_the_failed_reinstall_removed_says_how_to_get_it_back(host: FakeHost, capsys) -> None:
+    host.upgrade_code = host.reinstall_code = 2
+    host.reinstall_removes = True
+
+    assert upgrade.run(host) == 1
+
+    assert f"uv tool install --reinstall {PACKAGE}" in capsys.readouterr().err
+
+
+def test_a_checkout_install_is_moved_and_says_so(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys) -> None:
+    monkeypatch.setattr(upgrade, "BRIDGE_VERSION", "0.3.1")
+    receipt(tmp_path / "tools", f'{{ name = "{PACKAGE}", editable = "/src/agent-bridge" }}')
+    # The same version as the latest: moved all the same, and set up again.
+    host = FakeHost(tools=tmp_path / "tools", installed="0.3.1")
+
+    assert upgrade.run(host) == 0
+
+    assert host.ran("run") == [(UV, "tool", "install", "--reinstall", PACKAGE)]
+    assert host.ran("installed")[0][1:] == ("setup", "0.3.1")
+    out = capsys.readouterr().out
+    assert "installed from /src/agent-bridge" in out
+    assert "left as it is" in out
+
+
+def test_moving_a_newer_checkout_to_the_release_warns_and_says_how_to_go_back(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys) -> None:
+    monkeypatch.setattr(upgrade, "BRIDGE_VERSION", "0.3.1")
+    receipt(tmp_path / "tools", f'{{ name = "{PACKAGE}", editable = "/src/agent-bridge" }}')
+    host = FakeHost(tools=tmp_path / "tools", installed="0.4.0.dev0")
+
+    assert upgrade.run(host) == 0
+
+    err = capsys.readouterr().err
+    assert "older than the 0.4.0.dev0" in err
+    assert "uv tool install --reinstall --editable /src/agent-bridge" in err
+
+
+def test_homebrew_is_upgraded_with_brew_then_set_up(capsys) -> None:
+    host = FakeHost(tools=None, platform="darwin", installs=["Homebrew"], uv_cache=False,
+                    homebrew="/opt/homebrew/opt/agent-bridge/bin/agent-bridge")
+
+    assert upgrade.run(host) == 0
+
+    assert host.ran("run") == [(str(Path("/opt/homebrew/bin/brew")), "upgrade", "agent-bridge")]
+    assert host.ran("installed") == [("/opt/homebrew/opt/agent-bridge/bin/agent-bridge", "setup", "0.3.1")]
+
+
+def test_other_platforms_are_refused(host: FakeHost, capsys) -> None:
+    host.platform = "freebsd14"
+
+    assert upgrade.run(host) == 1
+
+    assert "macOS, Linux and Windows" in capsys.readouterr().err
+
+
+# --- Windows --------------------------------------------------------------------------
+
+
+def test_on_windows_the_installed_agent_bridge_points_at_uvx(host: FakeHost, capsys) -> None:
+    host.platform, host.uv_cache = "win32", False
+    host.prefix = host.tools / PACKAGE
+
+    assert upgrade.run(host) == 1
+
+    assert host.calls == []
+    assert upgrade.UVX in capsys.readouterr().err
+
+
+def test_on_windows_the_task_is_stopped_before_uv_runs(host: FakeHost, tmp_path: Path, capsys) -> None:
+    host.platform = "win32"
+
+    assert upgrade.run(host) == 0
+
+    assert [call[0] for call in host.calls] == ["stop", "run", "installed"]
+    assert host.ran("stop")[0][0] == str(tmp_path / "tools" / PACKAGE)
+    assert "the gateway can't reach them meanwhile" in capsys.readouterr().out
+
+
+def test_on_windows_setup_runs_even_when_the_version_didnt_change(host: FakeHost) -> None:
+    # From a checkout's .venv: not uvx, so its version isn't the latest's.
+    host.platform, host.uv_cache, host.installed, host.published = "win32", False, "0.3.1", "0.3.1"
+
+    assert upgrade.run(host) == 0
+
+    assert host.ran("installed")[0][1:] == ("setup", "0.3.1")
+
+
+def test_on_windows_a_refused_stop_changes_nothing(host: FakeHost, capsys) -> None:
+    host.platform, host.stop_refusal = "win32", "agent-bridge.exe (PID 5000) still runs"
+
+    assert upgrade.run(host) == 1
+
+    assert host.ran("run") == []
+    assert "PID 5000" in capsys.readouterr().err
+
+
+def test_on_windows_a_failed_upgrade_sets_the_old_version_up_again(host: FakeHost, capsys) -> None:
+    host.platform = "win32"
+    host.upgrade_code = host.reinstall_code = 2
+
+    assert upgrade.run(host) == 1
+
+    assert host.ran("installed")[0][1:] == ("setup", "0.3.0")
+    assert "the version still installed" in capsys.readouterr().out
+
+
+def test_on_windows_a_removed_package_stays_stopped_with_how_to_recover(host: FakeHost, capsys) -> None:
+    host.platform = "win32"
+    host.upgrade_code = host.reinstall_code = 2
+    host.reinstall_removes = True
+
+    assert upgrade.run(host) == 1
+
+    assert host.ran("installed") == []
+    err = capsys.readouterr().err
+    assert f"uv tool install --reinstall {PACKAGE}" in err
+    assert "agent-bridge setup" in err
