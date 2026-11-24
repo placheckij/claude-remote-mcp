@@ -817,7 +817,8 @@ uv tool upgrade claude-remote-mcp-agent-bridge
 agent-bridge setup
 ```
 
-If an upgrade failed that way, `agent-bridge` is gone too: run
+From Git Bash (as Claude Code's `!` runs commands), prefix the schtasks commands with
+`MSYS_NO_PATHCONV=1`. If an upgrade failed that way, `agent-bridge` is gone too: run
 `uv tool install --reinstall claude-remote-mcp-agent-bridge` (with agent-bridge stopped,
 as above), then `agent-bridge setup`.
 
