@@ -483,10 +483,13 @@ The last lines name the host as the gateway knows it. Nothing needs copying to t
 gateway host. The plist runs agent-bridge at a path upgrades keep:
 `/opt/homebrew/opt/agent-bridge/bin/agent-bridge` for Homebrew (`/usr/local/opt/...` on
 Intel; `brew upgrade agent-bridge`), `~/.local/bin/agent-bridge` for uv (`uv tool upgrade
-claude-remote-mcp-agent-bridge`). `agent-bridge upgrade` does both and runs setup again,
-which restarts the service (or run it as `uvx --from claude-remote-mcp-agent-bridge@latest
-agent-bridge upgrade`). By hand, re-run `agent-bridge setup` after upgrading. Re-running
-asks nothing on an installed Mac, and keeps the token and the enrollment. If setup stops partway, run it again: it picks up from there.
+claude-remote-mcp-agent-bridge`). `agent-bridge upgrade` upgrades whichever install there
+is (Homebrew's with `brew upgrade agent-bridge`, uv's with `uv tool upgrade`) and runs setup
+again, which restarts the service (or run it as `uvx --from
+claude-remote-mcp-agent-bridge@latest agent-bridge upgrade`, which also works from a
+version without `upgrade`). By hand, re-run `agent-bridge setup` after upgrading.
+Re-running asks nothing on an installed Mac, and keeps the token and the enrollment. If
+setup stops partway, run it again: it picks up from there.
 
 To skip the questions or change an installed value, pass it: `--roots`, `--name`,
 `--host`, `--port`, `--herdr-bin`, `--claude-config-dir` and `--trust-root` (`''` for no
@@ -679,8 +682,9 @@ re-runs keep what is installed.
 
 The unit runs `~/.local/bin/agent-bridge`, which `uv tool upgrade
 claude-remote-mcp-agent-bridge` keeps; `agent-bridge upgrade` upgrades it and runs setup
-again, which restarts agent-bridge but not herdr's server (by hand: `uv tool upgrade`,
-then `agent-bridge setup`). Re-running asks nothing on an installed host, and keeps the
+again (or `uvx --from claude-remote-mcp-agent-bridge@latest agent-bridge upgrade`, which
+also works from a version without `upgrade`), which restarts agent-bridge but not herdr's
+server (by hand: `uv tool upgrade`, then `agent-bridge setup`). Re-running asks nothing on an installed host, and keeps the
 token and the enrollment. If setup stops partway, run it again.
 
 A host set up from a checkout with `agent-bridge/deploy/linux/setup.sh` (earlier
@@ -832,10 +836,9 @@ installed agent-bridge. From a checkout, install it with
 `uv tool install --editable ./agent-bridge` and run that one's `agent-bridge setup`.
 
 An agent-bridge installed from a checkout or a wheel stays that version under a plain
-`uv tool install claude-remote-mcp-agent-bridge`.
-`agent-bridge upgrade` (run with uvx, as above) moves it to the published package: it says
-what it replaces and, when the release is older than what ran, how to go back. The checkout
-itself is left as it is.
+`uv tool install claude-remote-mcp-agent-bridge`. `agent-bridge upgrade` (run with uvx, as
+above) moves it to the published package: it says what it replaces and, when the release
+is older than what ran, how to go back. The checkout itself is left as it is.
 
 #### Restart, stop, uninstall
 
