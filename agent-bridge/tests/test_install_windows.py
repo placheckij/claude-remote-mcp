@@ -1449,6 +1449,40 @@ def test_upgrade_with_a_program_still_running_from_the_install_puts_the_task_bac
     assert not host.paths.disabled_marker.exists()
 
 
+def test_upgrade_refusal_says_the_task_was_started_again_only_when_it_was(host: FakeWindows, capsys) -> None:
+    assert setup(host, capsys, *every_flag(host)).code == 0
+    environment, programs = upgrade_paths(host)
+    host.processes_.append((Listener(5000, "agent-bridge.exe", "agent-bridge.exe check", programs[0]), 0))
+
+    with pytest.raises(Refused) as refused:
+        windows.stop_for_upgrade(host, environment, programs)
+
+    assert "wouldn't be able to replace its files" in str(refused.value)
+    assert "agent-bridge was started again meanwhile" in str(refused.value)
+
+
+def test_upgrade_refusal_leaves_a_task_that_was_never_set_up_as_it_was(host: FakeWindows) -> None:
+    environment, programs = upgrade_paths(host)
+    host.processes_.append((Listener(5000, "agent-bridge.exe", "agent-bridge.exe check", programs[0]), 0))
+
+    with pytest.raises(Refused) as refused:
+        windows.stop_for_upgrade(host, environment, programs)
+
+    assert "started again" not in str(refused.value)
+    assert "left as it was" in str(refused.value)
+
+
+def test_upgrade_does_not_count_a_sibling_folder_as_the_install(host: FakeWindows, capsys) -> None:
+    assert setup(host, capsys, *every_flag(host)).code == 0
+    environment, programs = upgrade_paths(host)
+    other = Path(str(environment) + "2") / "Scripts" / "python.exe"
+    host.processes_.append((Listener(5002, "python.exe", "python.exe", str(other)), 0))
+
+    windows.stop_for_upgrade(host, environment, programs)
+
+    assert not host.task_on
+
+
 def test_upgrade_ignores_programs_elsewhere(host: FakeWindows, capsys) -> None:
     assert setup(host, capsys, *every_flag(host)).code == 0
     # uvx's copy, which runs the upgrade, and another environment's python.

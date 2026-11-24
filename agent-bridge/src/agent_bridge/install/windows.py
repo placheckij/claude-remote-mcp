@@ -340,7 +340,7 @@ def stop_for_upgrade(system: System, environment: Path | None, programs: Iterabl
     """For `agent-bridge upgrade`: stops the task and the bridge it runs, as setup does, leaving
     the task disabled for the setup that follows to bring back. Refused, with the task put back,
     while anything else still runs from the install (e.g. an agent-bridge check in another
-    terminal): uv couldn't replace its files, and would leave the package half removed."""
+    terminal): uv wouldn't be able to replace its files, and would leave the package half removed."""
     if (refusal := _other_account(system)) is not None:
         raise Refused(refusal)
     service = WindowsService(system, lambda: None)
@@ -348,23 +348,31 @@ def stop_for_upgrade(system: System, environment: Path | None, programs: Iterabl
     if service.previous is not None:
         print(f"\n==> Stopping the scheduled task {TASK}")
     service._stop((service.installed_port,))
-    held = [process for process in system.processes() if _runs_from(process, environment, programs)]
+    # Resolved once, so a junction or an 8.3 short name in `uv tool dir` still matches.
+    resolved = None if environment is None else os.path.normcase(os.path.realpath(environment))
+    programs = [os.path.normcase(os.path.realpath(program)) for program in programs]
+    held = [process for process in system.processes() if _runs_from(process, resolved, programs)]
     if held:
+        was_off = service.paths.disabled_marker.exists()
         service.abandon()
+        # abandon() does nothing when the task was off before setup (the user disabled it, or none is
+        # registered), so it is only started again when the marker it removes was there.
+        again = was_off and not service.paths.disabled_marker.exists()
         running = ", ".join(f"{process.name} (PID {process.pid})" for process in held)
         raise Refused(f"{running} still {'run' if len(held) > 1 else 'runs'} from the installed agent-bridge, so uv "
-                      "couldn't replace its files. Close them, then run the upgrade again; agent-bridge was started "
-                      "again meanwhile")
+                      "wouldn't be able to replace its files. Close them, then run the upgrade again; "
+                      + ("agent-bridge was started again meanwhile" if again else "the scheduled task is left as it was"))
 
 
-def _runs_from(process: Listener, environment: Path | None, programs: Iterable[str]) -> bool:
-    """Whether `process` is one of `programs` or runs from `environment`."""
-    path = os.path.normcase(process.path)
-    if not path:
+def _runs_from(process: Listener, environment: str | None, programs: Iterable[str]) -> bool:
+    """Whether `process` is one of `programs` or runs from `environment`, both resolved and
+    normcased by the caller."""
+    if not process.path:
         return False
-    if environment is not None and path.startswith(os.path.normcase(str(environment)) + os.sep):
+    path = os.path.normcase(os.path.realpath(process.path))
+    if environment is not None and path.startswith(environment + os.sep):
         return True
-    return any(path == os.path.normcase(program) for program in programs)
+    return path in programs
 
 
 def _setup_ps1_answers(options: Options, paths: Paths) -> Options:
