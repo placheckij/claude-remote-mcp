@@ -46,8 +46,8 @@ upgrade a host needs a broad permission rule for `schtasks /End`.
   `claude_remote_mcp_agent_bridge-*.dist-info`. The receipt's requirement for
   `claude-remote-mcp-agent-bridge` decides the upgrade:
   - only a name (with or without a version specifier): **PyPI**, upgraded with
-    `uv tool upgrade claude-remote-mcp-agent-bridge`. A pin is kept by uv; upgrade says the
-    install is pinned when the version doesn't move.
+    `uv tool upgrade claude-remote-mcp-agent-bridge`. A pin is kept by uv, which itself prints
+    that the tool is pinned and how to reinstall it at the latest version.
   - `editable`, `path`, `directory`, `git` or `url`: **moved to PyPI** with
     `uv tool install --reinstall claude-remote-mcp-agent-bridge`. Before it does that, upgrade
     prints the install it replaces (where it came from and its version).
