@@ -467,8 +467,9 @@ def build_server(settings: Settings, hosts: Hosts, oauth: GatewayOAuth) -> MCPSe
 
     @mcp.tool(annotations=STOP)
     async def stop_agent(agent_id: AgentId) -> str:
-        """Stop an agent and close its terminal pane. Ask the user to confirm first, unless it
-        is a helper you started yourself and its job is done."""
+        """Stop an agent and close its terminal pane. Ask the user to confirm first, unless you
+        started it as a helper for your own task (not an agent the user asked for) and its job
+        is done."""
         host, bare = await hosts.route(agent_id)
         try:
             await host.bridge.stop_agent(bare)

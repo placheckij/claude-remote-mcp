@@ -54,3 +54,45 @@ def test_shipped_skill_is_within_limits() -> None:
     text = skill_md.decode()
     for needed in ("Owner:", "Depth:", "answer_agent", "stop_agent"):
         assert needed in text
+
+
+def teams_skill() -> tuple[str, str]:
+    (loaded,) = load_skills(SKILLS_DIR)
+    return loaded.skill.frontmatter["description"], loaded.files["skill://agent-teams/SKILL.md"].decode()
+
+
+def test_skill_description_says_when_to_load_it() -> None:
+    # Clients pick a skill by its description, so it says when, not only what.
+    description, _ = teams_skill()
+    assert description.startswith("Use when")
+
+
+def test_skill_lets_only_the_top_answer_approvals() -> None:
+    # Voice is the top and the only one who can call the tool for the human; a helper
+    # must not answer even when its owner says the human approved.
+    _, text = teams_skill()
+    assert "Only the top calls `answer_agent`" in text
+    assert "even when its owner says the human approved" in text
+
+
+def test_skill_wakes_the_helper_that_passed_something_up() -> None:
+    # Today's tools only poll: a helper that ended its turn to pass something up
+    # waits until someone tells it to carry on.
+    _, text = teams_skill()
+    assert "carry on" in text
+    assert "not when you end a turn to ask something" in text
+
+
+def test_skill_gives_helpers_their_own_worktree() -> None:
+    # start_agent starts in the project folder itself: a new branch there would switch
+    # the owner's checkout.
+    _, text = teams_skill()
+    assert "git worktree of your own" in text
+    assert "push it if your owner is on another host" in text
+
+
+def test_skill_names_helpers_after_their_owner() -> None:
+    # Without recorded ownership, the name is how helpers are found again, and orphans.
+    _, text = teams_skill()
+    assert "<your name>-<task>" in text
+    assert "orphan" in text

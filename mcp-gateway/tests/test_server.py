@@ -229,6 +229,12 @@ def test_lists_the_tools(client: TestClient) -> None:
     }
 
 
+def test_stop_agent_asks_first_for_an_agent_the_user_asked_for(client: TestClient) -> None:
+    # A helper may be stopped without asking; an agent voice started for the user may not.
+    tools = {tool["name"]: tool for tool in rpc(client, "tools/list").json()["result"]["tools"]}
+    assert "not an agent the user asked for" in tools["stop_agent"]["description"]
+
+
 # --- Skills ---------------------------------------------------------------------------
 
 TEAMS_SKILL = "skill://agent-teams/SKILL.md"
