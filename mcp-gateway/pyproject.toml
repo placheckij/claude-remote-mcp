@@ -20,7 +20,8 @@ classifiers = [
 ]
 dependencies = [
     "httpx>=0.28.1",
-    "mcp>=2.3.0",
+    # The unreleased Skills extension (#166); replace with a release before tagging.
+    "mcp @ git+https://github.com/modelcontextprotocol/python-sdk@77001c96f9507be0f4d009b83210a384a5e08bda",
     "pydantic-settings>=2.16.1",
     "uvicorn>=0.54.0",
 ]
@@ -41,6 +42,10 @@ build-backend = "hatchling.build"
 # The import name isn't the project's name, so hatchling can't find it by itself.
 [tool.hatch.build.targets.wheel]
 packages = ["src/mcp_gateway"]
+
+# For the git pin of mcp above; PyPI refuses such a package, so it can't be released with it.
+[tool.hatch.metadata]
+allow-direct-references = true
 
 [dependency-groups]
 dev = [
