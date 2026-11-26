@@ -34,6 +34,8 @@ class FakeHost:
     installs: list[str] = field(default_factory=list)
     homebrew: str | None = None
     stop_refusal: str | None = None
+    # Raised by stop_bridge, as Ctrl+C while it waits for the bridge to end does.
+    stop_error: BaseException | None = None
     setup_code: int = 0
     # Raised by run_installed / run, as a setup that can't start or Ctrl+C does.
     setup_error: BaseException | None = None
@@ -80,6 +82,8 @@ class FakeHost:
 
     def stop_bridge(self, install: upgrade.Install) -> None:
         self.calls.append(("stop", str(install.environment), *install.programs))
+        if self.stop_error:
+            raise self.stop_error
         if self.stop_refusal:
             raise Refused(self.stop_refusal)
 
@@ -509,6 +513,28 @@ def test_on_windows_ctrl_c_during_the_upgrade_says_how_to_start_agent_bridge(hos
     err = capsys.readouterr().err
     assert "agent-bridge setup" in err
     assert f"uv tool install --reinstall {PACKAGE}" in err
+
+
+def test_on_windows_ctrl_c_while_stopping_says_how_to_start_agent_bridge(host: FakeHost, capsys) -> None:
+    host.platform, host.stop_error = "win32", KeyboardInterrupt()
+
+    with pytest.raises(KeyboardInterrupt):
+        upgrade.run(host)
+
+    assert host.ran("run") == []
+    assert "agent-bridge setup" in capsys.readouterr().err
+
+
+def test_a_pinned_install_that_uv_keeps_back_isnt_called_up_to_date(host: FakeHost, capsys) -> None:
+    # uv tool upgrade keeps a pin (and says so) and exits 0; uvx@latest runs 0.3.1.
+    host.published = "0.3.0"
+
+    assert upgrade.run(host) == 0
+
+    out = capsys.readouterr().out
+    assert "up to date" not in out
+    assert "agent-bridge stays at 0.3.0; the latest is 0.3.1" in out
+    assert host.ran("installed") == []
 
 
 def test_on_posix_ctrl_c_during_the_upgrade_adds_nothing(host: FakeHost, capsys) -> None:

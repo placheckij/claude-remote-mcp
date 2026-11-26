@@ -163,12 +163,16 @@ def _upgrade(system: System) -> int:
         return _replace(system, install, windows, before)
     print("agent-bridge stops until setup starts it again. Agents keep running in herdr, but the gateway can't "
           "reach them meanwhile, also an agent that runs this upgrade.")
-    system.stop_bridge(install)
+    stopped = False
     try:
+        system.stop_bridge(install)
+        stopped = True
         return _replace(system, install, windows, before)
-    except (Refused, KeyboardInterrupt):
-        # A setup that can't run, or Ctrl+C during a slow uv: stopped, and nothing else says how to start it.
-        _how_to_start(install, gone=False)
+    except (Refused, KeyboardInterrupt) as error:
+        # Ctrl+C while stopping or during a slow uv, or a setup that can't run: stopped, and nothing else
+        # says how to start it. A refused stop says itself what it left.
+        if stopped or isinstance(error, KeyboardInterrupt):
+            _how_to_start(install, gone=False)
         raise
 
 
@@ -184,7 +188,11 @@ def _replace(system: System, install: Install, windows: bool, before: str | None
     if not upgraded or after is None:
         return _failed(system, install, windows, after)
     if install.kind != "source" and after == before:
-        print(f"agent-bridge is up to date ({after}).")
+        if system.in_uv_cache() and after != BRIDGE_VERSION:
+            # Kept back, e.g. pinned (uv says so above): uvx@latest runs a newer one.
+            print(f"agent-bridge stays at {after}; the latest is {BRIDGE_VERSION} (see above).")
+        else:
+            print(f"agent-bridge is up to date ({after}).")
         # On Windows it was stopped, and setup starts it again.
         if not windows:
             return OK
