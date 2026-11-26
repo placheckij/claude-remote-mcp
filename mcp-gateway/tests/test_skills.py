@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 
-from mcp_gateway.skills import load_skills
+from mcp_gateway.skills import SKILLS_DIR, load_skills
 
 
 def skill_folder(root: Path, folder: str, frontmatter: str, extra: dict[str, str] | None = None) -> None:
@@ -43,3 +43,14 @@ def test_refuses_a_folder_without_skill_md(tmp_path: Path) -> None:
     (tmp_path / "demo").mkdir()
     with pytest.raises(ValueError, match="demo"):
         load_skills(tmp_path)
+
+
+def test_shipped_skill_is_within_limits() -> None:
+    (loaded,) = load_skills(SKILLS_DIR)
+    assert loaded.skill.frontmatter["name"] == "agent-teams"
+    skill_md = loaded.files["skill://agent-teams/SKILL.md"]
+    # Claude scans connector skills only up to 100 KB per text file.
+    assert len(skill_md) < 100_000
+    text = skill_md.decode()
+    for needed in ("Owner:", "Depth:", "answer_agent", "stop_agent"):
+        assert needed in text
