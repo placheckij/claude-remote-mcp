@@ -294,9 +294,16 @@ class RealSystem:
         sys.stdout.flush()
         sys.stderr.flush()
         try:
-            return subprocess.run([command, *args], env=_environment(), cwd=self._cwd()).returncode
+            process = subprocess.Popen([command, *args], env=_environment(), cwd=self._cwd())
         except OSError as error:
             raise Refused(f"can't run {command} ({error.strerror})") from None
+        while True:
+            try:
+                return process.wait()
+            except KeyboardInterrupt:
+                # Ctrl+C reaches setup too, which puts things back and says so itself; subprocess.run
+                # would kill it a moment later, halfway through that.
+                continue
 
     def _cwd(self) -> str:
         # Not the shared /tmp, where another user could plant the legacy .env agent-bridge still reads

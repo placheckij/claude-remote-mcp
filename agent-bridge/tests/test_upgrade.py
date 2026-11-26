@@ -420,33 +420,69 @@ def test_uvx_environments_are_in_uvs_cache(monkeypatch: pytest.MonkeyPatch) -> N
     assert not real.in_uv_cache()
 
 
+class FakeSetup:
+    """A started agent-bridge setup: wait() raises KeyboardInterrupt for each Ctrl+C in `interrupts`,
+    then returns `code`."""
+
+    def __init__(self, seen: dict, code: int = 0, interrupts: int = 0) -> None:
+        self.seen, self.code, self.interrupts = seen, code, interrupts
+        self.killed = False
+
+    def __call__(self, argv, **options):
+        self.seen.update(options, argv=argv)
+        return self
+
+    def wait(self) -> int:
+        if self.interrupts:
+            self.interrupts -= 1
+            raise KeyboardInterrupt
+        return self.code
+
+    def kill(self) -> None:
+        self.killed = True
+
+
 @pytest.mark.parametrize(("platform", "cwd"), [("darwin", "/"), ("linux", "/")])
 def test_the_new_setup_runs_from_the_root_on_posix(monkeypatch: pytest.MonkeyPatch, platform: str, cwd: str) -> None:
     # Not the shared /tmp, where another user could plant the legacy .env agent-bridge reads.
     seen = {}
-
-    def fake_run(argv, **options):
-        seen.update(options)
-        return type("Result", (), {"returncode": 0})()
-
-    monkeypatch.setattr(upgrade.subprocess, "run", fake_run)
+    monkeypatch.setattr(upgrade.subprocess, "Popen", FakeSetup(seen))
     real = upgrade.RealSystem()
     real.platform = platform
 
     assert real.run_installed("/b/agent-bridge", "setup") == 0
     assert seen["cwd"] == cwd
+    assert seen["argv"] == ["/b/agent-bridge", "setup"]
 
 
 def test_the_new_setup_runs_from_the_temp_folder_on_windows(monkeypatch: pytest.MonkeyPatch) -> None:
     seen = {}
-    monkeypatch.setattr(upgrade.subprocess, "run", lambda argv, **options: seen.update(options) or
-                        type("Result", (), {"returncode": 0})())
+    monkeypatch.setattr(upgrade.subprocess, "Popen", FakeSetup(seen))
     real = upgrade.RealSystem()
     real.platform = "win32"
 
     real.run_installed("C:/b/agent-bridge.exe", "setup")
 
     assert seen["cwd"] == upgrade.tempfile.gettempdir()
+
+
+def test_ctrl_c_lets_the_new_setup_finish_putting_things_back(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Ctrl+C reaches setup too; it is waited for, not killed, and its exit code is upgrade's.
+    setup = FakeSetup({}, code=130, interrupts=2)
+    monkeypatch.setattr(upgrade.subprocess, "Popen", setup)
+
+    assert upgrade.RealSystem().run_installed("/b/agent-bridge", "setup") == 130
+    assert not setup.killed
+
+
+def test_a_setup_that_cant_start_is_refused(monkeypatch: pytest.MonkeyPatch) -> None:
+    def fail(argv, **options):
+        raise FileNotFoundError(2, "No such file")
+
+    monkeypatch.setattr(upgrade.subprocess, "Popen", fail)
+
+    with pytest.raises(Refused, match=r"can't run /b/agent-bridge \(No such file\)"):
+        upgrade.RealSystem().run_installed("/b/agent-bridge", "setup")
 
 
 def test_a_receipt_with_entries_that_arent_tables_is_refused() -> None:

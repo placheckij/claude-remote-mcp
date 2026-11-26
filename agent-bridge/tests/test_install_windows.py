@@ -1461,15 +1461,57 @@ def test_upgrade_refusal_says_the_task_was_started_again_only_when_it_was(host: 
     assert "agent-bridge was started again meanwhile" in str(refused.value)
 
 
-def test_upgrade_refusal_leaves_a_task_that_was_never_set_up_as_it_was(host: FakeWindows) -> None:
+def test_upgrade_refusal_on_a_host_never_set_up_says_how_to_start_agent_bridge(host: FakeWindows) -> None:
     environment, programs = upgrade_paths(host)
     host.processes_.append((Listener(5000, "agent-bridge.exe", "agent-bridge.exe check", programs[0]), 0))
 
     with pytest.raises(Refused) as refused:
         windows.stop_for_upgrade(host, environment, programs)
 
-    assert "started again" not in str(refused.value)
-    assert "left as it was" in str(refused.value)
+    assert "started again meanwhile" not in str(refused.value)
+    assert "agent-bridge is stopped meanwhile: start it again with agent-bridge setup" in str(refused.value)
+
+
+def test_upgrade_refusal_when_the_task_cant_be_put_back_says_agent_bridge_is_stopped(host: FakeWindows, capsys) -> None:
+    assert setup(host, capsys, *every_flag(host)).code == 0
+    environment, programs = upgrade_paths(host)
+    host.processes_.append((Listener(5000, "agent-bridge.exe", "agent-bridge.exe check", programs[0]), 0))
+    host.register_fails = True
+
+    with pytest.raises(Refused) as refused:
+        windows.stop_for_upgrade(host, environment, programs)
+
+    assert not host.task_on
+    assert "started again meanwhile" not in str(refused.value)
+    assert "agent-bridge is stopped meanwhile" in str(refused.value)
+
+
+def test_upgrade_refusal_with_a_stale_marker_and_no_task_says_agent_bridge_is_stopped(host: FakeWindows) -> None:
+    # Left by a setup killed long ago, the task since unregistered: abandon() only removes the marker.
+    environment, programs = upgrade_paths(host)
+    host.paths.state.mkdir(parents=True, exist_ok=True)
+    host.paths.disabled_marker.write_text("setup\n", encoding="utf-8")
+    host.processes_.append((Listener(5000, "agent-bridge.exe", "agent-bridge.exe check", programs[0]), 0))
+
+    with pytest.raises(Refused) as refused:
+        windows.stop_for_upgrade(host, environment, programs)
+
+    assert "started again meanwhile" not in str(refused.value)
+    assert "agent-bridge is stopped meanwhile" in str(refused.value)
+
+
+def test_upgrade_refusal_after_stopping_a_bridge_started_by_hand_says_how_to_start_it(host: FakeWindows, capsys) -> None:
+    # The task disabled by the user, and agent-bridge run by hand: stopped, and left off.
+    assert setup(host, capsys, *every_flag(host)).code == 0
+    host.task_on = False
+    environment, programs = upgrade_paths(host)
+    host.processes_.append((Listener(5000, "agent-bridge.exe", "agent-bridge.exe check", programs[0]), 0))
+
+    with pytest.raises(Refused) as refused:
+        windows.stop_for_upgrade(host, environment, programs)
+
+    assert SERVER not in host.pids()
+    assert "agent-bridge is stopped meanwhile: start it again with agent-bridge setup" in str(refused.value)
 
 
 def test_upgrade_does_not_count_a_sibling_folder_as_the_install(host: FakeWindows, capsys) -> None:

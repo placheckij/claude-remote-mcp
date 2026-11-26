@@ -353,15 +353,16 @@ def stop_for_upgrade(system: System, environment: Path | None, programs: Iterabl
     programs = [os.path.normcase(os.path.realpath(program)) for program in programs]
     held = [process for process in system.processes() if _runs_from(process, resolved, programs)]
     if held:
-        was_off = service.paths.disabled_marker.exists()
         service.abandon()
-        # abandon() does nothing when the task was off before setup (the user disabled it, or none is
-        # registered), so it is only started again when the marker it removes was there.
-        again = was_off and not service.paths.disabled_marker.exists()
+        # Told from the task itself: abandon() leaves it off when the user had disabled it, when none
+        # is registered, or when registering it fails, and a bridge started by hand was stopped anyway.
+        xml = system.task()
+        again = xml is not None and Task.parse(xml).enabled
         running = ", ".join(f"{process.name} (PID {process.pid})" for process in held)
         raise Refused(f"{running} still {'run' if len(held) > 1 else 'runs'} from the installed agent-bridge, so uv "
                       "wouldn't be able to replace its files. Close them, then run the upgrade again; "
-                      + ("agent-bridge was started again meanwhile" if again else "the scheduled task is left as it was"))
+                      + ("agent-bridge was started again meanwhile" if again
+                         else "agent-bridge is stopped meanwhile: start it again with agent-bridge setup"))
 
 
 def _runs_from(process: Listener, environment: str | None, programs: Iterable[str]) -> bool:
