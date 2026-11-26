@@ -1,3 +1,4 @@
+import hashlib
 import json
 import logging
 import sys
@@ -226,6 +227,38 @@ def test_lists_the_tools(client: TestClient) -> None:
         "list_agents", "agent_details", "read_output", "send_prompt", "wait_for_agent",
         "answer_agent", "start_agent", "rename_agent", "stop_agent",
     }
+
+
+# --- Skills ---------------------------------------------------------------------------
+
+TEAMS_SKILL = "skill://agent-teams/SKILL.md"
+
+
+def test_initialize_advertises_skills(client: TestClient) -> None:
+    # claude.ai may still connect with initialize rather than server/discover.
+    params = {"protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "t", "version": "0"}}
+    result = rpc(client, "initialize", params).json()["result"]
+    assert "io.modelcontextprotocol/skills" in result["capabilities"]["extensions"]
+
+
+def test_lists_the_shipped_skill(client: TestClient) -> None:
+    skills = rpc(client, "skills/list").json()["result"]["skills"]
+    assert [(s["uri"], s["frontmatter"]["name"]) for s in skills] == [(TEAMS_SKILL, "agent-teams")]
+
+
+def test_served_bytes_match_the_manifest(client: TestClient) -> None:
+    (skill,) = rpc(client, "skills/list").json()["result"]["skills"]
+    for resource in skill["resources"]:
+        (content,) = rpc(client, "resources/read", {"uri": resource["uri"]}).json()["result"]["contents"]
+        data = content["text"].encode()
+        assert resource["digest"] == f"sha256:{hashlib.sha256(data).hexdigest()}"
+        assert resource["size"] == len(data)
+
+
+def test_get_skill_answers_by_uri_and_refuses_unknown(client: TestClient) -> None:
+    (listed,) = rpc(client, "skills/list").json()["result"]["skills"]
+    assert rpc(client, "skills/get", {"uri": TEAMS_SKILL}).json()["result"]["skill"] == listed
+    assert rpc(client, "skills/get", {"uri": "skill://nope/SKILL.md"}).json()["error"]["code"] == -32602
 
 
 def test_list_agents_is_one_line_per_agent(client: TestClient, fake: FakeAgentBridge) -> None:

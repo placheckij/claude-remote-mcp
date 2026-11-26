@@ -19,6 +19,7 @@ from mcp_gateway.hosts import NO_HOSTS, Host, Hosts, gather_hosts, version_probl
 from mcp_gateway.oauth import LOGIN_PATH, GatewayOAuth
 from mcp_gateway.registry import NAME_PATTERN
 from mcp_gateway.replies import count, describe, folder, invalid, report, with_truncation_note
+from mcp_gateway.skills import SKILLS_DIR, load_skills, register_skills, skills_extension
 
 INSTRUCTIONS = """\
 Controls the user's Claude Code agents running on their agent hosts (via herdr). The user is
@@ -99,12 +100,15 @@ LIST_TIMEOUT_S = 8
 def build_server(settings: Settings, hosts: Hosts, oauth: GatewayOAuth) -> MCPServer:
     # With these the SDK serves the OAuth metadata, /register, /authorize, /token and
     # /revoke, and checks the token on /mcp.
+    skills = load_skills(SKILLS_DIR)
     mcp = _Server(
         name="claude-remote",
         instructions=INSTRUCTIONS,
         auth=oauth.auth_settings(),
         auth_server_provider=oauth,
+        extensions=[skills_extension(skills)],
     )
+    register_skills(mcp, skills)
     mcp.custom_route(LOGIN_PATH, methods=["GET", "POST"])(oauth.login)
     root = settings.projects_root
 
