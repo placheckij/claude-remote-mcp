@@ -36,6 +36,8 @@ class FakeHost:
     stop_refusal: str | None = None
     # Raised by stop_bridge, as Ctrl+C while it waits for the bridge to end does.
     stop_error: BaseException | None = None
+    # Windows: an earlier upgrade stopped the task and was cut short before its setup.
+    stopped_before: bool = False
     setup_code: int = 0
     # Raised by run_installed / run, as a setup that can't start or Ctrl+C does.
     setup_error: BaseException | None = None
@@ -86,6 +88,9 @@ class FakeHost:
             raise self.stop_error
         if self.stop_refusal:
             raise Refused(self.stop_refusal)
+
+    def left_stopped(self) -> bool:
+        return self.stopped_before
 
     def ran(self, kind: str) -> list[tuple[str, ...]]:
         return [call[1:] for call in self.calls if call[0] == kind]
@@ -231,6 +236,36 @@ def test_under_uvx_the_latest_release_installed_already_changes_nothing(host: Fa
     assert "up to date (0.3.1)" in capsys.readouterr().out
 
 
+def test_on_windows_after_an_upgrade_cut_short_the_latest_installed_is_set_up_again(host: FakeHost, capsys) -> None:
+    # The first run's uv upgraded it, then it was closed before its setup started the task again.
+    host.platform, host.installed, host.published, host.stopped_before = "win32", "0.3.1", "0.3.1", True
+
+    assert upgrade.run(host) == 0
+
+    assert host.ran("stop")
+    assert host.ran("installed")[0][1:] == ("setup", "0.3.1")
+
+
+def test_on_windows_the_latest_installed_with_nothing_left_stopped_changes_nothing(host: FakeHost) -> None:
+    host.platform, host.installed = "win32", "0.3.1"
+
+    assert upgrade.run(host) == 0
+
+    assert host.calls == []
+
+
+def test_an_upgrade_whose_new_version_doesnt_answer_is_set_up_all_the_same(host: FakeHost, capsys) -> None:
+    # uv installed it, but `agent-bridge --version` timed out: setup says if something is wrong.
+    host.published, host.setup_code = None, 4
+
+    assert upgrade.run(host) == 4
+
+    assert host.ran("installed")[0][1] == "setup"
+    err = capsys.readouterr().err
+    assert "doesn't say its version" in err
+    assert "the upgrade failed" not in err
+
+
 def test_run_from_the_install_on_posix_the_version_after_decides(host: FakeHost, capsys) -> None:
     # A plain `agent-bridge upgrade`: its own version is the installed one, not the latest.
     host.uv_cache, host.installed, host.published = False, "0.3.1", "0.3.1"
@@ -295,7 +330,18 @@ def test_moving_a_newer_checkout_to_the_release_warns_and_says_how_to_go_back(
 
     err = capsys.readouterr().err
     assert "older than the 0.4.0.dev0" in err
-    assert "uv tool install --reinstall --editable /src/agent-bridge" in err
+    assert "uv tool install --reinstall --editable /src/agent-bridge, then agent-bridge setup" in err
+
+
+def test_on_windows_the_way_back_from_a_downgrade_says_to_stop_agent_bridge_first(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys) -> None:
+    monkeypatch.setattr(upgrade, "BRIDGE_VERSION", "0.3.1")
+    receipt(tmp_path / "tools", f'{{ name = "{PACKAGE}", editable = "/src/agent-bridge" }}')
+    host = FakeHost(tools=tmp_path / "tools", installed="0.4.0.dev0", platform="win32")
+
+    assert upgrade.run(host) == 0
+
+    assert "--editable /src/agent-bridge with agent-bridge stopped first" in capsys.readouterr().err
 
 
 def test_homebrew_is_upgraded_with_brew_then_set_up(capsys) -> None:
@@ -544,3 +590,19 @@ def test_on_posix_ctrl_c_during_the_upgrade_adds_nothing(host: FakeHost, capsys)
         upgrade.run(host)
 
     assert "agent-bridge setup" not in capsys.readouterr().err
+
+
+def test_the_real_system_tells_a_task_left_stopped_by_setups_marker(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from agent_bridge.install import windows
+
+    paths = windows.Paths(tmp_path / "Roaming", tmp_path / "Local")
+    monkeypatch.setattr(windows, "system", lambda: type("Host", (), {"paths": paths})())
+    real = upgrade.RealSystem()
+    real.platform = "win32"
+
+    assert not real.left_stopped()
+    paths.disabled_marker.parent.mkdir(parents=True)
+    paths.disabled_marker.write_text("setup\n", encoding="utf-8")
+    assert real.left_stopped()
+    real.platform = "linux"
+    assert not real.left_stopped()

@@ -75,6 +75,8 @@ class System(Protocol):
     def run_installed(self, command: str, *args: str) -> int: ...
     # Windows: stops the scheduled task and makes sure nothing holds the install's files.
     def stop_bridge(self, install: Install) -> None: ...
+    # Windows: an earlier upgrade or setup stopped and left the task disabled (its marker is there).
+    def left_stopped(self) -> bool: ...
 
 
 def parse_receipt(text: str, environment: Path, uv: str) -> Install:
@@ -91,7 +93,8 @@ def parse_receipt(text: str, environment: Path, uv: str) -> Install:
     command = programs.get("agent-bridge")
     if requirement is None or not command:
         raise Refused(f"{environment / 'uv-receipt.toml'} doesn't list agent-bridge: reinstall it "
-                      f"(uv tool install --reinstall {PACKAGE}), then run agent-bridge setup")
+                      f"(uv tool install --reinstall {PACKAGE}, on Windows with agent-bridge stopped first), "
+                      "then run agent-bridge setup")
     shown = tuple(path for path in programs.values() if path)
     for key in SOURCES:
         if key in requirement:
@@ -153,7 +156,9 @@ def _upgrade(system: System) -> int:
     before = system.version(install.command)
     # uvx@latest runs the latest release: nothing to do, and nothing to stop. (That assumes the
     # documented @latest command: with `uvx --from ...@<version>` it would compare against that version.)
-    if system.in_uv_cache() and install.kind == "uv" and before == BRIDGE_VERSION:
+    # Not when an upgrade that stopped it was cut short before its setup: this one brings it back.
+    if (system.in_uv_cache() and install.kind == "uv" and before == BRIDGE_VERSION
+            and not (windows and system.left_stopped())):
         print(f"agent-bridge is up to date ({before}).")
         return OK
     if install.kind == "source":
@@ -185,9 +190,12 @@ def _replace(system: System, install: Install, windows: bool, before: str | None
         print("warning: uv tool upgrade failed; reinstalling the package instead", file=sys.stderr)
         upgraded = system.run(*install.upgrade[:2], "install", "--reinstall", PACKAGE) == 0
     after = system.version(install.command)
-    if not upgraded or after is None:
+    if not upgraded:
         return _failed(system, install, windows, after)
-    if install.kind != "source" and after == before:
+    if after is None:
+        # uv says it installed it: slow to start, say, rather than gone. Setup says if it is.
+        print("warning: the new agent-bridge doesn't say its version; setting it up all the same", file=sys.stderr)
+    elif install.kind != "source" and after == before:
         if system.in_uv_cache() and after != BRIDGE_VERSION:
             # Kept back, e.g. pinned (uv says so above): uvx@latest runs a newer one.
             print(f"agent-bridge stays at {after}; the latest is {BRIDGE_VERSION} (see above).")
@@ -198,9 +206,11 @@ def _replace(system: System, install: Install, windows: bool, before: str | None
             return OK
     else:
         print(f"agent-bridge {before or '(version unknown)'} -> {after}")
-    if install.kind == "source" and before and _release(after) < _release(before):
+    if install.kind == "source" and before and after and _release(after) < _release(before):
         back = install.back or f"reinstall it from {install.source}"
-        print(f"warning: that is older than the {before} you had. To go back: {back}, then agent-bridge setup",
+        # Windows can't replace the files agent-bridge runs from, as here.
+        stop = " with agent-bridge stopped first (the README's upgrade by hand)" if windows else ""
+        print(f"warning: that is older than the {before} you had. To go back: {back}{stop}, then agent-bridge setup",
               file=sys.stderr)
     return system.run_installed(install.command, "setup")
 
@@ -323,6 +333,13 @@ class RealSystem:
         from agent_bridge.install import windows
 
         windows.stop_for_upgrade(windows.system(), install.environment, install.programs)
+
+    def left_stopped(self) -> bool:
+        if self.platform != "win32":
+            return False
+        from agent_bridge.install import windows
+
+        return windows.system().paths.disabled_marker.exists()
 
 
 def system() -> RealSystem:
