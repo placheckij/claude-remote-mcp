@@ -62,6 +62,8 @@ Cloudflare Tunnel. See [mcp-gateway/README.md](mcp-gateway/README.md).
 - **Agent operations.** `list_agents`, `agent_details`, `read_output`, `send_prompt`,
   `wait_for_agent`, `answer_agent`, `start_agent`, `rename_agent` and `stop_agent`.
   agent-bridge's JSON comes back as one short line per agent plus the last output lines.
+- **Skills.** The skill folders shipped in `mcp_gateway/skills/` are served with the MCP
+  Skills extension (`skills/list`, `skills/get`, their files through `resources/read`).
 
 It runs as a single process: sign-ins in progress and the wrong-passphrase counts live in
 its memory, and it reads `oauth.json` only at startup.
