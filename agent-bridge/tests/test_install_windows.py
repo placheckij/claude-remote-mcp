@@ -1411,3 +1411,143 @@ def test_the_cli_runs_the_windows_setup_on_windows(monkeypatch: pytest.MonkeyPat
 
     assert host.task_xml is not None
     assert common.PREFIX + "TOKEN" in dotenv_values(host.env_file)
+
+
+# --- Stopping for agent-bridge upgrade -------------------------------------------------
+
+
+def upgrade_paths(host: FakeWindows) -> tuple[Path, list[str]]:
+    """uv's tool environment, and the programs uv put on the PATH (the task runs agent-bridgew)."""
+    return host.home / "uv" / "tools" / "claude-remote-mcp-agent-bridge", [
+        str(host.bin / "agent-bridge.exe"), str(host.bin / "agent-bridgew.exe")]
+
+
+def test_upgrade_stops_the_task_and_its_bridge_and_leaves_it_disabled(host: FakeWindows, capsys) -> None:
+    assert setup(host, capsys, *every_flag(host)).code == 0
+
+    windows.stop_for_upgrade(host, *upgrade_paths(host))
+
+    assert not host.task_on
+    assert not {LAUNCHER, SERVER} & host.pids()
+    # Setup, run after the upgrade, brings it back.
+    assert host.paths.disabled_marker.exists()
+
+
+def test_upgrade_with_a_program_still_running_from_the_install_puts_the_task_back(host: FakeWindows, capsys) -> None:
+    assert setup(host, capsys, *every_flag(host)).code == 0
+    environment, programs = upgrade_paths(host)
+    host.processes_ += [
+        (Listener(5000, "agent-bridge.exe", f'"{programs[0]}" check', programs[0]), 0),
+        (Listener(5001, "python.exe", "python.exe -c pass", str(environment / "Scripts" / "python.exe")), 0),
+    ]
+
+    with pytest.raises(Refused, match=r"agent-bridge.exe \(PID 5000\), python.exe \(PID 5001\)"):
+        windows.stop_for_upgrade(host, environment, programs)
+
+    assert host.task_on
+    assert SERVER in host.pids()
+    assert not host.paths.disabled_marker.exists()
+
+
+def test_upgrade_refusal_says_the_task_was_started_again_only_when_it_was(host: FakeWindows, capsys) -> None:
+    assert setup(host, capsys, *every_flag(host)).code == 0
+    environment, programs = upgrade_paths(host)
+    host.processes_.append((Listener(5000, "agent-bridge.exe", "agent-bridge.exe check", programs[0]), 0))
+
+    with pytest.raises(Refused) as refused:
+        windows.stop_for_upgrade(host, environment, programs)
+
+    assert "wouldn't be able to replace its files" in str(refused.value)
+    assert "agent-bridge was started again meanwhile" in str(refused.value)
+
+
+def test_upgrade_refusal_on_a_host_never_set_up_says_how_to_start_agent_bridge(host: FakeWindows) -> None:
+    environment, programs = upgrade_paths(host)
+    host.processes_.append((Listener(5000, "agent-bridge.exe", "agent-bridge.exe check", programs[0]), 0))
+
+    with pytest.raises(Refused) as refused:
+        windows.stop_for_upgrade(host, environment, programs)
+
+    assert "started again meanwhile" not in str(refused.value)
+    assert "agent-bridge is stopped meanwhile: start it again with agent-bridge setup" in str(refused.value)
+
+
+def test_upgrade_refusal_when_the_task_cant_be_put_back_says_agent_bridge_is_stopped(host: FakeWindows, capsys) -> None:
+    assert setup(host, capsys, *every_flag(host)).code == 0
+    environment, programs = upgrade_paths(host)
+    host.processes_.append((Listener(5000, "agent-bridge.exe", "agent-bridge.exe check", programs[0]), 0))
+    host.register_fails = True
+
+    with pytest.raises(Refused) as refused:
+        windows.stop_for_upgrade(host, environment, programs)
+
+    assert not host.task_on
+    assert "started again meanwhile" not in str(refused.value)
+    assert "agent-bridge is stopped meanwhile" in str(refused.value)
+
+
+def test_upgrade_refusal_with_a_stale_marker_and_no_task_says_agent_bridge_is_stopped(host: FakeWindows) -> None:
+    # Left by a setup killed long ago, the task since unregistered: abandon() only removes the marker.
+    environment, programs = upgrade_paths(host)
+    host.paths.state.mkdir(parents=True, exist_ok=True)
+    host.paths.disabled_marker.write_text("setup\n", encoding="utf-8")
+    host.processes_.append((Listener(5000, "agent-bridge.exe", "agent-bridge.exe check", programs[0]), 0))
+
+    with pytest.raises(Refused) as refused:
+        windows.stop_for_upgrade(host, environment, programs)
+
+    assert "started again meanwhile" not in str(refused.value)
+    assert "agent-bridge is stopped meanwhile" in str(refused.value)
+
+
+def test_upgrade_refusal_after_stopping_a_bridge_started_by_hand_says_how_to_start_it(host: FakeWindows, capsys) -> None:
+    # The task disabled by the user, and agent-bridge run by hand: stopped, and left off.
+    assert setup(host, capsys, *every_flag(host)).code == 0
+    host.task_on = False
+    environment, programs = upgrade_paths(host)
+    host.processes_.append((Listener(5000, "agent-bridge.exe", "agent-bridge.exe check", programs[0]), 0))
+
+    with pytest.raises(Refused) as refused:
+        windows.stop_for_upgrade(host, environment, programs)
+
+    assert SERVER not in host.pids()
+    assert "agent-bridge is stopped meanwhile: start it again with agent-bridge setup" in str(refused.value)
+
+
+def test_upgrade_does_not_count_a_sibling_folder_as_the_install(host: FakeWindows, capsys) -> None:
+    assert setup(host, capsys, *every_flag(host)).code == 0
+    environment, programs = upgrade_paths(host)
+    other = Path(str(environment) + "2") / "Scripts" / "python.exe"
+    host.processes_.append((Listener(5002, "python.exe", "python.exe", str(other)), 0))
+
+    windows.stop_for_upgrade(host, environment, programs)
+
+    assert not host.task_on
+
+
+def test_upgrade_ignores_programs_elsewhere(host: FakeWindows, capsys) -> None:
+    assert setup(host, capsys, *every_flag(host)).code == 0
+    # uvx's copy, which runs the upgrade, and another environment's python.
+    host.processes_ += [
+        (Listener(6000, "agent-bridge.exe", "agent-bridge.exe upgrade", r"C:\cache\archive-v0\x\Scripts\agent-bridge.exe"), 0),
+        (Listener(6001, "python.exe", "python.exe", r"C:\Python\python.exe"), 0),
+    ]
+
+    windows.stop_for_upgrade(host, *upgrade_paths(host))
+
+    assert not host.task_on
+
+
+def test_upgrade_on_a_host_never_set_up_stops_nothing(host: FakeWindows) -> None:
+    windows.stop_for_upgrade(host, *upgrade_paths(host))
+
+    assert host.ran("schtasks") == []
+
+
+def test_upgrade_as_another_account_than_the_desktops_is_refused(host: FakeWindows) -> None:
+    host.desktop = "PC\\someone"
+
+    with pytest.raises(Refused, match="run this as PC\\\\someone"):
+        windows.stop_for_upgrade(host, *upgrade_paths(host))
+
+    assert host.ran("schtasks") == []

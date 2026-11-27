@@ -1,4 +1,4 @@
-"""`agent-bridge serve | enroll | rename | unenroll | save-agents | check | setup | uninstall | start-herdr`:
+"""`agent-bridge serve | enroll | rename | unenroll | save-agents | check | setup | upgrade | uninstall | start-herdr`:
 what the platform setups run.
 
 Exit codes are part of the deploy contract the setups are built against: `enroll` and
@@ -75,6 +75,8 @@ def main(argv: list[str] | None = None, *, run: Callable[..., None] = uvicorn.ru
             return _unenroll()
         if args.command == "setup":
             return _setup(args)
+        if args.command == "upgrade":
+            return _upgrade()
         if args.command == "uninstall":
             return _uninstall()
         if args.command == "save-agents":
@@ -127,6 +129,10 @@ def _parser() -> argparse.ArgumentParser:
     setup.add_argument("--agent-restore", dest="restore_agents", action=argparse.BooleanOptionalAction, default=None,
                        help="bring the Claude agents back after a restart, instead of herdr, which setup turns off "
                             "(default: as installed, else yes)")
+    commands.add_parser(
+        "upgrade", help="upgrade the installed package to the latest release and run its setup again; on Windows, "
+                        "run it as uvx --from claude-remote-mcp-agent-bridge@latest agent-bridge upgrade",
+    )
     commands.add_parser("uninstall", help="leave the gateway, then remove the service, its settings, state and log")
     commands.add_parser("save-agents", help="save the Claude agents running in herdr now, to restore after a restart")
     start_herdr = commands.add_parser(
@@ -423,6 +429,12 @@ def _setup(args: argparse.Namespace) -> int:
         return FAILED
     options = platform.Options.from_args(args)
     return platform.setup(options, platform.system(), lambda: read_line(sys.stdin.buffer))
+
+
+def _upgrade() -> int:
+    from agent_bridge.install import upgrade
+
+    return upgrade.run(upgrade.system())
 
 
 def read_line(stream: BinaryIO) -> str | None:
