@@ -28,7 +28,9 @@ from dotenv import dotenv_values
 
 from agent_bridge.cli import FAILED, NAME_TAKEN, OK, SAVE_FAILED, UNREACHABLE
 from agent_bridge.config import check_host, check_name_format, check_token_format
+from agent_bridge.context import RELAY
 from agent_bridge.gateway import ENROLL_AGAIN, parse_enrollment
+from agent_bridge.install import statusline
 from agent_bridge.install.common import (
     PREFIX,
     Read,
@@ -236,6 +238,7 @@ def setup(options: Options, system: System, service: Service, read: Read) -> int
             _write_env(plan, service)
             service.install(plan)
             _herdr_resume(plan, system)
+            _context_relay(plan.values, system)
             _start(system, service, plan.gone or plan.new_token)
             _drop_saved_agents(plan, service)
             _enroll(plan, enrolled, system, service, read)
@@ -286,11 +289,19 @@ def uninstall(system: System, service: Service) -> int:
     if not name:
         print("If the gateway has this host anyway (added with bridges add), remove it there: "
               "sudo mcp-gateway bridges remove <name> (see sudo mcp-gateway bridges list)")
+    # Read before the env file goes: it names the agents' configs.
+    try:
+        relay_configs = hook_config_dirs(_installed(service).values)
+    except Refused as error:
+        print(f"warning: {error}; agent-bridge's status line relay stays in the agents' Claude configs",
+              file=sys.stderr)
+        relay_configs = []
     try:
         service.remove()
     except Refused as error:
         print(f"error: {error}", file=sys.stderr)
         return FAILED
+    _remove_context_relay(relay_configs)
     # herdr brings its agents back itself again.
     _give_herdr_its_resume_back()
     for path in (service.env_file, service.state_file, service.state_file.with_name("agents.json")):
@@ -701,6 +712,40 @@ def _hook_command(config_dir: Path) -> str:
         quoted = str(config_dir).replace("'", "''")
         return f"$env:CLAUDE_CONFIG_DIR='{quoted}'; herdr integration install claude"
     return f"CLAUDE_CONFIG_DIR={shlex.quote(str(config_dir))} herdr integration install claude"
+
+
+def relay_path(command: str) -> Path:
+    """agent-bridge-statusline, installed beside the agent-bridge that was run."""
+    name = RELAY + (".exe" if sys.platform == "win32" else "")
+    return Path(command).with_name(name)
+
+
+def _context_relay(values: dict[str, str], system: System) -> None:
+    """The agents' configs' status line goes through the relay, so agent_details can say how full
+    each agent's context is. Only warns: agents run the same without it."""
+    relay = relay_path(system.command())
+    if not relay.is_file():
+        print(f"warning: {relay} is missing, so agent_details can't tell agents' context use; reinstall "
+              "agent-bridge", file=sys.stderr)
+        return
+    for config_dir in hook_config_dirs(values):
+        try:
+            if statusline.install(config_dir, relay) == "written":
+                print(f"The status line in {config_dir / statusline.SETTINGS} now also tells agent-bridge "
+                      "agents' context use")
+        except (OSError, ValueError) as error:
+            print(f"warning: couldn't add agent-bridge's status line relay to {config_dir} ({_reason(error)}); "
+                  "agent_details can't tell the context use of agents started there", file=sys.stderr)
+
+
+def _remove_context_relay(configs: Iterable[Path]) -> None:
+    for config_dir in configs:
+        try:
+            if statusline.remove(config_dir):
+                print(f"Took agent-bridge's status line relay out of {config_dir / statusline.SETTINGS}")
+        except (OSError, ValueError) as error:
+            print(f"warning: couldn't take agent-bridge's status line relay out of {config_dir} ({_reason(error)}); "
+                  f"put your statusLine command back in {config_dir / statusline.SETTINGS}", file=sys.stderr)
 
 
 def _give_herdr_its_resume_back() -> None:

@@ -387,8 +387,10 @@ def test_list_agents_with_no_hosts_says_how_to_add_one(make) -> None:
 
 def test_a_qualified_id_reaches_its_host_with_the_bare_id(make) -> None:
     gateway = make(["mac", "linux"])
-    gateway.route("linux", "GET", "/agents/w1:p1", httpx.Response(200, json=AGENT))
-    assert gateway.call("agent_details", agent_id="linux/w1:p1") == (False, "linux/w1:p1 · webapp · idle · webapp")
+    gateway.route("linux", "GET", "/agents/w1:p1", httpx.Response(200, json={**AGENT, "context": None}))
+    assert gateway.call("agent_details", agent_id="linux/w1:p1") == (
+        False, "linux/w1:p1 · webapp · idle · webapp\n  context unknown",
+    )
     assert gateway.paths("mac") == []
 
 

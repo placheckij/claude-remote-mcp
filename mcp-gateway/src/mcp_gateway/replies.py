@@ -16,6 +16,27 @@ def describe(agent: dict, projects_root: str | None) -> str:
     return f"{line}\n  Asked: {question}" if question else line
 
 
+def context_line(agent: dict) -> str:
+    """How full the agent's context window is, e.g. "  context 34% (340k/1M)". Leaders parse it
+    (fleet-deputy's succession rule), so keep its shape: "  context unknown" when the host
+    can't tell, with a reason in brackets when its agent-bridge is too old to."""
+    if "context" not in agent:
+        return "  context unknown (its agent-bridge is too old to tell)"
+    use = agent["context"]
+    if not use:
+        return "  context unknown"
+    return f"  context {use['percent']}% ({tokens(use['tokens'])}/{tokens(use['window'])})"
+
+
+def tokens(n: int) -> str:
+    """850, 340k, 1M, 1.2M: short enough to say."""
+    if n < 1000:
+        return str(n)
+    if n < 999_500:
+        return f"{round(n / 1000)}k"
+    return f"{round(n / 1_000_000, 1):g}M"
+
+
 def folder(agent: dict, projects_root: str | None) -> str:
     """Where the agent works: its project, as the user said it to start_agent ("webapp"),
     not the whole path; outside every project, its full path."""

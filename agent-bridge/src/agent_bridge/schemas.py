@@ -22,6 +22,12 @@ def _no_nul(value: str) -> str:
 ArgvText = Annotated[str, AfterValidator(_no_nul)]
 
 
+class ContextUse(BaseModel):
+    percent: int
+    tokens: int
+    window: int
+
+
 class AgentSummary(BaseModel):
     id: str
     name: str | None
@@ -39,6 +45,9 @@ class AgentSummary(BaseModel):
     # was started with, or for a listed agent the one with its CLAUDE_CONFIG_DIR. None for
     # an unnamed config, or one that can't be read.
     account: str | None = None
+    # How full its context window is, as its Claude Code last told its status line
+    # (context.py); only on GET /agents/{id}, and None when that isn't known.
+    context: ContextUse | None = None
 
 
 class StartedAgent(AgentSummary):

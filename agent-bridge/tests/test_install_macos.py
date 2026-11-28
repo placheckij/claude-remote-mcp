@@ -15,6 +15,7 @@ from dotenv import dotenv_values
 
 from agent_bridge import cli
 from agent_bridge.config import check_name_format
+from agent_bridge.context import encode
 from agent_bridge.gateway import ENROLL_AGAIN
 from agent_bridge.install import common, flow, herdr_config, macos
 
@@ -511,6 +512,40 @@ def test_a_hook_that_wont_install_is_a_warning(mac: FakeMac, capsys) -> None:
     assert f"Run it again with: CLAUDE_CONFIG_DIR={work} herdr integration install claude" in run.out
     assert "can't write settings.json" in run.out
     assert "enrolled with the gateway" in run.out
+
+
+def test_the_agents_configs_status_line_goes_through_the_context_relay_until_uninstall(
+    mac: FakeMac, capsys, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    bridge = mac.home.parent / "bin" / "agent-bridge"
+    relay = bridge.with_name("agent-bridge-statusline")
+    relay.write_text("#!/bin/sh\n")
+    monkeypatch.setattr(mac, "command", lambda: str(bridge))
+    work, default = mac.home / ".claude-work", mac.home / ".claude"
+    for config, command in ((work, "bash ~/sl.sh"), (default, "echo mine")):
+        config.mkdir()
+        (config / "settings.json").write_text(json.dumps({"statusLine": {"type": "command", "command": command}}))
+
+    run = setup(mac, capsys, *every_flag(mac, accounts=json.dumps({"work": {"config_dir": str(work)}})))
+
+    assert run.code == 0, run.out
+    assert json.loads((work / "settings.json").read_text())["statusLine"]["command"] == (
+        f"{relay} --then {encode('bash ~/sl.sh')}")
+    assert f"The status line in {work / 'settings.json'} now also tells agent-bridge agents' context use" in run.out
+    assert json.loads((default / "settings.json").read_text())["statusLine"]["command"] == "echo mine"
+
+    code, out = uninstall(mac, capsys)
+
+    assert code == 0, out
+    assert json.loads((work / "settings.json").read_text())["statusLine"]["command"] == "bash ~/sl.sh"
+    assert f"Took agent-bridge's status line relay out of {work / 'settings.json'}" in out
+
+
+def test_a_missing_context_relay_is_a_warning(mac: FakeMac, capsys) -> None:
+    run = setup(mac, capsys, *every_flag(mac))
+
+    assert run.code == 0, run.out
+    assert "warning: /Users/me/.local/bin/agent-bridge-statusline is missing" in run.out
 
 
 def test_no_agent_restore_installs_no_hook(mac: FakeMac, capsys) -> None:
