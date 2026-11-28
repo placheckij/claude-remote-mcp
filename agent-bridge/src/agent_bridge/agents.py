@@ -15,6 +15,7 @@ from pathlib import Path, PurePath
 from agent_bridge.claude_args import picks_session
 from agent_bridge.claude_process import claude_environ, claude_process  # noqa: F401 - still importable from here
 from agent_bridge.config import Settings, claude_env
+from agent_bridge.context import read_context
 from agent_bridge.errors import BridgeError
 from agent_bridge.herdr import REMOTE_CONTROL_BLOCKED_TEXT, Herdr, HerdrError
 from agent_bridge.host import API_VERSION, BRIDGE_VERSION, host_name, platform_name
@@ -22,6 +23,7 @@ from agent_bridge.saved_agents import SavedAgent, forget
 from agent_bridge.state import StateError
 from agent_bridge.schemas import (
     AgentSummary,
+    ContextUse,
     HostInfo,
     Output,
     PromptResult,
@@ -119,7 +121,20 @@ class AgentService:
         return list(await asyncio.gather(*(self._detailed(agent) for agent in agents)))
 
     async def get_agent(self, agent_id: str) -> AgentSummary:
-        return await self._detailed(self._summarize(await self.herdr.get_agent(agent_id)))
+        found = await self.herdr.get_agent(agent_id)
+        agent = await self._detailed(self._summarize(found))
+        session = found.get("agent_session")
+        session_id = session.get("value") if isinstance(session, dict) and session.get("kind") == "id" else None
+        use = await asyncio.to_thread(read_context, session_id if isinstance(session_id, str) else None,
+                                      self._claude_configs())
+        context = ContextUse(percent=use[0], tokens=use[1], window=use[2]) if use else None
+        return agent.model_copy(update={"context": context})
+
+    def _claude_configs(self) -> list[Path]:
+        """Every Claude config an agent here may run on: the agents', each account's, the default."""
+        default = Path.home() / ".claude"
+        configs = [self.settings.claude_config_dir, *(a.config_dir for a in self.settings.accounts.values()), None]
+        return list(dict.fromkeys(config or default for config in configs))
 
     async def _detailed(self, agent: AgentSummary) -> AgentSummary:
         question, account = await asyncio.gather(self._question(agent), self._account_of(agent))

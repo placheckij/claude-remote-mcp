@@ -98,6 +98,7 @@ def test_lists_agents_as_summaries(root: Path) -> None:
             "question": None,
             "project": None,
             "account": None,
+            "context": None,
         }
     ]
 
@@ -619,6 +620,62 @@ def test_an_agent_on_a_config_no_account_has_carries_none(root: Path, claude_pro
         ("pane", "process-info"): process_info(claude_process(root / ".claude-other")),
     })
     assert accounts_client(runner, root).get("/agents/w1:p1", headers=AUTH).json()["account"] is None
+
+
+SESSION = "145550d5-22e8-42fc-8263-0bd7b29cddb9"
+# No question on screen, no account: the context is all these tests look at.
+NO_DETAILS = {("agent", "read"): (0, "", ""), ("pane", "process-info"): err("pane_not_found")}
+
+
+def in_session(found: dict, session_id: str = SESSION) -> dict:
+    return {**found, "agent_session": {"agent": "claude", "kind": "id", "source": "herdr:claude", "value": session_id}}
+
+
+def save_context(config: Path, session_id: str = SESSION, percent: float = 34.5) -> None:
+    path = config / "agent-bridge" / "context" / f"{session_id}.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    usage = {"input_tokens": 12, "cache_creation_input_tokens": 1_000, "cache_read_input_tokens": 339_000}
+    path.write_text(json.dumps({"context_window": {"context_window_size": 1_000_000, "used_percentage": percent,
+                                                   "current_usage": usage}}))
+
+
+@pytest.fixture
+def home(tmp_path_factory: pytest.TempPathFactory, set_home: Callable[[Path], None]) -> Path:
+    # Outside root: a root holding the home folder is refused as too broad.
+    home = tmp_path_factory.mktemp("home")
+    set_home(home)
+    return home
+
+
+@pytest.mark.parametrize("default", [False, True])
+def test_agent_details_say_how_full_the_context_is(root: Path, home: Path, default: bool) -> None:
+    # Found in whichever config the agent runs on: an account's, or the default one.
+    save_context(home / ".claude" if default else root / ".claude-personal")
+    runner = FakeRunner({("agent", "get"): ok({"agent": in_session(agent())}), **NO_DETAILS})
+    reply = accounts_client(runner, root).get("/agents/w1:p1", headers=AUTH).json()
+    assert reply["context"] == {"percent": 34, "tokens": 340_012, "window": 1_000_000}
+
+
+@pytest.mark.parametrize(
+    "found",
+    [
+        agent(),  # herdr doesn't know its conversation (no hook)
+        in_session(agent(), "4529f763-3898-405c-b06d-4306cd087ed2"),  # nothing saved for it
+        {**agent(), "agent_session": {"kind": "path", "value": SESSION}},
+    ],
+)
+def test_agent_details_without_a_known_context_say_none(
+    root: Path, home: Path, found: dict
+) -> None:
+    save_context(root / ".claude-personal")
+    runner = FakeRunner({("agent", "get"): ok({"agent": found}), **NO_DETAILS})
+    assert accounts_client(runner, root).get("/agents/w1:p1", headers=AUTH).json()["context"] is None
+
+
+def test_listed_agents_leave_the_context_out(root: Path, home: Path) -> None:
+    save_context(home / ".claude")
+    runner = FakeRunner({("agent", "list"): ok({"agents": [in_session(agent())]}), ("agent", "read"): (0, "", "")})
+    assert client(runner, root).get("/agents", headers=AUTH).json()[0]["context"] is None
 
 
 def test_agent_details_carry_the_account(root: Path, claude_process) -> None:

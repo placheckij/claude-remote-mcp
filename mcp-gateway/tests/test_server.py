@@ -355,7 +355,31 @@ def test_an_agent_that_asked_something_is_waiting_for_an_answer(
         False,
         f"2 agents:\n{expected}\nw2:p1 · webapp · idle · webapp",
     )
-    assert call_tool(client, "agent_details", agent_id="w1:p1") == (False, expected)
+    assert call_tool(client, "agent_details", agent_id="w1:p1") == (
+        False, f"{expected}\n  context unknown (its agent-bridge is too old to tell)",
+    )
+
+
+@pytest.mark.parametrize(
+    ("context", "line"),
+    [
+        ({"percent": 34, "tokens": 340_123, "window": 1_000_000}, "  context 34% (340k/1M)"),
+        ({"percent": 0, "tokens": 850, "window": 200_000}, "  context 0% (850/200k)"),
+        ({"percent": 82, "tokens": 1_234_567, "window": 1_500_000}, "  context 82% (1.2M/1.5M)"),
+        ({"percent": 99, "tokens": 999_600, "window": 1_000_000}, "  context 99% (1M/1M)"),
+        (None, "  context unknown"),
+    ],
+)
+def test_agent_details_says_how_full_the_context_is(
+    client: TestClient, fake: FakeAgentBridge, context: dict | None, line: str
+) -> None:
+    fake.routes[("GET", "/agents/w1:p1")] = httpx.Response(200, json={**AGENT, "context": context})
+    assert call_tool(client, "agent_details", agent_id="w1:p1") == (False, f"w1:p1 · webapp · idle · webapp\n{line}")
+
+
+def test_list_agents_leaves_the_context_out(client: TestClient, fake: FakeAgentBridge) -> None:
+    fake.routes[("GET", "/agents")] = httpx.Response(200, json=[{**AGENT, "context": None}])
+    assert call_tool(client, "list_agents") == (False, "1 agent:\nw1:p1 · webapp · idle · webapp")
 
 
 def test_a_prompt_that_ends_in_a_question_says_to_relay_it(client: TestClient, fake: FakeAgentBridge) -> None:

@@ -18,7 +18,7 @@ from mcp_gateway.config import Settings
 from mcp_gateway.hosts import NO_HOSTS, Host, Hosts, gather_hosts, version_problem
 from mcp_gateway.oauth import LOGIN_PATH, GatewayOAuth
 from mcp_gateway.registry import NAME_PATTERN
-from mcp_gateway.replies import count, describe, folder, invalid, report, with_truncation_note
+from mcp_gateway.replies import context_line, count, describe, folder, invalid, report, with_truncation_note
 
 INSTRUCTIONS = """\
 Controls the user's Claude Code agents running on their agent hosts (via herdr). The user is
@@ -222,9 +222,10 @@ def build_server(settings: Settings, hosts: Hosts, oauth: GatewayOAuth) -> MCPSe
 
     @mcp.tool(annotations=READ_ONLY)
     async def agent_details(agent_id: AgentId) -> str:
-        """Show one agent's name, status and folder."""
+        """Show one agent's name, status, folder and how full its context window is."""
         host, bare = await hosts.route(agent_id)
-        return shown(host, await call(host.bridge.get_agent(bare)))
+        agent = await call(host.bridge.get_agent(bare))
+        return f"{shown(host, agent)}\n{context_line(agent)}"
 
     @mcp.tool(annotations=READ_ONLY)
     async def read_output(

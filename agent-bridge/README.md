@@ -25,6 +25,7 @@ whose folder is under the allowed roots.
 - [Starting agents](#starting-agents)
   - [Claude accounts](#claude-accounts)
   - [Folder trust](#folder-trust)
+  - [Context use](#context-use)
 - [Configuration](#configuration)
 - [Run](#run)
   - [Commands](#commands)
@@ -202,7 +203,7 @@ All routes require `Authorization: Bearer $AGENT_BRIDGE_TOKEN`.
 | `GET /info` | `--version` | the host: `api_version` (2; a bridge without `/info` is 1), `bridge_id` (from the state file), `name` (`AGENT_BRIDGE_NAME`, or the hostname as a slug), `platform` (`darwin`, `linux` or `windows`), `bridge_version`, `herdr_version` (`null` if herdr can't be run), `roots`, `projects_root` (the first root), the `accounts`' names and `max_agents` |
 | `GET /projects/{name}` | | `{"cwd": …}` of the folder `name` under the first allowed root that has one; `404 project_not_found` otherwise, also for anything but one folder name (`..`, `.`, `~`, `/`, `\`, `:`) |
 | `GET /agents` | `agent list` | every herdr agent, in any folder. `project` is the agent's folder under the closest allowed root, joined with `/` on every platform (`webapp/api` for `<root>/webapp/api`), `null` at a root or outside them. An `idle` or `done` agent whose last message ends with a question has it in `question` (read from its screen with `agent read`, so it is a guess; herdr itself can't tell that agent from one that simply finished). `account` is the account its Claude Code runs on (see [Claude accounts](#claude-accounts)) |
-| `GET /agents/{id}` | `agent get` | the same, including `question` and `account` |
+| `GET /agents/{id}` | `agent get` | the same, including `question`, `account` and `context` (`{percent, tokens, window}` as Claude Code last gave its status line, or null; see [Context use](#context-use)) |
 | `GET /agents/{id}/output?lines=40&source=recent` | `agent read` | last N (1-500) meaningful lines: padding, input box (also when it shows the session's name) and status bar dropped; the visible screen only while the agent is working or blocked (herdr can't scroll its history then). `source=visible` reads only the screen; `recent-unwrapped` reads herdr's history of that name |
 | `POST /agents/{id}/prompt` `{text, timeout_s?, lines?}` | `agent prompt --wait` | waits until idle/done/blocked (the agent includes `question`); on timeout returns `timed_out: true` with current status, and `unconfirmed: true` if the text was typed but the agent didn't react within 5 s (don't resend). Refused with `409 agent_blocked` while the agent is `blocked` (the Enter would answer its question), and with `409 agent_busy` while it is `working` or another prompt to it is running |
 | `POST /agents/{id}/wait` `{timeout_s?, lines?, expect_change?}` | `agent wait` | same result as `/prompt`, without sending anything; `expect_change` (after `/keys`) first gives the agent 5 s to leave its old `blocked` state |
@@ -348,6 +349,21 @@ Hard limits:
   ignore case), a symlink, or a `.claude.json` linked to `~/.claude.json` is caught too.
 
 The file is written atomically and left alone if the folder itself is already trusted.
+
+### Context use
+
+`GET /agents/{id}` says how full the agent's context window is, with the numbers Claude
+Code itself works from (what `/context` shows). Claude Code gives them only to its status
+line, so setup routes the status line of each non-default config the agents use
+(`AGENT_BRIDGE_CLAUDE_CONFIG_DIR`, each account's) through `agent-bridge-statusline`.
+On each render it saves them to `<config dir>/agent-bridge/context/<session id>.json`, then
+runs the status line that was there with the same input, so it looks the same. Uninstall
+puts the old command back. The default config is never changed; route its status line by
+hand ([By hand](#by-hand), step 5) to get context use for agents on it.
+
+`context` is null until the agent's status line has rendered once since setup, while
+Claude Code can't measure the window (early in a session, right after `/compact`), and
+when herdr doesn't know the agent's conversation.
 
 ## Configuration
 
@@ -607,7 +623,10 @@ What setup does, step by step:
    `CLAUDE_CONFIG_DIR=<config dir> herdr integration install claude` for each
    non-default config the agents use. Or set `AGENT_BRIDGE_RESTORE_AGENTS=false`;
    without either, herdr resumes agents too, and one it brings back late can run twice.
-5. Run `agent-bridge check`, then [enroll](#enroll-with-the-gateway) it.
+5. For [context use](#context-use), set each non-default config's `statusLine.command`
+   in `settings.json` to the full path of `agent-bridge-statusline`, followed by
+   `--then <base64 of the old command>` if there was one.
+6. Run `agent-bridge check`, then [enroll](#enroll-with-the-gateway) it.
 
 This leaves starting herdr's server at login to you (setup's second launch agent does
 it). If the macOS firewall is on, allow incoming connections for Python when asked.
